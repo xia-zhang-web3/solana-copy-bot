@@ -99,6 +99,7 @@ struct LogsNotification {
 type HeliusWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+const WS_IDLE_TIMEOUT_SECS: u64 = 45;
 
 pub struct HeliusWsSource {
     ws_url: String,
@@ -173,11 +174,11 @@ impl HeliusWsSource {
 
             let next_message = {
                 let ws = self.ws.as_mut().expect("ws checked above");
-                ws.next().await
+                time::timeout(Duration::from_secs(WS_IDLE_TIMEOUT_SECS), ws.next()).await
             };
 
             match next_message {
-                Some(Ok(Message::Text(text))) => {
+                Ok(Some(Ok(Message::Text(text)))) => {
                     if let Some(notification) = self.parse_logs_notification(&text) {
                         if notification.is_failed {
                             continue;
@@ -193,7 +194,7 @@ impl HeliusWsSource {
                         }
                     }
                 }
-                Some(Ok(Message::Ping(payload))) => {
+                Ok(Some(Ok(Message::Ping(payload)))) => {
                     if let Some(ws) = self.ws.as_mut() {
                         if let Err(error) = ws.send(Message::Pong(payload)).await {
                             warn!(error = %error, "failed to send ws pong");
@@ -202,19 +203,27 @@ impl HeliusWsSource {
                         }
                     }
                 }
-                Some(Ok(Message::Close(frame))) => {
+                Ok(Some(Ok(Message::Close(frame)))) => {
                     warn!(?frame, "helius ws closed");
                     self.ws = None;
                     self.sleep_with_backoff().await;
                 }
-                Some(Ok(_)) => {}
-                Some(Err(error)) => {
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(error))) => {
                     warn!(error = %error, "helius ws stream error");
                     self.ws = None;
                     self.sleep_with_backoff().await;
                 }
-                None => {
+                Ok(None) => {
                     warn!("helius ws stream ended");
+                    self.ws = None;
+                    self.sleep_with_backoff().await;
+                }
+                Err(_) => {
+                    warn!(
+                        idle_timeout_seconds = WS_IDLE_TIMEOUT_SECS,
+                        "helius ws idle timeout, reconnecting"
+                    );
                     self.ws = None;
                     self.sleep_with_backoff().await;
                 }
