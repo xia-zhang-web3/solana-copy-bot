@@ -1,0 +1,11 @@
+[package]
+name = "copybot-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+copybot-core-types = { path = "../core-types" }
+rusqlite.workspace = true
+tracing.workspace = true

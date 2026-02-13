@@ -1,0 +1,17 @@
+[package]
+name = "copybot-ingestion"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bs58 = "0.5.1"
+chrono.workspace = true
+copybot-config = { path = "../config" }
+copybot-core-types = { path = "../core-types" }
+futures-util = "0.3.31"
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1.0"
+tokio.workspace = true
+tokio-tungstenite = { version = "0.27.0", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
+tracing.workspace = true

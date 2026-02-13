@@ -1,0 +1,16 @@
+[package]
+name = "copybot-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+copybot-config = { path = "../config" }
+copybot-discovery = { path = "../discovery" }
+copybot-ingestion = { path = "../ingestion" }
+copybot-shadow = { path = "../shadow" }
+copybot-storage = { path = "../storage" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

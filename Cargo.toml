@@ -1,0 +1,26 @@
+[workspace]
+members = [
+  "crates/core-types",
+  "crates/config",
+  "crates/storage",
+  "crates/ingestion",
+  "crates/discovery",
+  "crates/shadow",
+  "crates/app",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "signal", "time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1", features = ["serde", "v4"] }

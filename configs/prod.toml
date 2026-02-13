@@ -1,0 +1,55 @@
+[system]
+env = "prod"
+log_level = "info"
+log_json = true
+heartbeat_seconds = 30
+migrations_dir = "migrations"
+pause_new_trades_on_outage = true
+
+[sqlite]
+path = "state/prod_copybot.db"
+
+[ingestion]
+source = "helius_ws"
+helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
+helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
+subscribe_program_ids = []
+raydium_program_ids = [
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+  "CPMMoo8L3F4NbTegBCKVN6DKuQh8fYfY4yR4j3uP9s5",
+]
+pumpswap_program_ids = ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"]
+reconnect_initial_ms = 500
+reconnect_max_ms = 8000
+tx_fetch_retries = 3
+tx_fetch_retry_delay_ms = 150
+tx_request_timeout_ms = 5000
+seen_signatures_limit = 5000
+mock_interval_ms = 2000
+
+[discovery]
+scoring_window_days = 30
+decay_window_days = 7
+follow_top_n = 10
+min_leader_notional_sol = 1.0
+refresh_seconds = 180
+min_trades = 10
+min_active_days = 4
+min_score = 0.6
+max_tx_per_minute = 50
+
+[shadow]
+enabled = true
+refresh_seconds = 60
+copy_notional_sol = 0.20
+min_leader_notional_sol = 0.75
+max_signal_lag_seconds = 30
+
+[risk]
+max_position_sol = 0.4
+max_total_exposure_sol = 2.5
+max_concurrent_positions = 4
+daily_loss_limit_pct = 1.0
+max_drawdown_pct = 5.0
+max_hold_hours = 6
+max_copy_delay_sec = 4
