@@ -3,8 +3,9 @@ use chrono::Utc;
 use copybot_config::load_from_env_or_default;
 use copybot_discovery::DiscoveryService;
 use copybot_ingestion::IngestionService;
-use copybot_shadow::ShadowService;
+use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome, ShadowService};
 use copybot_storage::SqliteStore;
+use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use tokio::time::{self, Duration};
@@ -102,6 +103,7 @@ async fn run_app_loop(
     let mut active_follow_wallets = store
         .list_active_follow_wallets()
         .context("failed to load active follow wallets")?;
+    let mut shadow_drop_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
 
     if !active_follow_wallets.is_empty() {
         info!(
@@ -143,7 +145,7 @@ async fn run_app_loop(
                             "observed swap stored"
                         );
                         match shadow.process_swap(&store, &swap, &active_follow_wallets, Utc::now()) {
-                            Ok(Some(result)) => {
+                            Ok(ShadowProcessOutcome::Recorded(result)) => {
                                 info!(
                                     signal_id = %result.signal_id,
                                     wallet = %result.wallet_id,
@@ -156,7 +158,10 @@ async fn run_app_loop(
                                     "shadow signal recorded"
                                 );
                             }
-                            Ok(None) => {}
+                            Ok(ShadowProcessOutcome::Dropped(reason)) => {
+                                let key = reason_to_key(reason);
+                                *shadow_drop_counts.entry(key).or_insert(0) += 1;
+                            }
                             Err(error) => {
                                 warn!(error = %error, signature = %swap.signature, "shadow processing failed");
                             }
@@ -196,6 +201,13 @@ async fn run_app_loop(
                             active_follow_wallets = active_follow_wallets.len(),
                             "shadow snapshot"
                         );
+                        if !shadow_drop_counts.is_empty() {
+                            info!(
+                                drop_counts = ?shadow_drop_counts,
+                                "shadow drop reasons"
+                            );
+                            shadow_drop_counts.clear();
+                        }
                     }
                     Err(error) => {
                         warn!(error = %error, "shadow snapshot failed");
@@ -213,4 +225,8 @@ async fn run_app_loop(
         .record_heartbeat("copybot-app", "shutdown")
         .context("failed to write shutdown heartbeat")?;
     Ok(())
+}
+
+fn reason_to_key(reason: ShadowDropReason) -> &'static str {
+    reason.as_str()
 }

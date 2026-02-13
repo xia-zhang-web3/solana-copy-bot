@@ -25,6 +25,39 @@ pub struct ShadowSignalResult {
     pub realized_pnl_sol: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShadowDropReason {
+    Disabled,
+    NotFollowed,
+    NotSolLeg,
+    BelowNotional,
+    LagExceeded,
+    InvalidSizing,
+    DuplicateSignal,
+    UnsupportedSide,
+}
+
+impl ShadowDropReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::NotFollowed => "not_followed",
+            Self::NotSolLeg => "not_sol_leg",
+            Self::BelowNotional => "below_notional",
+            Self::LagExceeded => "lag_exceeded",
+            Self::InvalidSizing => "invalid_sizing",
+            Self::DuplicateSignal => "duplicate_signal",
+            Self::UnsupportedSide => "unsupported_side",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ShadowProcessOutcome {
+    Recorded(ShadowSignalResult),
+    Dropped(ShadowDropReason),
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ShadowSnapshot {
     pub closed_trades_24h: u64,
@@ -57,24 +90,26 @@ impl ShadowService {
         swap: &SwapEvent,
         active_follow_wallets: &HashSet<String>,
         now: DateTime<Utc>,
-    ) -> Result<Option<ShadowSignalResult>> {
+    ) -> Result<ShadowProcessOutcome> {
         if !self.config.enabled {
-            return Ok(None);
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::Disabled));
         }
         if !active_follow_wallets.contains(&swap.wallet) {
-            return Ok(None);
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
         }
 
         let Some(candidate) = Self::to_shadow_candidate(swap) else {
-            return Ok(None);
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotSolLeg));
         };
         if candidate.leader_notional_sol < self.config.min_leader_notional_sol {
-            return Ok(None);
+            return Ok(ShadowProcessOutcome::Dropped(
+                ShadowDropReason::BelowNotional,
+            ));
         }
 
         let latency_ms = (now - swap.ts_utc).num_milliseconds();
         if latency_ms > (self.config.max_signal_lag_seconds as i64 * 1_000) {
-            return Ok(None);
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::LagExceeded));
         }
 
         let copy_notional_sol = self
@@ -82,7 +117,9 @@ impl ShadowService {
             .copy_notional_sol
             .min(candidate.leader_notional_sol);
         if copy_notional_sol <= EPS || candidate.price_sol_per_token <= EPS {
-            return Ok(None);
+            return Ok(ShadowProcessOutcome::Dropped(
+                ShadowDropReason::InvalidSizing,
+            ));
         }
         let signal_id = format!(
             "shadow:{}:{}:{}:{}",
@@ -98,7 +135,9 @@ impl ShadowService {
             status: "shadow_recorded".to_string(),
         };
         if !store.insert_copy_signal(&signal)? {
-            return Ok(None);
+            return Ok(ShadowProcessOutcome::Dropped(
+                ShadowDropReason::DuplicateSignal,
+            ));
         }
 
         let mut close = CloseResult::default();
@@ -127,10 +166,14 @@ impl ShadowService {
                     now,
                 )?;
             }
-            _ => return Ok(None),
+            _ => {
+                return Ok(ShadowProcessOutcome::Dropped(
+                    ShadowDropReason::UnsupportedSide,
+                ))
+            }
         }
 
-        Ok(Some(ShadowSignalResult {
+        Ok(ShadowProcessOutcome::Recorded(ShadowSignalResult {
             signal_id,
             wallet_id: swap.wallet.clone(),
             side: candidate.side,
@@ -287,7 +330,7 @@ mod tests {
         };
         let buy_signal = service
             .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
-            .expect("buy signal expected");
+            .expect_recorded("buy signal expected");
         assert_eq!(buy_signal.side, "buy");
         assert!(store.shadow_open_lots_count()? > 0);
 
@@ -304,7 +347,7 @@ mod tests {
         };
         let sell_signal = service
             .process_swap(&store, &sell, &follow, sell_ts + Duration::seconds(1))?
-            .expect("sell signal expected");
+            .expect_recorded("sell signal expected");
         assert_eq!(sell_signal.side, "sell");
         assert!(sell_signal.realized_pnl_sol > 0.0);
 
@@ -312,5 +355,20 @@ mod tests {
         assert!(snapshot.closed_trades_24h >= 1);
         assert!(snapshot.realized_pnl_sol_24h > 0.0);
         Ok(())
+    }
+
+    trait TestOutcomeExt {
+        fn expect_recorded(self, message: &str) -> ShadowSignalResult;
+    }
+
+    impl TestOutcomeExt for ShadowProcessOutcome {
+        fn expect_recorded(self, message: &str) -> ShadowSignalResult {
+            match self {
+                ShadowProcessOutcome::Recorded(result) => result,
+                ShadowProcessOutcome::Dropped(reason) => {
+                    panic!("{message}: dropped with reason {}", reason.as_str())
+                }
+            }
+        }
     }
 }
