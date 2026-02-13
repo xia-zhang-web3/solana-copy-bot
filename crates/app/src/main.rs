@@ -8,7 +8,7 @@ use copybot_storage::SqliteStore;
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use tokio::time::{self, Duration};
+use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -100,6 +100,9 @@ async fn run_app_loop(
     let mut discovery_interval =
         time::interval(Duration::from_secs(discovery_refresh_seconds.max(10)));
     let mut shadow_interval = time::interval(Duration::from_secs(shadow_refresh_seconds.max(10)));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    discovery_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    shadow_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut active_follow_wallets = store
         .list_active_follow_wallets()
         .context("failed to load active follow wallets")?;

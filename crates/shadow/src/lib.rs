@@ -94,21 +94,28 @@ impl ShadowService {
         if !self.config.enabled {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::Disabled));
         }
-        if !active_follow_wallets.contains(&swap.wallet) {
-            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
-        }
-
         let Some(candidate) = Self::to_shadow_candidate(swap) else {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotSolLeg));
         };
-        if candidate.leader_notional_sol < self.config.min_leader_notional_sol {
+        let is_followed = active_follow_wallets.contains(&swap.wallet);
+        let is_unfollowed_sell_exit = !is_followed
+            && candidate.side == "sell"
+            && store.has_shadow_lots(&swap.wallet, &candidate.token)?;
+        if !is_followed && !is_unfollowed_sell_exit {
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
+        }
+        if !is_unfollowed_sell_exit
+            && candidate.leader_notional_sol < self.config.min_leader_notional_sol
+        {
             return Ok(ShadowProcessOutcome::Dropped(
                 ShadowDropReason::BelowNotional,
             ));
         }
 
         let latency_ms = (now - swap.ts_utc).num_milliseconds();
-        if latency_ms > (self.config.max_signal_lag_seconds as i64 * 1_000) {
+        if !is_unfollowed_sell_exit
+            && latency_ms > (self.config.max_signal_lag_seconds as i64 * 1_000)
+        {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::LagExceeded));
         }
 
@@ -354,6 +361,70 @@ mod tests {
         let snapshot = service.snapshot_24h(&store, sell_ts + Duration::seconds(2))?;
         assert!(snapshot.closed_trades_24h >= 1);
         assert!(snapshot.realized_pnl_sol_24h > 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn sell_closes_existing_lot_even_if_wallet_demoted() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-unfollowed-exit.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut follow = HashSet::new();
+        follow.insert("leader-wallet".to_string());
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let sell_ts = DateTime::parse_from_rfc3339("2026-02-12T12:05:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMint".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-demote".to_string(),
+            slot: 10,
+            ts_utc: buy_ts,
+        };
+        service
+            .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
+            .expect_recorded("buy signal expected");
+        assert_eq!(store.shadow_open_lots_count()?, 1);
+
+        // Simulate a discovery demotion: wallet is no longer in active followlist.
+        follow.clear();
+
+        let sell = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "TokenMint".to_string(),
+            token_out: SOL_MINT.to_string(),
+            amount_in: 1000.0,
+            amount_out: 1.0,
+            signature: "sig-sell-demote".to_string(),
+            slot: 11,
+            ts_utc: sell_ts,
+        };
+        let sell_signal = service
+            .process_swap(&store, &sell, &follow, sell_ts + Duration::seconds(1))?
+            .expect_recorded("sell signal should close orphaned lot");
+        assert_eq!(sell_signal.side, "sell");
+        assert_eq!(store.shadow_open_lots_count()?, 0);
+
+        let snapshot = service.snapshot_24h(&store, sell_ts + Duration::seconds(2))?;
+        assert!(snapshot.closed_trades_24h >= 1);
         Ok(())
     }
 

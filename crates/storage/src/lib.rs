@@ -448,6 +448,18 @@ impl SqliteStore {
         Ok(lots)
     }
 
+    pub fn has_shadow_lots(&self, wallet_id: &str, token: &str) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM shadow_lots WHERE wallet_id = ?1 AND token = ?2",
+                params![wallet_id, token],
+                |row| row.get(0),
+            )
+            .context("failed querying shadow lots existence")?;
+        Ok(count > 0)
+    }
+
     pub fn update_shadow_lot(&self, id: i64, qty: f64, cost_sol: f64) -> Result<()> {
         self.conn
             .execute(
