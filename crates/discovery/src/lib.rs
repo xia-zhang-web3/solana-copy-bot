@@ -1,17 +1,23 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use copybot_config::DiscoveryConfig;
+use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{SqliteStore, WalletMetricRow};
+use copybot_storage::{SqliteStore, TokenQualityCacheRow, WalletMetricRow};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
-use tracing::info;
+use tracing::{info, warn};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
+const QUALITY_RPC_TIMEOUT_MS: u64 = 2_500;
+const QUALITY_MAX_SIGNATURE_PAGES: u32 = 4;
+const QUALITY_MAX_FETCH_PER_CYCLE: usize = 200;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
     config: DiscoveryConfig,
+    shadow_quality: ShadowConfig,
+    helius_http_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -37,6 +43,9 @@ struct WalletSnapshot {
     closed_trades: u32,
     hold_median_seconds: i64,
     score: f64,
+    buy_total: u32,
+    tradable_ratio: f64,
+    rug_ratio: f64,
     eligible: bool,
 }
 
@@ -45,6 +54,29 @@ struct Lot {
     qty: f64,
     cost_sol: f64,
     opened_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct BuyObservation {
+    token: String,
+    ts: DateTime<Utc>,
+    tradable: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SolLegTrade {
+    ts: DateTime<Utc>,
+    wallet_id: String,
+    sol_notional: f64,
+}
+
+#[derive(Debug, Default)]
+struct TokenRollingState {
+    first_seen: Option<DateTime<Utc>>,
+    wallets_seen: HashSet<String>,
+    sol_trades_5m: VecDeque<SolLegTrade>,
+    sol_volume_5m: f64,
+    sol_traders_5m: HashMap<String, u32>,
 }
 
 #[derive(Debug, Default)]
@@ -63,11 +95,27 @@ struct WalletAccumulator {
     tx_per_minute: HashMap<i64, u32>,
     suspicious: bool,
     positions: HashMap<String, VecDeque<Lot>>,
+    buy_observations: Vec<BuyObservation>,
 }
 
 impl DiscoveryService {
-    pub fn new(config: DiscoveryConfig) -> Self {
-        Self { config }
+    pub fn new(config: DiscoveryConfig, shadow_quality: ShadowConfig) -> Self {
+        Self::new_with_helius(config, shadow_quality, None)
+    }
+
+    pub fn new_with_helius(
+        config: DiscoveryConfig,
+        shadow_quality: ShadowConfig,
+        helius_http_url: Option<String>,
+    ) -> Self {
+        let helius_http_url = helius_http_url
+            .map(|url| url.trim().to_string())
+            .filter(|url| !url.is_empty() && !url.contains("REPLACE_ME"));
+        Self {
+            config,
+            shadow_quality,
+            helius_http_url,
+        }
     }
 
     pub fn run_cycle(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<DiscoverySummary> {
@@ -82,7 +130,7 @@ impl DiscoveryService {
             });
         }
 
-        let snapshots = self.build_wallet_snapshots(&swaps, now);
+        let snapshots = self.build_wallet_snapshots(store, &swaps, now);
         for snapshot in snapshots.iter() {
             let status = if snapshot.eligible {
                 "candidate"
@@ -104,6 +152,9 @@ impl DiscoveryService {
                 closed_trades: snapshot.closed_trades,
                 hold_median_seconds: snapshot.hold_median_seconds,
                 score: snapshot.score,
+                buy_total: snapshot.buy_total,
+                tradable_ratio: snapshot.tradable_ratio,
+                rug_ratio: snapshot.rug_ratio,
             })?;
         }
 
@@ -124,7 +175,12 @@ impl DiscoveryService {
         let top_wallets = ranked
             .iter()
             .take(5)
-            .map(|item| format!("{}:{:.3}", item.wallet_id, item.score))
+            .map(|item| {
+                format!(
+                    "{}:{:.3}:t{:.2}:r{:.2}:b{}",
+                    item.wallet_id, item.score, item.tradable_ratio, item.rug_ratio, item.buy_total
+                )
+            })
             .collect::<Vec<_>>();
 
         let summary = DiscoverySummary {
@@ -155,6 +211,7 @@ impl DiscoveryService {
 
     fn build_wallet_snapshots(
         &self,
+        store: &SqliteStore,
         swaps: &[SwapEvent],
         now: DateTime<Utc>,
     ) -> Vec<WalletSnapshot> {
@@ -167,14 +224,31 @@ impl DiscoveryService {
         });
 
         let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
+        let unique_buy_mints: HashSet<String> = sorted
+            .iter()
+            .filter(|swap| is_sol_buy(swap))
+            .map(|swap| swap.token_out.clone())
+            .collect();
+        let token_quality_cache =
+            self.resolve_token_quality_for_mints(store, &unique_buy_mints, now);
+        let mut token_states: HashMap<String, TokenRollingState> = HashMap::new();
+        let mut token_sol_history: HashMap<String, Vec<SolLegTrade>> = HashMap::new();
         for swap in sorted.iter() {
+            let buy_quality = self.update_token_quality_state(
+                &mut token_states,
+                &mut token_sol_history,
+                &token_quality_cache,
+                swap,
+            );
             let entry = by_wallet.entry(swap.wallet.clone()).or_default();
-            entry.observe_swap(swap, self.config.max_tx_per_minute);
+            entry.observe_swap(swap, self.config.max_tx_per_minute, buy_quality);
         }
 
         by_wallet
             .into_iter()
-            .map(|(wallet_id, acc)| self.snapshot_from_accumulator(wallet_id, acc, now))
+            .map(|(wallet_id, acc)| {
+                self.snapshot_from_accumulator(wallet_id, acc, now, &token_sol_history)
+            })
             .collect()
     }
 
@@ -183,10 +257,29 @@ impl DiscoveryService {
         wallet_id: String,
         acc: WalletAccumulator,
         now: DateTime<Utc>,
+        token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
     ) -> WalletSnapshot {
         let first_seen = acc.first_seen.unwrap_or(now);
         let last_seen = acc.last_seen.unwrap_or(now);
         let active_days = acc.active_days.len() as u32;
+        let buy_total = acc.buy_observations.len() as u32;
+        let tradable_buys = acc
+            .buy_observations
+            .iter()
+            .filter(|buy| buy.tradable)
+            .count() as u32;
+        let tradable_ratio = if buy_total > 0 {
+            tradable_buys as f64 / buy_total as f64
+        } else {
+            0.0
+        };
+        let (rug_evaluated, rugged_buys) =
+            self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
+        let rug_ratio = if rug_evaluated > 0 {
+            rugged_buys as f64 / rug_evaluated as f64
+        } else {
+            0.0
+        };
         let win_rate = if acc.closed_trades > 0 {
             acc.wins as f64 / acc.closed_trades as f64
         } else {
@@ -215,18 +308,24 @@ impl DiscoveryService {
         let win_component = (win_rate * win_sample_factor).clamp(0.0, 1.0);
         let consistency_component = consistency_ratio.clamp(0.0, 1.0);
         let penalty_component = if acc.suspicious { 0.0 } else { 1.0 };
-        let raw_score = (0.35 * pnl_component)
+        let base_score = (0.35 * pnl_component)
             + (0.20 * roi_component)
             + (0.15 * win_component)
             + (0.15 * hold_quality)
             + (0.10 * consistency_component)
             + (0.05 * penalty_component);
+        let tradable_penalty = tradable_ratio.powf(1.5);
+        let rug_penalty = (1.0 - rug_ratio).clamp(0.0, 1.0).powi(2);
+        let raw_score = (base_score * tradable_penalty * rug_penalty).clamp(0.0, 1.0);
         let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
         let eligible = acc.trades >= self.config.min_trades
             && active_days >= self.config.min_active_days
             && !acc.suspicious
             && acc.max_buy_notional_sol >= self.config.min_leader_notional_sol
-            && last_seen >= decay_cutoff;
+            && last_seen >= decay_cutoff
+            && buy_total >= self.config.min_buy_count
+            && tradable_ratio >= self.config.min_tradable_ratio
+            && rug_ratio <= self.config.max_rug_ratio;
         let score = if eligible { raw_score } else { 0.0 };
 
         WalletSnapshot {
@@ -239,13 +338,338 @@ impl DiscoveryService {
             closed_trades: acc.closed_trades,
             hold_median_seconds,
             score,
+            buy_total,
+            tradable_ratio,
+            rug_ratio,
             eligible,
         }
+    }
+
+    fn compute_rug_metrics(
+        &self,
+        buys: &[BuyObservation],
+        token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
+        now: DateTime<Utc>,
+    ) -> (u32, u32) {
+        if buys.is_empty() {
+            return (0, 0);
+        }
+        let lookahead = Duration::seconds(self.config.rug_lookahead_seconds.max(1) as i64);
+        let mut evaluated = 0u32;
+        let mut rugged = 0u32;
+
+        for buy in buys {
+            let window_end = buy.ts + lookahead;
+            if window_end > now {
+                continue;
+            }
+            evaluated = evaluated.saturating_add(1);
+            let Some(trades) = token_sol_history.get(&buy.token) else {
+                rugged = rugged.saturating_add(1);
+                continue;
+            };
+
+            let start_idx = trades.partition_point(|trade| trade.ts < buy.ts);
+            let end_idx = trades.partition_point(|trade| trade.ts <= window_end);
+
+            let mut volume_sol = 0.0;
+            let mut unique_traders = HashSet::new();
+            for trade in &trades[start_idx..end_idx] {
+                volume_sol += trade.sol_notional;
+                unique_traders.insert(trade.wallet_id.as_str());
+            }
+            let thin_volume = volume_sol + 1e-12 < self.config.thin_market_min_volume_sol;
+            let thin_traders =
+                unique_traders.len() < self.config.thin_market_min_unique_traders as usize;
+            if thin_volume || thin_traders {
+                rugged = rugged.saturating_add(1);
+            }
+        }
+
+        (evaluated, rugged)
+    }
+
+    fn resolve_token_quality_for_mints(
+        &self,
+        store: &SqliteStore,
+        mints: &HashSet<String>,
+        now: DateTime<Utc>,
+    ) -> HashMap<String, TokenQualityCacheRow> {
+        if mints.is_empty() {
+            return HashMap::new();
+        }
+
+        let mut out = HashMap::new();
+        let ttl = Duration::seconds(QUALITY_CACHE_TTL_SECONDS);
+        let mut to_fetch = Vec::new();
+        let mut fresh_hits = 0usize;
+        let mut stale_hits = 0usize;
+        let mut misses = 0usize;
+
+        for mint in mints {
+            match store.get_token_quality_cache(mint) {
+                Ok(Some(row)) => {
+                    if now - row.fetched_at <= ttl {
+                        fresh_hits += 1;
+                        out.insert(mint.clone(), row);
+                    } else {
+                        stale_hits += 1;
+                        to_fetch.push((mint.clone(), Some(row)));
+                    }
+                }
+                Ok(None) => {
+                    misses += 1;
+                    to_fetch.push((mint.clone(), None))
+                }
+                Err(error) => {
+                    warn!(error = %error, mint = %mint, "failed reading token quality cache");
+                }
+            }
+        }
+
+        let Some(helius_http_url) = self.helius_http_url.as_deref() else {
+            for (mint, stale_row) in to_fetch {
+                if let Some(row) = stale_row {
+                    out.insert(mint, row);
+                }
+            }
+            return out;
+        };
+
+        let mut fetched_ok = 0usize;
+        let mut fetched_fail = 0usize;
+        for (index, (mint, stale_row)) in to_fetch.into_iter().enumerate() {
+            if index >= QUALITY_MAX_FETCH_PER_CYCLE {
+                if let Some(row) = stale_row {
+                    out.insert(mint, row);
+                }
+                continue;
+            }
+
+            match SqliteStore::fetch_token_quality_from_helius(
+                helius_http_url,
+                &mint,
+                QUALITY_RPC_TIMEOUT_MS,
+                QUALITY_MAX_SIGNATURE_PAGES,
+                Some(self.shadow_quality.min_token_age_seconds),
+            ) {
+                Ok(fetched) => {
+                    if let Err(error) = store.upsert_token_quality_cache(
+                        &mint,
+                        fetched.holders,
+                        fetched.liquidity_sol,
+                        fetched.token_age_seconds,
+                        now,
+                    ) {
+                        warn!(error = %error, mint = %mint, "failed updating token quality cache");
+                    }
+                    match store.get_token_quality_cache(&mint) {
+                        Ok(Some(row)) => {
+                            fetched_ok += 1;
+                            out.insert(mint, row);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                mint = %mint,
+                                "failed reading token quality cache after refresh"
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    fetched_fail += 1;
+                    warn!(
+                        error = %error,
+                        mint = %mint,
+                        "failed to refresh token quality via helius, using fallback"
+                    );
+                    if let Some(row) = stale_row {
+                        out.insert(mint, row);
+                    }
+                }
+            }
+        }
+
+        info!(
+            quality_source = "rpc+db_proxy",
+            mints_total = mints.len(),
+            cache_fresh = fresh_hits,
+            cache_stale = stale_hits,
+            cache_miss = misses,
+            fetched_ok,
+            fetched_fail,
+            "discovery token quality cache summary"
+        );
+
+        out
+    }
+
+    fn update_token_quality_state(
+        &self,
+        token_states: &mut HashMap<String, TokenRollingState>,
+        token_sol_history: &mut HashMap<String, Vec<SolLegTrade>>,
+        token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
+        swap: &SwapEvent,
+    ) -> Option<bool> {
+        self.touch_token_state(token_states, &swap.token_in, &swap.wallet, swap.ts_utc);
+        self.touch_token_state(token_states, &swap.token_out, &swap.wallet, swap.ts_utc);
+
+        let (token, sol_notional) = if is_sol_buy(swap) {
+            (swap.token_out.as_str(), swap.amount_in)
+        } else if is_sol_sell(swap) {
+            (swap.token_in.as_str(), swap.amount_out)
+        } else {
+            return None;
+        };
+
+        self.push_sol_leg_trade(
+            token_states,
+            token_sol_history,
+            token,
+            swap.wallet.as_str(),
+            swap.ts_utc,
+            sol_notional.max(0.0),
+        );
+
+        if !is_sol_buy(swap) {
+            return None;
+        }
+
+        let state = token_states
+            .get_mut(token)
+            .expect("token state is initialized when push_sol_leg_trade is called");
+        Self::evict_expired_5m(state, swap.ts_utc);
+        Some(self.is_tradable_token(state, token_quality_cache.get(token), swap.ts_utc))
+    }
+
+    fn touch_token_state(
+        &self,
+        token_states: &mut HashMap<String, TokenRollingState>,
+        token: &str,
+        wallet_id: &str,
+        ts: DateTime<Utc>,
+    ) {
+        let state = token_states.entry(token.to_string()).or_default();
+        state.first_seen = Some(
+            state
+                .first_seen
+                .map(|current| current.min(ts))
+                .unwrap_or(ts),
+        );
+        state.wallets_seen.insert(wallet_id.to_string());
+    }
+
+    fn push_sol_leg_trade(
+        &self,
+        token_states: &mut HashMap<String, TokenRollingState>,
+        token_sol_history: &mut HashMap<String, Vec<SolLegTrade>>,
+        token: &str,
+        wallet_id: &str,
+        ts: DateTime<Utc>,
+        sol_notional: f64,
+    ) {
+        let trade = SolLegTrade {
+            ts,
+            wallet_id: wallet_id.to_string(),
+            sol_notional,
+        };
+        token_sol_history
+            .entry(token.to_string())
+            .or_default()
+            .push(trade.clone());
+
+        let state = token_states.entry(token.to_string()).or_default();
+        Self::evict_expired_5m(state, ts);
+        state.sol_volume_5m += trade.sol_notional;
+        state
+            .sol_traders_5m
+            .entry(trade.wallet_id.clone())
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+        state.sol_trades_5m.push_back(trade);
+    }
+
+    fn evict_expired_5m(state: &mut TokenRollingState, now: DateTime<Utc>) {
+        let cutoff = now - Duration::minutes(5);
+        while let Some(front) = state.sol_trades_5m.front() {
+            if front.ts >= cutoff {
+                break;
+            }
+            let expired = state
+                .sol_trades_5m
+                .pop_front()
+                .expect("checked front exists above");
+            state.sol_volume_5m = (state.sol_volume_5m - expired.sol_notional).max(0.0);
+            if let Some(count) = state.sol_traders_5m.get_mut(&expired.wallet_id) {
+                *count -= 1;
+                if *count == 0 {
+                    state.sol_traders_5m.remove(&expired.wallet_id);
+                }
+            }
+        }
+    }
+
+    fn is_tradable_token(
+        &self,
+        state: &TokenRollingState,
+        rpc_quality: Option<&TokenQualityCacheRow>,
+        signal_ts: DateTime<Utc>,
+    ) -> bool {
+        let proxy_age_seconds = state
+            .first_seen
+            .map(|first_seen| (signal_ts - first_seen).num_seconds().max(0) as u64)
+            .unwrap_or(0);
+        let token_age_seconds = rpc_quality
+            .and_then(|row| row.token_age_seconds)
+            .unwrap_or(proxy_age_seconds);
+        let holders = rpc_quality
+            .and_then(|row| row.holders)
+            .unwrap_or(state.wallets_seen.len() as u64);
+        let liquidity_proxy = state
+            .sol_trades_5m
+            .iter()
+            .map(|trade| trade.sol_notional)
+            .fold(0.0, f64::max);
+        let liquidity_sol = rpc_quality
+            .and_then(|row| row.liquidity_sol)
+            .unwrap_or(liquidity_proxy);
+
+        if self.shadow_quality.min_token_age_seconds > 0 {
+            if token_age_seconds < self.shadow_quality.min_token_age_seconds {
+                return false;
+            }
+        }
+        if self.shadow_quality.min_holders > 0 && holders < self.shadow_quality.min_holders {
+            return false;
+        }
+        if self.shadow_quality.min_volume_5m_sol > 0.0
+            && state.sol_volume_5m + 1e-12 < self.shadow_quality.min_volume_5m_sol
+        {
+            return false;
+        }
+        if self.shadow_quality.min_unique_traders_5m > 0
+            && state.sol_traders_5m.len() < self.shadow_quality.min_unique_traders_5m as usize
+        {
+            return false;
+        }
+        if self.shadow_quality.min_liquidity_sol > 0.0
+            && liquidity_sol + 1e-12 < self.shadow_quality.min_liquidity_sol
+        {
+            return false;
+        }
+        true
     }
 }
 
 impl WalletAccumulator {
-    fn observe_swap(&mut self, swap: &SwapEvent, max_tx_per_minute: u32) {
+    fn observe_swap(
+        &mut self,
+        swap: &SwapEvent,
+        max_tx_per_minute: u32,
+        buy_tradable: Option<bool>,
+    ) {
         self.trades = self.trades.saturating_add(1);
         self.first_seen = Some(
             self.first_seen
@@ -267,6 +691,7 @@ impl WalletAccumulator {
                 swap.amount_out,
                 swap.amount_in,
                 swap.ts_utc,
+                buy_tradable.unwrap_or(false),
             );
             return;
         }
@@ -280,10 +705,22 @@ impl WalletAccumulator {
         }
     }
 
-    fn observe_buy(&mut self, token: &str, qty: f64, cost_sol: f64, ts: DateTime<Utc>) {
+    fn observe_buy(
+        &mut self,
+        token: &str,
+        qty: f64,
+        cost_sol: f64,
+        ts: DateTime<Utc>,
+        tradable: bool,
+    ) {
         if qty <= 0.0 || cost_sol <= 0.0 {
             return;
         }
+        self.buy_observations.push(BuyObservation {
+            token: token.to_string(),
+            ts,
+            tradable,
+        });
         self.spent_sol += cost_sol;
         if cost_sol > self.max_buy_notional_sol {
             self.max_buy_notional_sol = cost_sol;
@@ -443,7 +880,7 @@ mod tests {
             .with_timezone(&Utc);
         let start = now - Duration::days(1);
 
-        for idx in 0..6 {
+        for idx in 0..12 {
             let buy_ts = start + Duration::minutes((idx * 20) as i64);
             let sell_ts = buy_ts + Duration::minutes(6);
             let signature_buy = format!("a-buy-{idx}");
@@ -498,8 +935,9 @@ mod tests {
         config.min_active_days = 1;
         config.min_score = 0.55;
         config.max_tx_per_minute = 50;
+        config.thin_market_min_unique_traders = 1;
 
-        let discovery = DiscoveryService::new(config);
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
         let summary = discovery.run_cycle(&store, now)?;
         assert_eq!(summary.wallets_seen, 2);
         assert_eq!(summary.metrics_written, 2);

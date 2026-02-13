@@ -41,8 +41,15 @@ async fn main() -> Result<()> {
 
     let ingestion = IngestionService::build(&config.ingestion)
         .context("failed to initialize ingestion service")?;
-    let discovery = DiscoveryService::new(config.discovery.clone());
-    let shadow = ShadowService::new(config.shadow.clone());
+    let discovery = DiscoveryService::new_with_helius(
+        config.discovery.clone(),
+        config.shadow.clone(),
+        Some(config.ingestion.helius_http_url.clone()),
+    );
+    let shadow = ShadowService::new_with_helius(
+        config.shadow.clone(),
+        Some(config.ingestion.helius_http_url.clone()),
+    );
 
     run_app_loop(
         store,

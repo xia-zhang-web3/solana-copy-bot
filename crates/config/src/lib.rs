@@ -106,6 +106,12 @@ pub struct DiscoveryConfig {
     pub min_active_days: u32,
     pub min_score: f64,
     pub max_tx_per_minute: u32,
+    pub min_buy_count: u32,
+    pub min_tradable_ratio: f64,
+    pub max_rug_ratio: f64,
+    pub rug_lookahead_seconds: u64,
+    pub thin_market_min_volume_sol: f64,
+    pub thin_market_min_unique_traders: u32,
 }
 
 impl Default for DiscoveryConfig {
@@ -120,6 +126,12 @@ impl Default for DiscoveryConfig {
             min_active_days: 3,
             min_score: 0.55,
             max_tx_per_minute: 50,
+            min_buy_count: 10,
+            min_tradable_ratio: 0.25,
+            max_rug_ratio: 0.60,
+            rug_lookahead_seconds: 30 * 60,
+            thin_market_min_volume_sol: 3.0,
+            thin_market_min_unique_traders: 10,
         }
     }
 }
@@ -144,6 +156,11 @@ pub struct ShadowConfig {
     pub copy_notional_sol: f64,
     pub min_leader_notional_sol: f64,
     pub max_signal_lag_seconds: u64,
+    pub min_token_age_seconds: u64,
+    pub min_holders: u64,
+    pub min_liquidity_sol: f64,
+    pub min_volume_5m_sol: f64,
+    pub min_unique_traders_5m: u64,
 }
 
 impl Default for ShadowConfig {
@@ -154,6 +171,11 @@ impl Default for ShadowConfig {
             copy_notional_sol: 0.25,
             min_leader_notional_sol: 0.5,
             max_signal_lag_seconds: 45,
+            min_token_age_seconds: 0,
+            min_holders: 0,
+            min_liquidity_sol: 0.0,
+            min_volume_5m_sol: 0.0,
+            min_unique_traders_5m: 0,
         }
     }
 }

@@ -16,7 +16,7 @@ sudo systemctl status "$SERVICE" --no-pager -l | sed -n '1,20p'
 
 echo
 echo "=== CONFIG ==="
-grep -E "follow_top_n|min_trades|min_active_days|min_score|max_tx_per_minute|^\\[shadow\\]|copy_notional_sol|min_leader_notional_sol|max_signal_lag_seconds" configs/paper.toml
+grep -E "follow_top_n|min_trades|min_active_days|min_score|max_tx_per_minute|min_buy_count|min_tradable_ratio|max_rug_ratio|rug_lookahead_seconds|thin_market_min_volume_sol|thin_market_min_unique_traders|^\\[shadow\\]|copy_notional_sol|min_leader_notional_sol|max_signal_lag_seconds|min_token_age_seconds|min_holders|min_liquidity_sol|min_volume_5m_sol|min_unique_traders_5m" configs/paper.toml
 
 echo
 echo "=== LOGS (${HOURS}h, tail 300) ==="
@@ -106,6 +106,29 @@ print(f"signal_to_eligible_ratio: {ratio if ratio is not None else 'n/a'}")
 print(f"shadow_open_lots_now: {open_lots}")
 print(f"shadow_closed_trades_total: {closed_all}, pnl_total_sol: {round(float(pnl_all), 6)}")
 print(f"shadow_closed_trades_window: {closed_win}, pnl_window_sol: {round(float(pnl_win), 6)}")
+try:
+    cache_rows = one("select count(*) from token_quality_cache")
+    cache_fresh = one("select count(*) from token_quality_cache where julianday(fetched_at) >= julianday('now','-10 minutes')")
+    print(f"token_quality_cache_rows: {cache_rows}, fresh_10m: {cache_fresh}")
+except sqlite3.OperationalError:
+    pass
+
+latest_window = cur.execute("select max(window_start) from wallet_metrics").fetchone()[0]
+if latest_window:
+    print(f"\nLatest wallet_metrics window_start: {latest_window}")
+    try:
+        rows = cur.execute("""
+        select wallet_id, round(score, 3), buy_total, round(tradable_ratio, 3), round(rug_ratio, 3), trades, closed_trades
+        from wallet_metrics
+        where window_start = ?
+        order by score desc, trades desc
+        limit 10
+        """, (latest_window,)).fetchall()
+        print("Top scored wallets (score, buy_total, tradable_ratio, rug_ratio, trades, closed_trades):")
+        for r in rows:
+            print(r)
+    except sqlite3.OperationalError as exc:
+        print(f"wallet_metrics quality columns unavailable: {exc}")
 
 print("\nTop eligible wallets in window:")
 for r in cur.execute(f"""

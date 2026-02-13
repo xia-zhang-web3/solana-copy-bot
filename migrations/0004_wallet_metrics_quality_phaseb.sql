@@ -1,0 +1,3 @@
+ALTER TABLE wallet_metrics ADD COLUMN buy_total INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE wallet_metrics ADD COLUMN tradable_ratio REAL NOT NULL DEFAULT 0.0;
+ALTER TABLE wallet_metrics ADD COLUMN rug_ratio REAL NOT NULL DEFAULT 1.0;

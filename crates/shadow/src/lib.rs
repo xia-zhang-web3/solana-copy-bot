@@ -2,15 +2,20 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ShadowConfig;
 use copybot_core_types::SwapEvent;
-use copybot_storage::{CopySignalRow, SqliteStore};
+use copybot_storage::{CopySignalRow, SqliteStore, TokenQualityCacheRow};
 use std::collections::HashSet;
+use tracing::{info, warn};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const EPS: f64 = 1e-12;
+const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
+const QUALITY_RPC_TIMEOUT_MS: u64 = 2_500;
+const QUALITY_MAX_SIGNATURE_PAGES: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub struct ShadowService {
     config: ShadowConfig,
+    helius_http_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +37,11 @@ pub enum ShadowDropReason {
     NotSolLeg,
     BelowNotional,
     LagExceeded,
+    TooNew,
+    LowHolders,
+    LowLiquidity,
+    LowVolume,
+    ThinMarket,
     InvalidSizing,
     DuplicateSignal,
     UnsupportedSide,
@@ -45,6 +55,11 @@ impl ShadowDropReason {
             Self::NotSolLeg => "not_sol_leg",
             Self::BelowNotional => "below_notional",
             Self::LagExceeded => "lag_exceeded",
+            Self::TooNew => "too_new",
+            Self::LowHolders => "low_holders",
+            Self::LowLiquidity => "low_liquidity",
+            Self::LowVolume => "low_volume",
+            Self::ThinMarket => "thin_market",
             Self::InvalidSizing => "invalid_sizing",
             Self::DuplicateSignal => "duplicate_signal",
             Self::UnsupportedSide => "unsupported_side",
@@ -81,7 +96,20 @@ struct CloseResult {
 
 impl ShadowService {
     pub fn new(config: ShadowConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            helius_http_url: None,
+        }
+    }
+
+    pub fn new_with_helius(config: ShadowConfig, helius_http_url: Option<String>) -> Self {
+        let helius_http_url = helius_http_url
+            .map(|url| url.trim().to_string())
+            .filter(|url| !url.is_empty() && !url.contains("REPLACE_ME"));
+        Self {
+            config,
+            helius_http_url,
+        }
     }
 
     pub fn process_swap(
@@ -117,6 +145,13 @@ impl ShadowService {
             && latency_ms > (self.config.max_signal_lag_seconds as i64 * 1_000)
         {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::LagExceeded));
+        }
+        if candidate.side == "buy" {
+            if let Some(reason) =
+                self.drop_reason_for_buy_quality_gate(store, &candidate.token, swap.ts_utc, now)?
+            {
+                return Ok(ShadowProcessOutcome::Dropped(reason));
+            }
         }
 
         let copy_notional_sol = self
@@ -263,6 +298,127 @@ impl ShadowService {
             closed_qty,
             realized_pnl_sol,
         })
+    }
+
+    fn drop_reason_for_buy_quality_gate(
+        &self,
+        store: &SqliteStore,
+        token: &str,
+        signal_ts: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ShadowDropReason>> {
+        let stats = store.token_market_stats(token, signal_ts)?;
+        let rpc_quality = self.resolve_token_quality(store, token, now)?;
+        let proxy_age_seconds = stats
+            .first_seen
+            .map(|first_seen| (signal_ts - first_seen).num_seconds().max(0))
+            .unwrap_or(0) as u64;
+        let token_age_seconds = rpc_quality
+            .as_ref()
+            .and_then(|row| row.token_age_seconds)
+            .unwrap_or(proxy_age_seconds);
+        let holders = rpc_quality
+            .as_ref()
+            .and_then(|row| row.holders)
+            .unwrap_or(stats.holders_proxy);
+        let liquidity_sol = rpc_quality
+            .as_ref()
+            .and_then(|row| row.liquidity_sol)
+            .unwrap_or(stats.liquidity_sol_proxy);
+        let quality_source = if let Some(row) = rpc_quality.as_ref() {
+            if now - row.fetched_at <= Duration::seconds(QUALITY_CACHE_TTL_SECONDS) {
+                "rpc_cache"
+            } else {
+                "rpc_cache_stale"
+            }
+        } else {
+            "db_proxy"
+        };
+        info!(
+            token = %token,
+            quality_source,
+            token_age_seconds,
+            holders,
+            liquidity_sol,
+            "shadow quality metrics evaluated"
+        );
+
+        if self.config.min_token_age_seconds > 0 {
+            if token_age_seconds < self.config.min_token_age_seconds {
+                return Ok(Some(ShadowDropReason::TooNew));
+            }
+        }
+
+        if self.config.min_holders > 0 && holders < self.config.min_holders {
+            return Ok(Some(ShadowDropReason::LowHolders));
+        }
+
+        if self.config.min_liquidity_sol > 0.0
+            && liquidity_sol + EPS < self.config.min_liquidity_sol
+        {
+            return Ok(Some(ShadowDropReason::LowLiquidity));
+        }
+
+        if self.config.min_volume_5m_sol > 0.0
+            && stats.volume_5m_sol + EPS < self.config.min_volume_5m_sol
+        {
+            return Ok(Some(ShadowDropReason::LowVolume));
+        }
+
+        if self.config.min_unique_traders_5m > 0
+            && stats.unique_traders_5m < self.config.min_unique_traders_5m
+        {
+            return Ok(Some(ShadowDropReason::ThinMarket));
+        }
+
+        Ok(None)
+    }
+
+    fn resolve_token_quality(
+        &self,
+        store: &SqliteStore,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<TokenQualityCacheRow>> {
+        let cached = store.get_token_quality_cache(token)?;
+        let is_fresh = cached
+            .as_ref()
+            .map(|row| now - row.fetched_at <= Duration::seconds(QUALITY_CACHE_TTL_SECONDS))
+            .unwrap_or(false);
+        if is_fresh {
+            return Ok(cached);
+        }
+
+        let Some(helius_http_url) = self.helius_http_url.as_deref() else {
+            return Ok(cached);
+        };
+
+        match SqliteStore::fetch_token_quality_from_helius(
+            helius_http_url,
+            token,
+            QUALITY_RPC_TIMEOUT_MS,
+            QUALITY_MAX_SIGNATURE_PAGES,
+            Some(self.config.min_token_age_seconds),
+        ) {
+            Ok(fetched) => {
+                store.upsert_token_quality_cache(
+                    token,
+                    fetched.holders,
+                    fetched.liquidity_sol,
+                    fetched.token_age_seconds,
+                    now,
+                )?;
+                store.get_token_quality_cache(token)
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    token = %token,
+                    "failed to refresh token quality via helius, falling back"
+                );
+                Ok(cached)
+            }
+        }
     }
 
     fn to_shadow_candidate(swap: &SwapEvent) -> Option<ShadowCandidate> {
@@ -428,8 +584,46 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn drops_buy_when_token_is_too_new() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-quality-too-new.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut follow = HashSet::new();
+        follow.insert("leader-wallet".to_string());
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        cfg.min_token_age_seconds = 600;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMint".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-too-new".to_string(),
+            slot: 101,
+            ts_utc: buy_ts,
+        };
+
+        let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
+        outcome.expect_dropped(ShadowDropReason::TooNew, "buy should be dropped by age");
+        Ok(())
+    }
+
     trait TestOutcomeExt {
         fn expect_recorded(self, message: &str) -> ShadowSignalResult;
+        fn expect_dropped(self, expected: ShadowDropReason, message: &str);
     }
 
     impl TestOutcomeExt for ShadowProcessOutcome {
@@ -438,6 +632,23 @@ mod tests {
                 ShadowProcessOutcome::Recorded(result) => result,
                 ShadowProcessOutcome::Dropped(reason) => {
                     panic!("{message}: dropped with reason {}", reason.as_str())
+                }
+            }
+        }
+
+        fn expect_dropped(self, expected: ShadowDropReason, message: &str) {
+            match self {
+                ShadowProcessOutcome::Dropped(reason) => {
+                    assert_eq!(
+                        reason,
+                        expected,
+                        "{message}: expected {}, got {}",
+                        expected.as_str(),
+                        reason.as_str()
+                    );
+                }
+                ShadowProcessOutcome::Recorded(_) => {
+                    panic!("{message}: expected dropped, got recorded")
                 }
             }
         }

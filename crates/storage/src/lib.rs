@@ -1,10 +1,13 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::SwapEvent;
+use reqwest::blocking::Client;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration as StdDuration;
 
 pub struct SqliteStore {
     conn: Connection,
@@ -20,6 +23,9 @@ pub struct WalletMetricRow {
     pub closed_trades: u32,
     pub hold_median_seconds: i64,
     pub score: f64,
+    pub buy_total: u32,
+    pub tradable_ratio: f64,
+    pub rug_ratio: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -47,6 +53,31 @@ pub struct ShadowLotRow {
     pub qty: f64,
     pub cost_sol: f64,
     pub opened_ts: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TokenMarketStats {
+    pub first_seen: Option<DateTime<Utc>>,
+    pub holders_proxy: u64,
+    pub liquidity_sol_proxy: f64,
+    pub volume_5m_sol: f64,
+    pub unique_traders_5m: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenQualityCacheRow {
+    pub mint: String,
+    pub holders: Option<u64>,
+    pub liquidity_sol: Option<f64>,
+    pub token_age_seconds: Option<u64>,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TokenQualityRpcRow {
+    pub holders: Option<u64>,
+    pub liquidity_sol: Option<f64>,
+    pub token_age_seconds: Option<u64>,
 }
 
 impl SqliteStore {
@@ -258,8 +289,11 @@ impl SqliteStore {
                     trades,
                     closed_trades,
                     hold_median_seconds,
-                    score
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    score,
+                    buy_total,
+                    tradable_ratio,
+                    rug_ratio
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     &metric.wallet_id,
                     metric.window_start.to_rfc3339(),
@@ -269,6 +303,9 @@ impl SqliteStore {
                     metric.closed_trades as i64,
                     metric.hold_median_seconds,
                     metric.score,
+                    metric.buy_total as i64,
+                    metric.tradable_ratio,
+                    metric.rug_ratio,
                 ],
             )
             .context("failed to insert wallet metric")?;
@@ -460,6 +497,200 @@ impl SqliteStore {
         Ok(count > 0)
     }
 
+    pub fn token_market_stats(
+        &self,
+        token: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<TokenMarketStats> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+        let first_seen_raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT MIN(ts)
+                 FROM observed_swaps
+                 WHERE token_in = ?1 OR token_out = ?1",
+                params![token],
+                |row| row.get(0),
+            )
+            .context("failed querying token first_seen")?;
+
+        let first_seen = first_seen_raw
+            .as_deref()
+            .map(|raw| {
+                DateTime::parse_from_rfc3339(raw)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .with_context(|| format!("invalid observed_swaps.ts rfc3339 value: {raw}"))
+            })
+            .transpose()?;
+
+        let holders_proxy_raw: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(DISTINCT wallet_id)
+                 FROM observed_swaps
+                 WHERE token_in = ?1 OR token_out = ?1",
+                params![token],
+                |row| row.get(0),
+            )
+            .context("failed querying token holders proxy")?;
+
+        let window_start = (as_of - Duration::minutes(5)).to_rfc3339();
+        let window_end = as_of.to_rfc3339();
+        let (volume_5m_sol, liquidity_sol_proxy, unique_traders_5m_raw): (f64, f64, i64) = self
+            .conn
+            .query_row(
+                "SELECT
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN token_in = ?1 AND token_out = ?2 THEN qty_out
+                                WHEN token_out = ?1 AND token_in = ?2 THEN qty_in
+                                ELSE 0
+                            END
+                        ),
+                        0.0
+                    ) AS volume_5m_sol,
+                    COALESCE(
+                        MAX(
+                            CASE
+                                WHEN token_in = ?1 AND token_out = ?2 THEN qty_out
+                                WHEN token_out = ?1 AND token_in = ?2 THEN qty_in
+                                ELSE 0
+                            END
+                        ),
+                        0.0
+                    ) AS liquidity_sol_proxy,
+                    COUNT(DISTINCT wallet_id) AS unique_traders_5m
+                 FROM observed_swaps
+                 WHERE ts >= ?3
+                   AND ts <= ?4
+                   AND (
+                        (token_in = ?1 AND token_out = ?2)
+                        OR (token_out = ?1 AND token_in = ?2)
+                   )",
+                params![token, SOL_MINT, window_start, window_end],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .context("failed querying token 5m market stats")?;
+
+        Ok(TokenMarketStats {
+            first_seen,
+            holders_proxy: holders_proxy_raw.max(0) as u64,
+            liquidity_sol_proxy,
+            volume_5m_sol,
+            unique_traders_5m: unique_traders_5m_raw.max(0) as u64,
+        })
+    }
+
+    pub fn get_token_quality_cache(&self, mint: &str) -> Result<Option<TokenQualityCacheRow>> {
+        let row: Option<(String, Option<i64>, Option<f64>, Option<i64>, String)> = self
+            .conn
+            .query_row(
+                "SELECT mint, holders, liquidity_sol, token_age_seconds, fetched_at
+                 FROM token_quality_cache
+                 WHERE mint = ?1",
+                params![mint],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed querying token_quality_cache row")?;
+
+        row.map(|(mint, holders, liquidity_sol, token_age_seconds, fetched_at_raw)| {
+            let fetched_at = DateTime::parse_from_rfc3339(&fetched_at_raw)
+                .map(|dt| dt.with_timezone(&Utc))
+                .with_context(|| {
+                    format!("invalid token_quality_cache.fetched_at rfc3339 value: {fetched_at_raw}")
+                })?;
+            Ok(TokenQualityCacheRow {
+                mint,
+                holders: holders.map(|value| value.max(0) as u64),
+                liquidity_sol,
+                token_age_seconds: token_age_seconds.map(|value| value.max(0) as u64),
+                fetched_at,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn upsert_token_quality_cache(
+        &self,
+        mint: &str,
+        holders: Option<u64>,
+        liquidity_sol: Option<f64>,
+        token_age_seconds: Option<u64>,
+        fetched_at: DateTime<Utc>,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO token_quality_cache(
+                    mint,
+                    holders,
+                    liquidity_sol,
+                    token_age_seconds,
+                    fetched_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(mint) DO UPDATE SET
+                    holders = excluded.holders,
+                    liquidity_sol = excluded.liquidity_sol,
+                    token_age_seconds = excluded.token_age_seconds,
+                    fetched_at = excluded.fetched_at",
+                params![
+                    mint,
+                    holders.map(|value| value as i64),
+                    liquidity_sol,
+                    token_age_seconds.map(|value| value as i64),
+                    fetched_at.to_rfc3339(),
+                ],
+            )
+            .context("failed upserting token_quality_cache row")?;
+        Ok(())
+    }
+
+    pub fn fetch_token_quality_from_helius(
+        helius_http_url: &str,
+        mint: &str,
+        timeout_ms: u64,
+        max_signature_pages: u32,
+        min_age_hint_seconds: Option<u64>,
+    ) -> Result<TokenQualityRpcRow> {
+        let client = Client::builder()
+            .timeout(StdDuration::from_millis(timeout_ms.max(100)))
+            .build()
+            .context("failed building reqwest blocking client for token quality fetch")?;
+
+        let holders = fetch_token_holders(&client, helius_http_url, mint).ok();
+        let token_age_seconds = fetch_token_age_seconds(
+            &client,
+            helius_http_url,
+            mint,
+            max_signature_pages.max(1),
+            min_age_hint_seconds,
+        )
+        .ok()
+        .flatten();
+        if holders.is_none() && token_age_seconds.is_none() {
+            return Err(anyhow!(
+                "failed to fetch token quality fields for mint {} via helius",
+                mint
+            ));
+        }
+
+        Ok(TokenQualityRpcRow {
+            holders,
+            liquidity_sol: None,
+            token_age_seconds,
+        })
+    }
+
     pub fn update_shadow_lot(&self, id: i64, qty: f64, cost_sol: f64) -> Result<()> {
         self.conn
             .execute(
@@ -559,4 +790,113 @@ impl SqliteStore {
 
         Ok(files)
     }
+}
+
+fn rpc_result<'a>(payload: &'a Value) -> &'a Value {
+    payload.get("result").unwrap_or(payload)
+}
+
+fn post_helius_json(client: &Client, helius_http_url: &str, payload: &Value) -> Result<Value> {
+    let response = client
+        .post(helius_http_url)
+        .json(payload)
+        .send()
+        .with_context(|| format!("failed posting JSON-RPC request to {}", helius_http_url))?
+        .error_for_status()
+        .with_context(|| format!("non-success JSON-RPC response from {}", helius_http_url))?
+        .json::<Value>()
+        .context("failed parsing JSON-RPC response body")?;
+    if let Some(error) = response.get("error") {
+        return Err(anyhow!("JSON-RPC error: {}", error));
+    }
+    Ok(response)
+}
+
+fn fetch_token_holders(client: &Client, helius_http_url: &str, mint: &str) -> Result<u64> {
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "id": format!("holders-{}", mint),
+        "method": "getTokenAccounts",
+        "params": {
+            "mint": mint,
+            "page": 1,
+            "limit": 1
+        }
+    });
+    let response = post_helius_json(client, helius_http_url, &payload)?;
+    rpc_result(&response)
+        .get("total")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("missing getTokenAccounts.result.total for mint {}", mint))
+}
+
+fn fetch_token_age_seconds(
+    client: &Client,
+    helius_http_url: &str,
+    mint: &str,
+    max_pages: u32,
+    min_age_hint_seconds: Option<u64>,
+) -> Result<Option<u64>> {
+    let now_ts = Utc::now().timestamp();
+    let mut before: Option<String> = None;
+    let mut max_age_seconds: Option<u64> = None;
+
+    for page in 0..max_pages {
+        let mut options = json!({
+            "limit": 1000,
+            "commitment": "finalized"
+        });
+        if let Some(before_sig) = before.as_deref() {
+            options["before"] = Value::String(before_sig.to_string());
+        }
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": format!("token-age-{}-{}", mint, page),
+            "method": "getSignaturesForAddress",
+            "params": [mint, options]
+        });
+        let response = post_helius_json(client, helius_http_url, &payload)?;
+        let entries = rpc_result(&response)
+            .as_array()
+            .ok_or_else(|| anyhow!("invalid getSignaturesForAddress result for mint {}", mint))?;
+        if entries.is_empty() {
+            break;
+        }
+
+        let mut oldest_block_time: Option<i64> = None;
+        let mut last_signature: Option<String> = None;
+        for entry in entries {
+            if let Some(value) = entry.get("blockTime").and_then(Value::as_i64) {
+                oldest_block_time =
+                    Some(oldest_block_time.map_or(value, |current| current.min(value)));
+            }
+            if let Some(signature) = entry.get("signature").and_then(Value::as_str) {
+                last_signature = Some(signature.to_string());
+            }
+        }
+
+        if let Some(block_time) = oldest_block_time {
+            if block_time > 0 && now_ts > block_time {
+                let age_seconds = (now_ts - block_time) as u64;
+                max_age_seconds =
+                    Some(max_age_seconds.map_or(age_seconds, |current| current.max(age_seconds)));
+                if min_age_hint_seconds
+                    .map(|hint| age_seconds >= hint)
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+            }
+        }
+
+        if entries.len() < 1000 {
+            break;
+        }
+        let Some(signature) = last_signature else {
+            break;
+        };
+        before = Some(signature);
+    }
+
+    Ok(max_age_seconds)
 }
