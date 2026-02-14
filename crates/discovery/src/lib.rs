@@ -676,35 +676,13 @@ impl DiscoveryService {
         &self,
         state: &TokenRollingState,
         rpc_quality: Option<&TokenQualityCacheRow>,
-        signal_ts: DateTime<Utc>,
+        _signal_ts: DateTime<Utc>,
     ) -> bool {
-        let proxy_age_seconds = state
-            .first_seen
-            .map(|first_seen| (signal_ts - first_seen).num_seconds().max(0) as u64)
-            .unwrap_or(0);
-        let token_age_seconds = rpc_quality
-            .and_then(|row| row.token_age_seconds)
-            .unwrap_or(proxy_age_seconds);
-        let holders = rpc_quality
-            .and_then(|row| row.holders)
-            .unwrap_or(state.wallets_seen.len() as u64);
         let liquidity_proxy = state
             .sol_trades_5m
             .iter()
             .map(|trade| trade.sol_notional)
             .fold(0.0, f64::max);
-        let liquidity_sol = rpc_quality
-            .and_then(|row| row.liquidity_sol)
-            .unwrap_or(liquidity_proxy);
-
-        if self.shadow_quality.min_token_age_seconds > 0 {
-            if token_age_seconds < self.shadow_quality.min_token_age_seconds {
-                return false;
-            }
-        }
-        if self.shadow_quality.min_holders > 0 && holders < self.shadow_quality.min_holders {
-            return false;
-        }
         if self.shadow_quality.min_volume_5m_sol > 0.0
             && state.sol_volume_5m + 1e-12 < self.shadow_quality.min_volume_5m_sol
         {
@@ -715,10 +693,33 @@ impl DiscoveryService {
         {
             return false;
         }
-        if self.shadow_quality.min_liquidity_sol > 0.0
-            && liquidity_sol + 1e-12 < self.shadow_quality.min_liquidity_sol
-        {
-            return false;
+
+        // Discovery should never hard-fail on missing RPC fields.
+        // Age/holders/liquidity are enforced here only when RPC provided them.
+        if let Some(row) = rpc_quality {
+            if self.shadow_quality.min_token_age_seconds > 0 {
+                if let Some(token_age_seconds) = row.token_age_seconds {
+                    if token_age_seconds < self.shadow_quality.min_token_age_seconds {
+                        return false;
+                    }
+                }
+            }
+            if self.shadow_quality.min_holders > 0 {
+                if let Some(holders) = row.holders {
+                    if holders < self.shadow_quality.min_holders {
+                        return false;
+                    }
+                }
+            }
+            if self.shadow_quality.min_liquidity_sol > 0.0 {
+                if let Some(liquidity_sol) = row.liquidity_sol {
+                    if liquidity_sol + 1e-12 < self.shadow_quality.min_liquidity_sol {
+                        return false;
+                    }
+                } else if liquidity_proxy + 1e-12 < self.shadow_quality.min_liquidity_sol {
+                    return false;
+                }
+            }
         }
         true
     }
