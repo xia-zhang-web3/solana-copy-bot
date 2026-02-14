@@ -5,13 +5,15 @@ use copybot_core_types::SwapEvent;
 use copybot_storage::{SqliteStore, TokenQualityCacheRow, WalletMetricRow};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
 use tracing::{info, warn};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
-const QUALITY_RPC_TIMEOUT_MS: u64 = 2_500;
-const QUALITY_MAX_SIGNATURE_PAGES: u32 = 4;
-const QUALITY_MAX_FETCH_PER_CYCLE: usize = 200;
+const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
+const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
+const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
+const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
@@ -119,11 +121,25 @@ impl DiscoveryService {
     }
 
     pub fn run_cycle(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<DiscoverySummary> {
+        let cycle_started = Instant::now();
         let window_days = self.config.scoring_window_days.max(1);
         let window_start = now - Duration::days(window_days as i64);
         let swaps = store.load_observed_swaps_since(window_start)?;
 
         if swaps.is_empty() {
+            let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+            info!(
+                window_start = %window_start,
+                wallets_seen = 0usize,
+                eligible_wallets = 0usize,
+                metrics_written = 0usize,
+                follow_promoted = 0usize,
+                follow_demoted = 0usize,
+                active_follow_wallets = 0usize,
+                swaps_window = 0usize,
+                discovery_cycle_duration_ms = elapsed_ms,
+                "discovery cycle completed"
+            );
             return Ok(DiscoverySummary {
                 window_start,
                 ..DiscoverySummary::default()
@@ -193,6 +209,7 @@ impl DiscoveryService {
             active_follow_wallets,
             top_wallets,
         };
+        let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
         info!(
             window_start = %summary.window_start,
@@ -202,6 +219,8 @@ impl DiscoveryService {
             follow_promoted = summary.follow_promoted,
             follow_demoted = summary.follow_demoted,
             active_follow_wallets = summary.active_follow_wallets,
+            swaps_window = swaps.len(),
+            discovery_cycle_duration_ms = elapsed_ms,
             top_wallets = ?summary.top_wallets,
             "discovery cycle completed"
         );
@@ -433,19 +452,50 @@ impl DiscoveryService {
                     out.insert(mint, row);
                 }
             }
+            info!(
+                quality_source = "cache+db_proxy",
+                rpc_enabled = false,
+                mints_total = mints.len(),
+                cache_fresh = fresh_hits,
+                cache_stale = stale_hits,
+                cache_miss = misses,
+                fetched_ok = 0usize,
+                fetched_fail = 0usize,
+                fallback_from_stale = stale_hits,
+                budget_exhausted = 0usize,
+                rpc_attempted = 0usize,
+                rpc_budget_ms = QUALITY_RPC_BUDGET_MS,
+                rpc_spent_ms = 0u64,
+                "discovery token quality cache summary"
+            );
             return out;
         };
 
         let mut fetched_ok = 0usize;
         let mut fetched_fail = 0usize;
-        for (index, (mint, stale_row)) in to_fetch.into_iter().enumerate() {
-            if index >= QUALITY_MAX_FETCH_PER_CYCLE {
-                if let Some(row) = stale_row {
-                    out.insert(mint, row);
-                }
+        let mut fallback_from_stale = 0usize;
+        let mut budget_exhausted = 0usize;
+        let mut rpc_attempted = 0usize;
+        let refresh_started = Instant::now();
+        for (mint, stale_row) in to_fetch {
+            // Never block discovery on cache miss: DB proxy path remains available.
+            let Some(stale_row) = stale_row else {
+                continue;
+            };
+
+            if rpc_attempted >= QUALITY_MAX_FETCH_PER_CYCLE {
+                fallback_from_stale += 1;
+                out.insert(mint, stale_row);
+                continue;
+            }
+            if refresh_started.elapsed().as_millis() as u64 >= QUALITY_RPC_BUDGET_MS {
+                budget_exhausted += 1;
+                fallback_from_stale += 1;
+                out.insert(mint, stale_row);
                 continue;
             }
 
+            rpc_attempted += 1;
             match SqliteStore::fetch_token_quality_from_helius(
                 helius_http_url,
                 &mint,
@@ -468,13 +518,18 @@ impl DiscoveryService {
                             fetched_ok += 1;
                             out.insert(mint, row);
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            fallback_from_stale += 1;
+                            out.insert(mint, stale_row);
+                        }
                         Err(error) => {
                             warn!(
                                 error = %error,
                                 mint = %mint,
                                 "failed reading token quality cache after refresh"
                             );
+                            fallback_from_stale += 1;
+                            out.insert(mint, stale_row);
                         }
                     }
                 }
@@ -485,21 +540,27 @@ impl DiscoveryService {
                         mint = %mint,
                         "failed to refresh token quality via helius, using fallback"
                     );
-                    if let Some(row) = stale_row {
-                        out.insert(mint, row);
-                    }
+                    fallback_from_stale += 1;
+                    out.insert(mint, stale_row);
                 }
             }
         }
 
+        let rpc_spent_ms = refresh_started.elapsed().as_millis() as u64;
         info!(
-            quality_source = "rpc+db_proxy",
+            quality_source = "cache+rpc+db_proxy",
+            rpc_enabled = true,
             mints_total = mints.len(),
             cache_fresh = fresh_hits,
             cache_stale = stale_hits,
             cache_miss = misses,
             fetched_ok,
             fetched_fail,
+            fallback_from_stale,
+            budget_exhausted,
+            rpc_attempted,
+            rpc_budget_ms = QUALITY_RPC_BUDGET_MS,
+            rpc_spent_ms,
             "discovery token quality cache summary"
         );
 

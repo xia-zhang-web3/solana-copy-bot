@@ -9,8 +9,8 @@ use tracing::{info, warn};
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const EPS: f64 = 1e-12;
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
-const QUALITY_RPC_TIMEOUT_MS: u64 = 2_500;
-const QUALITY_MAX_SIGNATURE_PAGES: u32 = 4;
+const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
+const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct ShadowService {

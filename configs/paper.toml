@@ -30,7 +30,7 @@ mock_interval_ms = 1500
 [discovery]
 scoring_window_days = 30
 decay_window_days = 7
-follow_top_n = 20
+follow_top_n = 30
 min_leader_notional_sol = 0.75
 refresh_seconds = 180
 min_trades = 4
