@@ -125,31 +125,98 @@ impl ShadowService {
         let Some(candidate) = Self::to_shadow_candidate(swap) else {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotSolLeg));
         };
-        let is_followed = active_follow_wallets.contains(&swap.wallet);
+        let latency_ms = (now - swap.ts_utc).num_milliseconds();
+        let runtime_followed = active_follow_wallets.contains(&swap.wallet);
+        let temporal_followed = if runtime_followed {
+            false
+        } else {
+            store.was_wallet_followed_at(&swap.wallet, swap.ts_utc)?
+        };
+        if temporal_followed {
+            info!(
+                wallet = %swap.wallet,
+                token = %candidate.token,
+                side = %candidate.side,
+                leader_notional_sol = candidate.leader_notional_sol,
+                latency_ms,
+                "shadow runtime_not_followed_temporal_hit"
+            );
+        }
+        let is_followed = runtime_followed || temporal_followed;
         let is_unfollowed_sell_exit = !is_followed
             && candidate.side == "sell"
             && store.has_shadow_lots(&swap.wallet, &candidate.token)?;
+        if is_followed {
+            info!(
+                wallet = %swap.wallet,
+                token = %candidate.token,
+                side = %candidate.side,
+                leader_notional_sol = candidate.leader_notional_sol,
+                latency_ms,
+                runtime_followed,
+                temporal_followed,
+                "shadow followed wallet swap reached pipeline"
+            );
+        } else if is_unfollowed_sell_exit {
+            info!(
+                wallet = %swap.wallet,
+                token = %candidate.token,
+                side = %candidate.side,
+                leader_notional_sol = candidate.leader_notional_sol,
+                latency_ms,
+                "shadow unfollowed sell exit allowed"
+            );
+        }
         if !is_followed && !is_unfollowed_sell_exit {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
         }
         if !is_unfollowed_sell_exit
             && candidate.leader_notional_sol < self.config.min_leader_notional_sol
         {
+            Self::log_gate_drop(
+                "notional",
+                ShadowDropReason::BelowNotional,
+                swap,
+                &candidate,
+                latency_ms,
+                runtime_followed,
+                temporal_followed,
+                is_unfollowed_sell_exit,
+            );
             return Ok(ShadowProcessOutcome::Dropped(
                 ShadowDropReason::BelowNotional,
             ));
         }
 
-        let latency_ms = (now - swap.ts_utc).num_milliseconds();
         if !is_unfollowed_sell_exit
             && latency_ms > (self.config.max_signal_lag_seconds as i64 * 1_000)
         {
+            Self::log_gate_drop(
+                "lag",
+                ShadowDropReason::LagExceeded,
+                swap,
+                &candidate,
+                latency_ms,
+                runtime_followed,
+                temporal_followed,
+                is_unfollowed_sell_exit,
+            );
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::LagExceeded));
         }
         if candidate.side == "buy" {
             if let Some(reason) =
                 self.drop_reason_for_buy_quality_gate(store, &candidate.token, swap.ts_utc, now)?
             {
+                Self::log_gate_drop(
+                    "quality",
+                    reason,
+                    swap,
+                    &candidate,
+                    latency_ms,
+                    runtime_followed,
+                    temporal_followed,
+                    is_unfollowed_sell_exit,
+                );
                 return Ok(ShadowProcessOutcome::Dropped(reason));
             }
         }
@@ -159,6 +226,16 @@ impl ShadowService {
             .copy_notional_sol
             .min(candidate.leader_notional_sol);
         if copy_notional_sol <= EPS || candidate.price_sol_per_token <= EPS {
+            Self::log_gate_drop(
+                "sizing",
+                ShadowDropReason::InvalidSizing,
+                swap,
+                &candidate,
+                latency_ms,
+                runtime_followed,
+                temporal_followed,
+                is_unfollowed_sell_exit,
+            );
             return Ok(ShadowProcessOutcome::Dropped(
                 ShadowDropReason::InvalidSizing,
             ));
@@ -177,6 +254,16 @@ impl ShadowService {
             status: "shadow_recorded".to_string(),
         };
         if !store.insert_copy_signal(&signal)? {
+            Self::log_gate_drop(
+                "dedupe",
+                ShadowDropReason::DuplicateSignal,
+                swap,
+                &candidate,
+                latency_ms,
+                runtime_followed,
+                temporal_followed,
+                is_unfollowed_sell_exit,
+            );
             return Ok(ShadowProcessOutcome::Dropped(
                 ShadowDropReason::DuplicateSignal,
             ));
@@ -209,9 +296,19 @@ impl ShadowService {
                 )?;
             }
             _ => {
+                Self::log_gate_drop(
+                    "side",
+                    ShadowDropReason::UnsupportedSide,
+                    swap,
+                    &candidate,
+                    latency_ms,
+                    runtime_followed,
+                    temporal_followed,
+                    is_unfollowed_sell_exit,
+                );
                 return Ok(ShadowProcessOutcome::Dropped(
                     ShadowDropReason::UnsupportedSide,
-                ))
+                ));
             }
         }
 
@@ -372,6 +469,35 @@ impl ShadowService {
         }
 
         Ok(None)
+    }
+
+    fn log_gate_drop(
+        stage: &str,
+        reason: ShadowDropReason,
+        swap: &SwapEvent,
+        candidate: &ShadowCandidate,
+        latency_ms: i64,
+        runtime_followed: bool,
+        temporal_followed: bool,
+        is_unfollowed_sell_exit: bool,
+    ) {
+        if !runtime_followed && !temporal_followed && !is_unfollowed_sell_exit {
+            return;
+        }
+        info!(
+            stage,
+            reason = reason.as_str(),
+            wallet = %swap.wallet,
+            token = %candidate.token,
+            side = %candidate.side,
+            signature = %swap.signature,
+            leader_notional_sol = candidate.leader_notional_sol,
+            latency_ms,
+            runtime_followed,
+            temporal_followed,
+            is_unfollowed_sell_exit,
+            "shadow gate dropped"
+        );
     }
 
     fn resolve_token_quality(
@@ -581,6 +707,47 @@ mod tests {
 
         let snapshot = service.snapshot_24h(&store, sell_ts + Duration::seconds(2))?;
         assert!(snapshot.closed_trades_24h >= 1);
+        Ok(())
+    }
+
+    #[test]
+    fn buy_uses_temporal_follow_membership_when_runtime_set_is_stale() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-temporal-follow.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let follow = HashSet::new();
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            buy_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
+
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMint".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-temporal-follow".to_string(),
+            slot: 22,
+            ts_utc: buy_ts,
+        };
+
+        let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
+        outcome.expect_recorded("buy should pass with temporal follow membership");
         Ok(())
     }
 

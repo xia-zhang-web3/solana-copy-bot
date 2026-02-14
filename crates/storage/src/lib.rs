@@ -332,6 +332,25 @@ impl SqliteStore {
         Ok(wallets)
     }
 
+    pub fn was_wallet_followed_at(&self, wallet_id: &str, ts: DateTime<Utc>) -> Result<bool> {
+        let ts_raw = ts.to_rfc3339();
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM followlist
+                 WHERE wallet_id = ?1
+                   AND added_at <= ?2
+                   AND (removed_at IS NULL OR ?2 < removed_at)
+                 LIMIT 1",
+                params![wallet_id, ts_raw],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed checking temporal followlist membership")?;
+        Ok(exists.is_some())
+    }
+
     pub fn deactivate_follow_wallet(
         &self,
         wallet_id: &str,
