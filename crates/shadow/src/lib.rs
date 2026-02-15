@@ -28,6 +28,7 @@ pub struct ShadowSignalResult {
     pub latency_ms: i64,
     pub closed_qty: f64,
     pub realized_pnl_sol: f64,
+    pub has_open_lots_after_signal: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -304,7 +305,7 @@ impl ShadowService {
             ));
         }
 
-        let close = match candidate.side.as_str() {
+        let (close, has_open_lots_after_signal) = match candidate.side.as_str() {
             "buy" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
                 if qty > EPS {
@@ -316,18 +317,19 @@ impl ShadowService {
                         swap.ts_utc,
                     )?;
                 }
-                copybot_storage::ShadowCloseOutcome::default()
+                (copybot_storage::ShadowCloseOutcome::default(), Some(true))
             }
             "sell" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
-                store.close_shadow_lots_fifo_atomic(
+                let close = store.close_shadow_lots_fifo_atomic(
                     &signal_id,
                     &swap.wallet,
                     &candidate.token,
                     qty,
                     candidate.price_sol_per_token,
                     swap.ts_utc,
-                )?
+                )?;
+                (close, Some(close.has_open_lots_after))
             }
             _ => {
                 Self::log_gate_drop(
@@ -355,6 +357,7 @@ impl ShadowService {
             latency_ms,
             closed_qty: close.closed_qty,
             realized_pnl_sol: close.realized_pnl_sol,
+            has_open_lots_after_signal,
         }))
     }
 

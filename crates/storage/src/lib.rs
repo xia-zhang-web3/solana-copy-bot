@@ -1364,6 +1364,13 @@ fn rpc_result<'a>(payload: &'a Value) -> &'a Value {
     payload.get("result").unwrap_or(payload)
 }
 
+fn is_retryable_sqlite_message(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("database is locked")
+        || lowered.contains("database is busy")
+        || lowered.contains("database table is locked")
+}
+
 fn is_retryable_sqlite_error(error: &rusqlite::Error) -> bool {
     match error {
         rusqlite::Error::SqliteFailure(code, message) => {
@@ -1372,29 +1379,19 @@ fn is_retryable_sqlite_error(error: &rusqlite::Error) -> bool {
                 ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
             ) || message
                 .as_deref()
-                .map(|value| {
-                    let lowered = value.to_ascii_lowercase();
-                    lowered.contains("database is locked")
-                        || lowered.contains("database is busy")
-                        || lowered.contains("database table is locked")
-                })
+                .map(is_retryable_sqlite_message)
                 .unwrap_or(false)
         }
-        _ => {
-            let lowered = error.to_string().to_ascii_lowercase();
-            lowered.contains("database is locked")
-                || lowered.contains("database is busy")
-                || lowered.contains("database table is locked")
-        }
+        _ => is_retryable_sqlite_message(&error.to_string()),
     }
 }
 
 pub fn is_retryable_sqlite_anyhow_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
-        let lowered = cause.to_string().to_ascii_lowercase();
-        lowered.contains("database is locked")
-            || lowered.contains("database is busy")
-            || lowered.contains("database table is locked")
+        if let Some(sqlite_error) = cause.downcast_ref::<rusqlite::Error>() {
+            return is_retryable_sqlite_error(sqlite_error);
+        }
+        is_retryable_sqlite_message(&cause.to_string())
     })
 }
 

@@ -392,10 +392,11 @@ async fn run_app_loop(
                                 || follow_snapshot.demoted_at.contains_key(&swap.wallet);
                             let sell_key = shadow_task_key_for_swap(&swap, side);
                             let key_tuple = (sell_key.wallet.clone(), sell_key.token.clone());
-                            let has_pending_or_inflight = inflight_shadow_keys.contains(&sell_key)
-                                || pending_shadow_tasks
-                                    .get(&sell_key)
-                                    .is_some_and(|pending| !pending.is_empty());
+                            let has_pending_or_inflight = key_has_pending_or_inflight(
+                                &sell_key,
+                                &pending_shadow_tasks,
+                                &inflight_shadow_keys,
+                            );
                             if !wallet_has_recent_follow_history
                                 && !has_pending_or_inflight
                                 && !open_shadow_lots.contains(&key_tuple)
@@ -422,7 +423,13 @@ async fn run_app_loop(
                             follow_snapshot: Arc::clone(&follow_snapshot),
                             key: task_key,
                         };
-                        if shadow_queue_full || shadow_scheduler_needs_reset {
+                        if should_process_shadow_inline(
+                            shadow_queue_full,
+                            shadow_scheduler_needs_reset,
+                            &task_input.key,
+                            &pending_shadow_tasks,
+                            &inflight_shadow_keys,
+                        ) {
                             let task_output = shadow_task_with_store(&shadow, &store, task_input);
                             handle_shadow_task_output(
                                 task_output,
@@ -634,6 +641,29 @@ fn shadow_task_key_for_swap(swap: &SwapEvent, side: ShadowSwapSide) -> ShadowTas
     }
 }
 
+fn key_has_pending_or_inflight(
+    key: &ShadowTaskKey,
+    pending_shadow_tasks: &HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    inflight_shadow_keys: &HashSet<ShadowTaskKey>,
+) -> bool {
+    inflight_shadow_keys.contains(key)
+        || pending_shadow_tasks
+            .get(key)
+            .is_some_and(|pending| !pending.is_empty())
+}
+
+fn should_process_shadow_inline(
+    shadow_queue_full: bool,
+    shadow_scheduler_needs_reset: bool,
+    key: &ShadowTaskKey,
+    pending_shadow_tasks: &HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    inflight_shadow_keys: &HashSet<ShadowTaskKey>,
+) -> bool {
+    shadow_queue_full
+        && !shadow_scheduler_needs_reset
+        && !key_has_pending_or_inflight(key, pending_shadow_tasks, inflight_shadow_keys)
+}
+
 fn apply_follow_snapshot_update(
     follow_snapshot: &mut FollowSnapshot,
     active_wallets: HashSet<String>,
@@ -825,8 +855,15 @@ fn handle_shadow_task_output(
                 realized_pnl_sol = result.realized_pnl_sol,
                 "shadow signal recorded"
             );
+            let key = (result.wallet_id, result.token);
             if result.side == "buy" {
-                open_shadow_lots.insert((result.wallet_id, result.token));
+                open_shadow_lots.insert(key);
+            } else if result.side == "sell" {
+                if result.has_open_lots_after_signal.unwrap_or(false) {
+                    open_shadow_lots.insert(key);
+                } else {
+                    open_shadow_lots.remove(&key);
+                }
             }
         }
         Ok(ShadowProcessOutcome::Dropped(reason)) => {
@@ -987,6 +1024,75 @@ mod app_tests {
 
         assert_eq!(third.swap.signature, "A2");
         assert_eq!(pending_shadow_task_count, 0);
+    }
+
+    #[test]
+    fn inline_processing_respects_per_key_serialization() {
+        let key = ShadowTaskKey {
+            wallet: "wallet-a".to_string(),
+            token: "token-x".to_string(),
+        };
+        let mut pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> =
+            HashMap::new();
+        let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
+
+        assert!(should_process_shadow_inline(
+            true,
+            false,
+            &key,
+            &pending_shadow_tasks,
+            &inflight_shadow_keys,
+        ));
+
+        inflight_shadow_keys.insert(key.clone());
+        assert!(!should_process_shadow_inline(
+            true,
+            false,
+            &key,
+            &pending_shadow_tasks,
+            &inflight_shadow_keys,
+        ));
+
+        inflight_shadow_keys.clear();
+        pending_shadow_tasks.insert(
+            key.clone(),
+            VecDeque::from([ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: "wallet-a".to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: "So11111111111111111111111111111111111111112".to_string(),
+                    token_out: "token-x".to_string(),
+                    amount_in: 1.0,
+                    amount_out: 1000.0,
+                    signature: "sig-queued".to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: key.clone(),
+            }]),
+        );
+        assert!(!should_process_shadow_inline(
+            true,
+            false,
+            &key,
+            &pending_shadow_tasks,
+            &inflight_shadow_keys,
+        ));
+        assert!(!should_process_shadow_inline(
+            true,
+            true,
+            &key,
+            &pending_shadow_tasks,
+            &inflight_shadow_keys,
+        ));
+        assert!(!should_process_shadow_inline(
+            false,
+            false,
+            &key,
+            &pending_shadow_tasks,
+            &inflight_shadow_keys,
+        ));
     }
 
     #[test]
