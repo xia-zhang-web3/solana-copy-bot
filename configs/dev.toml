@@ -44,6 +44,7 @@ refresh_seconds = 60
 copy_notional_sol = 0.25
 min_leader_notional_sol = 0.5
 max_signal_lag_seconds = 45
+quality_gates_enabled = true
 
 [risk]
 max_position_sol = 0.5

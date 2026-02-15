@@ -50,6 +50,7 @@ refresh_seconds = 60
 copy_notional_sol = 0.25
 min_leader_notional_sol = 0.10
 max_signal_lag_seconds = 480
+quality_gates_enabled = true
 min_token_age_seconds = 300
 min_holders = 30
 min_liquidity_sol = 5.0

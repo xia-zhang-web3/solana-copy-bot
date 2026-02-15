@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::ShadowConfig;
 use copybot_core_types::SwapEvent;
 use copybot_storage::{CopySignalRow, SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -80,6 +80,41 @@ pub struct ShadowSnapshot {
     pub open_lots: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct FollowSnapshot {
+    pub active: HashSet<String>,
+    pub promoted_at: HashMap<String, DateTime<Utc>>,
+    pub demoted_at: HashMap<String, DateTime<Utc>>,
+}
+
+impl FollowSnapshot {
+    pub fn from_active_wallets(active: HashSet<String>) -> Self {
+        Self {
+            active,
+            promoted_at: HashMap::new(),
+            demoted_at: HashMap::new(),
+        }
+    }
+
+    pub fn is_active(&self, wallet_id: &str) -> bool {
+        self.active.contains(wallet_id)
+    }
+
+    pub fn is_followed_at(&self, wallet_id: &str, ts: DateTime<Utc>) -> bool {
+        let promoted_at = self.promoted_at.get(wallet_id).cloned();
+        let demoted_at = self.demoted_at.get(wallet_id).cloned();
+        match (promoted_at, demoted_at) {
+            // Promotion happened after the latest demotion: active from promotion onward.
+            (Some(promoted), Some(demoted)) if promoted >= demoted => ts >= promoted,
+            // Demotion happened after the latest promotion: active only in [promotion, demotion).
+            (Some(promoted), Some(demoted)) => ts >= promoted && ts < demoted,
+            (Some(promoted), None) => ts >= promoted,
+            (None, Some(demoted)) => ts < demoted,
+            (None, None) => self.is_active(wallet_id),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ShadowCandidate {
     side: String,
@@ -116,7 +151,7 @@ impl ShadowService {
         &self,
         store: &SqliteStore,
         swap: &SwapEvent,
-        active_follow_wallets: &HashSet<String>,
+        follow_snapshot: &FollowSnapshot,
         now: DateTime<Utc>,
     ) -> Result<ShadowProcessOutcome> {
         if !self.config.enabled {
@@ -126,8 +161,8 @@ impl ShadowService {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotSolLeg));
         };
         let latency_ms = (now - swap.ts_utc).num_milliseconds();
-        let runtime_followed = active_follow_wallets.contains(&swap.wallet);
-        let temporal_followed = store.was_wallet_followed_at(&swap.wallet, swap.ts_utc)?;
+        let runtime_followed = follow_snapshot.is_active(&swap.wallet);
+        let temporal_followed = follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc);
         if runtime_followed && !temporal_followed {
             info!(
                 wallet = %swap.wallet,
@@ -138,7 +173,7 @@ impl ShadowService {
                 "shadow runtime_follow_stale_temporal_miss"
             );
         }
-        if temporal_followed {
+        if !runtime_followed && temporal_followed {
             info!(
                 wallet = %swap.wallet,
                 token = %candidate.token,
@@ -410,6 +445,10 @@ impl ShadowService {
         signal_ts: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Result<Option<ShadowDropReason>> {
+        if !self.config.quality_gates_enabled {
+            return Ok(None);
+        }
+
         let stats = store.token_market_stats(token, signal_ts)?;
         let rpc_quality = self.resolve_token_quality(store, token, now)?;
         let proxy_age_seconds = stats
@@ -605,6 +644,15 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
 
+    fn follow_snapshot(active_wallets: &[&str]) -> FollowSnapshot {
+        FollowSnapshot::from_active_wallets(
+            active_wallets
+                .iter()
+                .map(|wallet| wallet.to_string())
+                .collect(),
+        )
+    }
+
     #[test]
     fn creates_shadow_signal_and_realized_pnl() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -613,8 +661,7 @@ mod tests {
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
 
-        let mut follow = HashSet::new();
-        follow.insert("leader-wallet".to_string());
+        let follow = follow_snapshot(&["leader-wallet"]);
 
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;
@@ -681,8 +728,7 @@ mod tests {
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
 
-        let mut follow = HashSet::new();
-        follow.insert("leader-wallet".to_string());
+        let mut follow = follow_snapshot(&["leader-wallet"]);
 
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;
@@ -718,7 +764,10 @@ mod tests {
         assert_eq!(store.shadow_open_lots_count()?, 1);
 
         // Simulate a discovery demotion: wallet is no longer in active followlist.
-        follow.clear();
+        follow.active.clear();
+        follow
+            .demoted_at
+            .insert("leader-wallet".to_string(), sell_ts - Duration::seconds(30));
         store.deactivate_follow_wallet(
             "leader-wallet",
             sell_ts - Duration::seconds(30),
@@ -755,7 +804,7 @@ mod tests {
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
 
-        let follow = HashSet::new();
+        let mut follow = follow_snapshot(&[]);
 
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;
@@ -765,11 +814,9 @@ mod tests {
         let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
-        store.activate_follow_wallet(
-            "leader-wallet",
-            buy_ts - Duration::seconds(30),
-            "test-seed-follow",
-        )?;
+        follow
+            .promoted_at
+            .insert("leader-wallet".to_string(), buy_ts - Duration::seconds(30));
 
         let buy = SwapEvent {
             wallet: "leader-wallet".to_string(),
@@ -796,8 +843,7 @@ mod tests {
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
 
-        let mut follow = HashSet::new();
-        follow.insert("leader-wallet".to_string());
+        let mut follow = follow_snapshot(&["leader-wallet"]);
 
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;
@@ -811,12 +857,9 @@ mod tests {
             .expect("timestamp")
             .with_timezone(&Utc);
 
-        store.activate_follow_wallet(
-            "leader-wallet",
-            demoted_at - Duration::minutes(10),
-            "test-seed-follow",
-        )?;
-        store.deactivate_follow_wallet("leader-wallet", demoted_at, "test-demote")?;
+        follow
+            .demoted_at
+            .insert("leader-wallet".to_string(), demoted_at);
 
         let buy = SwapEvent {
             wallet: "leader-wallet".to_string(),
@@ -846,8 +889,7 @@ mod tests {
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
 
-        let mut follow = HashSet::new();
-        follow.insert("leader-wallet".to_string());
+        let follow = follow_snapshot(&["leader-wallet"]);
 
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;

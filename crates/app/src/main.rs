@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use copybot_config::load_from_env_or_default;
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_ingestion::IngestionService;
-use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot};
+use copybot_shadow::{
+    FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
+};
 use copybot_storage::SqliteStore;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use tokio::task::JoinHandle;
@@ -15,7 +17,7 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
-const MAX_PENDING_SHADOW_SWAPS: usize = 10_000;
+const SHADOW_WRITE_QUEUE_CAPACITY: usize = 256;
 const OBSERVED_SWAP_WRITE_MAX_RETRIES: usize = 3;
 const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [50, 125, 250];
 
@@ -65,6 +67,7 @@ async fn main() -> Result<()> {
         config.system.heartbeat_seconds,
         config.discovery.refresh_seconds,
         config.shadow.refresh_seconds,
+        config.shadow.max_signal_lag_seconds,
     )
     .await
 }
@@ -132,6 +135,7 @@ async fn run_app_loop(
     heartbeat_seconds: u64,
     discovery_refresh_seconds: u64,
     shadow_refresh_seconds: u64,
+    shadow_max_signal_lag_seconds: u64,
 ) -> Result<()> {
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
     let mut discovery_interval =
@@ -140,20 +144,23 @@ async fn run_app_loop(
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     discovery_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     shadow_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut active_follow_wallets = store
+    let initial_active_wallets = store
         .list_active_follow_wallets()
         .context("failed to load active follow wallets")?;
+    let mut follow_snapshot = FollowSnapshot::from_active_wallets(initial_active_wallets);
+    let follow_event_retention = Duration::from_secs(shadow_max_signal_lag_seconds.max(1));
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
-    let mut discovery_handle: Option<JoinHandle<Result<HashSet<String>>>> = None;
+    let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_handle: Option<JoinHandle<ShadowTaskOutput>> = None;
     let mut shadow_snapshot_handle: Option<JoinHandle<Result<ShadowSnapshot>>> = None;
     let mut shadow_store: Option<SqliteStore> = None;
-    let mut pending_shadow_swaps: VecDeque<ShadowTaskInput> = VecDeque::new();
+    let (shadow_task_tx, mut shadow_task_rx) =
+        tokio::sync::mpsc::channel::<ShadowTaskInput>(SHADOW_WRITE_QUEUE_CAPACITY);
 
-    if !active_follow_wallets.is_empty() {
+    if !follow_snapshot.active.is_empty() {
         info!(
-            active_follow_wallets = active_follow_wallets.len(),
+            active_follow_wallets = follow_snapshot.active.len(),
             "active follow wallets loaded"
         );
     }
@@ -161,7 +168,7 @@ async fn run_app_loop(
     loop {
         spawn_next_shadow_task_if_idle(
             &mut shadow_handle,
-            &mut pending_shadow_swaps,
+            &mut shadow_task_rx,
             &mut shadow_store,
             &sqlite_path,
             &shadow,
@@ -177,8 +184,13 @@ async fn run_app_loop(
             }, if discovery_handle.is_some() => {
                 discovery_handle = None;
                 match discovery_result.expect("guard ensures discovery task exists") {
-                    Ok(Ok(wallets)) => {
-                        active_follow_wallets = wallets;
+                    Ok(Ok(discovery_output)) => {
+                        apply_follow_snapshot_update(
+                            &mut follow_snapshot,
+                            discovery_output.active_wallets,
+                            discovery_output.cycle_ts,
+                            follow_event_retention,
+                        );
                     }
                     Ok(Err(error)) => {
                         warn!(error = %error, "discovery cycle failed");
@@ -248,7 +260,7 @@ async fn run_app_loop(
                             closed_trades_24h = snapshot.closed_trades_24h,
                             realized_pnl_sol_24h = snapshot.realized_pnl_sol_24h,
                             open_lots = snapshot.open_lots,
-                            active_follow_wallets = active_follow_wallets.len(),
+                            active_follow_wallets = follow_snapshot.active.len(),
                             "shadow snapshot"
                         );
                         if !shadow_drop_reason_counts.is_empty() {
@@ -300,47 +312,75 @@ async fn run_app_loop(
                             "observed swap stored"
                         );
 
-                        if pending_shadow_swaps.len() >= MAX_PENDING_SHADOW_SWAPS {
-                            let reason = "queue_saturated";
+                        if matches!(classify_swap_side(&swap), Some(ShadowSwapSide::Buy))
+                            && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
+                        {
+                            let reason = "not_followed";
+                            let runtime_followed = follow_snapshot.is_active(&swap.wallet);
                             *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
-                            *shadow_drop_stage_counts.entry("queue").or_insert(0) += 1;
+                            *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
                             warn!(
-                                stage = "queue",
+                                stage = "follow",
                                 reason,
+                                side = "buy",
                                 wallet = %swap.wallet,
                                 token_in = %swap.token_in,
                                 token_out = %swap.token_out,
-                                pending = pending_shadow_swaps.len(),
-                                max_pending = MAX_PENDING_SHADOW_SWAPS,
+                                runtime_followed,
                                 signature = %swap.signature,
                                 "shadow gate dropped"
                             );
-                            let details_json = format!(
-                                "{{\"reason\":\"{reason}\",\"signature\":\"{}\",\"wallet\":\"{}\",\"pending\":{},\"max_pending\":{}}}",
-                                swap.signature,
-                                swap.wallet,
-                                pending_shadow_swaps.len(),
-                                MAX_PENDING_SHADOW_SWAPS,
-                            );
-                            if let Err(error) = store.insert_risk_event(
-                                "shadow_queue_saturated",
-                                "warn",
-                                Utc::now(),
-                                Some(&details_json),
-                            ) {
-                                warn!(
-                                    error = %error,
-                                    signature = %swap.signature,
-                                    "failed to persist shadow queue saturation risk event"
-                                );
-                            }
                             continue;
                         }
 
-                        pending_shadow_swaps.push_back(ShadowTaskInput {
+                        let task_input = ShadowTaskInput {
                             swap,
-                            active_follow_wallets: active_follow_wallets.clone(),
-                        });
+                            follow_snapshot: follow_snapshot.clone(),
+                        };
+                        match shadow_task_tx.try_send(task_input) {
+                            Ok(()) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(returned)) => {
+                                let swap = returned.swap;
+                                let reason = "queue_saturated";
+                                *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+                                *shadow_drop_stage_counts.entry("queue").or_insert(0) += 1;
+                                warn!(
+                                    stage = "queue",
+                                    reason,
+                                    wallet = %swap.wallet,
+                                    token_in = %swap.token_in,
+                                    token_out = %swap.token_out,
+                                    queue_capacity = SHADOW_WRITE_QUEUE_CAPACITY,
+                                    signature = %swap.signature,
+                                    "shadow gate dropped"
+                                );
+                                let details_json = format!(
+                                    "{{\"reason\":\"{reason}\",\"signature\":\"{}\",\"wallet\":\"{}\",\"queue_capacity\":{}}}",
+                                    swap.signature,
+                                    swap.wallet,
+                                    SHADOW_WRITE_QUEUE_CAPACITY,
+                                );
+                                if let Err(error) = store.insert_risk_event(
+                                    "shadow_queue_saturated",
+                                    "warn",
+                                    Utc::now(),
+                                    Some(&details_json),
+                                ) {
+                                    warn!(
+                                        error = %error,
+                                        signature = %swap.signature,
+                                        "failed to persist shadow queue saturation risk event"
+                                    );
+                                }
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(returned)) => {
+                                warn!(
+                                    signature = %returned.swap.signature,
+                                    wallet = %returned.swap.wallet,
+                                    "shadow queue closed, dropping signal candidate"
+                                );
+                            }
+                        }
                     }
                     Ok(false) => {
                         debug!(signature = %swap.signature, "duplicate swap ignored");
@@ -462,13 +502,17 @@ fn spawn_discovery_task(
     sqlite_path: String,
     discovery: DiscoveryService,
     now: chrono::DateTime<Utc>,
-) -> impl FnOnce() -> Result<HashSet<String>> {
+) -> impl FnOnce() -> Result<DiscoveryTaskOutput> {
     move || {
         let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
             format!("failed to open sqlite db for discovery task: {sqlite_path}")
         })?;
         discovery.run_cycle(&store, now)?;
-        store.list_active_follow_wallets()
+        let active_wallets = store.list_active_follow_wallets()?;
+        Ok(DiscoveryTaskOutput {
+            active_wallets,
+            cycle_ts: now,
+        })
     }
 }
 
@@ -491,14 +535,65 @@ struct ShadowTaskOutput {
     store: SqliteStore,
 }
 
+struct DiscoveryTaskOutput {
+    active_wallets: HashSet<String>,
+    cycle_ts: DateTime<Utc>,
+}
+
 struct ShadowTaskInput {
     swap: SwapEvent,
-    active_follow_wallets: HashSet<String>,
+    follow_snapshot: FollowSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShadowSwapSide {
+    Buy,
+    Sell,
+}
+
+fn classify_swap_side(swap: &SwapEvent) -> Option<ShadowSwapSide> {
+    const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+    if swap.token_in == SOL_MINT && swap.token_out != SOL_MINT {
+        return Some(ShadowSwapSide::Buy);
+    }
+    if swap.token_out == SOL_MINT && swap.token_in != SOL_MINT {
+        return Some(ShadowSwapSide::Sell);
+    }
+    None
+}
+
+fn apply_follow_snapshot_update(
+    follow_snapshot: &mut FollowSnapshot,
+    active_wallets: HashSet<String>,
+    cycle_ts: DateTime<Utc>,
+    retention: Duration,
+) {
+    let promoted_wallets: Vec<String> = active_wallets
+        .difference(&follow_snapshot.active)
+        .cloned()
+        .collect();
+    let demoted_wallets: Vec<String> = follow_snapshot
+        .active
+        .difference(&active_wallets)
+        .cloned()
+        .collect();
+
+    for wallet in promoted_wallets {
+        follow_snapshot.promoted_at.insert(wallet, cycle_ts);
+    }
+    for wallet in demoted_wallets {
+        follow_snapshot.demoted_at.insert(wallet, cycle_ts);
+    }
+    follow_snapshot.active = active_wallets;
+
+    let cutoff = cycle_ts - chrono::Duration::seconds(retention.as_secs() as i64);
+    follow_snapshot.promoted_at.retain(|_, ts| *ts >= cutoff);
+    follow_snapshot.demoted_at.retain(|_, ts| *ts >= cutoff);
 }
 
 fn spawn_next_shadow_task_if_idle(
     shadow_handle: &mut Option<JoinHandle<ShadowTaskOutput>>,
-    pending_shadow_swaps: &mut VecDeque<ShadowTaskInput>,
+    shadow_task_rx: &mut tokio::sync::mpsc::Receiver<ShadowTaskInput>,
     shadow_store: &mut Option<SqliteStore>,
     sqlite_path: &str,
     shadow: &ShadowService,
@@ -506,6 +601,15 @@ fn spawn_next_shadow_task_if_idle(
     if shadow_handle.is_some() {
         return;
     }
+    let next = match shadow_task_rx.try_recv() {
+        Ok(task_input) => task_input,
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return,
+        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+            warn!("shadow task channel disconnected");
+            return;
+        }
+    };
+
     let store = match shadow_store.take() {
         Some(store) => store,
         None => match SqliteStore::open(Path::new(sqlite_path)) {
@@ -519,10 +623,6 @@ fn spawn_next_shadow_task_if_idle(
                 return;
             }
         },
-    };
-    let Some(next) = pending_shadow_swaps.pop_front() else {
-        *shadow_store = Some(store);
-        return;
     };
     *shadow_handle = Some(tokio::task::spawn_blocking(shadow_task(
         shadow.clone(),
@@ -539,10 +639,10 @@ fn shadow_task(
     move || {
         let ShadowTaskInput {
             swap,
-            active_follow_wallets,
+            follow_snapshot,
         } = task_input;
         let signature = swap.signature.clone();
-        let outcome = shadow.process_swap(&store, &swap, &active_follow_wallets, Utc::now());
+        let outcome = shadow.process_swap(&store, &swap, &follow_snapshot, Utc::now());
         ShadowTaskOutput {
             signature,
             outcome,
