@@ -762,6 +762,30 @@ impl SqliteStore {
         Ok(count > 0)
     }
 
+    pub fn list_shadow_open_pairs(&self) -> Result<HashSet<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT wallet_id, token
+                 FROM shadow_lots
+                 WHERE qty > 0",
+            )
+            .context("failed to prepare shadow open lots query")?;
+        let mut rows = stmt.query([]).context("failed querying shadow open lots")?;
+
+        let mut pairs = HashSet::new();
+        while let Some(row) = rows.next().context("failed iterating shadow open lots")? {
+            let wallet_id: String = row
+                .get(0)
+                .context("failed reading shadow_lots.wallet_id in open lots query")?;
+            let token: String = row
+                .get(1)
+                .context("failed reading shadow_lots.token in open lots query")?;
+            pairs.insert((wallet_id, token));
+        }
+        Ok(pairs)
+    }
+
     pub fn token_market_stats(
         &self,
         token: &str,
