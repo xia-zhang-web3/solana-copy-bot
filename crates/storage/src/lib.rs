@@ -2,12 +2,15 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::SwapEvent;
 use reqwest::blocking::Client;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration as StdDuration;
+
+const SQLITE_WRITE_MAX_RETRIES: usize = 3;
+const SQLITE_WRITE_RETRY_BACKOFF_MS: [u64; SQLITE_WRITE_MAX_RETRIES] = [100, 300, 700];
 
 pub struct SqliteStore {
     conn: Connection,
@@ -233,6 +236,27 @@ impl SqliteStore {
             )
             .context("failed to insert observed swap")?;
         Ok(written > 0)
+    }
+
+    fn execute_with_retry<F>(&self, mut operation: F) -> rusqlite::Result<usize>
+    where
+        F: FnMut(&Connection) -> rusqlite::Result<usize>,
+    {
+        for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
+            match operation(&self.conn) {
+                Ok(changed) => return Ok(changed),
+                Err(error) => {
+                    if attempt < SQLITE_WRITE_MAX_RETRIES && is_retryable_sqlite_error(&error) {
+                        std::thread::sleep(StdDuration::from_millis(
+                            SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                        ));
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        unreachable!("retry loop must return on success or terminal error");
     }
 
     pub fn load_observed_swaps_since(&self, since: DateTime<Utc>) -> Result<Vec<SwapEvent>> {
@@ -673,9 +697,9 @@ impl SqliteStore {
 
     pub fn insert_copy_signal(&self, signal: &CopySignalRow) -> Result<bool> {
         let written = self
-            .conn
-            .execute(
-                "INSERT OR IGNORE INTO copy_signals(
+            .execute_with_retry(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO copy_signals(
                     signal_id,
                     wallet_id,
                     side,
@@ -684,16 +708,17 @@ impl SqliteStore {
                     ts,
                     status
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    &signal.signal_id,
-                    &signal.wallet_id,
-                    &signal.side,
-                    &signal.token,
-                    signal.notional_sol,
-                    signal.ts.to_rfc3339(),
-                    &signal.status,
-                ],
-            )
+                    params![
+                        &signal.signal_id,
+                        &signal.wallet_id,
+                        &signal.side,
+                        &signal.token,
+                        signal.notional_sol,
+                        signal.ts.to_rfc3339(),
+                        &signal.status,
+                    ],
+                )
+            })
             .context("failed to insert copy signal")?;
         Ok(written > 0)
     }
@@ -706,13 +731,14 @@ impl SqliteStore {
         cost_sol: f64,
         opened_ts: DateTime<Utc>,
     ) -> Result<i64> {
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "INSERT INTO shadow_lots(wallet_id, token, qty, cost_sol, opened_ts)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![wallet_id, token, qty, cost_sol, opened_ts.to_rfc3339()],
             )
-            .context("failed to insert shadow lot")?;
+        })
+        .context("failed to insert shadow lot")?;
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -984,19 +1010,21 @@ impl SqliteStore {
     }
 
     pub fn update_shadow_lot(&self, id: i64, qty: f64, cost_sol: f64) -> Result<()> {
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "UPDATE shadow_lots SET qty = ?1, cost_sol = ?2 WHERE id = ?3",
                 params![qty, cost_sol, id],
             )
-            .context("failed to update shadow lot")?;
+        })
+        .context("failed to update shadow lot")?;
         Ok(())
     }
 
     pub fn delete_shadow_lot(&self, id: i64) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM shadow_lots WHERE id = ?1", params![id])
-            .context("failed to delete shadow lot")?;
+        self.execute_with_retry(|conn| {
+            conn.execute("DELETE FROM shadow_lots WHERE id = ?1", params![id])
+        })
+        .context("failed to delete shadow lot")?;
         Ok(())
     }
 
@@ -1012,8 +1040,8 @@ impl SqliteStore {
         opened_ts: DateTime<Utc>,
         closed_ts: DateTime<Utc>,
     ) -> Result<()> {
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "INSERT INTO shadow_closed_trades(
                     signal_id,
                     wallet_id,
@@ -1037,7 +1065,8 @@ impl SqliteStore {
                     closed_ts.to_rfc3339(),
                 ],
             )
-            .context("failed to insert shadow closed trade")?;
+        })
+        .context("failed to insert shadow closed trade")?;
         Ok(())
     }
 
@@ -1086,6 +1115,31 @@ impl SqliteStore {
 
 fn rpc_result<'a>(payload: &'a Value) -> &'a Value {
     payload.get("result").unwrap_or(payload)
+}
+
+fn is_retryable_sqlite_error(error: &rusqlite::Error) -> bool {
+    match error {
+        rusqlite::Error::SqliteFailure(code, message) => {
+            matches!(
+                code.code,
+                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
+            ) || message
+                .as_deref()
+                .map(|value| {
+                    let lowered = value.to_ascii_lowercase();
+                    lowered.contains("database is locked")
+                        || lowered.contains("database is busy")
+                        || lowered.contains("database table is locked")
+                })
+                .unwrap_or(false)
+        }
+        _ => {
+            let lowered = error.to_string().to_ascii_lowercase();
+            lowered.contains("database is locked")
+                || lowered.contains("database is busy")
+                || lowered.contains("database table is locked")
+        }
+    }
 }
 
 fn post_helius_json(client: &Client, helius_http_url: &str, payload: &Value) -> Result<Value> {

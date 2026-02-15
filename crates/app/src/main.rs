@@ -226,21 +226,10 @@ async fn run_app_loop(
                                 if result.side == "buy" {
                                     open_shadow_lots.insert(key);
                                 } else if result.side == "sell" {
-                                    match store.has_shadow_lots(&result.wallet_id, &result.token) {
-                                        Ok(true) => {
-                                            open_shadow_lots.insert(key);
-                                        }
-                                        Ok(false) => {
-                                            open_shadow_lots.remove(&key);
-                                        }
-                                        Err(error) => {
-                                            warn!(
-                                                error = %error,
-                                                wallet = %result.wallet_id,
-                                                token = %result.token,
-                                                "failed to refresh open lot index for recorded sell"
-                                            );
-                                        }
+                                    if result.has_open_lots_after_signal.unwrap_or(false) {
+                                        open_shadow_lots.insert(key);
+                                    } else {
+                                        open_shadow_lots.remove(&key);
                                     }
                                 }
                             }
