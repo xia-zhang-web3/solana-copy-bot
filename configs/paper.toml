@@ -49,12 +49,12 @@ enabled = true
 refresh_seconds = 60
 copy_notional_sol = 0.25
 min_leader_notional_sol = 0.10
-max_signal_lag_seconds = 900
-min_token_age_seconds = 30
-min_holders = 0
-min_liquidity_sol = 0.0
-min_volume_5m_sol = 0.0
-min_unique_traders_5m = 0
+max_signal_lag_seconds = 480
+min_token_age_seconds = 300
+min_holders = 30
+min_liquidity_sol = 5.0
+min_volume_5m_sol = 2.0
+min_unique_traders_5m = 3
 
 [risk]
 max_position_sol = 0.5
