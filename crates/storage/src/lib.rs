@@ -28,6 +28,14 @@ pub struct WalletMetricRow {
     pub rug_ratio: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct WalletUpsertRow {
+    pub wallet_id: String,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FollowlistUpdateResult {
     pub activated: usize,
@@ -94,6 +102,8 @@ impl SqliteStore {
             .context("failed to set sqlite busy_timeout")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("failed to set sqlite journal mode WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .context("failed to set sqlite synchronous NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("failed to enable sqlite foreign keys")?;
         conn.execute_batch(
@@ -401,6 +411,151 @@ impl SqliteStore {
             )
             .context("failed to insert wallet metric")?;
         Ok(())
+    }
+
+    pub fn persist_discovery_cycle(
+        &self,
+        wallets: &[WalletUpsertRow],
+        metrics: &[WalletMetricRow],
+        desired_wallets: &[String],
+        now: DateTime<Utc>,
+        reason: &str,
+    ) -> Result<FollowlistUpdateResult> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("failed to open discovery write transaction")?;
+
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO wallets(wallet_id, first_seen, last_seen, status)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(wallet_id) DO UPDATE SET
+                        first_seen = CASE WHEN excluded.first_seen < wallets.first_seen THEN excluded.first_seen ELSE wallets.first_seen END,
+                        last_seen = CASE WHEN excluded.last_seen > wallets.last_seen THEN excluded.last_seen ELSE wallets.last_seen END,
+                        status = excluded.status",
+                )
+                .context("failed to prepare discovery wallet upsert statement")?;
+            for wallet in wallets {
+                stmt.execute(params![
+                    &wallet.wallet_id,
+                    wallet.first_seen.to_rfc3339(),
+                    wallet.last_seen.to_rfc3339(),
+                    &wallet.status,
+                ])
+                .context("failed to upsert wallet in discovery transaction")?;
+            }
+        }
+
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO wallet_metrics(
+                        wallet_id,
+                        window_start,
+                        pnl,
+                        win_rate,
+                        trades,
+                        closed_trades,
+                        hold_median_seconds,
+                        score,
+                        buy_total,
+                        tradable_ratio,
+                        rug_ratio
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                )
+                .context("failed to prepare discovery wallet metric insert statement")?;
+            for metric in metrics {
+                stmt.execute(params![
+                    &metric.wallet_id,
+                    metric.window_start.to_rfc3339(),
+                    metric.pnl,
+                    metric.win_rate,
+                    metric.trades as i64,
+                    metric.closed_trades as i64,
+                    metric.hold_median_seconds,
+                    metric.score,
+                    metric.buy_total as i64,
+                    metric.tradable_ratio,
+                    metric.rug_ratio,
+                ])
+                .context("failed to insert wallet metric in discovery transaction")?;
+            }
+        }
+
+        let desired: HashSet<&str> = desired_wallets.iter().map(String::as_str).collect();
+        let active_wallets: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT wallet_id FROM followlist WHERE active = 1")
+                .context("failed to prepare active followlist query in discovery transaction")?;
+            let mut rows = stmt
+                .query([])
+                .context("failed querying active followlist in discovery transaction")?;
+            let mut wallets = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .context("failed iterating active followlist in discovery transaction")?
+            {
+                wallets.push(
+                    row.get(0)
+                        .context("failed reading followlist.wallet_id in discovery transaction")?,
+                );
+            }
+            wallets
+        };
+
+        let now_raw = now.to_rfc3339();
+        let mut result = FollowlistUpdateResult::default();
+        {
+            let mut deactivate_stmt = tx
+                .prepare_cached(
+                    "UPDATE followlist
+                     SET active = 0, removed_at = ?1, reason = ?2
+                     WHERE wallet_id = ?3 AND active = 1",
+                )
+                .context("failed to prepare followlist deactivate statement")?;
+            for wallet_id in active_wallets.iter() {
+                if !desired.contains(wallet_id.as_str()) {
+                    let changed = deactivate_stmt
+                        .execute(params![&now_raw, reason, wallet_id])
+                        .context("failed to deactivate follow wallet in discovery transaction")?;
+                    if changed > 0 {
+                        result.deactivated += 1;
+                    }
+                }
+            }
+        }
+
+        {
+            let mut exists_stmt = tx
+                .prepare_cached(
+                    "SELECT id FROM followlist WHERE wallet_id = ?1 AND active = 1 LIMIT 1",
+                )
+                .context("failed to prepare followlist active check statement")?;
+            let mut activate_stmt = tx
+                .prepare_cached(
+                    "INSERT INTO followlist(wallet_id, added_at, reason, active)
+                     VALUES (?1, ?2, ?3, 1)",
+                )
+                .context("failed to prepare followlist activate statement")?;
+            for wallet_id in desired_wallets {
+                let already_active: Option<i64> = exists_stmt
+                    .query_row(params![wallet_id], |row| row.get(0))
+                    .optional()
+                    .context("failed checking existing active follow wallet in transaction")?;
+                if already_active.is_none() {
+                    activate_stmt
+                        .execute(params![wallet_id, &now_raw, reason])
+                        .context("failed to activate follow wallet in discovery transaction")?;
+                    result.activated += 1;
+                }
+            }
+        }
+
+        tx.commit()
+            .context("failed to commit discovery write transaction")?;
+        Ok(result)
     }
 
     pub fn list_active_follow_wallets(&self) -> Result<HashSet<String>> {

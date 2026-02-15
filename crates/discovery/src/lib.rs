@@ -2,7 +2,9 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow};
+use copybot_storage::{
+    SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
+};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -205,19 +207,21 @@ impl DiscoveryService {
                 ..DiscoverySummary::default()
             });
         }
+        let mut wallet_rows: Vec<WalletUpsertRow> = Vec::with_capacity(snapshots.len());
+        let mut metric_rows: Vec<WalletMetricRow> = Vec::with_capacity(snapshots.len());
         for snapshot in snapshots.iter() {
             let status = if snapshot.eligible {
                 "candidate"
             } else {
                 "observed"
             };
-            store.upsert_wallet(
-                &snapshot.wallet_id,
-                snapshot.first_seen,
-                snapshot.last_seen,
-                status,
-            )?;
-            store.insert_wallet_metric(&WalletMetricRow {
+            wallet_rows.push(WalletUpsertRow {
+                wallet_id: snapshot.wallet_id.clone(),
+                first_seen: snapshot.first_seen,
+                last_seen: snapshot.last_seen,
+                status: status.to_string(),
+            });
+            metric_rows.push(WalletMetricRow {
                 wallet_id: snapshot.wallet_id.clone(),
                 window_start,
                 pnl: snapshot.pnl_sol,
@@ -229,7 +233,7 @@ impl DiscoveryService {
                 buy_total: snapshot.buy_total,
                 tradable_ratio: snapshot.tradable_ratio,
                 rug_ratio: snapshot.rug_ratio,
-            })?;
+            });
         }
 
         let mut ranked: Vec<&WalletSnapshot> = snapshots
@@ -243,8 +247,13 @@ impl DiscoveryService {
             .take(self.config.follow_top_n as usize)
             .map(|item| item.wallet_id.clone())
             .collect();
-        let follow_delta =
-            store.reconcile_followlist(&desired_wallets, now, "discovery_score_refresh")?;
+        let follow_delta = store.persist_discovery_cycle(
+            &wallet_rows,
+            &metric_rows,
+            &desired_wallets,
+            now,
+            "discovery_score_refresh",
+        )?;
         let active_follow_wallets = store.list_active_follow_wallets()?.len();
         let top_wallets = ranked
             .iter()

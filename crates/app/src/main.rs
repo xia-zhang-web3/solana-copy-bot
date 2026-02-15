@@ -16,6 +16,8 @@ use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const MAX_PENDING_SHADOW_SWAPS: usize = 10_000;
+const OBSERVED_SWAP_WRITE_MAX_RETRIES: usize = 3;
+const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [50, 125, 250];
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -285,7 +287,7 @@ async fn run_app_loop(
                     }
                 };
 
-                match store.insert_observed_swap(&swap) {
+                match insert_observed_swap_with_retry(&store, &swap).await {
                     Ok(true) => {
                         info!(
                             signature = %swap.signature,
@@ -344,7 +346,13 @@ async fn run_app_loop(
                         debug!(signature = %swap.signature, "duplicate swap ignored");
                     }
                     Err(error) => {
-                        warn!(error = %error, signature = %swap.signature, "failed writing observed swap");
+                        let error_chain = format_error_chain(&error);
+                        warn!(
+                            error = %error,
+                            error_chain = %error_chain,
+                            signature = %swap.signature,
+                            "failed writing observed swap"
+                        );
                     }
                 }
             }
@@ -403,6 +411,51 @@ fn reason_to_stage(reason: ShadowDropReason) -> &'static str {
         ShadowDropReason::DuplicateSignal => "dedupe",
         ShadowDropReason::UnsupportedSide => "side",
     }
+}
+
+async fn insert_observed_swap_with_retry(store: &SqliteStore, swap: &SwapEvent) -> Result<bool> {
+    for attempt in 0..=OBSERVED_SWAP_WRITE_MAX_RETRIES {
+        match store.insert_observed_swap(swap) {
+            Ok(written) => return Ok(written),
+            Err(error) => {
+                if attempt < OBSERVED_SWAP_WRITE_MAX_RETRIES && is_retryable_sqlite_error(&error) {
+                    let backoff_ms = OBSERVED_SWAP_RETRY_BACKOFF_MS[attempt];
+                    debug!(
+                        signature = %swap.signature,
+                        attempt = attempt + 1,
+                        max_attempts = OBSERVED_SWAP_WRITE_MAX_RETRIES + 1,
+                        backoff_ms,
+                        error = %error,
+                        "retrying observed swap write after sqlite contention"
+                    );
+                    time::sleep(Duration::from_millis(backoff_ms)).await;
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
+    unreachable!("retry loop must return on success or terminal error");
+}
+
+fn is_retryable_sqlite_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let lowered = cause.to_string().to_ascii_lowercase();
+        lowered.contains("database is locked")
+            || lowered.contains("database is busy")
+            || lowered.contains("database table is locked")
+    })
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    let mut chain = String::new();
+    for (idx, cause) in error.chain().enumerate() {
+        if idx > 0 {
+            chain.push_str(" | ");
+        }
+        chain.push_str(&cause.to_string());
+    }
+    chain
 }
 
 fn spawn_discovery_task(

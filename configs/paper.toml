@@ -28,10 +28,10 @@ seen_signatures_limit = 5000
 mock_interval_ms = 1500
 
 [discovery]
-scoring_window_days = 30
-decay_window_days = 7
-follow_top_n = 30
-min_leader_notional_sol = 0.75
+scoring_window_days = 7
+decay_window_days = 1
+follow_top_n = 100
+min_leader_notional_sol = 0.35
 refresh_seconds = 180
 min_trades = 2
 min_active_days = 1
@@ -48,7 +48,7 @@ thin_market_min_unique_traders = 10
 enabled = true
 refresh_seconds = 60
 copy_notional_sol = 0.25
-min_leader_notional_sol = 0.35
+min_leader_notional_sol = 0.10
 max_signal_lag_seconds = 480
 min_token_age_seconds = 300
 min_holders = 30
