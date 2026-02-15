@@ -1389,6 +1389,15 @@ fn is_retryable_sqlite_error(error: &rusqlite::Error) -> bool {
     }
 }
 
+pub fn is_retryable_sqlite_anyhow_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let lowered = cause.to_string().to_ascii_lowercase();
+        lowered.contains("database is locked")
+            || lowered.contains("database is busy")
+            || lowered.contains("database table is locked")
+    })
+}
+
 fn post_helius_json(client: &Client, helius_http_url: &str, payload: &Value) -> Result<Value> {
     let response = client
         .post(helius_http_url)

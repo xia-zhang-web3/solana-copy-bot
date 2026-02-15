@@ -7,7 +7,7 @@ use copybot_ingestion::IngestionService;
 use copybot_shadow::{
     FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
 };
-use copybot_storage::SqliteStore;
+use copybot_storage::{is_retryable_sqlite_anyhow_error, SqliteStore};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -151,6 +151,9 @@ async fn run_app_loop(
         .context("failed to load active follow wallets")?;
     let mut follow_snapshot = Arc::new(FollowSnapshot::from_active_wallets(initial_active_wallets));
     let follow_event_retention = Duration::from_secs(shadow_max_signal_lag_seconds.max(1));
+    let mut open_shadow_lots = store
+        .list_shadow_open_pairs()
+        .context("failed to load open shadow lot index")?;
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
@@ -205,7 +208,7 @@ async fn run_app_loop(
             warn!(
                 pending_shadow_task_count,
                 shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
-                "shadow queue backpressure active; pausing ingestion polling"
+                "shadow queue backpressure active; switching to inline shadow processing"
             );
             let details_json = format!(
                 "{{\"reason\":\"queue_backpressure\",\"pending\":{},\"capacity\":{}}}",
@@ -269,34 +272,12 @@ async fn run_app_loop(
                             &mut ready_shadow_key_set,
                             &mut inflight_shadow_keys,
                         );
-                        match task_output.outcome {
-                            Ok(ShadowProcessOutcome::Recorded(result)) => {
-                                info!(
-                                    signal_id = %result.signal_id,
-                                    wallet = %result.wallet_id,
-                                    side = %result.side,
-                                    token = %result.token,
-                                    notional_sol = result.notional_sol,
-                                    latency_ms = result.latency_ms,
-                                    closed_qty = result.closed_qty,
-                                    realized_pnl_sol = result.realized_pnl_sol,
-                                    "shadow signal recorded"
-                                );
-                            }
-                            Ok(ShadowProcessOutcome::Dropped(reason)) => {
-                                let reason_key = reason_to_key(reason);
-                                let stage_key = reason_to_stage(reason);
-                                *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
-                                *shadow_drop_stage_counts.entry(stage_key).or_insert(0) += 1;
-                            }
-                            Err(error) => {
-                                warn!(
-                                    error = %error,
-                                    signature = %task_output.signature,
-                                    "shadow processing failed"
-                                );
-                            }
-                        }
+                        handle_shadow_task_output(
+                            task_output,
+                            &mut open_shadow_lots,
+                            &mut shadow_drop_reason_counts,
+                            &mut shadow_drop_stage_counts,
+                        );
                     }
                     Some(Err(error)) => {
                         warn!(error = %error, "shadow task join failed");
@@ -315,6 +296,14 @@ async fn run_app_loop(
                 shadow_snapshot_handle = None;
                 match snapshot_result.expect("guard ensures shadow snapshot task exists") {
                     Ok(Ok(snapshot)) => {
+                        match store.list_shadow_open_pairs() {
+                            Ok(pairs) => {
+                                open_shadow_lots = pairs;
+                            }
+                            Err(error) => {
+                                warn!(error = %error, "failed to refresh open shadow lot index");
+                            }
+                        }
                         info!(
                             closed_trades_24h = snapshot.closed_trades_24h,
                             realized_pnl_sol_24h = snapshot.realized_pnl_sol_24h,
@@ -345,7 +334,7 @@ async fn run_app_loop(
                     warn!(error = %error, "heartbeat write failed");
                 }
             }
-            maybe_swap = ingestion.next_swap(), if !shadow_queue_full => {
+            maybe_swap = ingestion.next_swap() => {
                 let swap = match maybe_swap {
                     Ok(Some(swap)) => swap,
                     Ok(None) => {
@@ -394,20 +383,63 @@ async fn run_app_loop(
                             );
                             continue;
                         }
+
+                        if matches!(side, ShadowSwapSide::Sell)
+                            && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
+                        {
+                            let wallet_has_recent_follow_history = follow_snapshot.is_active(&swap.wallet)
+                                || follow_snapshot.promoted_at.contains_key(&swap.wallet)
+                                || follow_snapshot.demoted_at.contains_key(&swap.wallet);
+                            let sell_key = shadow_task_key_for_swap(&swap, side);
+                            let key_tuple = (sell_key.wallet.clone(), sell_key.token.clone());
+                            let has_pending_or_inflight = inflight_shadow_keys.contains(&sell_key)
+                                || pending_shadow_tasks
+                                    .get(&sell_key)
+                                    .is_some_and(|pending| !pending.is_empty());
+                            if !wallet_has_recent_follow_history
+                                && !has_pending_or_inflight
+                                && !open_shadow_lots.contains(&key_tuple)
+                            {
+                                let reason = "not_followed";
+                                *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+                                *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
+                                warn!(
+                                    stage = "follow",
+                                    reason,
+                                    side = "sell",
+                                    wallet = %swap.wallet,
+                                    token = %swap.token_in,
+                                    signature = %swap.signature,
+                                    "shadow gate dropped"
+                                );
+                                continue;
+                            }
+                        }
+
                         let task_key = shadow_task_key_for_swap(&swap, side);
                         let task_input = ShadowTaskInput {
                             swap,
                             follow_snapshot: Arc::clone(&follow_snapshot),
                             key: task_key,
                         };
-                        enqueue_shadow_task(
-                            &mut pending_shadow_tasks,
-                            &mut pending_shadow_task_count,
-                            &mut ready_shadow_keys,
-                            &mut ready_shadow_key_set,
-                            &inflight_shadow_keys,
-                            task_input,
-                        );
+                        if shadow_queue_full || shadow_scheduler_needs_reset {
+                            let task_output = shadow_task_with_store(&shadow, &store, task_input);
+                            handle_shadow_task_output(
+                                task_output,
+                                &mut open_shadow_lots,
+                                &mut shadow_drop_reason_counts,
+                                &mut shadow_drop_stage_counts,
+                            );
+                        } else {
+                            enqueue_shadow_task(
+                                &mut pending_shadow_tasks,
+                                &mut pending_shadow_task_count,
+                                &mut ready_shadow_keys,
+                                &mut ready_shadow_key_set,
+                                &inflight_shadow_keys,
+                                task_input,
+                            );
+                        }
                     }
                     Ok(false) => {
                         debug!(signature = %swap.signature, "duplicate swap ignored");
@@ -485,7 +517,9 @@ async fn insert_observed_swap_with_retry(store: &SqliteStore, swap: &SwapEvent) 
         match store.insert_observed_swap(swap) {
             Ok(written) => return Ok(written),
             Err(error) => {
-                if attempt < OBSERVED_SWAP_WRITE_MAX_RETRIES && is_retryable_sqlite_error(&error) {
+                if attempt < OBSERVED_SWAP_WRITE_MAX_RETRIES
+                    && is_retryable_sqlite_anyhow_error(&error)
+                {
                     let backoff_ms = OBSERVED_SWAP_RETRY_BACKOFF_MS[attempt];
                     debug!(
                         signature = %swap.signature,
@@ -503,15 +537,6 @@ async fn insert_observed_swap_with_retry(store: &SqliteStore, swap: &SwapEvent) 
         }
     }
     unreachable!("retry loop must return on success or terminal error");
-}
-
-fn is_retryable_sqlite_error(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        let lowered = cause.to_string().to_ascii_lowercase();
-        lowered.contains("database is locked")
-            || lowered.contains("database is busy")
-            || lowered.contains("database table is locked")
-    })
 }
 
 fn format_error_chain(error: &anyhow::Error) -> String {
@@ -778,6 +803,64 @@ fn mark_shadow_task_complete(
         && ready_shadow_key_set.insert(key.clone())
     {
         ready_shadow_keys.push_back(key.clone());
+    }
+}
+
+fn handle_shadow_task_output(
+    task_output: ShadowTaskOutput,
+    open_shadow_lots: &mut HashSet<(String, String)>,
+    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+) {
+    match task_output.outcome {
+        Ok(ShadowProcessOutcome::Recorded(result)) => {
+            info!(
+                signal_id = %result.signal_id,
+                wallet = %result.wallet_id,
+                side = %result.side,
+                token = %result.token,
+                notional_sol = result.notional_sol,
+                latency_ms = result.latency_ms,
+                closed_qty = result.closed_qty,
+                realized_pnl_sol = result.realized_pnl_sol,
+                "shadow signal recorded"
+            );
+            if result.side == "buy" {
+                open_shadow_lots.insert((result.wallet_id, result.token));
+            }
+        }
+        Ok(ShadowProcessOutcome::Dropped(reason)) => {
+            let reason_key = reason_to_key(reason);
+            let stage_key = reason_to_stage(reason);
+            *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
+            *shadow_drop_stage_counts.entry(stage_key).or_insert(0) += 1;
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                signature = %task_output.signature,
+                "shadow processing failed"
+            );
+        }
+    }
+}
+
+fn shadow_task_with_store(
+    shadow: &ShadowService,
+    store: &SqliteStore,
+    task_input: ShadowTaskInput,
+) -> ShadowTaskOutput {
+    let ShadowTaskInput {
+        swap,
+        follow_snapshot,
+        key,
+    } = task_input;
+    let signature = swap.signature.clone();
+    let outcome = shadow.process_swap(store, &swap, follow_snapshot.as_ref(), Utc::now());
+    ShadowTaskOutput {
+        signature,
+        key,
+        outcome,
     }
 }
 
