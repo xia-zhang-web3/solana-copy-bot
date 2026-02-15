@@ -90,6 +90,8 @@ impl SqliteStore {
 
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open sqlite db: {}", path.display()))?;
+        conn.busy_timeout(StdDuration::from_secs(5))
+            .context("failed to set sqlite busy_timeout")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("failed to set sqlite journal mode WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")
@@ -166,6 +168,29 @@ impl SqliteStore {
                 params![component, status],
             )
             .context("failed to record heartbeat")?;
+        Ok(())
+    }
+
+    pub fn insert_risk_event(
+        &self,
+        event_type: &str,
+        severity: &str,
+        ts: DateTime<Utc>,
+        details_json: Option<&str>,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO risk_events(event_id, type, severity, ts, details_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    event_type,
+                    severity,
+                    ts.to_rfc3339(),
+                    details_json,
+                ],
+            )
+            .context("failed to insert risk event")?;
         Ok(())
     }
 

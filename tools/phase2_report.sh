@@ -85,6 +85,10 @@ where os.ts >= ?
 signals_all = one("select count(*) from copy_signals where ts >= ?", (cutoff,))
 signals_buy = one("select count(*) from copy_signals where ts >= ? and side='buy'", (cutoff,))
 signals_sell = one("select count(*) from copy_signals where ts >= ? and side='sell'", (cutoff,))
+queue_sat = one(
+    "select count(*) from risk_events where ts >= ? and type='shadow_queue_saturated'",
+    (cutoff,),
+)
 
 obs_all = one("select count(*) from observed_swaps where ts >= ?", (cutoff,))
 active_follow = one("select count(*) from followlist where active=1")
@@ -101,6 +105,7 @@ print(f"eligible_window_sell:  {eligible_sell}")
 print(f"signals_window_total:  {signals_all}")
 print(f"signals_window_buy:    {signals_buy}")
 print(f"signals_window_sell:   {signals_sell}")
+print(f"shadow_queue_saturated_window: {queue_sat}")
 ratio = (signals_all / eligible_all) if eligible_all else None
 print(f"signal_to_eligible_ratio: {ratio if ratio is not None else 'n/a'}")
 print(f"shadow_open_lots_now: {open_lots}")

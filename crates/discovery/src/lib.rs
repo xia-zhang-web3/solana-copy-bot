@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{SqliteStore, TokenQualityCacheRow, WalletMetricRow};
+use copybot_storage::{SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
@@ -478,25 +478,25 @@ impl DiscoveryService {
         let mut rpc_attempted = 0usize;
         let refresh_started = Instant::now();
         for (mint, stale_row) in to_fetch {
-            // Never block discovery on cache miss: DB proxy path remains available.
-            let Some(stale_row) = stale_row else {
-                continue;
-            };
-
+            let mut stale_fallback = stale_row;
             if rpc_attempted >= QUALITY_MAX_FETCH_PER_CYCLE {
-                fallback_from_stale += 1;
-                out.insert(mint, stale_row);
+                if let Some(stale_row) = stale_fallback.take() {
+                    fallback_from_stale += 1;
+                    out.insert(mint, stale_row);
+                }
                 continue;
             }
             if refresh_started.elapsed().as_millis() as u64 >= QUALITY_RPC_BUDGET_MS {
                 budget_exhausted += 1;
-                fallback_from_stale += 1;
-                out.insert(mint, stale_row);
+                if let Some(stale_row) = stale_fallback.take() {
+                    fallback_from_stale += 1;
+                    out.insert(mint, stale_row);
+                }
                 continue;
             }
 
             rpc_attempted += 1;
-            match SqliteStore::fetch_token_quality_from_helius(
+            match fetch_token_quality_from_helius_guarded(
                 helius_http_url,
                 &mint,
                 QUALITY_RPC_TIMEOUT_MS,
@@ -519,8 +519,15 @@ impl DiscoveryService {
                             out.insert(mint, row);
                         }
                         Ok(None) => {
-                            fallback_from_stale += 1;
-                            out.insert(mint, stale_row);
+                            if let Some(stale_row) = stale_fallback.take() {
+                                fallback_from_stale += 1;
+                                out.insert(mint, stale_row);
+                            } else {
+                                warn!(
+                                    mint = %mint,
+                                    "token quality cache row missing after refresh"
+                                );
+                            }
                         }
                         Err(error) => {
                             warn!(
@@ -528,8 +535,10 @@ impl DiscoveryService {
                                 mint = %mint,
                                 "failed reading token quality cache after refresh"
                             );
-                            fallback_from_stale += 1;
-                            out.insert(mint, stale_row);
+                            if let Some(stale_row) = stale_fallback.take() {
+                                fallback_from_stale += 1;
+                                out.insert(mint, stale_row);
+                            }
                         }
                     }
                 }
@@ -540,8 +549,10 @@ impl DiscoveryService {
                         mint = %mint,
                         "failed to refresh token quality via helius, using fallback"
                     );
-                    fallback_from_stale += 1;
-                    out.insert(mint, stale_row);
+                    if let Some(stale_row) = stale_fallback.take() {
+                        fallback_from_stale += 1;
+                        out.insert(mint, stale_row);
+                    }
                 }
             }
         }
@@ -919,6 +930,22 @@ fn cmp_score_then_trades(a: &WalletSnapshot, b: &WalletSnapshot) -> Ordering {
         .unwrap_or(Ordering::Equal)
         .then_with(|| b.trades.cmp(&a.trades))
         .then_with(|| a.wallet_id.cmp(&b.wallet_id))
+}
+
+fn fetch_token_quality_from_helius_guarded(
+    helius_http_url: &str,
+    mint: &str,
+    timeout_ms: u64,
+    max_signature_pages: u32,
+    min_age_hint_seconds: Option<u64>,
+) -> Result<TokenQualityRpcRow> {
+    SqliteStore::fetch_token_quality_from_helius(
+        helius_http_url,
+        mint,
+        timeout_ms,
+        max_signature_pages,
+        min_age_hint_seconds,
+    )
 }
 
 #[cfg(test)]

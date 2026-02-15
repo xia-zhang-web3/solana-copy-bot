@@ -135,6 +135,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "copybot-config",
+ "copybot-core-types",
  "copybot-discovery",
  "copybot-ingestion",
  "copybot-shadow",
@@ -216,6 +217,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ShadowConfig;
 use copybot_core_types::SwapEvent;
-use copybot_storage::{CopySignalRow, SqliteStore, TokenQualityCacheRow};
+use copybot_storage::{CopySignalRow, SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow};
 use std::collections::HashSet;
 use tracing::{info, warn};
 
@@ -519,7 +519,7 @@ impl ShadowService {
             return Ok(cached);
         };
 
-        match SqliteStore::fetch_token_quality_from_helius(
+        match Self::fetch_token_quality_from_helius_guarded(
             helius_http_url,
             token,
             QUALITY_RPC_TIMEOUT_MS,
@@ -545,6 +545,22 @@ impl ShadowService {
                 Ok(cached)
             }
         }
+    }
+
+    fn fetch_token_quality_from_helius_guarded(
+        helius_http_url: &str,
+        token: &str,
+        timeout_ms: u64,
+        max_signature_pages: u32,
+        min_age_hint_seconds: Option<u64>,
+    ) -> Result<TokenQualityRpcRow> {
+        SqliteStore::fetch_token_quality_from_helius(
+            helius_http_url,
+            token,
+            timeout_ms,
+            max_signature_pages,
+            min_age_hint_seconds,
+        )
     }
 
     fn to_shadow_candidate(swap: &SwapEvent) -> Option<ShadowCandidate> {

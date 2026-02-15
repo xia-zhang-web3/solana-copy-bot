@@ -1,18 +1,21 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use copybot_config::load_from_env_or_default;
+use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_ingestion::IngestionService;
 use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome, ShadowService};
 use copybot_storage::SqliteStore;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
+use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
+const MAX_PENDING_SHADOW_SWAPS: usize = 10_000;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,7 +32,7 @@ async fn main() -> Result<()> {
 
     let mut store = SqliteStore::open(Path::new(&config.sqlite.path))
         .context("failed to initialize sqlite store")?;
-    let migrations_dir = PathBuf::from(&config.system.migrations_dir);
+    let migrations_dir = resolve_migrations_dir(&loaded_config_path, &config.system.migrations_dir);
     let applied = store
         .run_migrations(&migrations_dir)
         .with_context(|| format!("failed to apply migrations in {}", migrations_dir.display()))?;
@@ -56,6 +59,7 @@ async fn main() -> Result<()> {
         ingestion,
         discovery,
         shadow,
+        config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
         config.discovery.refresh_seconds,
         config.shadow.refresh_seconds,
@@ -74,6 +78,29 @@ fn parse_config_arg() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn resolve_migrations_dir(config_path: &Path, configured_migrations_dir: &str) -> PathBuf {
+    let configured = PathBuf::from(configured_migrations_dir);
+    if configured.is_absolute() || configured.exists() {
+        return configured;
+    }
+
+    if let Some(config_parent) = config_path.parent() {
+        let sibling_candidate = config_parent.join(&configured);
+        if sibling_candidate.exists() {
+            return sibling_candidate;
+        }
+
+        if let Some(project_root) = config_parent.parent() {
+            let root_candidate = project_root.join(&configured);
+            if root_candidate.exists() {
+                return root_candidate;
+            }
+        }
+    }
+
+    configured
 }
 
 fn init_tracing(log_level: &str, json: bool) {
@@ -99,6 +126,7 @@ async fn run_app_loop(
     mut ingestion: IngestionService,
     discovery: DiscoveryService,
     shadow: ShadowService,
+    sqlite_path: String,
     heartbeat_seconds: u64,
     discovery_refresh_seconds: u64,
     shadow_refresh_seconds: u64,
@@ -113,7 +141,11 @@ async fn run_app_loop(
     let mut active_follow_wallets = store
         .list_active_follow_wallets()
         .context("failed to load active follow wallets")?;
-    let mut shadow_drop_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut discovery_handle: Option<JoinHandle<Result<HashSet<String>>>> = None;
+    let mut shadow_handle: Option<JoinHandle<ShadowTaskOutput>> = None;
+    let mut pending_shadow_swaps: VecDeque<ShadowTaskInput> = VecDeque::new();
 
     if !active_follow_wallets.is_empty() {
         info!(
@@ -123,7 +155,76 @@ async fn run_app_loop(
     }
 
     loop {
+        spawn_next_shadow_task_if_idle(
+            &mut shadow_handle,
+            &mut pending_shadow_swaps,
+            &sqlite_path,
+            &shadow,
+        );
+
         tokio::select! {
+            discovery_result = async {
+                if let Some(handle) = &mut discovery_handle {
+                    Some(handle.await)
+                } else {
+                    None
+                }
+            }, if discovery_handle.is_some() => {
+                discovery_handle = None;
+                match discovery_result.expect("guard ensures discovery task exists") {
+                    Ok(Ok(wallets)) => {
+                        active_follow_wallets = wallets;
+                    }
+                    Ok(Err(error)) => {
+                        warn!(error = %error, "discovery cycle failed");
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "discovery task join failed");
+                    }
+                }
+            }
+            shadow_result = async {
+                if let Some(handle) = &mut shadow_handle {
+                    Some(handle.await)
+                } else {
+                    None
+                }
+            }, if shadow_handle.is_some() => {
+                shadow_handle = None;
+                match shadow_result.expect("guard ensures shadow task exists") {
+                    Ok(task_output) => match task_output.outcome {
+                        Ok(ShadowProcessOutcome::Recorded(result)) => {
+                            info!(
+                                signal_id = %result.signal_id,
+                                wallet = %result.wallet_id,
+                                side = %result.side,
+                                token = %result.token,
+                                notional_sol = result.notional_sol,
+                                latency_ms = result.latency_ms,
+                                closed_qty = result.closed_qty,
+                                realized_pnl_sol = result.realized_pnl_sol,
+                                "shadow signal recorded"
+                            );
+                        }
+                        Ok(ShadowProcessOutcome::Dropped(reason)) => {
+                            let reason_key = reason_to_key(reason);
+                            let stage_key = reason_to_stage(reason);
+                            *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
+                            *shadow_drop_stage_counts.entry(stage_key).or_insert(0) += 1;
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                signature = %task_output.signature,
+                                "shadow processing failed"
+                            );
+                        }
+                    },
+                    Err(error) => {
+                        warn!(error = %error, "shadow task join failed");
+                    }
+                }
+            }
             _ = interval.tick() => {
                 if let Err(error) = store.record_heartbeat("copybot-app", "alive") {
                     warn!(error = %error, "heartbeat write failed");
@@ -154,28 +255,48 @@ async fn run_app_loop(
                             amount_out = swap.amount_out,
                             "observed swap stored"
                         );
-                        match shadow.process_swap(&store, &swap, &active_follow_wallets, Utc::now()) {
-                            Ok(ShadowProcessOutcome::Recorded(result)) => {
-                                info!(
-                                    signal_id = %result.signal_id,
-                                    wallet = %result.wallet_id,
-                                    side = %result.side,
-                                    token = %result.token,
-                                    notional_sol = result.notional_sol,
-                                    latency_ms = result.latency_ms,
-                                    closed_qty = result.closed_qty,
-                                    realized_pnl_sol = result.realized_pnl_sol,
-                                    "shadow signal recorded"
+
+                        if pending_shadow_swaps.len() >= MAX_PENDING_SHADOW_SWAPS {
+                            let reason = "queue_saturated";
+                            *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+                            *shadow_drop_stage_counts.entry("queue").or_insert(0) += 1;
+                            warn!(
+                                stage = "queue",
+                                reason,
+                                wallet = %swap.wallet,
+                                token_in = %swap.token_in,
+                                token_out = %swap.token_out,
+                                pending = pending_shadow_swaps.len(),
+                                max_pending = MAX_PENDING_SHADOW_SWAPS,
+                                signature = %swap.signature,
+                                "shadow gate dropped"
+                            );
+                            let details_json = format!(
+                                "{{\"reason\":\"{reason}\",\"signature\":\"{}\",\"wallet\":\"{}\",\"pending\":{},\"max_pending\":{}}}",
+                                swap.signature,
+                                swap.wallet,
+                                pending_shadow_swaps.len(),
+                                MAX_PENDING_SHADOW_SWAPS,
+                            );
+                            if let Err(error) = store.insert_risk_event(
+                                "shadow_queue_saturated",
+                                "warn",
+                                Utc::now(),
+                                Some(&details_json),
+                            ) {
+                                warn!(
+                                    error = %error,
+                                    signature = %swap.signature,
+                                    "failed to persist shadow queue saturation risk event"
                                 );
                             }
-                            Ok(ShadowProcessOutcome::Dropped(reason)) => {
-                                let key = reason_to_key(reason);
-                                *shadow_drop_counts.entry(key).or_insert(0) += 1;
-                            }
-                            Err(error) => {
-                                warn!(error = %error, signature = %swap.signature, "shadow processing failed");
-                            }
+                            continue;
                         }
+
+                        pending_shadow_swaps.push_back(ShadowTaskInput {
+                            swap,
+                            active_follow_wallets: active_follow_wallets.clone(),
+                        });
                     }
                     Ok(false) => {
                         debug!(signature = %swap.signature, "duplicate swap ignored");
@@ -186,20 +307,15 @@ async fn run_app_loop(
                 }
             }
             _ = discovery_interval.tick() => {
-                let now = Utc::now();
-                match discovery.run_cycle(&store, now) {
-                    Ok(_) => match store.list_active_follow_wallets() {
-                        Ok(wallets) => {
-                            active_follow_wallets = wallets;
-                        }
-                        Err(error) => {
-                            warn!(error = %error, "failed to refresh active follow wallets");
-                        }
-                    },
-                    Err(error) => {
-                        warn!(error = %error, "discovery cycle failed");
-                    }
+                if discovery_handle.is_some() {
+                    warn!("discovery cycle still running, skipping scheduled trigger");
+                    continue;
                 }
+                discovery_handle = Some(tokio::task::spawn_blocking(spawn_discovery_task(
+                    sqlite_path.clone(),
+                    discovery.clone(),
+                    Utc::now(),
+                )));
             }
             _ = shadow_interval.tick() => {
                 match shadow.snapshot_24h(&store, Utc::now()) {
@@ -211,12 +327,14 @@ async fn run_app_loop(
                             active_follow_wallets = active_follow_wallets.len(),
                             "shadow snapshot"
                         );
-                        if !shadow_drop_counts.is_empty() {
+                        if !shadow_drop_reason_counts.is_empty() {
                             info!(
-                                drop_counts = ?shadow_drop_counts,
+                                drop_counts = ?shadow_drop_reason_counts,
+                                drop_stage_counts = ?shadow_drop_stage_counts,
                                 "shadow drop reasons"
                             );
-                            shadow_drop_counts.clear();
+                            shadow_drop_reason_counts.clear();
+                            shadow_drop_stage_counts.clear();
                         }
                     }
                     Err(error) => {
@@ -239,4 +357,86 @@ async fn run_app_loop(
 
 fn reason_to_key(reason: ShadowDropReason) -> &'static str {
     reason.as_str()
+}
+
+fn reason_to_stage(reason: ShadowDropReason) -> &'static str {
+    match reason {
+        ShadowDropReason::Disabled => "disabled",
+        ShadowDropReason::NotFollowed => "follow",
+        ShadowDropReason::NotSolLeg => "pair",
+        ShadowDropReason::BelowNotional => "notional",
+        ShadowDropReason::LagExceeded => "lag",
+        ShadowDropReason::TooNew
+        | ShadowDropReason::LowHolders
+        | ShadowDropReason::LowLiquidity
+        | ShadowDropReason::LowVolume
+        | ShadowDropReason::ThinMarket => "quality",
+        ShadowDropReason::InvalidSizing => "sizing",
+        ShadowDropReason::DuplicateSignal => "dedupe",
+        ShadowDropReason::UnsupportedSide => "side",
+    }
+}
+
+fn spawn_discovery_task(
+    sqlite_path: String,
+    discovery: DiscoveryService,
+    now: chrono::DateTime<Utc>,
+) -> impl FnOnce() -> Result<HashSet<String>> {
+    move || {
+        let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
+            format!("failed to open sqlite db for discovery task: {sqlite_path}")
+        })?;
+        discovery.run_cycle(&store, now)?;
+        store.list_active_follow_wallets()
+    }
+}
+
+struct ShadowTaskOutput {
+    signature: String,
+    outcome: Result<ShadowProcessOutcome>,
+}
+
+struct ShadowTaskInput {
+    swap: SwapEvent,
+    active_follow_wallets: HashSet<String>,
+}
+
+fn spawn_next_shadow_task_if_idle(
+    shadow_handle: &mut Option<JoinHandle<ShadowTaskOutput>>,
+    pending_shadow_swaps: &mut VecDeque<ShadowTaskInput>,
+    sqlite_path: &str,
+    shadow: &ShadowService,
+) {
+    if shadow_handle.is_some() {
+        return;
+    }
+    let Some(next) = pending_shadow_swaps.pop_front() else {
+        return;
+    };
+    *shadow_handle = Some(tokio::task::spawn_blocking(shadow_task(
+        sqlite_path.to_string(),
+        shadow.clone(),
+        next,
+    )));
+}
+
+fn shadow_task(
+    sqlite_path: String,
+    shadow: ShadowService,
+    task_input: ShadowTaskInput,
+) -> impl FnOnce() -> ShadowTaskOutput {
+    move || {
+        let ShadowTaskInput {
+            swap,
+            active_follow_wallets,
+        } = task_input;
+        let signature = swap.signature.clone();
+        let outcome = (|| -> Result<ShadowProcessOutcome> {
+            let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
+                format!("failed to open sqlite db for shadow task: {sqlite_path}")
+            })?;
+            shadow.process_swap(&store, &swap, &active_follow_wallets, Utc::now())
+        })();
+        ShadowTaskOutput { signature, outcome }
+    }
 }
