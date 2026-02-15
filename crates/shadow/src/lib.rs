@@ -127,11 +127,17 @@ impl ShadowService {
         };
         let latency_ms = (now - swap.ts_utc).num_milliseconds();
         let runtime_followed = active_follow_wallets.contains(&swap.wallet);
-        let temporal_followed = if runtime_followed {
-            false
-        } else {
-            store.was_wallet_followed_at(&swap.wallet, swap.ts_utc)?
-        };
+        let temporal_followed = store.was_wallet_followed_at(&swap.wallet, swap.ts_utc)?;
+        if runtime_followed && !temporal_followed {
+            info!(
+                wallet = %swap.wallet,
+                token = %candidate.token,
+                side = %candidate.side,
+                leader_notional_sol = candidate.leader_notional_sol,
+                latency_ms,
+                "shadow runtime_follow_stale_temporal_miss"
+            );
+        }
         if temporal_followed {
             info!(
                 wallet = %swap.wallet,
@@ -142,7 +148,7 @@ impl ShadowService {
                 "shadow runtime_not_followed_temporal_hit"
             );
         }
-        let is_followed = runtime_followed || temporal_followed;
+        let is_followed = temporal_followed;
         let is_unfollowed_sell_exit = !is_followed
             && candidate.side == "sell"
             && store.has_shadow_lots(&swap.wallet, &candidate.token)?;
@@ -292,7 +298,7 @@ impl ShadowService {
                     &candidate.token,
                     qty,
                     candidate.price_sol_per_token,
-                    now,
+                    swap.ts_utc,
                 )?;
             }
             _ => {
@@ -621,6 +627,11 @@ mod tests {
         let sell_ts = DateTime::parse_from_rfc3339("2026-02-12T12:05:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            buy_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
 
         let buy = SwapEvent {
             wallet: "leader-wallet".to_string(),
@@ -684,6 +695,11 @@ mod tests {
         let sell_ts = DateTime::parse_from_rfc3339("2026-02-12T12:05:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            buy_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
 
         let buy = SwapEvent {
             wallet: "leader-wallet".to_string(),
@@ -703,6 +719,11 @@ mod tests {
 
         // Simulate a discovery demotion: wallet is no longer in active followlist.
         follow.clear();
+        store.deactivate_follow_wallet(
+            "leader-wallet",
+            sell_ts - Duration::seconds(30),
+            "test-demote",
+        )?;
 
         let sell = SwapEvent {
             wallet: "leader-wallet".to_string(),
@@ -768,6 +789,56 @@ mod tests {
     }
 
     #[test]
+    fn drops_buy_when_runtime_follow_set_is_stale_after_demotion() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-runtime-stale-demotion.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut follow = HashSet::new();
+        follow.insert("leader-wallet".to_string());
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        let service = ShadowService::new(cfg);
+
+        let demoted_at = DateTime::parse_from_rfc3339("2026-02-12T11:59:30Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.activate_follow_wallet(
+            "leader-wallet",
+            demoted_at - Duration::minutes(10),
+            "test-seed-follow",
+        )?;
+        store.deactivate_follow_wallet("leader-wallet", demoted_at, "test-demote")?;
+
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMint".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-runtime-stale".to_string(),
+            slot: 55,
+            ts_utc: buy_ts,
+        };
+
+        let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
+        outcome.expect_dropped(
+            ShadowDropReason::NotFollowed,
+            "buy should be dropped when runtime follow set is stale after demotion",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn drops_buy_when_token_is_too_new() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("shadow-quality-too-new.db");
@@ -787,6 +858,11 @@ mod tests {
         let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            buy_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
         let buy = SwapEvent {
             wallet: "leader-wallet".to_string(),
             dex: "pumpswap".to_string(),

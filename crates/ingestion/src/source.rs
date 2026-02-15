@@ -57,14 +57,17 @@ impl IngestionSource {
 pub struct MockSource {
     interval: Interval,
     sequence: u64,
+    session_tag: String,
     raydium_program_id: String,
 }
 
 impl MockSource {
     pub fn new(interval_ms: u64, raydium_program_id: String) -> Self {
+        let session_tag = format!("{}-{}", Utc::now().timestamp_millis(), std::process::id());
         Self {
             interval: time::interval(Duration::from_millis(interval_ms.max(100))),
             sequence: 0,
+            session_tag,
             raydium_program_id,
         }
     }
@@ -75,7 +78,7 @@ impl MockSource {
         let n = self.sequence;
 
         Ok(Some(RawSwapObservation {
-            signature: format!("mock-sig-{n}"),
+            signature: format!("mock-{}-sig-{n}", self.session_tag),
             slot: 1_000_000 + n,
             signer: "MockLeaderWallet1111111111111111111111111111".to_string(),
             token_in: "So11111111111111111111111111111111111111112".to_string(),
@@ -412,18 +415,17 @@ impl HeliusWsSource {
             .ok_or_else(|| anyhow!("missing signer in parsed account keys"))?;
 
         let mut program_ids = Self::extract_program_ids(result, meta, logs_hint);
-        if !program_ids
+        if program_ids.is_empty() {
+            program_ids.extend(self.interested_program_ids.iter().cloned());
+        } else if !program_ids
             .iter()
             .any(|program| self.interested_program_ids.contains(program))
         {
             return Ok(None);
         }
-        if program_ids.is_empty() {
-            program_ids.extend(self.interested_program_ids.iter().cloned());
-        }
 
         let (token_in, amount_in, token_out, amount_out) =
-            match Self::infer_swap_from_json_balances(meta, &account_keys, signer_index, &signer) {
+            match Self::infer_swap_from_json_balances(meta, signer_index, &signer) {
                 Some(value) => value,
                 None => return Ok(None),
             };
@@ -527,10 +529,11 @@ impl HeliusWsSource {
 
     fn infer_swap_from_json_balances(
         meta: &Value,
-        account_keys: &[(String, bool)],
         signer_index: usize,
         signer: &str,
     ) -> Option<(String, f64, String, f64)> {
+        const TOKEN_EPS: f64 = 1e-12;
+        const SOL_EPS: f64 = 1e-8;
         let mut mint_deltas: HashMap<String, f64> = HashMap::new();
 
         let pre = meta
@@ -559,27 +562,73 @@ impl HeliusWsSource {
             }
         }
 
-        let mut token_in: Option<(String, f64)> = None;
-        let mut token_out: Option<(String, f64)> = None;
-        for (mint, delta) in mint_deltas {
-            if delta < -1e-12 {
-                let value = delta.abs();
-                if token_in.as_ref().map(|(_, v)| value > *v).unwrap_or(true) {
-                    token_in = Some((mint, value));
-                }
-            } else if delta > 1e-12 {
-                if token_out.as_ref().map(|(_, v)| delta > *v).unwrap_or(true) {
-                    token_out = Some((mint, delta));
+        let mut token_in_candidates = Vec::new();
+        let mut token_out_candidates = Vec::new();
+        for (mint, delta) in mint_deltas.iter() {
+            if *delta < -TOKEN_EPS {
+                token_in_candidates.push((mint.clone(), delta.abs()));
+            } else if *delta > TOKEN_EPS {
+                token_out_candidates.push((mint.clone(), *delta));
+            }
+        }
+        token_in_candidates
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        token_out_candidates
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let sol_token_delta = mint_deltas.get(SOL_MINT).copied().unwrap_or(0.0);
+        if sol_token_delta < -TOKEN_EPS {
+            if let Some((out_mint, out_amt)) = Self::dominant_non_sol_leg(&token_out_candidates) {
+                return Some((
+                    SOL_MINT.to_string(),
+                    sol_token_delta.abs(),
+                    out_mint,
+                    out_amt,
+                ));
+            }
+        }
+        if sol_token_delta > TOKEN_EPS {
+            if let Some((in_mint, in_amt)) = Self::dominant_non_sol_leg(&token_in_candidates) {
+                return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_token_delta));
+            }
+        }
+
+        let sol_delta = Self::signer_sol_delta(meta, signer_index).unwrap_or(0.0);
+        if sol_delta < -SOL_EPS {
+            if let Some((out_mint, out_amt)) = Self::dominant_non_sol_leg(&token_out_candidates) {
+                return Some((SOL_MINT.to_string(), sol_delta.abs(), out_mint, out_amt));
+            }
+        }
+        if sol_delta > SOL_EPS {
+            if let Some((in_mint, in_amt)) = Self::dominant_non_sol_leg(&token_in_candidates) {
+                return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_delta));
+            }
+        }
+
+        if sol_delta.abs() <= SOL_EPS && sol_token_delta.abs() <= TOKEN_EPS {
+            let token_in_non_sol: Vec<_> = token_in_candidates
+                .iter()
+                .filter(|(mint, _)| mint != SOL_MINT)
+                .cloned()
+                .collect();
+            let token_out_non_sol: Vec<_> = token_out_candidates
+                .iter()
+                .filter(|(mint, _)| mint != SOL_MINT)
+                .cloned()
+                .collect();
+            if token_in_non_sol.len() == 1 && token_out_non_sol.len() == 1 {
+                let (in_mint, in_amt) = token_in_non_sol[0].clone();
+                let (out_mint, out_amt) = token_out_non_sol[0].clone();
+                if in_mint != out_mint {
+                    return Some((in_mint, in_amt, out_mint, out_amt));
                 }
             }
         }
 
-        if let (Some((in_mint, in_amt)), Some((out_mint, out_amt))) = (&token_in, &token_out) {
-            if in_mint != out_mint {
-                return Some((in_mint.clone(), *in_amt, out_mint.clone(), *out_amt));
-            }
-        }
+        None
+    }
 
+    fn signer_sol_delta(meta: &Value, signer_index: usize) -> Option<f64> {
         let pre_sol = meta
             .get("preBalances")
             .and_then(Value::as_array)
@@ -592,23 +641,25 @@ impl HeliusWsSource {
             .and_then(|balances| balances.get(signer_index))
             .and_then(Value::as_u64)
             .map(|lamports| lamports as f64 / 1_000_000_000.0)?;
-        let sol_delta = post_sol - pre_sol;
+        Some(post_sol - pre_sol)
+    }
 
-        if let Some((out_mint, out_amt)) = token_out {
-            if sol_delta < -1e-8 {
-                return Some((SOL_MINT.to_string(), sol_delta.abs(), out_mint, out_amt));
+    fn dominant_non_sol_leg(entries: &[(String, f64)]) -> Option<(String, f64)> {
+        const EPS: f64 = 1e-12;
+        const SECOND_LEG_AMBIGUITY_RATIO: f64 = 0.15;
+        let non_sol: Vec<(String, f64)> = entries
+            .iter()
+            .filter(|(mint, value)| mint != SOL_MINT && *value > EPS)
+            .cloned()
+            .collect();
+        let (primary_mint, primary_value) = non_sol.first()?.clone();
+        if non_sol.len() >= 2 {
+            let second_value = non_sol[1].1;
+            if second_value > primary_value * SECOND_LEG_AMBIGUITY_RATIO {
+                return None;
             }
         }
-        if let Some((in_mint, in_amt)) = token_in {
-            if sol_delta > 1e-8 {
-                return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_delta));
-            }
-        }
-
-        if account_keys.is_empty() {
-            return None;
-        }
-        None
+        Some((primary_mint, primary_value))
     }
 
     fn parse_ui_amount_json(ui_amount: Option<&Value>) -> Option<f64> {
@@ -682,5 +733,60 @@ impl HeliusWsSource {
             .clamp(self.reconnect_initial_ms, self.reconnect_max_ms);
         time::sleep(Duration::from_millis(delay)).await;
         self.next_backoff_ms = (delay.saturating_mul(2)).min(self.reconnect_max_ms);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn token_balance(owner: &str, mint: &str, amount: &str) -> Value {
+        json!({
+            "owner": owner,
+            "mint": mint,
+            "uiTokenAmount": {
+                "uiAmountString": amount,
+                "decimals": 6
+            }
+        })
+    }
+
+    #[test]
+    fn infer_swap_prefers_sol_leg_with_lamport_delta() {
+        let signer = "Leader111111111111111111111111111111111";
+        let meta = json!({
+            "preTokenBalances": [token_balance(signer, "TokenMintA", "0")],
+            "postTokenBalances": [token_balance(signer, "TokenMintA", "100")],
+            "preBalances": [2_000_000_000u64],
+            "postBalances": [1_000_000_000u64]
+        });
+
+        let inferred = HeliusWsSource::infer_swap_from_json_balances(&meta, 0, signer)
+            .expect("expected SOL buy inference");
+        assert_eq!(inferred.0, SOL_MINT);
+        assert!((inferred.1 - 1.0).abs() < 1e-9);
+        assert_eq!(inferred.2, "TokenMintA");
+        assert!((inferred.3 - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn infer_swap_drops_ambiguous_multi_output_tx() {
+        let signer = "Leader111111111111111111111111111111111";
+        let meta = json!({
+            "preTokenBalances": [
+                token_balance(signer, "TokenMintA", "0"),
+                token_balance(signer, "TokenMintB", "0")
+            ],
+            "postTokenBalances": [
+                token_balance(signer, "TokenMintA", "100"),
+                token_balance(signer, "TokenMintB", "40")
+            ],
+            "preBalances": [2_000_000_000u64],
+            "postBalances": [1_000_000_000u64]
+        });
+
+        let inferred = HeliusWsSource::infer_swap_from_json_balances(&meta, 0, signer);
+        assert!(inferred.is_none(), "ambiguous multi-hop should be rejected");
     }
 }

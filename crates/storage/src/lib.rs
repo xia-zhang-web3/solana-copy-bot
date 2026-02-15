@@ -613,17 +613,18 @@ impl SqliteStore {
         as_of: DateTime<Utc>,
     ) -> Result<TokenMarketStats> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let as_of_raw = as_of.to_rfc3339();
 
         let first_seen_raw: Option<String> = self
             .conn
             .query_row(
                 "SELECT MIN(ts)
                  FROM (
-                    SELECT ts FROM observed_swaps WHERE token_in = ?1
+                    SELECT ts FROM observed_swaps WHERE token_in = ?1 AND ts <= ?2
                     UNION ALL
-                    SELECT ts FROM observed_swaps WHERE token_out = ?1
+                    SELECT ts FROM observed_swaps WHERE token_out = ?1 AND ts <= ?2
                  )",
-                params![token],
+                params![token, &as_of_raw],
                 |row| row.get(0),
             )
             .context("failed querying token first_seen")?;
@@ -645,12 +646,14 @@ impl SqliteStore {
                     SELECT DISTINCT wallet_id
                     FROM observed_swaps
                     WHERE token_in = ?1
+                      AND ts <= ?2
                     UNION
                     SELECT DISTINCT wallet_id
                     FROM observed_swaps
                     WHERE token_out = ?1
+                      AND ts <= ?2
                  )",
-                params![token],
+                params![token, &as_of_raw],
                 |row| row.get(0),
             )
             .context("failed querying token holders proxy")?;
