@@ -8,7 +8,7 @@ use copybot_shadow::{
     FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
 };
 use copybot_storage::SqliteStore;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,7 +18,6 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
-const SHADOW_WRITE_QUEUE_CAPACITY: usize = 256;
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
 const OBSERVED_SWAP_WRITE_MAX_RETRIES: usize = 3;
 const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [50, 125, 250];
@@ -151,16 +150,16 @@ async fn run_app_loop(
         .context("failed to load active follow wallets")?;
     let mut follow_snapshot = Arc::new(FollowSnapshot::from_active_wallets(initial_active_wallets));
     let follow_event_retention = Duration::from_secs(shadow_max_signal_lag_seconds.max(1));
-    let mut open_shadow_lots = store
-        .list_shadow_open_pairs()
-        .context("failed to load open shadow lot index")?;
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_workers: JoinSet<ShadowTaskOutput> = JoinSet::new();
     let mut shadow_snapshot_handle: Option<JoinHandle<Result<ShadowSnapshot>>> = None;
-    let (shadow_task_tx, mut shadow_task_rx) =
-        tokio::sync::mpsc::channel::<ShadowTaskInput>(SHADOW_WRITE_QUEUE_CAPACITY);
+    let mut pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> =
+        HashMap::new();
+    let mut ready_shadow_keys: VecDeque<ShadowTaskKey> = VecDeque::new();
+    let mut ready_shadow_key_set: HashSet<ShadowTaskKey> = HashSet::new();
+    let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
 
     if !follow_snapshot.active.is_empty() {
         info!(
@@ -172,7 +171,10 @@ async fn run_app_loop(
     loop {
         spawn_shadow_tasks_up_to_limit(
             &mut shadow_workers,
-            &mut shadow_task_rx,
+            &mut pending_shadow_tasks,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &mut inflight_shadow_keys,
             &sqlite_path,
             &shadow,
             SHADOW_WORKER_POOL_SIZE,
@@ -209,6 +211,13 @@ async fn run_app_loop(
             shadow_result = shadow_workers.join_next(), if !shadow_workers.is_empty() => {
                 match shadow_result {
                     Some(Ok(task_output)) => {
+                        mark_shadow_task_complete(
+                            &task_output.key,
+                            &pending_shadow_tasks,
+                            &mut ready_shadow_keys,
+                            &mut ready_shadow_key_set,
+                            &mut inflight_shadow_keys,
+                        );
                         match task_output.outcome {
                             Ok(ShadowProcessOutcome::Recorded(result)) => {
                                 info!(
@@ -222,16 +231,6 @@ async fn run_app_loop(
                                     realized_pnl_sol = result.realized_pnl_sol,
                                     "shadow signal recorded"
                                 );
-                                let key = (result.wallet_id.clone(), result.token.clone());
-                                if result.side == "buy" {
-                                    open_shadow_lots.insert(key);
-                                } else if result.side == "sell" {
-                                    if result.has_open_lots_after_signal.unwrap_or(false) {
-                                        open_shadow_lots.insert(key);
-                                    } else {
-                                        open_shadow_lots.remove(&key);
-                                    }
-                                }
                             }
                             Ok(ShadowProcessOutcome::Dropped(reason)) => {
                                 let reason_key = reason_to_key(reason);
@@ -264,14 +263,6 @@ async fn run_app_loop(
                 shadow_snapshot_handle = None;
                 match snapshot_result.expect("guard ensures shadow snapshot task exists") {
                     Ok(Ok(snapshot)) => {
-                        match store.list_shadow_open_pairs() {
-                            Ok(pairs) => {
-                                open_shadow_lots = pairs;
-                            }
-                            Err(error) => {
-                                warn!(error = %error, "failed to refresh open shadow lot index");
-                            }
-                        }
                         info!(
                             closed_trades_24h = snapshot.closed_trades_24h,
                             realized_pnl_sol_24h = snapshot.realized_pnl_sol_24h,
@@ -328,8 +319,10 @@ async fn run_app_loop(
                             "observed swap stored"
                         );
 
-                        let shadow_side = classify_swap_side(&swap);
-                        if matches!(shadow_side, Some(ShadowSwapSide::Buy))
+                        let Some(side) = classify_swap_side(&swap) else {
+                            continue;
+                        };
+                        if matches!(side, ShadowSwapSide::Buy)
                             && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
                         {
                             let reason = "not_followed";
@@ -349,75 +342,19 @@ async fn run_app_loop(
                             );
                             continue;
                         }
-                        if matches!(shadow_side, Some(ShadowSwapSide::Sell))
-                            && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
-                        {
-                            let lot_key = (swap.wallet.clone(), swap.token_in.clone());
-                            if !open_shadow_lots.contains(&lot_key) {
-                                let reason = "not_followed_no_open_lot";
-                                *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
-                                *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
-                                warn!(
-                                    stage = "follow",
-                                    reason,
-                                    side = "sell",
-                                    wallet = %swap.wallet,
-                                    token = %swap.token_in,
-                                    signature = %swap.signature,
-                                    "shadow gate dropped"
-                                );
-                                continue;
-                            }
-                        }
-
+                        let task_key = shadow_task_key_for_swap(&swap, side);
                         let task_input = ShadowTaskInput {
                             swap,
                             follow_snapshot: Arc::clone(&follow_snapshot),
+                            key: task_key,
                         };
-                        match shadow_task_tx.try_send(task_input) {
-                            Ok(()) => {}
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(returned)) => {
-                                let swap = returned.swap;
-                                let reason = "queue_saturated";
-                                *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
-                                *shadow_drop_stage_counts.entry("queue").or_insert(0) += 1;
-                                warn!(
-                                    stage = "queue",
-                                    reason,
-                                    wallet = %swap.wallet,
-                                    token_in = %swap.token_in,
-                                    token_out = %swap.token_out,
-                                    queue_capacity = SHADOW_WRITE_QUEUE_CAPACITY,
-                                    signature = %swap.signature,
-                                    "shadow gate dropped"
-                                );
-                                let details_json = format!(
-                                    "{{\"reason\":\"{reason}\",\"signature\":\"{}\",\"wallet\":\"{}\",\"queue_capacity\":{}}}",
-                                    swap.signature,
-                                    swap.wallet,
-                                    SHADOW_WRITE_QUEUE_CAPACITY,
-                                );
-                                if let Err(error) = store.insert_risk_event(
-                                    "shadow_queue_saturated",
-                                    "warn",
-                                    Utc::now(),
-                                    Some(&details_json),
-                                ) {
-                                    warn!(
-                                        error = %error,
-                                        signature = %swap.signature,
-                                        "failed to persist shadow queue saturation risk event"
-                                    );
-                                }
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(returned)) => {
-                                warn!(
-                                    signature = %returned.swap.signature,
-                                    wallet = %returned.swap.wallet,
-                                    "shadow queue closed, dropping signal candidate"
-                                );
-                            }
-                        }
+                        enqueue_shadow_task(
+                            &mut pending_shadow_tasks,
+                            &mut ready_shadow_keys,
+                            &mut ready_shadow_key_set,
+                            &inflight_shadow_keys,
+                            task_input,
+                        );
                     }
                     Ok(false) => {
                         debug!(signature = %swap.signature, "duplicate swap ignored");
@@ -568,6 +505,7 @@ fn spawn_shadow_snapshot_task(
 
 struct ShadowTaskOutput {
     signature: String,
+    key: ShadowTaskKey,
     outcome: Result<ShadowProcessOutcome>,
 }
 
@@ -579,6 +517,13 @@ struct DiscoveryTaskOutput {
 struct ShadowTaskInput {
     swap: SwapEvent,
     follow_snapshot: Arc<FollowSnapshot>,
+    key: ShadowTaskKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ShadowTaskKey {
+    wallet: String,
+    token: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -596,6 +541,19 @@ fn classify_swap_side(swap: &SwapEvent) -> Option<ShadowSwapSide> {
         return Some(ShadowSwapSide::Sell);
     }
     None
+}
+
+fn shadow_task_key_for_swap(swap: &SwapEvent, side: ShadowSwapSide) -> ShadowTaskKey {
+    match side {
+        ShadowSwapSide::Buy => ShadowTaskKey {
+            wallet: swap.wallet.clone(),
+            token: swap.token_out.clone(),
+        },
+        ShadowSwapSide::Sell => ShadowTaskKey {
+            wallet: swap.wallet.clone(),
+            token: swap.token_in.clone(),
+        },
+    }
 }
 
 fn apply_follow_snapshot_update(
@@ -629,23 +587,93 @@ fn apply_follow_snapshot_update(
 
 fn spawn_shadow_tasks_up_to_limit(
     shadow_workers: &mut JoinSet<ShadowTaskOutput>,
-    shadow_task_rx: &mut tokio::sync::mpsc::Receiver<ShadowTaskInput>,
+    pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
+    inflight_shadow_keys: &mut HashSet<ShadowTaskKey>,
     sqlite_path: &str,
     shadow: &ShadowService,
     max_workers: usize,
 ) {
     while shadow_workers.len() < max_workers {
-        let next = match shadow_task_rx.try_recv() {
-            Ok(task_input) => task_input,
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return,
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                warn!("shadow task channel disconnected");
-                return;
-            }
+        let Some(next) = dequeue_next_shadow_task(
+            pending_shadow_tasks,
+            ready_shadow_keys,
+            ready_shadow_key_set,
+            inflight_shadow_keys,
+        ) else {
+            return;
         };
         let shadow = shadow.clone();
         let sqlite_path = sqlite_path.to_string();
         shadow_workers.spawn_blocking(move || shadow_task(shadow, &sqlite_path, next));
+    }
+}
+
+fn enqueue_shadow_task(
+    pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
+    inflight_shadow_keys: &HashSet<ShadowTaskKey>,
+    task_input: ShadowTaskInput,
+) {
+    let key = task_input.key.clone();
+    pending_shadow_tasks
+        .entry(key.clone())
+        .or_default()
+        .push_back(task_input);
+    if !inflight_shadow_keys.contains(&key) && ready_shadow_key_set.insert(key.clone()) {
+        ready_shadow_keys.push_back(key);
+    }
+}
+
+fn dequeue_next_shadow_task(
+    pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
+    inflight_shadow_keys: &mut HashSet<ShadowTaskKey>,
+) -> Option<ShadowTaskInput> {
+    while let Some(key) = ready_shadow_keys.pop_front() {
+        ready_shadow_key_set.remove(&key);
+        if inflight_shadow_keys.contains(&key) {
+            continue;
+        }
+
+        let mut remove_key = false;
+        let next_task = if let Some(queue) = pending_shadow_tasks.get_mut(&key) {
+            let task = queue.pop_front();
+            remove_key = queue.is_empty();
+            task
+        } else {
+            None
+        };
+
+        if remove_key {
+            pending_shadow_tasks.remove(&key);
+        }
+
+        if let Some(task) = next_task {
+            inflight_shadow_keys.insert(key);
+            return Some(task);
+        }
+    }
+    None
+}
+
+fn mark_shadow_task_complete(
+    key: &ShadowTaskKey,
+    pending_shadow_tasks: &HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
+    inflight_shadow_keys: &mut HashSet<ShadowTaskKey>,
+) {
+    inflight_shadow_keys.remove(key);
+    if pending_shadow_tasks
+        .get(key)
+        .is_some_and(|pending| !pending.is_empty())
+        && ready_shadow_key_set.insert(key.clone())
+    {
+        ready_shadow_keys.push_back(key.clone());
     }
 }
 
@@ -657,6 +685,7 @@ fn shadow_task(
     let ShadowTaskInput {
         swap,
         follow_snapshot,
+        key,
     } = task_input;
     let signature = swap.signature.clone();
     let outcome = (|| -> Result<ShadowProcessOutcome> {
@@ -665,7 +694,11 @@ fn shadow_task(
         })?;
         shadow.process_swap(&store, &swap, follow_snapshot.as_ref(), Utc::now())
     })();
-    ShadowTaskOutput { signature, outcome }
+    ShadowTaskOutput {
+        signature,
+        key,
+        outcome,
+    }
 }
 
 #[cfg(test)]
@@ -673,28 +706,91 @@ mod app_tests {
     use super::*;
 
     #[test]
-    fn prefilter_sell_never_followed_without_open_lot_is_dropped() {
-        let mut follow_snapshot = FollowSnapshot::default();
-        follow_snapshot.active.insert("leader".to_string());
-        let follow_snapshot = Arc::new(follow_snapshot);
-        let open_shadow_lots: HashSet<(String, String)> = HashSet::new();
+    fn scheduler_keeps_single_inflight_per_wallet_token_key() {
+        fn make_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: "So11111111111111111111111111111111111111112".to_string(),
+                    token_out: token.to_string(),
+                    amount_in: 1.0,
+                    amount_out: 1000.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
 
-        let swap = SwapEvent {
-            wallet: "not-followed".to_string(),
-            dex: "pumpswap".to_string(),
-            token_in: "TokenMint".to_string(),
-            token_out: "So11111111111111111111111111111111111111112".to_string(),
-            amount_in: 1.0,
-            amount_out: 0.1,
-            signature: "sig".to_string(),
-            slot: 1,
-            ts_utc: Utc::now(),
-        };
+        let mut pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> =
+            HashMap::new();
+        let mut ready_shadow_keys: VecDeque<ShadowTaskKey> = VecDeque::new();
+        let mut ready_shadow_key_set: HashSet<ShadowTaskKey> = HashSet::new();
+        let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
 
-        let should_drop = matches!(classify_swap_side(&swap), Some(ShadowSwapSide::Sell))
-            && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
-            && !open_shadow_lots.contains(&(swap.wallet.clone(), swap.token_in.clone()));
-        assert!(should_drop);
+        enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            make_task("A1", "wallet-a", "token-x"),
+        );
+        enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            make_task("A2", "wallet-a", "token-x"),
+        );
+        enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            make_task("B1", "wallet-b", "token-y"),
+        );
+
+        let first = dequeue_next_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &mut inflight_shadow_keys,
+        )
+        .expect("first task");
+        let second = dequeue_next_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &mut inflight_shadow_keys,
+        )
+        .expect("second task");
+
+        assert_eq!(first.swap.signature, "A1");
+        assert_eq!(second.swap.signature, "B1");
+
+        mark_shadow_task_complete(
+            &first.key,
+            &pending_shadow_tasks,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &mut inflight_shadow_keys,
+        );
+
+        let third = dequeue_next_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &mut inflight_shadow_keys,
+        )
+        .expect("third task");
+
+        assert_eq!(third.swap.signature, "A2");
     }
 
     #[test]

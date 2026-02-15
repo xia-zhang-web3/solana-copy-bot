@@ -66,6 +66,13 @@ pub struct ShadowLotRow {
     pub opened_ts: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShadowCloseOutcome {
+    pub closed_qty: f64,
+    pub realized_pnl_sol: f64,
+    pub has_open_lots_after: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TokenMarketStats {
     pub first_seen: Option<DateTime<Utc>>,
@@ -812,6 +819,165 @@ impl SqliteStore {
         Ok(pairs)
     }
 
+    pub fn close_shadow_lots_fifo_atomic(
+        &self,
+        signal_id: &str,
+        wallet_id: &str,
+        token: &str,
+        target_qty: f64,
+        exit_price_sol: f64,
+        closed_ts: DateTime<Utc>,
+    ) -> Result<ShadowCloseOutcome> {
+        const EPS: f64 = 1e-12;
+
+        if target_qty <= EPS {
+            return Ok(ShadowCloseOutcome {
+                has_open_lots_after: self.has_shadow_lots(wallet_id, token)?,
+                ..ShadowCloseOutcome::default()
+            });
+        }
+
+        for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
+            match self.close_shadow_lots_fifo_atomic_once(
+                signal_id,
+                wallet_id,
+                token,
+                target_qty,
+                exit_price_sol,
+                closed_ts,
+            ) {
+                Ok(outcome) => return Ok(outcome),
+                Err(error) => {
+                    if attempt < SQLITE_WRITE_MAX_RETRIES && is_retryable_sqlite_error(&error) {
+                        std::thread::sleep(StdDuration::from_millis(
+                            SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                        ));
+                        continue;
+                    }
+                    return Err(error).context("failed to close shadow fifo lots atomically");
+                }
+            }
+        }
+
+        unreachable!("retry loop must return on success or terminal error");
+    }
+
+    fn close_shadow_lots_fifo_atomic_once(
+        &self,
+        signal_id: &str,
+        wallet_id: &str,
+        token: &str,
+        target_qty: f64,
+        exit_price_sol: f64,
+        closed_ts: DateTime<Utc>,
+    ) -> rusqlite::Result<ShadowCloseOutcome> {
+        const EPS: f64 = 1e-12;
+
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let close_result = (|| -> rusqlite::Result<ShadowCloseOutcome> {
+            let mut qty_remaining = target_qty;
+            let mut closed_qty = 0.0;
+            let mut realized_pnl_sol = 0.0;
+
+            let mut stmt = self.conn.prepare(
+                "SELECT id, qty, cost_sol, opened_ts
+                 FROM shadow_lots
+                 WHERE wallet_id = ?1 AND token = ?2
+                 ORDER BY id ASC",
+            )?;
+            let mut rows = stmt.query(params![wallet_id, token])?;
+            let mut lots: Vec<(i64, f64, f64, String)> = Vec::new();
+            while let Some(row) = rows.next()? {
+                lots.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
+            }
+            drop(rows);
+            drop(stmt);
+
+            for (lot_id, lot_qty, lot_cost_sol, lot_opened_ts) in lots {
+                if qty_remaining <= EPS {
+                    break;
+                }
+
+                if lot_qty <= EPS {
+                    self.conn
+                        .execute("DELETE FROM shadow_lots WHERE id = ?1", params![lot_id])?;
+                    continue;
+                }
+
+                let take_qty = qty_remaining.min(lot_qty);
+                let entry_cost_sol = lot_cost_sol * (take_qty / lot_qty);
+                let remaining_qty = (lot_qty - take_qty).max(0.0);
+                let remaining_cost = (lot_cost_sol - entry_cost_sol).max(0.0);
+
+                if remaining_qty <= EPS {
+                    self.conn
+                        .execute("DELETE FROM shadow_lots WHERE id = ?1", params![lot_id])?;
+                } else {
+                    self.conn.execute(
+                        "UPDATE shadow_lots SET qty = ?1, cost_sol = ?2 WHERE id = ?3",
+                        params![remaining_qty, remaining_cost, lot_id],
+                    )?;
+                }
+
+                let exit_value_sol = take_qty * exit_price_sol;
+                let pnl_sol = exit_value_sol - entry_cost_sol;
+                self.conn.execute(
+                    "INSERT INTO shadow_closed_trades(
+                        signal_id,
+                        wallet_id,
+                        token,
+                        qty,
+                        entry_cost_sol,
+                        exit_value_sol,
+                        pnl_sol,
+                        opened_ts,
+                        closed_ts
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        signal_id,
+                        wallet_id,
+                        token,
+                        take_qty,
+                        entry_cost_sol,
+                        exit_value_sol,
+                        pnl_sol,
+                        lot_opened_ts,
+                        closed_ts.to_rfc3339(),
+                    ],
+                )?;
+
+                qty_remaining -= take_qty;
+                closed_qty += take_qty;
+                realized_pnl_sol += pnl_sol;
+            }
+
+            let remaining_lots: i64 = self.conn.query_row(
+                "SELECT COUNT(*)
+                 FROM shadow_lots
+                 WHERE wallet_id = ?1 AND token = ?2 AND qty > 0",
+                params![wallet_id, token],
+                |row| row.get(0),
+            )?;
+
+            Ok(ShadowCloseOutcome {
+                closed_qty,
+                realized_pnl_sol,
+                has_open_lots_after: remaining_lots > 0,
+            })
+        })();
+
+        match close_result {
+            Ok(outcome) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(outcome)
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     pub fn token_market_stats(
         &self,
         token: &str,
@@ -1110,6 +1276,84 @@ impl SqliteStore {
         }
 
         Ok(files)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn close_shadow_lots_fifo_atomic_handles_parallel_sells_without_double_close() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-close-race.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let opened_ts = DateTime::parse_from_rfc3339("2026-02-15T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        seed_store.insert_shadow_lot("wallet", "token", 100.0, 1.0, opened_ts)?;
+        drop(seed_store);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let db_path_a = db_path.clone();
+        let barrier_a = barrier.clone();
+        let opened_ts_a = opened_ts;
+        let worker_a = std::thread::spawn(move || -> Result<ShadowCloseOutcome> {
+            let store = SqliteStore::open(Path::new(&db_path_a))?;
+            barrier_a.wait();
+            store.close_shadow_lots_fifo_atomic(
+                "signal-a",
+                "wallet",
+                "token",
+                80.0,
+                0.02,
+                opened_ts_a + Duration::minutes(1),
+            )
+        });
+
+        let db_path_b = db_path.clone();
+        let barrier_b = barrier.clone();
+        let opened_ts_b = opened_ts;
+        let worker_b = std::thread::spawn(move || -> Result<ShadowCloseOutcome> {
+            let store = SqliteStore::open(Path::new(&db_path_b))?;
+            barrier_b.wait();
+            store.close_shadow_lots_fifo_atomic(
+                "signal-b",
+                "wallet",
+                "token",
+                80.0,
+                0.02,
+                opened_ts_b + Duration::minutes(2),
+            )
+        });
+
+        barrier.wait();
+        let close_a = worker_a
+            .join()
+            .expect("worker A thread panicked")
+            .context("worker A close failed")?;
+        let close_b = worker_b
+            .join()
+            .expect("worker B thread panicked")
+            .context("worker B close failed")?;
+
+        let total_closed = close_a.closed_qty + close_b.closed_qty;
+        assert!(
+            (total_closed - 100.0).abs() < 1e-9,
+            "expected total closed qty to equal available inventory, got {total_closed}"
+        );
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert!(
+            !verify_store.has_shadow_lots("wallet", "token")?,
+            "all lots should be closed exactly once"
+        );
+
+        Ok(())
     }
 }
 

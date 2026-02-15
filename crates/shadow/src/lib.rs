@@ -124,12 +124,6 @@ struct ShadowCandidate {
     price_sol_per_token: f64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct CloseResult {
-    closed_qty: f64,
-    realized_pnl_sol: f64,
-}
-
 impl ShadowService {
     pub fn new(config: ShadowConfig) -> Self {
         Self {
@@ -323,12 +317,11 @@ impl ShadowService {
                         swap.ts_utc,
                     )?;
                 }
-                (CloseResult::default(), Some(true))
+                (copybot_storage::ShadowCloseOutcome::default(), Some(true))
             }
             "sell" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
-                let close = self.close_fifo_lots(
-                    store,
+                let close = store.close_shadow_lots_fifo_atomic(
                     &signal_id,
                     &swap.wallet,
                     &candidate.token,
@@ -336,9 +329,7 @@ impl ShadowService {
                     candidate.price_sol_per_token,
                     swap.ts_utc,
                 )?;
-                let has_open_lots_after_signal =
-                    Some(store.has_shadow_lots(&swap.wallet, &candidate.token)?);
-                (close, has_open_lots_after_signal)
+                (close, Some(close.has_open_lots_after))
             }
             _ => {
                 Self::log_gate_drop(
@@ -378,68 +369,6 @@ impl ShadowService {
             closed_trades_24h,
             realized_pnl_sol_24h,
             open_lots,
-        })
-    }
-
-    fn close_fifo_lots(
-        &self,
-        store: &SqliteStore,
-        signal_id: &str,
-        wallet_id: &str,
-        token: &str,
-        target_qty: f64,
-        exit_price_sol: f64,
-        closed_ts: DateTime<Utc>,
-    ) -> Result<CloseResult> {
-        if target_qty <= EPS {
-            return Ok(CloseResult::default());
-        }
-
-        let lots = store.list_shadow_lots(wallet_id, token)?;
-        let mut qty_remaining = target_qty;
-        let mut closed_qty = 0.0;
-        let mut realized_pnl_sol = 0.0;
-
-        for lot in lots {
-            if qty_remaining <= EPS {
-                break;
-            }
-            if lot.qty <= EPS {
-                store.delete_shadow_lot(lot.id)?;
-                continue;
-            }
-
-            let take_qty = qty_remaining.min(lot.qty);
-            let entry_cost_sol = lot.cost_sol * (take_qty / lot.qty);
-            let remaining_qty = (lot.qty - take_qty).max(0.0);
-            let remaining_cost = (lot.cost_sol - entry_cost_sol).max(0.0);
-            if remaining_qty <= EPS {
-                store.delete_shadow_lot(lot.id)?;
-            } else {
-                store.update_shadow_lot(lot.id, remaining_qty, remaining_cost)?;
-            }
-
-            let exit_value_sol = take_qty * exit_price_sol;
-            let pnl_sol = exit_value_sol - entry_cost_sol;
-            store.insert_shadow_closed_trade(
-                signal_id,
-                wallet_id,
-                token,
-                take_qty,
-                entry_cost_sol,
-                exit_value_sol,
-                pnl_sol,
-                lot.opened_ts,
-                closed_ts,
-            )?;
-            realized_pnl_sol += pnl_sol;
-            closed_qty += take_qty;
-            qty_remaining -= take_qty;
-        }
-
-        Ok(CloseResult {
-            closed_qty,
-            realized_pnl_sol,
         })
     }
 
