@@ -19,6 +19,7 @@ use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
+const SHADOW_PENDING_TASK_CAPACITY: usize = 256;
 const OBSERVED_SWAP_WRITE_MAX_RETRIES: usize = 3;
 const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [50, 125, 250];
 
@@ -157,9 +158,12 @@ async fn run_app_loop(
     let mut shadow_snapshot_handle: Option<JoinHandle<Result<ShadowSnapshot>>> = None;
     let mut pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> =
         HashMap::new();
+    let mut pending_shadow_task_count: usize = 0;
     let mut ready_shadow_keys: VecDeque<ShadowTaskKey> = VecDeque::new();
     let mut ready_shadow_key_set: HashSet<ShadowTaskKey> = HashSet::new();
     let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
+    let mut shadow_queue_backpressure_active = false;
+    let mut shadow_scheduler_needs_reset = false;
 
     if !follow_snapshot.active.is_empty() {
         info!(
@@ -169,16 +173,63 @@ async fn run_app_loop(
     }
 
     loop {
-        spawn_shadow_tasks_up_to_limit(
-            &mut shadow_workers,
-            &mut pending_shadow_tasks,
-            &mut ready_shadow_keys,
-            &mut ready_shadow_key_set,
-            &mut inflight_shadow_keys,
-            &sqlite_path,
-            &shadow,
-            SHADOW_WORKER_POOL_SIZE,
-        );
+        if shadow_scheduler_needs_reset {
+            if shadow_workers.is_empty() {
+                inflight_shadow_keys.clear();
+                rebuild_shadow_ready_queue(
+                    &pending_shadow_tasks,
+                    &mut ready_shadow_keys,
+                    &mut ready_shadow_key_set,
+                    &inflight_shadow_keys,
+                );
+                shadow_scheduler_needs_reset = false;
+                warn!("shadow scheduler recovered after worker join error");
+            }
+        } else {
+            spawn_shadow_tasks_up_to_limit(
+                &mut shadow_workers,
+                &mut pending_shadow_tasks,
+                &mut pending_shadow_task_count,
+                &mut ready_shadow_keys,
+                &mut ready_shadow_key_set,
+                &mut inflight_shadow_keys,
+                &sqlite_path,
+                &shadow,
+                SHADOW_WORKER_POOL_SIZE,
+            );
+        }
+
+        let shadow_queue_full = pending_shadow_task_count >= SHADOW_PENDING_TASK_CAPACITY;
+        if shadow_queue_full && !shadow_queue_backpressure_active {
+            shadow_queue_backpressure_active = true;
+            warn!(
+                pending_shadow_task_count,
+                shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
+                "shadow queue backpressure active; pausing ingestion polling"
+            );
+            let details_json = format!(
+                "{{\"reason\":\"queue_backpressure\",\"pending\":{},\"capacity\":{}}}",
+                pending_shadow_task_count, SHADOW_PENDING_TASK_CAPACITY
+            );
+            if let Err(error) = store.insert_risk_event(
+                "shadow_queue_saturated",
+                "warn",
+                Utc::now(),
+                Some(&details_json),
+            ) {
+                warn!(
+                    error = %error,
+                    "failed to persist shadow queue backpressure risk event"
+                );
+            }
+        } else if !shadow_queue_full && shadow_queue_backpressure_active {
+            shadow_queue_backpressure_active = false;
+            info!(
+                pending_shadow_task_count,
+                shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
+                "shadow queue backpressure cleared"
+            );
+        }
 
         tokio::select! {
             discovery_result = async {
@@ -249,6 +300,7 @@ async fn run_app_loop(
                     }
                     Some(Err(error)) => {
                         warn!(error = %error, "shadow task join failed");
+                        shadow_scheduler_needs_reset = true;
                     }
                     None => {}
                 }
@@ -293,7 +345,7 @@ async fn run_app_loop(
                     warn!(error = %error, "heartbeat write failed");
                 }
             }
-            maybe_swap = ingestion.next_swap() => {
+            maybe_swap = ingestion.next_swap(), if !shadow_queue_full => {
                 let swap = match maybe_swap {
                     Ok(Some(swap)) => swap,
                     Ok(None) => {
@@ -350,6 +402,7 @@ async fn run_app_loop(
                         };
                         enqueue_shadow_task(
                             &mut pending_shadow_tasks,
+                            &mut pending_shadow_task_count,
                             &mut ready_shadow_keys,
                             &mut ready_shadow_key_set,
                             &inflight_shadow_keys,
@@ -588,6 +641,7 @@ fn apply_follow_snapshot_update(
 fn spawn_shadow_tasks_up_to_limit(
     shadow_workers: &mut JoinSet<ShadowTaskOutput>,
     pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    pending_shadow_task_count: &mut usize,
     ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
     ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
     inflight_shadow_keys: &mut HashSet<ShadowTaskKey>,
@@ -598,6 +652,7 @@ fn spawn_shadow_tasks_up_to_limit(
     while shadow_workers.len() < max_workers {
         let Some(next) = dequeue_next_shadow_task(
             pending_shadow_tasks,
+            pending_shadow_task_count,
             ready_shadow_keys,
             ready_shadow_key_set,
             inflight_shadow_keys,
@@ -606,12 +661,30 @@ fn spawn_shadow_tasks_up_to_limit(
         };
         let shadow = shadow.clone();
         let sqlite_path = sqlite_path.to_string();
-        shadow_workers.spawn_blocking(move || shadow_task(shadow, &sqlite_path, next));
+        let fallback_signature = next.swap.signature.clone();
+        let fallback_key = next.key.clone();
+        shadow_workers.spawn_blocking(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                shadow_task(shadow, &sqlite_path, next)
+            }));
+            match result {
+                Ok(output) => output,
+                Err(payload) => ShadowTaskOutput {
+                    signature: fallback_signature,
+                    key: fallback_key,
+                    outcome: Err(anyhow::anyhow!(
+                        "shadow worker task panicked: {}",
+                        panic_payload_to_string(payload.as_ref())
+                    )),
+                },
+            }
+        });
     }
 }
 
 fn enqueue_shadow_task(
     pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    pending_shadow_task_count: &mut usize,
     ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
     ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
     inflight_shadow_keys: &HashSet<ShadowTaskKey>,
@@ -622,6 +695,7 @@ fn enqueue_shadow_task(
         .entry(key.clone())
         .or_default()
         .push_back(task_input);
+    *pending_shadow_task_count = pending_shadow_task_count.saturating_add(1);
     if !inflight_shadow_keys.contains(&key) && ready_shadow_key_set.insert(key.clone()) {
         ready_shadow_keys.push_back(key);
     }
@@ -629,6 +703,7 @@ fn enqueue_shadow_task(
 
 fn dequeue_next_shadow_task(
     pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    pending_shadow_task_count: &mut usize,
     ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
     ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
     inflight_shadow_keys: &mut HashSet<ShadowTaskKey>,
@@ -654,10 +729,39 @@ fn dequeue_next_shadow_task(
 
         if let Some(task) = next_task {
             inflight_shadow_keys.insert(key);
+            *pending_shadow_task_count = pending_shadow_task_count.saturating_sub(1);
             return Some(task);
         }
     }
     None
+}
+
+fn rebuild_shadow_ready_queue(
+    pending_shadow_tasks: &HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
+    inflight_shadow_keys: &HashSet<ShadowTaskKey>,
+) {
+    ready_shadow_keys.clear();
+    ready_shadow_key_set.clear();
+    for (key, pending) in pending_shadow_tasks {
+        if pending.is_empty() || inflight_shadow_keys.contains(key) {
+            continue;
+        }
+        if ready_shadow_key_set.insert(key.clone()) {
+            ready_shadow_keys.push_back(key.clone());
+        }
+    }
+}
+
+fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
+    }
+    "unknown panic payload".to_string()
 }
 
 fn mark_shadow_task_complete(
@@ -730,12 +834,14 @@ mod app_tests {
 
         let mut pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> =
             HashMap::new();
+        let mut pending_shadow_task_count = 0usize;
         let mut ready_shadow_keys: VecDeque<ShadowTaskKey> = VecDeque::new();
         let mut ready_shadow_key_set: HashSet<ShadowTaskKey> = HashSet::new();
         let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
 
         enqueue_shadow_task(
             &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &inflight_shadow_keys,
@@ -743,6 +849,7 @@ mod app_tests {
         );
         enqueue_shadow_task(
             &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &inflight_shadow_keys,
@@ -750,14 +857,17 @@ mod app_tests {
         );
         enqueue_shadow_task(
             &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &inflight_shadow_keys,
             make_task("B1", "wallet-b", "token-y"),
         );
+        assert_eq!(pending_shadow_task_count, 3);
 
         let first = dequeue_next_shadow_task(
             &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &mut inflight_shadow_keys,
@@ -765,6 +875,7 @@ mod app_tests {
         .expect("first task");
         let second = dequeue_next_shadow_task(
             &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &mut inflight_shadow_keys,
@@ -784,6 +895,7 @@ mod app_tests {
 
         let third = dequeue_next_shadow_task(
             &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &mut inflight_shadow_keys,
@@ -791,6 +903,7 @@ mod app_tests {
         .expect("third task");
 
         assert_eq!(third.swap.signature, "A2");
+        assert_eq!(pending_shadow_task_count, 0);
     }
 
     #[test]

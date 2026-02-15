@@ -967,10 +967,13 @@ impl SqliteStore {
         })();
 
         match close_result {
-            Ok(outcome) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(outcome)
-            }
+            Ok(outcome) => match self.conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(outcome),
+                Err(error) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            },
             Err(error) => {
                 let _ = self.conn.execute_batch("ROLLBACK");
                 Err(error)
