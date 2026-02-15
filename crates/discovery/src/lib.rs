@@ -5,6 +5,7 @@ use copybot_core_types::SwapEvent;
 use copybot_storage::{SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -14,12 +15,14 @@ const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
 const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
+const DELTA_FETCH_OVERLAP_SECONDS: i64 = 15 * 60;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
     config: DiscoveryConfig,
     shadow_quality: ShadowConfig,
     helius_http_url: Option<String>,
+    window_state: Arc<Mutex<DiscoveryWindowState>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -100,6 +103,13 @@ struct WalletAccumulator {
     buy_observations: Vec<BuyObservation>,
 }
 
+#[derive(Debug, Default)]
+struct DiscoveryWindowState {
+    swaps: VecDeque<SwapEvent>,
+    signatures: HashSet<String>,
+    high_watermark_ts: Option<DateTime<Utc>>,
+}
+
 impl DiscoveryService {
     pub fn new(config: DiscoveryConfig, shadow_quality: ShadowConfig) -> Self {
         Self::new_with_helius(config, shadow_quality, None)
@@ -117,6 +127,7 @@ impl DiscoveryService {
             config,
             shadow_quality,
             helius_http_url,
+            window_state: Arc::new(Mutex::new(DiscoveryWindowState::default())),
         }
     }
 
@@ -124,9 +135,58 @@ impl DiscoveryService {
         let cycle_started = Instant::now();
         let window_days = self.config.scoring_window_days.max(1);
         let window_start = now - Duration::days(window_days as i64);
-        let swaps = store.load_observed_swaps_since(window_start)?;
+        let mut delta_fetched = 0usize;
+        let (snapshots, swaps_window) = {
+            let mut state = self
+                .window_state
+                .lock()
+                .expect("discovery window mutex poisoned");
+            state.evict_before(window_start);
 
-        if swaps.is_empty() {
+            let fetch_start = state
+                .high_watermark_ts
+                .map(|ts| {
+                    let overlap_start = ts - Duration::seconds(DELTA_FETCH_OVERLAP_SECONDS);
+                    overlap_start.max(window_start)
+                })
+                .unwrap_or(window_start);
+
+            let mut out_of_order = false;
+            store.for_each_observed_swap_since(fetch_start, |swap| {
+                if swap.ts_utc < window_start {
+                    return Ok(());
+                }
+                if state.signatures.contains(&swap.signature) {
+                    return Ok(());
+                }
+
+                if let Some(back) = state.swaps.back() {
+                    if cmp_swap_order(&swap, back) == Ordering::Less {
+                        out_of_order = true;
+                    }
+                }
+                let next_high_watermark = state
+                    .high_watermark_ts
+                    .map_or(swap.ts_utc, |v| v.max(swap.ts_utc));
+                state.high_watermark_ts = Some(next_high_watermark);
+                state.signatures.insert(swap.signature.clone());
+                state.swaps.push_back(swap);
+                delta_fetched = delta_fetched.saturating_add(1);
+                Ok(())
+            })?;
+
+            if out_of_order {
+                let mut sorted: Vec<SwapEvent> = state.swaps.drain(..).collect();
+                sorted.sort_by(cmp_swap_order);
+                state.swaps = sorted.into();
+            }
+
+            let swaps_window = state.swaps.len();
+            let snapshots = self.build_wallet_snapshots_from_cached(store, &state.swaps, now);
+            (snapshots, swaps_window)
+        };
+
+        if swaps_window == 0 {
             let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
             info!(
                 window_start = %window_start,
@@ -145,8 +205,6 @@ impl DiscoveryService {
                 ..DiscoverySummary::default()
             });
         }
-
-        let snapshots = self.build_wallet_snapshots(store, &swaps, now);
         for snapshot in snapshots.iter() {
             let status = if snapshot.eligible {
                 "candidate"
@@ -219,7 +277,8 @@ impl DiscoveryService {
             follow_promoted = summary.follow_promoted,
             follow_demoted = summary.follow_demoted,
             active_follow_wallets = summary.active_follow_wallets,
-            swaps_window = swaps.len(),
+            swaps_window,
+            swaps_delta_fetched = delta_fetched,
             discovery_cycle_duration_ms = elapsed_ms,
             top_wallets = ?summary.top_wallets,
             "discovery cycle completed"
@@ -228,22 +287,14 @@ impl DiscoveryService {
         Ok(summary)
     }
 
-    fn build_wallet_snapshots(
+    fn build_wallet_snapshots_from_cached(
         &self,
         store: &SqliteStore,
-        swaps: &[SwapEvent],
+        swaps: &VecDeque<SwapEvent>,
         now: DateTime<Utc>,
     ) -> Vec<WalletSnapshot> {
-        let mut sorted = swaps.to_vec();
-        sorted.sort_by(|a, b| {
-            a.ts_utc
-                .cmp(&b.ts_utc)
-                .then_with(|| a.slot.cmp(&b.slot))
-                .then_with(|| a.signature.cmp(&b.signature))
-        });
-
         let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
-        let unique_buy_mints: HashSet<String> = sorted
+        let unique_buy_mints: HashSet<String> = swaps
             .iter()
             .filter(|swap| is_sol_buy(swap))
             .map(|swap| swap.token_out.clone())
@@ -252,7 +303,7 @@ impl DiscoveryService {
             self.resolve_token_quality_for_mints(store, &unique_buy_mints, now);
         let mut token_states: HashMap<String, TokenRollingState> = HashMap::new();
         let mut token_sol_history: HashMap<String, Vec<SolLegTrade>> = HashMap::new();
-        for swap in sorted.iter() {
+        for swap in swaps.iter() {
             let buy_quality = self.update_token_quality_state(
                 &mut token_states,
                 &mut token_sol_history,
@@ -932,6 +983,13 @@ fn cmp_score_then_trades(a: &WalletSnapshot, b: &WalletSnapshot) -> Ordering {
         .then_with(|| a.wallet_id.cmp(&b.wallet_id))
 }
 
+fn cmp_swap_order(a: &SwapEvent, b: &SwapEvent) -> Ordering {
+    a.ts_utc
+        .cmp(&b.ts_utc)
+        .then_with(|| a.slot.cmp(&b.slot))
+        .then_with(|| a.signature.cmp(&b.signature))
+}
+
 fn fetch_token_quality_from_helius_guarded(
     helius_http_url: &str,
     mint: &str,
@@ -946,6 +1004,18 @@ fn fetch_token_quality_from_helius_guarded(
         max_signature_pages,
         min_age_hint_seconds,
     )
+}
+
+impl DiscoveryWindowState {
+    fn evict_before(&mut self, window_start: DateTime<Utc>) {
+        while let Some(front) = self.swaps.front() {
+            if front.ts_utc >= window_start {
+                break;
+            }
+            let expired = self.swaps.pop_front().expect("checked front exists above");
+            self.signatures.remove(&expired.signature);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use copybot_config::load_from_env_or_default;
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_ingestion::IngestionService;
-use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome, ShadowService};
+use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot};
 use copybot_storage::SqliteStore;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
@@ -145,6 +145,8 @@ async fn run_app_loop(
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut discovery_handle: Option<JoinHandle<Result<HashSet<String>>>> = None;
     let mut shadow_handle: Option<JoinHandle<ShadowTaskOutput>> = None;
+    let mut shadow_snapshot_handle: Option<JoinHandle<Result<ShadowSnapshot>>> = None;
+    let mut shadow_store: Option<SqliteStore> = None;
     let mut pending_shadow_swaps: VecDeque<ShadowTaskInput> = VecDeque::new();
 
     if !active_follow_wallets.is_empty() {
@@ -158,6 +160,7 @@ async fn run_app_loop(
         spawn_next_shadow_task_if_idle(
             &mut shadow_handle,
             &mut pending_shadow_swaps,
+            &mut shadow_store,
             &sqlite_path,
             &shadow,
         );
@@ -192,36 +195,75 @@ async fn run_app_loop(
             }, if shadow_handle.is_some() => {
                 shadow_handle = None;
                 match shadow_result.expect("guard ensures shadow task exists") {
-                    Ok(task_output) => match task_output.outcome {
-                        Ok(ShadowProcessOutcome::Recorded(result)) => {
-                            info!(
-                                signal_id = %result.signal_id,
-                                wallet = %result.wallet_id,
-                                side = %result.side,
-                                token = %result.token,
-                                notional_sol = result.notional_sol,
-                                latency_ms = result.latency_ms,
-                                closed_qty = result.closed_qty,
-                                realized_pnl_sol = result.realized_pnl_sol,
-                                "shadow signal recorded"
-                            );
+                    Ok(task_output) => {
+                        shadow_store = Some(task_output.store);
+                        match task_output.outcome {
+                            Ok(ShadowProcessOutcome::Recorded(result)) => {
+                                info!(
+                                    signal_id = %result.signal_id,
+                                    wallet = %result.wallet_id,
+                                    side = %result.side,
+                                    token = %result.token,
+                                    notional_sol = result.notional_sol,
+                                    latency_ms = result.latency_ms,
+                                    closed_qty = result.closed_qty,
+                                    realized_pnl_sol = result.realized_pnl_sol,
+                                    "shadow signal recorded"
+                                );
+                            }
+                            Ok(ShadowProcessOutcome::Dropped(reason)) => {
+                                let reason_key = reason_to_key(reason);
+                                let stage_key = reason_to_stage(reason);
+                                *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
+                                *shadow_drop_stage_counts.entry(stage_key).or_insert(0) += 1;
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    signature = %task_output.signature,
+                                    "shadow processing failed"
+                                );
+                            }
                         }
-                        Ok(ShadowProcessOutcome::Dropped(reason)) => {
-                            let reason_key = reason_to_key(reason);
-                            let stage_key = reason_to_stage(reason);
-                            *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
-                            *shadow_drop_stage_counts.entry(stage_key).or_insert(0) += 1;
-                        }
-                        Err(error) => {
-                            warn!(
-                                error = %error,
-                                signature = %task_output.signature,
-                                "shadow processing failed"
-                            );
-                        }
-                    },
+                    }
                     Err(error) => {
+                        shadow_store = None;
                         warn!(error = %error, "shadow task join failed");
+                    }
+                }
+            }
+            snapshot_result = async {
+                if let Some(handle) = &mut shadow_snapshot_handle {
+                    Some(handle.await)
+                } else {
+                    None
+                }
+            }, if shadow_snapshot_handle.is_some() => {
+                shadow_snapshot_handle = None;
+                match snapshot_result.expect("guard ensures shadow snapshot task exists") {
+                    Ok(Ok(snapshot)) => {
+                        info!(
+                            closed_trades_24h = snapshot.closed_trades_24h,
+                            realized_pnl_sol_24h = snapshot.realized_pnl_sol_24h,
+                            open_lots = snapshot.open_lots,
+                            active_follow_wallets = active_follow_wallets.len(),
+                            "shadow snapshot"
+                        );
+                        if !shadow_drop_reason_counts.is_empty() {
+                            info!(
+                                drop_counts = ?shadow_drop_reason_counts,
+                                drop_stage_counts = ?shadow_drop_stage_counts,
+                                "shadow drop reasons"
+                            );
+                            shadow_drop_reason_counts.clear();
+                            shadow_drop_stage_counts.clear();
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        warn!(error = %error, "shadow snapshot failed");
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "shadow snapshot task join failed");
                     }
                 }
             }
@@ -318,29 +360,15 @@ async fn run_app_loop(
                 )));
             }
             _ = shadow_interval.tick() => {
-                match shadow.snapshot_24h(&store, Utc::now()) {
-                    Ok(snapshot) => {
-                        info!(
-                            closed_trades_24h = snapshot.closed_trades_24h,
-                            realized_pnl_sol_24h = snapshot.realized_pnl_sol_24h,
-                            open_lots = snapshot.open_lots,
-                            active_follow_wallets = active_follow_wallets.len(),
-                            "shadow snapshot"
-                        );
-                        if !shadow_drop_reason_counts.is_empty() {
-                            info!(
-                                drop_counts = ?shadow_drop_reason_counts,
-                                drop_stage_counts = ?shadow_drop_stage_counts,
-                                "shadow drop reasons"
-                            );
-                            shadow_drop_reason_counts.clear();
-                            shadow_drop_stage_counts.clear();
-                        }
-                    }
-                    Err(error) => {
-                        warn!(error = %error, "shadow snapshot failed");
-                    }
+                if shadow_snapshot_handle.is_some() {
+                    warn!("shadow snapshot still running, skipping scheduled trigger");
+                    continue;
                 }
+                shadow_snapshot_handle = Some(tokio::task::spawn_blocking(spawn_shadow_snapshot_task(
+                    sqlite_path.clone(),
+                    shadow.clone(),
+                    Utc::now(),
+                )));
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("shutdown signal received");
@@ -391,9 +419,23 @@ fn spawn_discovery_task(
     }
 }
 
+fn spawn_shadow_snapshot_task(
+    sqlite_path: String,
+    shadow: ShadowService,
+    now: chrono::DateTime<Utc>,
+) -> impl FnOnce() -> Result<ShadowSnapshot> {
+    move || {
+        let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
+            format!("failed to open sqlite db for shadow snapshot task: {sqlite_path}")
+        })?;
+        shadow.snapshot_24h(&store, now)
+    }
+}
+
 struct ShadowTaskOutput {
     signature: String,
     outcome: Result<ShadowProcessOutcome>,
+    store: SqliteStore,
 }
 
 struct ShadowTaskInput {
@@ -404,25 +446,41 @@ struct ShadowTaskInput {
 fn spawn_next_shadow_task_if_idle(
     shadow_handle: &mut Option<JoinHandle<ShadowTaskOutput>>,
     pending_shadow_swaps: &mut VecDeque<ShadowTaskInput>,
+    shadow_store: &mut Option<SqliteStore>,
     sqlite_path: &str,
     shadow: &ShadowService,
 ) {
     if shadow_handle.is_some() {
         return;
     }
+    let store = match shadow_store.take() {
+        Some(store) => store,
+        None => match SqliteStore::open(Path::new(sqlite_path)) {
+            Ok(store) => store,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    sqlite_path,
+                    "failed to open sqlite db for shadow worker"
+                );
+                return;
+            }
+        },
+    };
     let Some(next) = pending_shadow_swaps.pop_front() else {
+        *shadow_store = Some(store);
         return;
     };
     *shadow_handle = Some(tokio::task::spawn_blocking(shadow_task(
-        sqlite_path.to_string(),
         shadow.clone(),
+        store,
         next,
     )));
 }
 
 fn shadow_task(
-    sqlite_path: String,
     shadow: ShadowService,
+    store: SqliteStore,
     task_input: ShadowTaskInput,
 ) -> impl FnOnce() -> ShadowTaskOutput {
     move || {
@@ -431,12 +489,11 @@ fn shadow_task(
             active_follow_wallets,
         } = task_input;
         let signature = swap.signature.clone();
-        let outcome = (|| -> Result<ShadowProcessOutcome> {
-            let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
-                format!("failed to open sqlite db for shadow task: {sqlite_path}")
-            })?;
-            shadow.process_swap(&store, &swap, &active_follow_wallets, Utc::now())
-        })();
-        ShadowTaskOutput { signature, outcome }
+        let outcome = shadow.process_swap(&store, &swap, &active_follow_wallets, Utc::now());
+        ShadowTaskOutput {
+            signature,
+            outcome,
+            store,
+        }
     }
 }

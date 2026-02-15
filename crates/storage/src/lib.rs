@@ -244,37 +244,103 @@ impl SqliteStore {
             .next()
             .context("failed iterating observed_swaps rows")?
         {
-            let ts_raw: String = row.get(8).context("failed reading observed_swaps.ts")?;
-            let ts_utc = DateTime::parse_from_rfc3339(&ts_raw)
-                .map(|dt| dt.with_timezone(&Utc))
-                .with_context(|| format!("invalid observed_swaps.ts rfc3339 value: {ts_raw}"))?;
-            let slot_raw: i64 = row.get(7).context("failed reading observed_swaps.slot")?;
-            let slot = if slot_raw < 0 { 0 } else { slot_raw as u64 };
-
-            swaps.push(SwapEvent {
-                signature: row
-                    .get(0)
-                    .context("failed reading observed_swaps.signature")?,
-                wallet: row
-                    .get(1)
-                    .context("failed reading observed_swaps.wallet_id")?,
-                dex: row.get(2).context("failed reading observed_swaps.dex")?,
-                token_in: row
-                    .get(3)
-                    .context("failed reading observed_swaps.token_in")?,
-                token_out: row
-                    .get(4)
-                    .context("failed reading observed_swaps.token_out")?,
-                amount_in: row.get(5).context("failed reading observed_swaps.qty_in")?,
-                amount_out: row
-                    .get(6)
-                    .context("failed reading observed_swaps.qty_out")?,
-                slot,
-                ts_utc,
-            });
+            swaps.push(Self::row_to_swap_event(row)?);
         }
 
         Ok(swaps)
+    }
+
+    pub fn for_each_observed_swap_since<F>(
+        &self,
+        since: DateTime<Utc>,
+        mut on_swap: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+                 FROM observed_swaps
+                 WHERE ts >= ?1
+                 ORDER BY ts ASC, slot ASC",
+            )
+            .context("failed to prepare observed_swaps streaming query")?;
+        let mut rows = stmt
+            .query(params![since.to_rfc3339()])
+            .context("failed to stream observed_swaps rows")?;
+
+        let mut seen = 0usize;
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating observed_swaps stream")?
+        {
+            let swap = Self::row_to_swap_event(row)?;
+            on_swap(swap)?;
+            seen = seen.saturating_add(1);
+        }
+        Ok(seen)
+    }
+
+    pub fn list_unique_sol_buy_mints_since(&self, since: DateTime<Utc>) -> Result<HashSet<String>> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT token_out
+                 FROM observed_swaps
+                 WHERE ts >= ?1
+                   AND token_in = ?2
+                   AND token_out <> ?2",
+            )
+            .context("failed to prepare unique sol-buy mints query")?;
+        let mut rows = stmt
+            .query(params![since.to_rfc3339(), SOL_MINT])
+            .context("failed to query unique sol-buy mints")?;
+
+        let mut out = HashSet::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating unique sol-buy mints rows")?
+        {
+            let mint: String = row
+                .get(0)
+                .context("failed reading observed_swaps.token_out")?;
+            out.insert(mint);
+        }
+        Ok(out)
+    }
+
+    fn row_to_swap_event(row: &rusqlite::Row<'_>) -> Result<SwapEvent> {
+        let ts_raw: String = row.get(8).context("failed reading observed_swaps.ts")?;
+        let ts_utc = DateTime::parse_from_rfc3339(&ts_raw)
+            .map(|dt| dt.with_timezone(&Utc))
+            .with_context(|| format!("invalid observed_swaps.ts rfc3339 value: {ts_raw}"))?;
+        let slot_raw: i64 = row.get(7).context("failed reading observed_swaps.slot")?;
+        let slot = if slot_raw < 0 { 0 } else { slot_raw as u64 };
+
+        Ok(SwapEvent {
+            signature: row
+                .get(0)
+                .context("failed reading observed_swaps.signature")?,
+            wallet: row
+                .get(1)
+                .context("failed reading observed_swaps.wallet_id")?,
+            dex: row.get(2).context("failed reading observed_swaps.dex")?,
+            token_in: row
+                .get(3)
+                .context("failed reading observed_swaps.token_in")?,
+            token_out: row
+                .get(4)
+                .context("failed reading observed_swaps.token_out")?,
+            amount_in: row.get(5).context("failed reading observed_swaps.qty_in")?,
+            amount_out: row
+                .get(6)
+                .context("failed reading observed_swaps.qty_out")?,
+            slot,
+            ts_utc,
+        })
     }
 
     pub fn upsert_wallet(
@@ -552,8 +618,11 @@ impl SqliteStore {
             .conn
             .query_row(
                 "SELECT MIN(ts)
-                 FROM observed_swaps
-                 WHERE token_in = ?1 OR token_out = ?1",
+                 FROM (
+                    SELECT ts FROM observed_swaps WHERE token_in = ?1
+                    UNION ALL
+                    SELECT ts FROM observed_swaps WHERE token_out = ?1
+                 )",
                 params![token],
                 |row| row.get(0),
             )
@@ -571,9 +640,16 @@ impl SqliteStore {
         let holders_proxy_raw: i64 = self
             .conn
             .query_row(
-                "SELECT COUNT(DISTINCT wallet_id)
-                 FROM observed_swaps
-                 WHERE token_in = ?1 OR token_out = ?1",
+                "SELECT COUNT(*)
+                 FROM (
+                    SELECT DISTINCT wallet_id
+                    FROM observed_swaps
+                    WHERE token_in = ?1
+                    UNION
+                    SELECT DISTINCT wallet_id
+                    FROM observed_swaps
+                    WHERE token_out = ?1
+                 )",
                 params![token],
                 |row| row.get(0),
             )
@@ -585,34 +661,24 @@ impl SqliteStore {
             .conn
             .query_row(
                 "SELECT
-                    COALESCE(
-                        SUM(
-                            CASE
-                                WHEN token_in = ?1 AND token_out = ?2 THEN qty_out
-                                WHEN token_out = ?1 AND token_in = ?2 THEN qty_in
-                                ELSE 0
-                            END
-                        ),
-                        0.0
-                    ) AS volume_5m_sol,
-                    COALESCE(
-                        MAX(
-                            CASE
-                                WHEN token_in = ?1 AND token_out = ?2 THEN qty_out
-                                WHEN token_out = ?1 AND token_in = ?2 THEN qty_in
-                                ELSE 0
-                            END
-                        ),
-                        0.0
-                    ) AS liquidity_sol_proxy,
+                    COALESCE(SUM(sol_notional), 0.0) AS volume_5m_sol,
+                    COALESCE(MAX(sol_notional), 0.0) AS liquidity_sol_proxy,
                     COUNT(DISTINCT wallet_id) AS unique_traders_5m
-                 FROM observed_swaps
-                 WHERE ts >= ?3
-                   AND ts <= ?4
-                   AND (
-                        (token_in = ?1 AND token_out = ?2)
-                        OR (token_out = ?1 AND token_in = ?2)
-                   )",
+                 FROM (
+                    SELECT wallet_id, qty_out AS sol_notional
+                    FROM observed_swaps
+                    WHERE token_in = ?1
+                      AND token_out = ?2
+                      AND ts >= ?3
+                      AND ts <= ?4
+                    UNION ALL
+                    SELECT wallet_id, qty_in AS sol_notional
+                    FROM observed_swaps
+                    WHERE token_out = ?1
+                      AND token_in = ?2
+                      AND ts >= ?3
+                      AND ts <= ?4
+                 )",
                 params![token, SOL_MINT, window_start, window_end],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
