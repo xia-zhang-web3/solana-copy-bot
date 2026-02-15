@@ -442,24 +442,40 @@ async fn run_app_loop(
                                     task_input,
                                 );
                             } else {
-                                enqueue_shadow_task(
+                                if let Err(dropped_task) = enqueue_shadow_task(
                                     &mut pending_shadow_tasks,
                                     &mut pending_shadow_task_count,
                                     &mut ready_shadow_keys,
                                     &mut ready_shadow_key_set,
                                     &inflight_shadow_keys,
+                                    SHADOW_PENDING_TASK_CAPACITY,
                                     task_input,
-                                );
+                                ) {
+                                    record_shadow_queue_capacity_drop(
+                                        &dropped_task.swap,
+                                        side,
+                                        &mut shadow_drop_reason_counts,
+                                        &mut shadow_drop_stage_counts,
+                                    );
+                                }
                             }
                         } else {
-                            enqueue_shadow_task(
+                            if let Err(dropped_task) = enqueue_shadow_task(
                                 &mut pending_shadow_tasks,
                                 &mut pending_shadow_task_count,
                                 &mut ready_shadow_keys,
                                 &mut ready_shadow_key_set,
                                 &inflight_shadow_keys,
+                                SHADOW_PENDING_TASK_CAPACITY,
                                 task_input,
-                            );
+                            ) {
+                                record_shadow_queue_capacity_drop(
+                                    &dropped_task.swap,
+                                    side,
+                                    &mut shadow_drop_reason_counts,
+                                    &mut shadow_drop_stage_counts,
+                                );
+                            }
                         }
                     }
                     Ok(false) => {
@@ -768,8 +784,12 @@ fn enqueue_shadow_task(
     ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
     ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
     inflight_shadow_keys: &HashSet<ShadowTaskKey>,
+    capacity: usize,
     task_input: ShadowTaskInput,
-) {
+) -> std::result::Result<(), ShadowTaskInput> {
+    if *pending_shadow_task_count >= capacity {
+        return Err(task_input);
+    }
     let key = task_input.key.clone();
     pending_shadow_tasks
         .entry(key.clone())
@@ -779,6 +799,35 @@ fn enqueue_shadow_task(
     if !inflight_shadow_keys.contains(&key) && ready_shadow_key_set.insert(key.clone()) {
         ready_shadow_keys.push_back(key);
     }
+    Ok(())
+}
+
+fn record_shadow_queue_capacity_drop(
+    swap: &SwapEvent,
+    side: ShadowSwapSide,
+    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+) {
+    let reason = "queue_full";
+    *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+    *shadow_drop_stage_counts.entry("scheduler").or_insert(0) += 1;
+    let token = match side {
+        ShadowSwapSide::Buy => &swap.token_out,
+        ShadowSwapSide::Sell => &swap.token_in,
+    };
+    let side = match side {
+        ShadowSwapSide::Buy => "buy",
+        ShadowSwapSide::Sell => "sell",
+    };
+    warn!(
+        stage = "scheduler",
+        reason,
+        side,
+        wallet = %swap.wallet,
+        token = %token,
+        signature = %swap.signature,
+        "shadow gate dropped"
+    );
 }
 
 fn dequeue_next_shadow_task(
@@ -965,30 +1014,36 @@ mod app_tests {
         let mut ready_shadow_key_set: HashSet<ShadowTaskKey> = HashSet::new();
         let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
 
-        enqueue_shadow_task(
+        assert!(enqueue_shadow_task(
             &mut pending_shadow_tasks,
             &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &inflight_shadow_keys,
+            SHADOW_PENDING_TASK_CAPACITY,
             make_task("A1", "wallet-a", "token-x"),
-        );
-        enqueue_shadow_task(
+        )
+        .is_ok());
+        assert!(enqueue_shadow_task(
             &mut pending_shadow_tasks,
             &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &inflight_shadow_keys,
+            SHADOW_PENDING_TASK_CAPACITY,
             make_task("A2", "wallet-a", "token-x"),
-        );
-        enqueue_shadow_task(
+        )
+        .is_ok());
+        assert!(enqueue_shadow_task(
             &mut pending_shadow_tasks,
             &mut pending_shadow_task_count,
             &mut ready_shadow_keys,
             &mut ready_shadow_key_set,
             &inflight_shadow_keys,
+            SHADOW_PENDING_TASK_CAPACITY,
             make_task("B1", "wallet-b", "token-y"),
-        );
+        )
+        .is_ok());
         assert_eq!(pending_shadow_task_count, 3);
 
         let first = dequeue_next_shadow_task(
@@ -1030,6 +1085,70 @@ mod app_tests {
 
         assert_eq!(third.swap.signature, "A2");
         assert_eq!(pending_shadow_task_count, 0);
+    }
+
+    #[test]
+    fn enqueue_shadow_task_enforces_capacity() {
+        fn make_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: "So11111111111111111111111111111111111111112".to_string(),
+                    token_out: token.to_string(),
+                    amount_in: 1.0,
+                    amount_out: 1000.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
+
+        let mut pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> =
+            HashMap::new();
+        let mut pending_shadow_task_count = 0usize;
+        let mut ready_shadow_keys: VecDeque<ShadowTaskKey> = VecDeque::new();
+        let mut ready_shadow_key_set: HashSet<ShadowTaskKey> = HashSet::new();
+        let inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
+        let cap = 2usize;
+
+        assert!(enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            cap,
+            make_task("A1", "wallet-a", "token-x"),
+        )
+        .is_ok());
+        assert!(enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            cap,
+            make_task("A2", "wallet-a", "token-x"),
+        )
+        .is_ok());
+        assert!(enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            cap,
+            make_task("B1", "wallet-b", "token-y"),
+        )
+        .is_err());
+        assert_eq!(pending_shadow_task_count, cap);
     }
 
     #[test]
