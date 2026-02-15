@@ -159,6 +159,7 @@ async fn run_app_loop(
         .context("failed to load open shadow lot index")?;
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_workers: JoinSet<ShadowTaskOutput> = JoinSet::new();
     let mut shadow_snapshot_handle: Option<JoinHandle<Result<ShadowSnapshot>>> = None;
@@ -323,6 +324,13 @@ async fn run_app_loop(
                             shadow_drop_reason_counts.clear();
                             shadow_drop_stage_counts.clear();
                         }
+                        if !shadow_queue_full_outcome_counts.is_empty() {
+                            info!(
+                                queue_full_outcomes = ?shadow_queue_full_outcome_counts,
+                                "shadow queue_full outcomes"
+                            );
+                            shadow_queue_full_outcome_counts.clear();
+                        }
                     }
                     Ok(Err(error)) => {
                         warn!(error = %error, "shadow snapshot failed");
@@ -451,11 +459,18 @@ async fn run_app_loop(
                                     SHADOW_PENDING_TASK_CAPACITY,
                                     task_input,
                                 ) {
-                                    record_shadow_queue_capacity_drop(
-                                        &dropped_task.swap,
+                                    handle_shadow_enqueue_overflow(
                                         side,
+                                        dropped_task,
+                                        &mut pending_shadow_tasks,
+                                        &mut pending_shadow_task_count,
+                                        &mut ready_shadow_keys,
+                                        &mut ready_shadow_key_set,
+                                        &inflight_shadow_keys,
+                                        SHADOW_PENDING_TASK_CAPACITY,
                                         &mut shadow_drop_reason_counts,
                                         &mut shadow_drop_stage_counts,
+                                        &mut shadow_queue_full_outcome_counts,
                                     );
                                 }
                             }
@@ -469,11 +484,18 @@ async fn run_app_loop(
                                 SHADOW_PENDING_TASK_CAPACITY,
                                 task_input,
                             ) {
-                                record_shadow_queue_capacity_drop(
-                                    &dropped_task.swap,
+                                handle_shadow_enqueue_overflow(
                                     side,
+                                    dropped_task,
+                                    &mut pending_shadow_tasks,
+                                    &mut pending_shadow_task_count,
+                                    &mut ready_shadow_keys,
+                                    &mut ready_shadow_key_set,
+                                    &inflight_shadow_keys,
+                                    SHADOW_PENDING_TASK_CAPACITY,
                                     &mut shadow_drop_reason_counts,
                                     &mut shadow_drop_stage_counts,
+                                    &mut shadow_queue_full_outcome_counts,
                                 );
                             }
                         }
@@ -802,32 +824,216 @@ fn enqueue_shadow_task(
     Ok(())
 }
 
-fn record_shadow_queue_capacity_drop(
-    swap: &SwapEvent,
-    side: ShadowSwapSide,
+fn handle_shadow_enqueue_overflow(
+    overflow_side: ShadowSwapSide,
+    overflow_task: ShadowTaskInput,
+    pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    pending_shadow_task_count: &mut usize,
+    ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
+    inflight_shadow_keys: &HashSet<ShadowTaskKey>,
+    capacity: usize,
     shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
     shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
 ) {
-    let reason = "queue_full";
+    match overflow_side {
+        ShadowSwapSide::Buy => {
+            record_shadow_queue_full_buy_drop(
+                &overflow_task.swap,
+                shadow_drop_reason_counts,
+                shadow_drop_stage_counts,
+                shadow_queue_full_outcome_counts,
+            );
+        }
+        ShadowSwapSide::Sell => {
+            if let Some(evicted_buy_task) = evict_one_pending_buy_task(
+                pending_shadow_tasks,
+                pending_shadow_task_count,
+                ready_shadow_keys,
+                ready_shadow_key_set,
+            ) {
+                let sell_swap_for_log = overflow_task.swap.clone();
+                match enqueue_shadow_task(
+                    pending_shadow_tasks,
+                    pending_shadow_task_count,
+                    ready_shadow_keys,
+                    ready_shadow_key_set,
+                    inflight_shadow_keys,
+                    capacity,
+                    overflow_task,
+                ) {
+                    Ok(()) => {
+                        record_shadow_queue_full_buy_drop(
+                            &evicted_buy_task.swap,
+                            shadow_drop_reason_counts,
+                            shadow_drop_stage_counts,
+                            shadow_queue_full_outcome_counts,
+                        );
+                        record_shadow_queue_full_sell_outcome(
+                            &sell_swap_for_log,
+                            true,
+                            shadow_drop_reason_counts,
+                            shadow_drop_stage_counts,
+                            shadow_queue_full_outcome_counts,
+                        );
+                    }
+                    Err(dropped_sell_task) => {
+                        if let Err(still_evicted_buy_task) = enqueue_shadow_task(
+                            pending_shadow_tasks,
+                            pending_shadow_task_count,
+                            ready_shadow_keys,
+                            ready_shadow_key_set,
+                            inflight_shadow_keys,
+                            capacity,
+                            evicted_buy_task,
+                        ) {
+                            record_shadow_queue_full_buy_drop(
+                                &still_evicted_buy_task.swap,
+                                shadow_drop_reason_counts,
+                                shadow_drop_stage_counts,
+                                shadow_queue_full_outcome_counts,
+                            );
+                        }
+                        record_shadow_queue_full_sell_outcome(
+                            &dropped_sell_task.swap,
+                            false,
+                            shadow_drop_reason_counts,
+                            shadow_drop_stage_counts,
+                            shadow_queue_full_outcome_counts,
+                        );
+                    }
+                }
+            } else {
+                record_shadow_queue_full_sell_outcome(
+                    &overflow_task.swap,
+                    false,
+                    shadow_drop_reason_counts,
+                    shadow_drop_stage_counts,
+                    shadow_queue_full_outcome_counts,
+                );
+            }
+        }
+    }
+}
+
+fn evict_one_pending_buy_task(
+    pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    pending_shadow_task_count: &mut usize,
+    ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
+) -> Option<ShadowTaskInput> {
+    let ready_candidate = ready_shadow_keys.iter().find_map(|key| {
+        pending_shadow_tasks
+            .get(key)
+            .and_then(find_last_pending_buy_index)
+            .map(|index| (key.clone(), index))
+    });
+    let candidate = ready_candidate.or_else(|| {
+        let keys: Vec<ShadowTaskKey> = pending_shadow_tasks.keys().cloned().collect();
+        keys.into_iter().find_map(|key| {
+            pending_shadow_tasks
+                .get(&key)
+                .and_then(find_last_pending_buy_index)
+                .map(|index| (key, index))
+        })
+    })?;
+
+    let (key, index) = candidate;
+    let mut remove_key = false;
+    let removed = if let Some(queue) = pending_shadow_tasks.get_mut(&key) {
+        let task = queue.remove(index);
+        remove_key = queue.is_empty();
+        task
+    } else {
+        None
+    };
+
+    if remove_key {
+        pending_shadow_tasks.remove(&key);
+        ready_shadow_key_set.remove(&key);
+        ready_shadow_keys.retain(|ready_key| ready_key != &key);
+    }
+
+    if removed.is_some() {
+        *pending_shadow_task_count = pending_shadow_task_count.saturating_sub(1);
+    }
+    removed
+}
+
+fn find_last_pending_buy_index(queue: &VecDeque<ShadowTaskInput>) -> Option<usize> {
+    (0..queue.len()).rev().find(|index| {
+        queue
+            .get(*index)
+            .and_then(|task| classify_swap_side(&task.swap))
+            .is_some_and(|side| matches!(side, ShadowSwapSide::Buy))
+    })
+}
+
+fn record_shadow_queue_full_buy_drop(
+    swap: &SwapEvent,
+    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
+) {
+    let reason = "queue_full_buy_drop";
     *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
     *shadow_drop_stage_counts.entry("scheduler").or_insert(0) += 1;
-    let token = match side {
-        ShadowSwapSide::Buy => &swap.token_out,
-        ShadowSwapSide::Sell => &swap.token_in,
-    };
-    let side = match side {
-        ShadowSwapSide::Buy => "buy",
-        ShadowSwapSide::Sell => "sell",
-    };
+    *shadow_queue_full_outcome_counts.entry(reason).or_insert(0) += 1;
     warn!(
         stage = "scheduler",
         reason,
-        side,
+        side = "buy",
         wallet = %swap.wallet,
-        token = %token,
+        token = %swap.token_out,
         signature = %swap.signature,
         "shadow gate dropped"
     );
+}
+
+fn record_shadow_queue_full_sell_outcome(
+    swap: &SwapEvent,
+    kept: bool,
+    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
+) {
+    let reason = "queue_full_sell_kept_or_dropped";
+    let outcome_key = if kept {
+        "queue_full_sell_kept"
+    } else {
+        "queue_full_sell_dropped"
+    };
+    *shadow_queue_full_outcome_counts
+        .entry(outcome_key)
+        .or_insert(0) += 1;
+    if kept {
+        info!(
+            stage = "scheduler",
+            reason,
+            outcome = "kept",
+            side = "sell",
+            wallet = %swap.wallet,
+            token = %swap.token_in,
+            signature = %swap.signature,
+            "shadow queue_full sell outcome"
+        );
+    } else {
+        *shadow_drop_reason_counts
+            .entry("queue_full_sell_dropped")
+            .or_insert(0) += 1;
+        *shadow_drop_stage_counts.entry("scheduler").or_insert(0) += 1;
+        warn!(
+            stage = "scheduler",
+            reason,
+            outcome = "dropped",
+            side = "sell",
+            wallet = %swap.wallet,
+            token = %swap.token_in,
+            signature = %swap.signature,
+            "shadow gate dropped"
+        );
+    }
 }
 
 fn dequeue_next_shadow_task(
@@ -1149,6 +1355,151 @@ mod app_tests {
         )
         .is_err());
         assert_eq!(pending_shadow_task_count, cap);
+    }
+
+    #[test]
+    fn queue_full_prefers_sell_over_buy_under_mixed_flow() {
+        fn make_buy_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: "So11111111111111111111111111111111111111112".to_string(),
+                    token_out: token.to_string(),
+                    amount_in: 1.0,
+                    amount_out: 1000.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
+
+        fn make_sell_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: token.to_string(),
+                    token_out: "So11111111111111111111111111111111111111112".to_string(),
+                    amount_in: 1000.0,
+                    amount_out: 1.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
+
+        let mut pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> =
+            HashMap::new();
+        let mut pending_shadow_task_count = 0usize;
+        let mut ready_shadow_keys: VecDeque<ShadowTaskKey> = VecDeque::new();
+        let mut ready_shadow_key_set: HashSet<ShadowTaskKey> = HashSet::new();
+        let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
+        let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let cap = 1usize;
+
+        assert!(enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            cap,
+            make_buy_task("B0", "wallet-buy", "token-buy"),
+        )
+        .is_ok());
+        assert_eq!(pending_shadow_task_count, 1);
+
+        let overflow_buy = enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            cap,
+            make_buy_task("B1", "wallet-buy-2", "token-buy-2"),
+        )
+        .expect_err("buy should overflow at cap");
+        handle_shadow_enqueue_overflow(
+            ShadowSwapSide::Buy,
+            overflow_buy,
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            cap,
+            &mut shadow_drop_reason_counts,
+            &mut shadow_drop_stage_counts,
+            &mut shadow_queue_full_outcome_counts,
+        );
+
+        assert_eq!(pending_shadow_task_count, 1);
+        assert_eq!(
+            shadow_queue_full_outcome_counts.get("queue_full_buy_drop"),
+            Some(&1)
+        );
+
+        let sell_task = make_sell_task("S1", "wallet-sell", "token-sell");
+        let sell_key = sell_task.key.clone();
+        inflight_shadow_keys.insert(sell_key.clone());
+        let overflow_sell = enqueue_shadow_task(
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            cap,
+            sell_task,
+        )
+        .expect_err("sell should overflow at cap before policy handling");
+
+        handle_shadow_enqueue_overflow(
+            ShadowSwapSide::Sell,
+            overflow_sell,
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            cap,
+            &mut shadow_drop_reason_counts,
+            &mut shadow_drop_stage_counts,
+            &mut shadow_queue_full_outcome_counts,
+        );
+
+        assert_eq!(pending_shadow_task_count, 1);
+        assert_eq!(
+            shadow_queue_full_outcome_counts.get("queue_full_sell_kept"),
+            Some(&1)
+        );
+        assert!(
+            !shadow_queue_full_outcome_counts.contains_key("queue_full_sell_dropped"),
+            "sell should be kept when a pending buy can be evicted"
+        );
+
+        let queued_sell = pending_shadow_tasks
+            .get(&sell_key)
+            .expect("sell task should remain queued");
+        assert_eq!(queued_sell.len(), 1);
+        assert!(
+            ready_shadow_key_set.get(&sell_key).is_none(),
+            "inflight key must not be marked ready"
+        );
     }
 
     #[test]
