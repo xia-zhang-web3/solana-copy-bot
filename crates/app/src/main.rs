@@ -19,6 +19,9 @@ use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
+const SHADOW_INLINE_WORKER_OVERFLOW: usize = 1;
+const SHADOW_MAX_CONCURRENT_WORKERS: usize =
+    SHADOW_WORKER_POOL_SIZE + SHADOW_INLINE_WORKER_OVERFLOW;
 const SHADOW_PENDING_TASK_CAPACITY: usize = 256;
 const OBSERVED_SWAP_WRITE_MAX_RETRIES: usize = 3;
 const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [50, 125, 250];
@@ -426,17 +429,28 @@ async fn run_app_loop(
                         if should_process_shadow_inline(
                             shadow_queue_full,
                             shadow_scheduler_needs_reset,
+                            shadow_workers.len(),
                             &task_input.key,
                             &pending_shadow_tasks,
                             &inflight_shadow_keys,
                         ) {
-                            let task_output = shadow_task_with_store(&shadow, &store, task_input);
-                            handle_shadow_task_output(
-                                task_output,
-                                &mut open_shadow_lots,
-                                &mut shadow_drop_reason_counts,
-                                &mut shadow_drop_stage_counts,
-                            );
+                            if inflight_shadow_keys.insert(task_input.key.clone()) {
+                                spawn_shadow_worker_task(
+                                    &mut shadow_workers,
+                                    &shadow,
+                                    &sqlite_path,
+                                    task_input,
+                                );
+                            } else {
+                                enqueue_shadow_task(
+                                    &mut pending_shadow_tasks,
+                                    &mut pending_shadow_task_count,
+                                    &mut ready_shadow_keys,
+                                    &mut ready_shadow_key_set,
+                                    &inflight_shadow_keys,
+                                    task_input,
+                                );
+                            }
                         } else {
                             enqueue_shadow_task(
                                 &mut pending_shadow_tasks,
@@ -655,12 +669,14 @@ fn key_has_pending_or_inflight(
 fn should_process_shadow_inline(
     shadow_queue_full: bool,
     shadow_scheduler_needs_reset: bool,
+    shadow_worker_count: usize,
     key: &ShadowTaskKey,
     pending_shadow_tasks: &HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
     inflight_shadow_keys: &HashSet<ShadowTaskKey>,
 ) -> bool {
     shadow_queue_full
         && !shadow_scheduler_needs_reset
+        && shadow_worker_count < SHADOW_MAX_CONCURRENT_WORKERS
         && !key_has_pending_or_inflight(key, pending_shadow_tasks, inflight_shadow_keys)
 }
 
@@ -693,6 +709,34 @@ fn apply_follow_snapshot_update(
     follow_snapshot.demoted_at.retain(|_, ts| *ts >= cutoff);
 }
 
+fn spawn_shadow_worker_task(
+    shadow_workers: &mut JoinSet<ShadowTaskOutput>,
+    shadow: &ShadowService,
+    sqlite_path: &str,
+    task_input: ShadowTaskInput,
+) {
+    let shadow = shadow.clone();
+    let sqlite_path = sqlite_path.to_string();
+    let fallback_signature = task_input.swap.signature.clone();
+    let fallback_key = task_input.key.clone();
+    shadow_workers.spawn_blocking(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            shadow_task(shadow, &sqlite_path, task_input)
+        }));
+        match result {
+            Ok(output) => output,
+            Err(payload) => ShadowTaskOutput {
+                signature: fallback_signature,
+                key: fallback_key,
+                outcome: Err(anyhow::anyhow!(
+                    "shadow worker task panicked: {}",
+                    panic_payload_to_string(payload.as_ref())
+                )),
+            },
+        }
+    });
+}
+
 fn spawn_shadow_tasks_up_to_limit(
     shadow_workers: &mut JoinSet<ShadowTaskOutput>,
     pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
@@ -714,26 +758,7 @@ fn spawn_shadow_tasks_up_to_limit(
         ) else {
             return;
         };
-        let shadow = shadow.clone();
-        let sqlite_path = sqlite_path.to_string();
-        let fallback_signature = next.swap.signature.clone();
-        let fallback_key = next.key.clone();
-        shadow_workers.spawn_blocking(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                shadow_task(shadow, &sqlite_path, next)
-            }));
-            match result {
-                Ok(output) => output,
-                Err(payload) => ShadowTaskOutput {
-                    signature: fallback_signature,
-                    key: fallback_key,
-                    outcome: Err(anyhow::anyhow!(
-                        "shadow worker task panicked: {}",
-                        panic_payload_to_string(payload.as_ref())
-                    )),
-                },
-            }
-        });
+        spawn_shadow_worker_task(shadow_workers, shadow, sqlite_path, next);
     }
 }
 
@@ -882,25 +907,6 @@ fn handle_shadow_task_output(
     }
 }
 
-fn shadow_task_with_store(
-    shadow: &ShadowService,
-    store: &SqliteStore,
-    task_input: ShadowTaskInput,
-) -> ShadowTaskOutput {
-    let ShadowTaskInput {
-        swap,
-        follow_snapshot,
-        key,
-    } = task_input;
-    let signature = swap.signature.clone();
-    let outcome = shadow.process_swap(store, &swap, follow_snapshot.as_ref(), Utc::now());
-    ShadowTaskOutput {
-        signature,
-        key,
-        outcome,
-    }
-}
-
 fn shadow_task(
     shadow: ShadowService,
     sqlite_path: &str,
@@ -1039,6 +1045,7 @@ mod app_tests {
         assert!(should_process_shadow_inline(
             true,
             false,
+            SHADOW_WORKER_POOL_SIZE,
             &key,
             &pending_shadow_tasks,
             &inflight_shadow_keys,
@@ -1048,6 +1055,7 @@ mod app_tests {
         assert!(!should_process_shadow_inline(
             true,
             false,
+            SHADOW_WORKER_POOL_SIZE,
             &key,
             &pending_shadow_tasks,
             &inflight_shadow_keys,
@@ -1075,6 +1083,7 @@ mod app_tests {
         assert!(!should_process_shadow_inline(
             true,
             false,
+            SHADOW_WORKER_POOL_SIZE,
             &key,
             &pending_shadow_tasks,
             &inflight_shadow_keys,
@@ -1082,6 +1091,7 @@ mod app_tests {
         assert!(!should_process_shadow_inline(
             true,
             true,
+            SHADOW_WORKER_POOL_SIZE,
             &key,
             &pending_shadow_tasks,
             &inflight_shadow_keys,
@@ -1089,6 +1099,15 @@ mod app_tests {
         assert!(!should_process_shadow_inline(
             false,
             false,
+            SHADOW_WORKER_POOL_SIZE,
+            &key,
+            &pending_shadow_tasks,
+            &inflight_shadow_keys,
+        ));
+        assert!(!should_process_shadow_inline(
+            true,
+            false,
+            SHADOW_MAX_CONCURRENT_WORKERS,
             &key,
             &pending_shadow_tasks,
             &inflight_shadow_keys,
