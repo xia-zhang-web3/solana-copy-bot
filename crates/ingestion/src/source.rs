@@ -338,29 +338,59 @@ impl HeliusWsSource {
             .build()
             .context("failed building reqwest client")?;
 
-        let mut http_urls = Vec::new();
+        let mut candidates = Vec::new();
         for url in &config.helius_http_urls {
             let trimmed = url.trim();
-            if !trimmed.is_empty() && !http_urls.iter().any(|existing| existing == trimmed) {
-                http_urls.push(trimmed.to_string());
+            if !trimmed.is_empty() && !candidates.iter().any(|existing| existing == trimmed) {
+                candidates.push(trimmed.to_string());
+            }
+        }
+        if candidates.is_empty() {
+            let trimmed = config.helius_http_url.trim();
+            if !trimmed.is_empty() {
+                candidates.push(trimmed.to_string());
+            }
+        }
+
+        let mut http_urls = Vec::new();
+        for candidate in candidates {
+            let parsed = match Url::parse(&candidate) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    warn!(
+                        url = %candidate,
+                        error = %error,
+                        "dropping invalid ingestion HTTP URL"
+                    );
+                    continue;
+                }
+            };
+
+            let scheme = parsed.scheme();
+            if scheme != "http" && scheme != "https" {
+                warn!(
+                    url = %candidate,
+                    scheme = %scheme,
+                    "dropping ingestion HTTP URL with unsupported scheme"
+                );
+                continue;
+            }
+            if parsed.host_str().is_none() {
+                warn!(
+                    url = %candidate,
+                    "dropping ingestion HTTP URL without host"
+                );
+                continue;
+            }
+
+            if !http_urls.iter().any(|existing| existing == &candidate) {
+                http_urls.push(candidate);
             }
         }
         if http_urls.is_empty() {
-            let trimmed = config.helius_http_url.trim();
-            if !trimmed.is_empty() {
-                http_urls.push(trimmed.to_string());
-            }
-        }
-        for url in &http_urls {
-            let parsed = Url::parse(url).with_context(|| {
-                format!("invalid ingestion HTTP URL in helius_http_url(s): {url}")
-            })?;
-            let scheme = parsed.scheme();
-            if scheme != "http" && scheme != "https" {
-                return Err(anyhow!(
-                    "unsupported ingestion HTTP URL scheme `{scheme}` for {url}"
-                ));
-            }
+            return Err(anyhow!(
+                "no valid ingestion HTTP URL configured (check helius_http_url / helius_http_urls)"
+            ));
         }
 
         let runtime_config = HeliusRuntimeConfig {
@@ -1225,12 +1255,22 @@ async fn fetch_swap_with_retries(
             // Retrying these amplifies backlog pressure without improving success rate.
             Ok(None) => return Ok(None),
             Err(error) => {
-                warn!(
-                    error = %error,
-                    signature = %notification.signature,
-                    attempt,
-                    "tx fetch attempt failed"
-                );
+                // Keep high-signal warnings only for the terminal retry attempt.
+                if attempt >= runtime_config.tx_fetch_retries {
+                    warn!(
+                        error = %error,
+                        signature = %notification.signature,
+                        attempt,
+                        "tx fetch attempt failed"
+                    );
+                } else {
+                    debug!(
+                        error = %error,
+                        signature = %notification.signature,
+                        attempt,
+                        "tx fetch attempt failed"
+                    );
+                }
             }
         }
 

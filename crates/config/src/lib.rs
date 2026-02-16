@@ -244,8 +244,12 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     }
     if let Ok(http_urls_csv) = env::var("SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS") {
         let values: Vec<String> = http_urls_csv
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
             .split(',')
             .map(str::trim)
+            .map(|value| value.trim_matches('"').trim_matches('\''))
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)
             .collect();
