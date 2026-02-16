@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::IngestionConfig;
 use futures_util::{SinkExt, StreamExt};
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -349,6 +349,17 @@ impl HeliusWsSource {
             let trimmed = config.helius_http_url.trim();
             if !trimmed.is_empty() {
                 http_urls.push(trimmed.to_string());
+            }
+        }
+        for url in &http_urls {
+            let parsed = Url::parse(url).with_context(|| {
+                format!("invalid ingestion HTTP URL in helius_http_url(s): {url}")
+            })?;
+            let scheme = parsed.scheme();
+            if scheme != "http" && scheme != "https" {
+                return Err(anyhow!(
+                    "unsupported ingestion HTTP URL scheme `{scheme}` for {url}"
+                ));
             }
         }
 
