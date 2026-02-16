@@ -354,6 +354,14 @@ impl HeliusWsSource {
 
         let mut http_urls = Vec::new();
         for candidate in candidates {
+            if !(candidate.starts_with("http://") || candidate.starts_with("https://")) {
+                warn!(
+                    url = %candidate,
+                    "dropping ingestion HTTP URL without explicit http(s):// prefix"
+                );
+                continue;
+            }
+
             let parsed = match Url::parse(&candidate) {
                 Ok(parsed) => parsed,
                 Err(error) => {
