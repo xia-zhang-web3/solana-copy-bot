@@ -407,7 +407,7 @@ async fn run_app_loop(
 
                 match insert_observed_swap_with_retry(&store, &swap).await {
                     Ok(true) => {
-                        info!(
+                        debug!(
                             signature = %swap.signature,
                             wallet = %swap.wallet,
                             dex = %swap.dex,
@@ -426,17 +426,13 @@ async fn run_app_loop(
                             && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
                         {
                             let reason = "not_followed";
-                            let runtime_followed = follow_snapshot.is_active(&swap.wallet);
                             *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
                             *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
-                            warn!(
+                            debug!(
                                 stage = "follow",
                                 reason,
                                 side = "buy",
                                 wallet = %swap.wallet,
-                                token_in = %swap.token_in,
-                                token_out = %swap.token_out,
-                                runtime_followed,
                                 signature = %swap.signature,
                                 "shadow gate dropped"
                             );
@@ -463,12 +459,11 @@ async fn run_app_loop(
                                 let reason = "not_followed";
                                 *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
                                 *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
-                                warn!(
+                                debug!(
                                     stage = "follow",
                                     reason,
                                     side = "sell",
                                     wallet = %swap.wallet,
-                                    token = %swap.token_in,
                                     signature = %swap.signature,
                                     "shadow gate dropped"
                                 );
