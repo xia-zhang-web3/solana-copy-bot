@@ -613,7 +613,20 @@ impl HeliusWsSource {
             ));
         }
 
-        let endpoint_rps_limit = config.per_endpoint_rpc_rps_limit;
+        let endpoint_rps_limit = effective_per_endpoint_rps_limit(
+            config.per_endpoint_rpc_rps_limit,
+            config.global_rpc_rps_limit,
+            http_urls.len(),
+        );
+        if endpoint_rps_limit != config.per_endpoint_rpc_rps_limit {
+            warn!(
+                configured_per_endpoint_rps = config.per_endpoint_rpc_rps_limit,
+                effective_per_endpoint_rps = endpoint_rps_limit,
+                global_rps = config.global_rpc_rps_limit,
+                endpoint_count = http_urls.len(),
+                "adjusted per-endpoint RPC limiter to avoid self-throttling with a single endpoint"
+            );
+        }
         let endpoint_burst = endpoint_rps_limit.max(1);
         let http_endpoints = http_urls
             .into_iter()
@@ -1893,6 +1906,15 @@ fn retry_jitter_ms(signature: &str, attempt: u32, max_jitter_ms: u64) -> u64 {
     hasher.finish() % (max_jitter_ms + 1)
 }
 
+fn effective_per_endpoint_rps_limit(configured: u64, global: u64, endpoint_count: usize) -> u64 {
+    if endpoint_count == 1 && global > 0 {
+        if configured == 0 || configured < global {
+            return global;
+        }
+    }
+    configured
+}
+
 async fn sleep_with_backoff(next_backoff_ms: &mut u64, initial_ms: u64, max_ms: u64) {
     let delay = (*next_backoff_ms).clamp(initial_ms, max_ms);
     time::sleep(Duration::from_millis(delay)).await;
@@ -2205,6 +2227,13 @@ mod tests {
             compute_retry_delay(100, 500, 50, 1, "signature-a", Some(Duration::from_secs(2)));
         assert!(delay >= Duration::from_secs(2));
         assert!(delay <= Duration::from_millis(2_050));
+    }
+
+    #[test]
+    fn effective_per_endpoint_limit_avoids_single_endpoint_self_throttle() {
+        assert_eq!(effective_per_endpoint_rps_limit(16, 45, 1), 45);
+        assert_eq!(effective_per_endpoint_rps_limit(0, 45, 1), 45);
+        assert_eq!(effective_per_endpoint_rps_limit(16, 45, 3), 16);
     }
 
     #[test]
