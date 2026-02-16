@@ -276,10 +276,10 @@ impl Drop for HeliusPipeline {
     }
 }
 
-#[derive(Clone)]
 struct HeliusRuntimeConfig {
     ws_url: String,
-    http_url: String,
+    http_urls: Vec<String>,
+    http_url_rr: AtomicUsize,
     reconnect_initial_ms: u64,
     reconnect_max_ms: u64,
     tx_fetch_retries: u32,
@@ -290,6 +290,14 @@ struct HeliusRuntimeConfig {
     pumpswap_program_ids: HashSet<String>,
     http_client: Client,
     telemetry: Arc<IngestionTelemetry>,
+}
+
+impl HeliusRuntimeConfig {
+    fn next_http_url(&self) -> &str {
+        let len = self.http_urls.len();
+        let index = self.http_url_rr.fetch_add(1, Ordering::Relaxed) % len;
+        &self.http_urls[index]
+    }
 }
 
 pub struct HeliusWsSource {
@@ -330,9 +338,24 @@ impl HeliusWsSource {
             .build()
             .context("failed building reqwest client")?;
 
+        let mut http_urls = Vec::new();
+        for url in &config.helius_http_urls {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() && !http_urls.iter().any(|existing| existing == trimmed) {
+                http_urls.push(trimmed.to_string());
+            }
+        }
+        if http_urls.is_empty() {
+            let trimmed = config.helius_http_url.trim();
+            if !trimmed.is_empty() {
+                http_urls.push(trimmed.to_string());
+            }
+        }
+
         let runtime_config = HeliusRuntimeConfig {
             ws_url: config.helius_ws_url.clone(),
-            http_url: config.helius_http_url.clone(),
+            http_urls,
+            http_url_rr: AtomicUsize::new(0),
             reconnect_initial_ms: config.reconnect_initial_ms.max(200),
             reconnect_max_ms: config
                 .reconnect_max_ms
@@ -413,10 +436,15 @@ impl HeliusWsSource {
 
     fn spawn_pipeline(&self) -> Result<HeliusPipeline> {
         if self.runtime_config.ws_url.contains("REPLACE_ME")
-            || self.runtime_config.http_url.contains("REPLACE_ME")
+            || self
+                .runtime_config
+                .http_urls
+                .iter()
+                .any(|url| url.contains("REPLACE_ME"))
+            || self.runtime_config.http_urls.is_empty()
         {
             return Err(anyhow!(
-                "configure ingestion.helius_ws_url and ingestion.helius_http_url with real API key"
+                "configure ingestion.helius_ws_url and ingestion.helius_http_url / ingestion.helius_http_urls with real API key(s)"
             ));
         }
 
@@ -1139,6 +1167,7 @@ async fn connect_ws_stream(
 
     info!(
         ws_url = %runtime_config.ws_url,
+        http_endpoints = runtime_config.http_urls.len(),
         programs = runtime_config.interested_program_ids.len(),
         "helius ws connected and subscriptions sent"
     );
@@ -1211,6 +1240,7 @@ async fn fetch_swap_from_signature(
     slot_hint: u64,
     logs_hint: &[String],
 ) -> Result<Option<RawSwapObservation>> {
+    let http_url = runtime_config.next_http_url().to_string();
     let request = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -1227,11 +1257,11 @@ async fn fetch_swap_from_signature(
 
     let response = runtime_config
         .http_client
-        .post(&runtime_config.http_url)
+        .post(&http_url)
         .json(&request)
         .send()
         .await
-        .with_context(|| format!("failed getTransaction POST for {signature}"))?;
+        .with_context(|| format!("failed getTransaction POST for {signature} via {http_url}"))?;
 
     let status = response.status();
     if status.as_u16() == 429 {
@@ -1249,10 +1279,14 @@ async fn fetch_swap_from_signature(
 
     let response: Value = response
         .error_for_status()
-        .with_context(|| format!("non-success getTransaction status for {signature}"))?
+        .with_context(|| {
+            format!("non-success getTransaction status for {signature} via {http_url}")
+        })?
         .json()
         .await
-        .with_context(|| format!("failed parsing getTransaction json for {signature}"))?;
+        .with_context(|| {
+            format!("failed parsing getTransaction json for {signature} via {http_url}")
+        })?;
 
     if response.get("error").is_some() {
         debug!(signature, error = ?response.get("error"), "rpc returned error");
@@ -1443,7 +1477,8 @@ mod tests {
         let telemetry = Arc::new(IngestionTelemetry::default());
         let runtime_config = Arc::new(HeliusRuntimeConfig {
             ws_url: "wss://example".to_string(),
-            http_url: "https://example".to_string(),
+            http_urls: vec!["https://example".to_string()],
+            http_url_rr: AtomicUsize::new(0),
             reconnect_initial_ms: 500,
             reconnect_max_ms: 8_000,
             tx_fetch_retries: 1,
@@ -1515,7 +1550,8 @@ mod tests {
         let telemetry = Arc::new(IngestionTelemetry::default());
         let runtime_config = Arc::new(HeliusRuntimeConfig {
             ws_url: "wss://example".to_string(),
-            http_url: "https://example".to_string(),
+            http_urls: vec!["https://example".to_string()],
+            http_url_rr: AtomicUsize::new(0),
             reconnect_initial_ms: 500,
             reconnect_max_ms: 8_000,
             tx_fetch_retries: 1,

@@ -59,6 +59,7 @@ pub struct IngestionConfig {
     pub source: String,
     pub helius_ws_url: String,
     pub helius_http_url: String,
+    pub helius_http_urls: Vec<String>,
     pub fetch_concurrency: usize,
     pub ws_queue_capacity: usize,
     pub output_queue_capacity: usize,
@@ -83,6 +84,7 @@ impl Default for IngestionConfig {
             source: "mock".to_string(),
             helius_ws_url: "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_url: "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
+            helius_http_urls: Vec::new(),
             fetch_concurrency: 8,
             ws_queue_capacity: 2048,
             output_queue_capacity: 1024,
@@ -239,6 +241,17 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     }
     if let Ok(http_url) = env::var("SOLANA_COPY_BOT_HELIUS_HTTP_URL") {
         config.ingestion.helius_http_url = http_url;
+    }
+    if let Ok(http_urls_csv) = env::var("SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS") {
+        let values: Vec<String> = http_urls_csv
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        if !values.is_empty() {
+            config.ingestion.helius_http_urls = values;
+        }
     }
     if let Some(fetch_concurrency) = env::var("SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY")
         .ok()

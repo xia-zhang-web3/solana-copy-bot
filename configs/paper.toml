@@ -13,6 +13,7 @@ path = "state/paper_copybot.db"
 source = "helius_ws"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
+helius_http_urls = []
 fetch_concurrency = 3
 ws_queue_capacity = 512
 output_queue_capacity = 2048

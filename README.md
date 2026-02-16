@@ -60,6 +60,12 @@ SOLANA_COPY_BOT_INGESTION_REORDER_MAX_BUFFER=1024 \
 SOLANA_COPY_BOT_INGESTION_TELEMETRY_REPORT_SECONDS=30
 ```
 
+Optional: load-balance ingestion `getTransaction` calls across multiple Helius keys:
+
+```bash
+SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS="https://mainnet.helius-rpc.com/?api-key=<KEY1>,https://mainnet.helius-rpc.com/?api-key=<KEY2>,https://mainnet.helius-rpc.com/?api-key=<KEY3>"
+```
+
 Optional sell causal holdback controls:
 
 ```bash

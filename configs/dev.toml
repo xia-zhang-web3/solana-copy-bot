@@ -13,6 +13,7 @@ path = "state/dev_copybot.db"
 source = "mock"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
+helius_http_urls = []
 fetch_concurrency = 8
 ws_queue_capacity = 2048
 output_queue_capacity = 1024
