@@ -1181,7 +1181,9 @@ async fn fetch_swap_with_retries(
                     fetch_latency_ms,
                 }));
             }
-            Ok(None) => {}
+            // No parsed swap / null transaction is a terminal outcome for this signature.
+            // Retrying these amplifies backlog pressure without improving success rate.
+            Ok(None) => return Ok(None),
             Err(error) => {
                 warn!(
                     error = %error,
