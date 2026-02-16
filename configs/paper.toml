@@ -42,22 +42,22 @@ seen_signatures_limit = 5000
 mock_interval_ms = 1500
 
 [discovery]
-scoring_window_days = 7
+scoring_window_days = 30
 decay_window_days = 1
-follow_top_n = 100
-min_leader_notional_sol = 0.35
+follow_top_n = 25
+min_leader_notional_sol = 0.5
 helius_http_url = ""
 refresh_seconds = 180
-min_trades = 2
-min_active_days = 1
-min_score = 0.15
-max_tx_per_minute = 80
-min_buy_count = 2
-min_tradable_ratio = 0.05
-max_rug_ratio = 0.90
+min_trades = 10
+min_active_days = 3
+min_score = 0.45
+max_tx_per_minute = 50
+min_buy_count = 6
+min_tradable_ratio = 0.20
+max_rug_ratio = 0.60
 rug_lookahead_seconds = 1800
-thin_market_min_volume_sol = 3.0
-thin_market_min_unique_traders = 10
+thin_market_min_volume_sol = 5.0
+thin_market_min_unique_traders = 12
 
 [shadow]
 enabled = true
