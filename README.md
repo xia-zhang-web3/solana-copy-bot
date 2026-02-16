@@ -55,8 +55,16 @@ Tune ingestion parallel pipeline from env:
 SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY=3 \
 SOLANA_COPY_BOT_INGESTION_WS_QUEUE_CAPACITY=512 \
 SOLANA_COPY_BOT_INGESTION_OUTPUT_QUEUE_CAPACITY=2048 \
+SOLANA_COPY_BOT_INGESTION_PREFETCH_STALE_DROP_MS=30000 \
+SOLANA_COPY_BOT_INGESTION_SEEN_SIGNATURES_TTL_MS=600000 \
+SOLANA_COPY_BOT_INGESTION_QUEUE_OVERFLOW_POLICY=drop_oldest \
 SOLANA_COPY_BOT_INGESTION_REORDER_HOLD_MS=1500 \
 SOLANA_COPY_BOT_INGESTION_REORDER_MAX_BUFFER=1024 \
+SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT=45 \
+SOLANA_COPY_BOT_INGESTION_PER_ENDPOINT_RPC_RPS_LIMIT=16 \
+SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_DELAY_MS=500 \
+SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_MAX_MS=2000 \
+SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_JITTER_MS=150 \
 SOLANA_COPY_BOT_INGESTION_TELEMETRY_REPORT_SECONDS=30
 ```
 
@@ -92,7 +100,9 @@ SOLANA_COPY_BOT_PROGRAM_IDS="675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8,pAMMBa
 
 - `ingestion.source="mock"` generates synthetic swaps and stores them in SQLite.
 - `ingestion.source="helius_ws"` uses `logsSubscribe` for target program IDs and a bounded parallel `getTransaction` worker pool for full swap parsing.
+- ws->fetch queue supports bounded policies (`block`/`drop_oldest`) to prioritize fresh traffic under overload.
 - ingestion includes bounded reorder-by-`(slot, arrival_seq, signature)` holdback to reduce out-of-order processing risk.
+- ingestion supports pre-fetch stale drop, signature dedupe TTL/LRU, and optional global/per-endpoint token-bucket HTTP rate limiting.
 - shadow scheduler supports per-`(wallet, token)` sell causal holdback before release into processing queue.
 - ingestion emits periodic pipeline metrics (`ws_to_fetch_queue_depth`, `ws_notifications_backpressured`, `fetch_latency_ms`, `ingestion_lag_ms`, `reorder_buffer_size`, RPC `429/5xx` counters).
 - discovery cycle runs every `discovery.refresh_seconds` and recalculates score/follow-list.

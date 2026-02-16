@@ -63,6 +63,9 @@ pub struct IngestionConfig {
     pub fetch_concurrency: usize,
     pub ws_queue_capacity: usize,
     pub output_queue_capacity: usize,
+    pub prefetch_stale_drop_ms: u64,
+    pub seen_signatures_ttl_ms: u64,
+    pub queue_overflow_policy: String,
     pub reorder_hold_ms: u64,
     pub reorder_max_buffer: usize,
     pub telemetry_report_seconds: u64,
@@ -73,7 +76,11 @@ pub struct IngestionConfig {
     pub reconnect_max_ms: u64,
     pub tx_fetch_retries: u32,
     pub tx_fetch_retry_delay_ms: u64,
+    pub tx_fetch_retry_max_ms: u64,
+    pub tx_fetch_retry_jitter_ms: u64,
     pub tx_request_timeout_ms: u64,
+    pub global_rpc_rps_limit: u64,
+    pub per_endpoint_rpc_rps_limit: u64,
     pub seen_signatures_limit: usize,
     pub mock_interval_ms: u64,
 }
@@ -88,6 +95,9 @@ impl Default for IngestionConfig {
             fetch_concurrency: 8,
             ws_queue_capacity: 2048,
             output_queue_capacity: 1024,
+            prefetch_stale_drop_ms: 45_000,
+            seen_signatures_ttl_ms: 10 * 60 * 1_000,
+            queue_overflow_policy: "block".to_string(),
             reorder_hold_ms: 2000,
             reorder_max_buffer: 512,
             telemetry_report_seconds: 30,
@@ -101,7 +111,11 @@ impl Default for IngestionConfig {
             reconnect_max_ms: 8_000,
             tx_fetch_retries: 3,
             tx_fetch_retry_delay_ms: 150,
+            tx_fetch_retry_max_ms: 2_000,
+            tx_fetch_retry_jitter_ms: 150,
             tx_request_timeout_ms: 5_000,
+            global_rpc_rps_limit: 0,
+            per_endpoint_rpc_rps_limit: 0,
             seen_signatures_limit: 5_000,
             mock_interval_ms: 1000,
         }
@@ -275,6 +289,26 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.ingestion.output_queue_capacity = output_queue_capacity;
     }
+    if let Some(prefetch_stale_drop_ms) =
+        env::var("SOLANA_COPY_BOT_INGESTION_PREFETCH_STALE_DROP_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.prefetch_stale_drop_ms = prefetch_stale_drop_ms;
+    }
+    if let Some(seen_signatures_ttl_ms) =
+        env::var("SOLANA_COPY_BOT_INGESTION_SEEN_SIGNATURES_TTL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.seen_signatures_ttl_ms = seen_signatures_ttl_ms;
+    }
+    if let Ok(policy) = env::var("SOLANA_COPY_BOT_INGESTION_QUEUE_OVERFLOW_POLICY") {
+        let trimmed = policy.trim();
+        if !trimmed.is_empty() {
+            config.ingestion.queue_overflow_policy = trimmed.to_string();
+        }
+    }
     if let Some(reorder_hold_ms) = env::var("SOLANA_COPY_BOT_INGESTION_REORDER_HOLD_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -293,6 +327,51 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
             .and_then(|value| value.parse::<u64>().ok())
     {
         config.ingestion.telemetry_report_seconds = telemetry_report_seconds;
+    }
+    if let Some(tx_fetch_retries) = env::var("SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRIES")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.ingestion.tx_fetch_retries = tx_fetch_retries;
+    }
+    if let Some(tx_fetch_retry_delay_ms) =
+        env::var("SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.tx_fetch_retry_delay_ms = tx_fetch_retry_delay_ms;
+    }
+    if let Some(tx_fetch_retry_max_ms) = env::var("SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_MAX_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.tx_fetch_retry_max_ms = tx_fetch_retry_max_ms;
+    }
+    if let Some(tx_fetch_retry_jitter_ms) =
+        env::var("SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_JITTER_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.tx_fetch_retry_jitter_ms = tx_fetch_retry_jitter_ms;
+    }
+    if let Some(tx_request_timeout_ms) = env::var("SOLANA_COPY_BOT_INGESTION_TX_REQUEST_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.tx_request_timeout_ms = tx_request_timeout_ms;
+    }
+    if let Some(global_rpc_rps_limit) = env::var("SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.global_rpc_rps_limit = global_rpc_rps_limit;
+    }
+    if let Some(per_endpoint_rpc_rps_limit) =
+        env::var("SOLANA_COPY_BOT_INGESTION_PER_ENDPOINT_RPC_RPS_LIMIT")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.per_endpoint_rpc_rps_limit = per_endpoint_rpc_rps_limit;
     }
     if let Ok(discovery_http_url) = env::var("SOLANA_COPY_BOT_DISCOVERY_HELIUS_HTTP_URL") {
         config.discovery.helius_http_url = discovery_http_url;
