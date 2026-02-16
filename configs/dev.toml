@@ -13,6 +13,12 @@ path = "state/dev_copybot.db"
 source = "mock"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
+fetch_concurrency = 8
+ws_queue_capacity = 2048
+output_queue_capacity = 1024
+reorder_hold_ms = 2000
+reorder_max_buffer = 512
+telemetry_report_seconds = 30
 subscribe_program_ids = []
 raydium_program_ids = [
   "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
@@ -32,6 +38,7 @@ scoring_window_days = 30
 decay_window_days = 7
 follow_top_n = 20
 min_leader_notional_sol = 0.5
+helius_http_url = ""
 refresh_seconds = 120
 min_trades = 8
 min_active_days = 3
@@ -40,6 +47,9 @@ max_tx_per_minute = 50
 
 [shadow]
 enabled = true
+helius_http_url = ""
+causal_holdback_enabled = true
+causal_holdback_ms = 2500
 refresh_seconds = 60
 copy_notional_sol = 0.25
 min_leader_notional_sol = 0.5

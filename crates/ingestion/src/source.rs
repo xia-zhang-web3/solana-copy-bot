@@ -4,9 +4,13 @@ use copybot_config::IngestionConfig;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Duration;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio::task::JoinHandle;
 use tokio::time::{self, Interval};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
@@ -81,7 +85,7 @@ impl MockSource {
             signature: format!("mock-{}-sig-{n}", self.session_tag),
             slot: 1_000_000 + n,
             signer: "MockLeaderWallet1111111111111111111111111111".to_string(),
-            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_in: SOL_MINT.to_string(),
             token_out: format!("MockTokenMint{n}"),
             amount_in: 0.5,
             amount_out: 1_000.0 + (n as f64),
@@ -92,35 +96,218 @@ impl MockSource {
     }
 }
 
+#[derive(Debug, Clone)]
 struct LogsNotification {
     signature: String,
     slot: u64,
+    arrival_seq: u64,
     logs: Vec<String>,
     is_failed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FetchedObservation {
+    raw: RawSwapObservation,
+    arrival_seq: u64,
+    fetch_latency_ms: u64,
+}
+
+#[derive(Debug)]
+struct ReorderEntry {
+    raw: RawSwapObservation,
+    enqueued_at: Instant,
 }
 
 type HeliusWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const WS_IDLE_TIMEOUT_SECS: u64 = 45;
+const TELEMETRY_SAMPLE_CAPACITY: usize = 4096;
 
-pub struct HeliusWsSource {
+#[derive(Debug)]
+struct IngestionTelemetry {
+    ws_notifications_seen: AtomicU64,
+    ws_notifications_enqueued: AtomicU64,
+    ws_notifications_backpressured: AtomicU64,
+    ws_notifications_dropped: AtomicU64,
+    fetch_inflight: AtomicU64,
+    fetch_success: AtomicU64,
+    fetch_failed: AtomicU64,
+    rpc_429: AtomicU64,
+    rpc_5xx: AtomicU64,
+    fetch_latency_ms_samples: Mutex<VecDeque<u64>>,
+    ingestion_lag_ms_samples: Mutex<VecDeque<u64>>,
+    reorder_hold_ms_samples: Mutex<VecDeque<u64>>,
+    max_reorder_buffer_size: AtomicUsize,
+    last_report_ms: AtomicI64,
+}
+
+impl Default for IngestionTelemetry {
+    fn default() -> Self {
+        Self {
+            ws_notifications_seen: AtomicU64::new(0),
+            ws_notifications_enqueued: AtomicU64::new(0),
+            ws_notifications_backpressured: AtomicU64::new(0),
+            ws_notifications_dropped: AtomicU64::new(0),
+            fetch_inflight: AtomicU64::new(0),
+            fetch_success: AtomicU64::new(0),
+            fetch_failed: AtomicU64::new(0),
+            rpc_429: AtomicU64::new(0),
+            rpc_5xx: AtomicU64::new(0),
+            fetch_latency_ms_samples: Mutex::new(VecDeque::with_capacity(
+                TELEMETRY_SAMPLE_CAPACITY,
+            )),
+            ingestion_lag_ms_samples: Mutex::new(VecDeque::with_capacity(
+                TELEMETRY_SAMPLE_CAPACITY,
+            )),
+            reorder_hold_ms_samples: Mutex::new(VecDeque::with_capacity(TELEMETRY_SAMPLE_CAPACITY)),
+            max_reorder_buffer_size: AtomicUsize::new(0),
+            last_report_ms: AtomicI64::new(0),
+        }
+    }
+}
+
+impl IngestionTelemetry {
+    fn push_fetch_latency(&self, value: u64) {
+        if let Ok(mut guard) = self.fetch_latency_ms_samples.lock() {
+            push_sample(&mut guard, value, TELEMETRY_SAMPLE_CAPACITY);
+        }
+    }
+
+    fn push_ingestion_lag(&self, value: u64) {
+        if let Ok(mut guard) = self.ingestion_lag_ms_samples.lock() {
+            push_sample(&mut guard, value, TELEMETRY_SAMPLE_CAPACITY);
+        }
+    }
+
+    fn push_reorder_hold(&self, value: u64) {
+        if let Ok(mut guard) = self.reorder_hold_ms_samples.lock() {
+            push_sample(&mut guard, value, TELEMETRY_SAMPLE_CAPACITY);
+        }
+    }
+
+    fn note_reorder_buffer_size(&self, size: usize) {
+        let _ = self
+            .max_reorder_buffer_size
+            .fetch_max(size, Ordering::Relaxed);
+    }
+
+    fn maybe_report(
+        &self,
+        report_seconds: u64,
+        ws_to_fetch_queue_depth: usize,
+        fetch_to_output_queue_depth: usize,
+        reorder_buffer_size: usize,
+    ) {
+        let report_seconds = report_seconds.max(5);
+        let now_ms = Utc::now().timestamp_millis();
+        let last = self.last_report_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < (report_seconds as i64 * 1_000) {
+            return;
+        }
+        if self
+            .last_report_ms
+            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        let fetch_samples = self
+            .fetch_latency_ms_samples
+            .lock()
+            .ok()
+            .map(|values| values.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let lag_samples = self
+            .ingestion_lag_ms_samples
+            .lock()
+            .ok()
+            .map(|values| values.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let hold_samples = self
+            .reorder_hold_ms_samples
+            .lock()
+            .ok()
+            .map(|values| values.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        info!(
+            ws_notifications_seen = self.ws_notifications_seen.load(Ordering::Relaxed),
+            ws_notifications_enqueued = self.ws_notifications_enqueued.load(Ordering::Relaxed),
+            ws_notifications_backpressured =
+                self.ws_notifications_backpressured.load(Ordering::Relaxed),
+            ws_notifications_dropped = self.ws_notifications_dropped.load(Ordering::Relaxed),
+            ws_to_fetch_queue_depth,
+            fetch_to_output_queue_depth,
+            fetch_concurrency_inflight = self.fetch_inflight.load(Ordering::Relaxed),
+            fetch_success = self.fetch_success.load(Ordering::Relaxed),
+            fetch_failed = self.fetch_failed.load(Ordering::Relaxed),
+            rpc_429 = self.rpc_429.load(Ordering::Relaxed),
+            rpc_5xx = self.rpc_5xx.load(Ordering::Relaxed),
+            fetch_latency_ms_p50 = percentile(&fetch_samples, 0.50),
+            fetch_latency_ms_p95 = percentile(&fetch_samples, 0.95),
+            fetch_latency_ms_p99 = percentile(&fetch_samples, 0.99),
+            ingestion_lag_ms_p50 = percentile(&lag_samples, 0.50),
+            ingestion_lag_ms_p95 = percentile(&lag_samples, 0.95),
+            ingestion_lag_ms_p99 = percentile(&lag_samples, 0.99),
+            reorder_hold_ms_p95 = percentile(&hold_samples, 0.95),
+            reorder_buffer_size,
+            reorder_buffer_max = self.max_reorder_buffer_size.load(Ordering::Relaxed),
+            "ingestion pipeline metrics"
+        );
+    }
+}
+
+struct HeliusPipeline {
+    output_rx: mpsc::Receiver<FetchedObservation>,
+    ws_to_fetch_depth: Arc<AtomicUsize>,
+    fetch_to_output_depth: Arc<AtomicUsize>,
+    ws_reader_task: JoinHandle<()>,
+    fetcher_tasks: Vec<JoinHandle<()>>,
+}
+
+impl Drop for HeliusPipeline {
+    fn drop(&mut self) {
+        self.ws_reader_task.abort();
+        for task in &self.fetcher_tasks {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct HeliusRuntimeConfig {
     ws_url: String,
     http_url: String,
     reconnect_initial_ms: u64,
     reconnect_max_ms: u64,
-    next_backoff_ms: u64,
     tx_fetch_retries: u32,
     tx_fetch_retry_delay_ms: u64,
     seen_signatures_limit: usize,
-    request_id: u64,
-    ws: Option<HeliusWsStream>,
-    http_client: Client,
     interested_program_ids: HashSet<String>,
     raydium_program_ids: HashSet<String>,
     pumpswap_program_ids: HashSet<String>,
-    seen_signatures_queue: VecDeque<String>,
-    seen_signatures_set: HashSet<String>,
+    http_client: Client,
+    telemetry: Arc<IngestionTelemetry>,
+}
+
+pub struct HeliusWsSource {
+    runtime_config: Arc<HeliusRuntimeConfig>,
+    fetch_concurrency: usize,
+    ws_queue_capacity: usize,
+    output_queue_capacity: usize,
+    reorder_hold_ms: u64,
+    reorder_max_buffer: usize,
+    telemetry_report_seconds: u64,
+    pipeline: Option<HeliusPipeline>,
+    reorder_buffer: BTreeMap<(u64, u64, String), ReorderEntry>,
+}
+
+enum OutputRecvOutcome {
+    Item(FetchedObservation),
+    ChannelClosed,
+    TimedOut,
 }
 
 impl HeliusWsSource {
@@ -143,134 +330,255 @@ impl HeliusWsSource {
             .build()
             .context("failed building reqwest client")?;
 
-        Ok(Self {
+        let runtime_config = HeliusRuntimeConfig {
             ws_url: config.helius_ws_url.clone(),
             http_url: config.helius_http_url.clone(),
             reconnect_initial_ms: config.reconnect_initial_ms.max(200),
             reconnect_max_ms: config
                 .reconnect_max_ms
                 .max(config.reconnect_initial_ms.max(200)),
-            next_backoff_ms: config.reconnect_initial_ms.max(200),
             tx_fetch_retries: config.tx_fetch_retries,
             tx_fetch_retry_delay_ms: config.tx_fetch_retry_delay_ms.max(50),
             seen_signatures_limit: config.seen_signatures_limit.max(500),
-            request_id: 1000,
-            ws: None,
-            http_client,
             interested_program_ids,
             raydium_program_ids: config.raydium_program_ids.iter().cloned().collect(),
             pumpswap_program_ids: config.pumpswap_program_ids.iter().cloned().collect(),
-            seen_signatures_queue: VecDeque::new(),
-            seen_signatures_set: HashSet::new(),
+            http_client,
+            telemetry: Arc::new(IngestionTelemetry::default()),
+        };
+
+        Ok(Self {
+            runtime_config: Arc::new(runtime_config),
+            fetch_concurrency: config.fetch_concurrency.max(1),
+            ws_queue_capacity: config.ws_queue_capacity.max(128),
+            output_queue_capacity: config.output_queue_capacity.max(64),
+            reorder_hold_ms: config.reorder_hold_ms.max(1),
+            reorder_max_buffer: config.reorder_max_buffer.max(16),
+            telemetry_report_seconds: config.telemetry_report_seconds.max(5),
+            pipeline: None,
+            reorder_buffer: BTreeMap::new(),
         })
     }
 
     async fn next_observation(&mut self) -> Result<Option<RawSwapObservation>> {
         loop {
-            if self.ws.is_none() {
-                if let Err(error) = self.connect_ws().await {
-                    warn!(error = ?error, "helius ws connect failed");
-                    self.sleep_with_backoff().await;
-                    continue;
-                }
+            self.ensure_pipeline_running()?;
+
+            if let Some(raw) = self.pop_ready_observation() {
+                self.maybe_report_pipeline_metrics();
+                return Ok(Some(raw));
             }
 
-            let next_message = {
-                let ws = self.ws.as_mut().expect("ws checked above");
-                time::timeout(Duration::from_secs(WS_IDLE_TIMEOUT_SECS), ws.next()).await
-            };
-
-            match next_message {
-                Ok(Some(Ok(Message::Text(text)))) => {
-                    if let Some(notification) = self.parse_logs_notification(&text) {
-                        if notification.is_failed {
-                            continue;
-                        }
-                        if self.is_seen_signature(&notification.signature) {
-                            continue;
-                        }
-                        self.mark_seen_signature(notification.signature.clone());
-
-                        if let Some(raw) = self.fetch_swap_with_retries(notification).await? {
-                            self.next_backoff_ms = self.reconnect_initial_ms;
-                            return Ok(Some(raw));
-                        }
+            let wait_for_ready = self.reorder_wait_duration();
+            match self.recv_from_pipeline(wait_for_ready).await {
+                OutputRecvOutcome::Item(item) => {
+                    self.push_reorder_entry(item);
+                    self.maybe_report_pipeline_metrics();
+                }
+                OutputRecvOutcome::TimedOut => {
+                    self.maybe_report_pipeline_metrics();
+                    continue;
+                }
+                OutputRecvOutcome::ChannelClosed => {
+                    warn!("ingestion pipeline output channel closed; restarting pipeline");
+                    self.pipeline = None;
+                    if let Some(raw) = self.pop_earliest_observation() {
+                        self.maybe_report_pipeline_metrics();
+                        return Ok(Some(raw));
                     }
-                }
-                Ok(Some(Ok(Message::Ping(payload)))) => {
-                    if let Some(ws) = self.ws.as_mut() {
-                        if let Err(error) = ws.send(Message::Pong(payload)).await {
-                            warn!(error = %error, "failed to send ws pong");
-                            self.ws = None;
-                            self.sleep_with_backoff().await;
-                        }
-                    }
-                }
-                Ok(Some(Ok(Message::Close(frame)))) => {
-                    warn!(?frame, "helius ws closed");
-                    self.ws = None;
-                    self.sleep_with_backoff().await;
-                }
-                Ok(Some(Ok(_))) => {}
-                Ok(Some(Err(error))) => {
-                    warn!(error = %error, "helius ws stream error");
-                    self.ws = None;
-                    self.sleep_with_backoff().await;
-                }
-                Ok(None) => {
-                    warn!("helius ws stream ended");
-                    self.ws = None;
-                    self.sleep_with_backoff().await;
-                }
-                Err(_) => {
-                    warn!(
-                        idle_timeout_seconds = WS_IDLE_TIMEOUT_SECS,
-                        "helius ws idle timeout, reconnecting"
-                    );
-                    self.ws = None;
-                    self.sleep_with_backoff().await;
+                    self.maybe_report_pipeline_metrics();
+                    continue;
                 }
             }
         }
     }
 
-    async fn connect_ws(&mut self) -> Result<()> {
-        if self.ws_url.contains("REPLACE_ME") || self.http_url.contains("REPLACE_ME") {
+    fn ensure_pipeline_running(&mut self) -> Result<()> {
+        let needs_restart = self
+            .pipeline
+            .as_ref()
+            .map(|pipeline| {
+                pipeline.ws_reader_task.is_finished()
+                    || pipeline.fetcher_tasks.iter().any(|task| task.is_finished())
+            })
+            .unwrap_or(true);
+        if needs_restart {
+            if self.pipeline.is_some() {
+                warn!("ingestion pipeline became unhealthy; recreating pipeline tasks");
+            }
+            self.pipeline = Some(self.spawn_pipeline()?);
+        }
+        Ok(())
+    }
+
+    fn spawn_pipeline(&self) -> Result<HeliusPipeline> {
+        if self.runtime_config.ws_url.contains("REPLACE_ME")
+            || self.runtime_config.http_url.contains("REPLACE_ME")
+        {
             return Err(anyhow!(
                 "configure ingestion.helius_ws_url and ingestion.helius_http_url with real API key"
             ));
         }
 
-        let (mut ws, _response) = connect_async(&self.ws_url)
-            .await
-            .with_context(|| format!("failed connecting to {}", self.ws_url))?;
+        let (sig_tx, sig_rx) = mpsc::channel::<LogsNotification>(self.ws_queue_capacity);
+        let (out_tx, out_rx) = mpsc::channel::<FetchedObservation>(self.output_queue_capacity);
+        let ws_to_fetch_depth = Arc::new(AtomicUsize::new(0));
+        let fetch_to_output_depth = Arc::new(AtomicUsize::new(0));
 
-        for program_id in self.interested_program_ids.iter() {
-            self.request_id = self.request_id.saturating_add(1);
-            let request = json!({
-                "jsonrpc": "2.0",
-                "id": self.request_id,
-                "method": "logsSubscribe",
-                "params": [
-                    {"mentions": [program_id]},
-                    {"commitment": "confirmed"}
-                ]
-            });
-            ws.send(Message::Text(request.to_string().into()))
-                .await
-                .with_context(|| format!("failed sending logsSubscribe for {}", program_id))?;
+        let ws_reader_task = {
+            let runtime_config = Arc::clone(&self.runtime_config);
+            let ws_to_fetch_depth = Arc::clone(&ws_to_fetch_depth);
+            tokio::spawn(async move {
+                ws_reader_loop(runtime_config, sig_tx, ws_to_fetch_depth).await;
+            })
+        };
+
+        let shared_sig_rx = Arc::new(AsyncMutex::new(sig_rx));
+        let mut fetcher_tasks = Vec::with_capacity(self.fetch_concurrency);
+        for worker_id in 0..self.fetch_concurrency {
+            let runtime_config = Arc::clone(&self.runtime_config);
+            let shared_sig_rx = Arc::clone(&shared_sig_rx);
+            let out_tx = out_tx.clone();
+            let ws_to_fetch_depth = Arc::clone(&ws_to_fetch_depth);
+            let fetch_to_output_depth = Arc::clone(&fetch_to_output_depth);
+            fetcher_tasks.push(tokio::spawn(async move {
+                fetch_worker_loop(
+                    worker_id,
+                    runtime_config,
+                    shared_sig_rx,
+                    out_tx,
+                    ws_to_fetch_depth,
+                    fetch_to_output_depth,
+                )
+                .await;
+            }));
         }
+        drop(out_tx);
 
-        info!(
-            ws_url = %self.ws_url,
-            programs = self.interested_program_ids.len(),
-            "helius ws connected and subscriptions sent"
-        );
-        self.ws = Some(ws);
-        Ok(())
+        Ok(HeliusPipeline {
+            output_rx: out_rx,
+            ws_to_fetch_depth,
+            fetch_to_output_depth,
+            ws_reader_task,
+            fetcher_tasks,
+        })
     }
 
-    fn parse_logs_notification(&self, text: &str) -> Option<LogsNotification> {
+    async fn recv_from_pipeline(&mut self, wait: Option<Duration>) -> OutputRecvOutcome {
+        let Some(pipeline) = self.pipeline.as_mut() else {
+            return OutputRecvOutcome::ChannelClosed;
+        };
+
+        if let Some(wait) = wait {
+            match time::timeout(wait, pipeline.output_rx.recv()).await {
+                Ok(Some(item)) => {
+                    decrement_atomic_usize(&pipeline.fetch_to_output_depth);
+                    OutputRecvOutcome::Item(item)
+                }
+                Ok(None) => OutputRecvOutcome::ChannelClosed,
+                Err(_) => OutputRecvOutcome::TimedOut,
+            }
+        } else {
+            match pipeline.output_rx.recv().await {
+                Some(item) => {
+                    decrement_atomic_usize(&pipeline.fetch_to_output_depth);
+                    OutputRecvOutcome::Item(item)
+                }
+                None => OutputRecvOutcome::ChannelClosed,
+            }
+        }
+    }
+
+    fn push_reorder_entry(&mut self, fetched: FetchedObservation) {
+        self.runtime_config
+            .telemetry
+            .push_fetch_latency(fetched.fetch_latency_ms);
+
+        let key = (
+            fetched.raw.slot,
+            fetched.arrival_seq,
+            fetched.raw.signature.clone(),
+        );
+        self.reorder_buffer.entry(key).or_insert(ReorderEntry {
+            raw: fetched.raw,
+            enqueued_at: Instant::now(),
+        });
+        self.runtime_config
+            .telemetry
+            .note_reorder_buffer_size(self.reorder_buffer.len());
+    }
+
+    fn pop_ready_observation(&mut self) -> Option<RawSwapObservation> {
+        if self.reorder_buffer.is_empty() {
+            return None;
+        }
+
+        let first_key = self.reorder_buffer.keys().next()?.clone();
+        let first_entry = self.reorder_buffer.get(&first_key)?;
+        let hold_elapsed = first_entry.enqueued_at.elapsed();
+        let hold_target = Duration::from_millis(self.reorder_hold_ms.max(1));
+
+        let should_release =
+            self.reorder_buffer.len() > self.reorder_max_buffer || hold_elapsed >= hold_target;
+        if !should_release {
+            return None;
+        }
+
+        let entry = self.reorder_buffer.remove(&first_key)?;
+        let hold_ms = entry.enqueued_at.elapsed().as_millis() as u64;
+        self.runtime_config.telemetry.push_reorder_hold(hold_ms);
+
+        let lag_ms = (Utc::now() - entry.raw.ts_utc).num_milliseconds().max(0) as u64;
+        self.runtime_config.telemetry.push_ingestion_lag(lag_ms);
+        Some(entry.raw)
+    }
+
+    fn pop_earliest_observation(&mut self) -> Option<RawSwapObservation> {
+        let first_key = self.reorder_buffer.keys().next()?.clone();
+        let entry = self.reorder_buffer.remove(&first_key)?;
+        let hold_ms = entry.enqueued_at.elapsed().as_millis() as u64;
+        self.runtime_config.telemetry.push_reorder_hold(hold_ms);
+
+        let lag_ms = (Utc::now() - entry.raw.ts_utc).num_milliseconds().max(0) as u64;
+        self.runtime_config.telemetry.push_ingestion_lag(lag_ms);
+        Some(entry.raw)
+    }
+
+    fn reorder_wait_duration(&self) -> Option<Duration> {
+        let first_entry = self.reorder_buffer.values().next()?;
+        if self.reorder_buffer.len() > self.reorder_max_buffer {
+            return Some(Duration::from_millis(0));
+        }
+
+        let hold_target = Duration::from_millis(self.reorder_hold_ms.max(1));
+        let elapsed = first_entry.enqueued_at.elapsed();
+        if elapsed >= hold_target {
+            Some(Duration::from_millis(0))
+        } else {
+            Some(hold_target - elapsed)
+        }
+    }
+
+    fn maybe_report_pipeline_metrics(&self) {
+        let (ws_depth, output_depth) = self
+            .pipeline
+            .as_ref()
+            .map(|pipeline| {
+                (
+                    pipeline.ws_to_fetch_depth.load(Ordering::Relaxed),
+                    pipeline.fetch_to_output_depth.load(Ordering::Relaxed),
+                )
+            })
+            .unwrap_or((0, 0));
+        self.runtime_config.telemetry.maybe_report(
+            self.telemetry_report_seconds,
+            ws_depth,
+            output_depth,
+            self.reorder_buffer.len(),
+        );
+    }
+
+    fn parse_logs_notification(text: &str) -> Option<LogsNotification> {
         let value: Value = match serde_json::from_str(text) {
             Ok(value) => value,
             Err(error) => {
@@ -316,144 +624,10 @@ impl HeliusWsSource {
         Some(LogsNotification {
             signature,
             slot,
+            arrival_seq: 0,
             logs,
             is_failed,
         })
-    }
-
-    async fn fetch_swap_with_retries(
-        &self,
-        notification: LogsNotification,
-    ) -> Result<Option<RawSwapObservation>> {
-        for attempt in 0..=self.tx_fetch_retries {
-            match self
-                .fetch_swap_from_signature(
-                    &notification.signature,
-                    notification.slot,
-                    &notification.logs,
-                )
-                .await
-            {
-                Ok(Some(raw)) => return Ok(Some(raw)),
-                Ok(None) => {}
-                Err(error) => warn!(
-                    error = %error,
-                    signature = %notification.signature,
-                    attempt,
-                    "tx fetch attempt failed"
-                ),
-            }
-
-            if attempt < self.tx_fetch_retries {
-                time::sleep(Duration::from_millis(self.tx_fetch_retry_delay_ms)).await;
-            }
-        }
-        Ok(None)
-    }
-
-    async fn fetch_swap_from_signature(
-        &self,
-        signature: &str,
-        slot_hint: u64,
-        logs_hint: &[String],
-    ) -> Result<Option<RawSwapObservation>> {
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getTransaction",
-            "params": [
-                signature,
-                {
-                    "encoding": "jsonParsed",
-                    "commitment": "confirmed",
-                    "maxSupportedTransactionVersion": 0
-                }
-            ]
-        });
-
-        let response: Value = self
-            .http_client
-            .post(&self.http_url)
-            .json(&request)
-            .send()
-            .await
-            .with_context(|| format!("failed getTransaction POST for {}", signature))?
-            .error_for_status()
-            .with_context(|| format!("non-success getTransaction status for {}", signature))?
-            .json()
-            .await
-            .with_context(|| format!("failed parsing getTransaction json for {}", signature))?;
-
-        if response.get("error").is_some() {
-            debug!(signature, error = ?response.get("error"), "rpc returned error");
-            return Ok(None);
-        }
-
-        let result = match response.get("result") {
-            Some(value) if !value.is_null() => value,
-            _ => return Ok(None),
-        };
-        let meta = match result.get("meta") {
-            Some(value) if !value.is_null() => value,
-            _ => return Ok(None),
-        };
-        if meta.get("err").map(|err| !err.is_null()).unwrap_or(false) {
-            return Ok(None);
-        }
-
-        let account_keys = Self::extract_account_keys(result);
-        if account_keys.is_empty() {
-            return Ok(None);
-        }
-        let signer_index = account_keys
-            .iter()
-            .position(|(_, is_signer)| *is_signer)
-            .unwrap_or(0);
-        let signer = account_keys
-            .get(signer_index)
-            .map(|(pubkey, _)| pubkey.clone())
-            .ok_or_else(|| anyhow!("missing signer in parsed account keys"))?;
-
-        let mut program_ids = Self::extract_program_ids(result, meta, logs_hint);
-        if program_ids.is_empty() {
-            program_ids.extend(self.interested_program_ids.iter().cloned());
-        } else if !program_ids
-            .iter()
-            .any(|program| self.interested_program_ids.contains(program))
-        {
-            return Ok(None);
-        }
-
-        let (token_in, amount_in, token_out, amount_out) =
-            match Self::infer_swap_from_json_balances(meta, signer_index, &signer) {
-                Some(value) => value,
-                None => return Ok(None),
-            };
-
-        let block_time = result.get("blockTime").and_then(Value::as_i64);
-        let ts_utc = block_time
-            .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
-            .unwrap_or_else(Utc::now);
-        let slot = result
-            .get("slot")
-            .and_then(Value::as_u64)
-            .unwrap_or(slot_hint);
-        let logs = Self::value_to_string_vec(meta.get("logMessages"))
-            .unwrap_or_else(|| logs_hint.to_vec());
-        let dex_hint = self.detect_dex_hint(&program_ids, &logs);
-
-        Ok(Some(RawSwapObservation {
-            signature: signature.to_string(),
-            slot,
-            signer,
-            token_in,
-            token_out,
-            amount_in,
-            amount_out,
-            program_ids: program_ids.into_iter().collect(),
-            dex_hint,
-            ts_utc,
-        }))
     }
 
     fn extract_account_keys(result: &Value) -> Vec<(String, bool)> {
@@ -564,7 +738,7 @@ impl HeliusWsSource {
 
         let mut token_in_candidates = Vec::new();
         let mut token_out_candidates = Vec::new();
-        for (mint, delta) in mint_deltas.iter() {
+        for (mint, delta) in &mint_deltas {
             if *delta < -TOKEN_EPS {
                 token_in_candidates.push((mint.clone(), delta.abs()));
             } else if *delta > TOKEN_EPS {
@@ -690,10 +864,15 @@ impl HeliusWsSource {
         )
     }
 
-    fn detect_dex_hint(&self, program_ids: &HashSet<String>, logs: &[String]) -> String {
+    fn detect_dex_hint(
+        program_ids: &HashSet<String>,
+        logs: &[String],
+        raydium_program_ids: &HashSet<String>,
+        pumpswap_program_ids: &HashSet<String>,
+    ) -> String {
         if program_ids
             .iter()
-            .any(|program| self.raydium_program_ids.contains(program))
+            .any(|program| raydium_program_ids.contains(program))
             || logs
                 .iter()
                 .any(|log| log.to_ascii_lowercase().contains("raydium"))
@@ -702,7 +881,7 @@ impl HeliusWsSource {
         }
         if program_ids
             .iter()
-            .any(|program| self.pumpswap_program_ids.contains(program))
+            .any(|program| pumpswap_program_ids.contains(program))
             || logs
                 .iter()
                 .any(|log| log.to_ascii_lowercase().contains("pump"))
@@ -711,29 +890,496 @@ impl HeliusWsSource {
         }
         "unknown".to_string()
     }
+}
 
-    fn is_seen_signature(&self, signature: &str) -> bool {
-        self.seen_signatures_set.contains(signature)
-    }
+async fn ws_reader_loop(
+    runtime_config: Arc<HeliusRuntimeConfig>,
+    sig_tx: mpsc::Sender<LogsNotification>,
+    ws_to_fetch_depth: Arc<AtomicUsize>,
+) {
+    let mut request_id: u64 = 1000;
+    let mut arrival_seq: u64 = 0;
+    let mut ws: Option<HeliusWsStream> = None;
+    let mut next_backoff_ms = runtime_config.reconnect_initial_ms;
+    let mut seen_signatures_queue: VecDeque<String> = VecDeque::new();
+    let mut seen_signatures_set: HashSet<String> = HashSet::new();
 
-    fn mark_seen_signature(&mut self, signature: String) {
-        if self.seen_signatures_set.insert(signature.clone()) {
-            self.seen_signatures_queue.push_back(signature);
+    loop {
+        if ws.is_none() {
+            match connect_ws_stream(&runtime_config, &mut request_id).await {
+                Ok(stream) => {
+                    ws = Some(stream);
+                    next_backoff_ms = runtime_config.reconnect_initial_ms;
+                }
+                Err(error) => {
+                    warn!(error = ?error, "helius ws connect failed");
+                    sleep_with_backoff(
+                        &mut next_backoff_ms,
+                        runtime_config.reconnect_initial_ms,
+                        runtime_config.reconnect_max_ms,
+                    )
+                    .await;
+                    continue;
+                }
+            }
         }
-        while self.seen_signatures_queue.len() > self.seen_signatures_limit {
-            if let Some(removed) = self.seen_signatures_queue.pop_front() {
-                self.seen_signatures_set.remove(&removed);
+
+        let next_message = {
+            let ws_stream = ws.as_mut().expect("ws stream present after connect");
+            time::timeout(Duration::from_secs(WS_IDLE_TIMEOUT_SECS), ws_stream.next()).await
+        };
+
+        match next_message {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if let Some(mut notification) = HeliusWsSource::parse_logs_notification(&text) {
+                    runtime_config
+                        .telemetry
+                        .ws_notifications_seen
+                        .fetch_add(1, Ordering::Relaxed);
+                    if notification.is_failed {
+                        continue;
+                    }
+                    if is_seen_signature(&seen_signatures_set, &notification.signature) {
+                        continue;
+                    }
+
+                    arrival_seq = arrival_seq.saturating_add(1);
+                    notification.arrival_seq = arrival_seq;
+                    let signature = notification.signature.clone();
+
+                    match sig_tx.try_send(notification) {
+                        Ok(()) => {
+                            mark_seen_signature(
+                                &mut seen_signatures_set,
+                                &mut seen_signatures_queue,
+                                runtime_config.seen_signatures_limit,
+                                signature,
+                            );
+                            increment_atomic_usize(&ws_to_fetch_depth);
+                            runtime_config
+                                .telemetry
+                                .ws_notifications_enqueued
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(mpsc::error::TrySendError::Full(notification)) => {
+                            runtime_config
+                                .telemetry
+                                .ws_notifications_backpressured
+                                .fetch_add(1, Ordering::Relaxed);
+                            match sig_tx.send(notification).await {
+                                Ok(()) => {
+                                    mark_seen_signature(
+                                        &mut seen_signatures_set,
+                                        &mut seen_signatures_queue,
+                                        runtime_config.seen_signatures_limit,
+                                        signature,
+                                    );
+                                    increment_atomic_usize(&ws_to_fetch_depth);
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_enqueued
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(_) => {
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_dropped
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    warn!(
+                                        "signature queue receiver dropped while backpressured; stopping ws reader"
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            runtime_config
+                                .telemetry
+                                .ws_notifications_dropped
+                                .fetch_add(1, Ordering::Relaxed);
+                            warn!("signature queue receiver dropped; stopping ws reader");
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(Some(Ok(Message::Ping(payload)))) => {
+                if let Some(ws_stream) = ws.as_mut() {
+                    if let Err(error) = ws_stream.send(Message::Pong(payload)).await {
+                        warn!(error = %error, "failed to send ws pong");
+                        ws = None;
+                        sleep_with_backoff(
+                            &mut next_backoff_ms,
+                            runtime_config.reconnect_initial_ms,
+                            runtime_config.reconnect_max_ms,
+                        )
+                        .await;
+                    }
+                }
+            }
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                warn!(?frame, "helius ws closed");
+                ws = None;
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(error))) => {
+                warn!(error = %error, "helius ws stream error");
+                ws = None;
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
+            }
+            Ok(None) => {
+                warn!("helius ws stream ended");
+                ws = None;
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
+            }
+            Err(_) => {
+                warn!(
+                    idle_timeout_seconds = WS_IDLE_TIMEOUT_SECS,
+                    "helius ws idle timeout, reconnecting"
+                );
+                ws = None;
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
             }
         }
     }
+}
 
-    async fn sleep_with_backoff(&mut self) {
-        let delay = self
-            .next_backoff_ms
-            .clamp(self.reconnect_initial_ms, self.reconnect_max_ms);
-        time::sleep(Duration::from_millis(delay)).await;
-        self.next_backoff_ms = (delay.saturating_mul(2)).min(self.reconnect_max_ms);
+async fn fetch_worker_loop(
+    worker_id: usize,
+    runtime_config: Arc<HeliusRuntimeConfig>,
+    shared_sig_rx: Arc<AsyncMutex<mpsc::Receiver<LogsNotification>>>,
+    out_tx: mpsc::Sender<FetchedObservation>,
+    ws_to_fetch_depth: Arc<AtomicUsize>,
+    fetch_to_output_depth: Arc<AtomicUsize>,
+) {
+    loop {
+        let notification = {
+            let mut guard = shared_sig_rx.lock().await;
+            guard.recv().await
+        };
+
+        let Some(notification) = notification else {
+            debug!(
+                worker_id,
+                "fetch worker exiting because signature channel closed"
+            );
+            return;
+        };
+        decrement_atomic_usize(&ws_to_fetch_depth);
+
+        match fetch_swap_with_retries(runtime_config.as_ref(), notification).await {
+            Ok(Some(fetched)) => {
+                if out_tx.send(fetched).await.is_err() {
+                    warn!(worker_id, "output channel closed; stopping fetch worker");
+                    return;
+                }
+                increment_atomic_usize(&fetch_to_output_depth);
+            }
+            Ok(None) => {
+                runtime_config
+                    .telemetry
+                    .fetch_failed
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Err(error) => {
+                runtime_config
+                    .telemetry
+                    .fetch_failed
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(worker_id, error = %error, "fetch worker failed to parse transaction");
+            }
+        }
     }
+}
+
+async fn connect_ws_stream(
+    runtime_config: &HeliusRuntimeConfig,
+    request_id: &mut u64,
+) -> Result<HeliusWsStream> {
+    let (mut ws, _response) = connect_async(&runtime_config.ws_url)
+        .await
+        .with_context(|| format!("failed connecting to {}", runtime_config.ws_url))?;
+
+    for program_id in &runtime_config.interested_program_ids {
+        *request_id = request_id.saturating_add(1);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": *request_id,
+            "method": "logsSubscribe",
+            "params": [
+                {"mentions": [program_id]},
+                {"commitment": "confirmed"}
+            ]
+        });
+        ws.send(Message::Text(request.to_string().into()))
+            .await
+            .with_context(|| format!("failed sending logsSubscribe for {program_id}"))?;
+    }
+
+    info!(
+        ws_url = %runtime_config.ws_url,
+        programs = runtime_config.interested_program_ids.len(),
+        "helius ws connected and subscriptions sent"
+    );
+
+    Ok(ws)
+}
+
+async fn fetch_swap_with_retries(
+    runtime_config: &HeliusRuntimeConfig,
+    notification: LogsNotification,
+) -> Result<Option<FetchedObservation>> {
+    for attempt in 0..=runtime_config.tx_fetch_retries {
+        let started = Instant::now();
+        runtime_config
+            .telemetry
+            .fetch_inflight
+            .fetch_add(1, Ordering::Relaxed);
+        let result = fetch_swap_from_signature(
+            runtime_config,
+            &notification.signature,
+            notification.slot,
+            &notification.logs,
+        )
+        .await;
+        runtime_config
+            .telemetry
+            .fetch_inflight
+            .fetch_sub(1, Ordering::Relaxed);
+
+        match result {
+            Ok(Some(raw)) => {
+                runtime_config
+                    .telemetry
+                    .fetch_success
+                    .fetch_add(1, Ordering::Relaxed);
+                let fetch_latency_ms = started.elapsed().as_millis() as u64;
+                return Ok(Some(FetchedObservation {
+                    raw,
+                    arrival_seq: notification.arrival_seq,
+                    fetch_latency_ms,
+                }));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    signature = %notification.signature,
+                    attempt,
+                    "tx fetch attempt failed"
+                );
+            }
+        }
+
+        if attempt < runtime_config.tx_fetch_retries {
+            time::sleep(Duration::from_millis(
+                runtime_config.tx_fetch_retry_delay_ms,
+            ))
+            .await;
+        }
+    }
+
+    Ok(None)
+}
+
+async fn fetch_swap_from_signature(
+    runtime_config: &HeliusRuntimeConfig,
+    signature: &str,
+    slot_hint: u64,
+    logs_hint: &[String],
+) -> Result<Option<RawSwapObservation>> {
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "commitment": "confirmed",
+                "maxSupportedTransactionVersion": 0
+            }
+        ]
+    });
+
+    let response = runtime_config
+        .http_client
+        .post(&runtime_config.http_url)
+        .json(&request)
+        .send()
+        .await
+        .with_context(|| format!("failed getTransaction POST for {signature}"))?;
+
+    let status = response.status();
+    if status.as_u16() == 429 {
+        runtime_config
+            .telemetry
+            .rpc_429
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    if status.is_server_error() {
+        runtime_config
+            .telemetry
+            .rpc_5xx
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    let response: Value = response
+        .error_for_status()
+        .with_context(|| format!("non-success getTransaction status for {signature}"))?
+        .json()
+        .await
+        .with_context(|| format!("failed parsing getTransaction json for {signature}"))?;
+
+    if response.get("error").is_some() {
+        debug!(signature, error = ?response.get("error"), "rpc returned error");
+        return Ok(None);
+    }
+
+    let result = match response.get("result") {
+        Some(value) if !value.is_null() => value,
+        _ => return Ok(None),
+    };
+    let meta = match result.get("meta") {
+        Some(value) if !value.is_null() => value,
+        _ => return Ok(None),
+    };
+    if meta.get("err").map(|err| !err.is_null()).unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let account_keys = HeliusWsSource::extract_account_keys(result);
+    if account_keys.is_empty() {
+        return Ok(None);
+    }
+    let signer_index = account_keys
+        .iter()
+        .position(|(_, is_signer)| *is_signer)
+        .unwrap_or(0);
+    let signer = account_keys
+        .get(signer_index)
+        .map(|(pubkey, _)| pubkey.clone())
+        .ok_or_else(|| anyhow!("missing signer in parsed account keys"))?;
+
+    let mut program_ids = HeliusWsSource::extract_program_ids(result, meta, logs_hint);
+    if program_ids.is_empty() {
+        program_ids.extend(runtime_config.interested_program_ids.iter().cloned());
+    } else if !program_ids
+        .iter()
+        .any(|program| runtime_config.interested_program_ids.contains(program))
+    {
+        return Ok(None);
+    }
+
+    let (token_in, amount_in, token_out, amount_out) =
+        match HeliusWsSource::infer_swap_from_json_balances(meta, signer_index, &signer) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+
+    let block_time = result.get("blockTime").and_then(Value::as_i64);
+    let ts_utc = block_time
+        .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
+        .unwrap_or_else(Utc::now);
+    let slot = result
+        .get("slot")
+        .and_then(Value::as_u64)
+        .unwrap_or(slot_hint);
+    let logs = HeliusWsSource::value_to_string_vec(meta.get("logMessages"))
+        .unwrap_or_else(|| logs_hint.to_vec());
+    let dex_hint = HeliusWsSource::detect_dex_hint(
+        &program_ids,
+        &logs,
+        &runtime_config.raydium_program_ids,
+        &runtime_config.pumpswap_program_ids,
+    );
+
+    Ok(Some(RawSwapObservation {
+        signature: signature.to_string(),
+        slot,
+        signer,
+        token_in,
+        token_out,
+        amount_in,
+        amount_out,
+        program_ids: program_ids.into_iter().collect(),
+        dex_hint,
+        ts_utc,
+    }))
+}
+
+fn is_seen_signature(seen_signatures_set: &HashSet<String>, signature: &str) -> bool {
+    seen_signatures_set.contains(signature)
+}
+
+fn mark_seen_signature(
+    seen_signatures_set: &mut HashSet<String>,
+    seen_signatures_queue: &mut VecDeque<String>,
+    seen_signatures_limit: usize,
+    signature: String,
+) {
+    if seen_signatures_set.insert(signature.clone()) {
+        seen_signatures_queue.push_back(signature);
+    }
+    while seen_signatures_queue.len() > seen_signatures_limit {
+        if let Some(removed) = seen_signatures_queue.pop_front() {
+            seen_signatures_set.remove(&removed);
+        }
+    }
+}
+
+async fn sleep_with_backoff(next_backoff_ms: &mut u64, initial_ms: u64, max_ms: u64) {
+    let delay = (*next_backoff_ms).clamp(initial_ms, max_ms);
+    time::sleep(Duration::from_millis(delay)).await;
+    *next_backoff_ms = delay.saturating_mul(2).min(max_ms);
+}
+
+fn push_sample(samples: &mut VecDeque<u64>, value: u64, cap: usize) {
+    if samples.len() >= cap {
+        let _ = samples.pop_front();
+    }
+    samples.push_back(value);
+}
+
+fn percentile(values: &[u64], q: f64) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let idx = ((sorted.len() - 1) as f64 * q.clamp(0.0, 1.0)).round() as usize;
+    sorted[idx]
+}
+
+fn increment_atomic_usize(counter: &AtomicUsize) {
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+fn decrement_atomic_usize(counter: &AtomicUsize) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_sub(1))
+    });
 }
 
 #[cfg(test)]
@@ -788,5 +1434,158 @@ mod tests {
 
         let inferred = HeliusWsSource::infer_swap_from_json_balances(&meta, 0, signer);
         assert!(inferred.is_none(), "ambiguous multi-hop should be rejected");
+    }
+
+    #[test]
+    fn reorder_releases_oldest_slot_signature() {
+        let telemetry = Arc::new(IngestionTelemetry::default());
+        let runtime_config = Arc::new(HeliusRuntimeConfig {
+            ws_url: "wss://example".to_string(),
+            http_url: "https://example".to_string(),
+            reconnect_initial_ms: 500,
+            reconnect_max_ms: 8_000,
+            tx_fetch_retries: 1,
+            tx_fetch_retry_delay_ms: 50,
+            seen_signatures_limit: 100,
+            interested_program_ids: HashSet::new(),
+            raydium_program_ids: HashSet::new(),
+            pumpswap_program_ids: HashSet::new(),
+            http_client: Client::new(),
+            telemetry,
+        });
+
+        let mut source = HeliusWsSource {
+            runtime_config,
+            fetch_concurrency: 1,
+            ws_queue_capacity: 16,
+            output_queue_capacity: 16,
+            reorder_hold_ms: 1,
+            reorder_max_buffer: 8,
+            telemetry_report_seconds: 30,
+            pipeline: None,
+            reorder_buffer: BTreeMap::new(),
+        };
+
+        source.push_reorder_entry(FetchedObservation {
+            raw: RawSwapObservation {
+                signature: "b".to_string(),
+                slot: 20,
+                signer: "w".to_string(),
+                token_in: SOL_MINT.to_string(),
+                token_out: "t".to_string(),
+                amount_in: 1.0,
+                amount_out: 100.0,
+                program_ids: vec![],
+                dex_hint: "raydium".to_string(),
+                ts_utc: Utc::now(),
+            },
+            arrival_seq: 2,
+            fetch_latency_ms: 10,
+        });
+        source.push_reorder_entry(FetchedObservation {
+            raw: RawSwapObservation {
+                signature: "a".to_string(),
+                slot: 10,
+                signer: "w".to_string(),
+                token_in: SOL_MINT.to_string(),
+                token_out: "t".to_string(),
+                amount_in: 1.0,
+                amount_out: 100.0,
+                program_ids: vec![],
+                dex_hint: "raydium".to_string(),
+                ts_utc: Utc::now(),
+            },
+            arrival_seq: 1,
+            fetch_latency_ms: 10,
+        });
+
+        // Force early release via buffer cap branch.
+        source.reorder_max_buffer = 1;
+        let first = source
+            .pop_ready_observation()
+            .expect("first observation should be released");
+        assert_eq!(first.slot, 10);
+        assert_eq!(first.signature, "a");
+    }
+
+    #[test]
+    fn reorder_uses_arrival_sequence_within_same_slot() {
+        let telemetry = Arc::new(IngestionTelemetry::default());
+        let runtime_config = Arc::new(HeliusRuntimeConfig {
+            ws_url: "wss://example".to_string(),
+            http_url: "https://example".to_string(),
+            reconnect_initial_ms: 500,
+            reconnect_max_ms: 8_000,
+            tx_fetch_retries: 1,
+            tx_fetch_retry_delay_ms: 50,
+            seen_signatures_limit: 100,
+            interested_program_ids: HashSet::new(),
+            raydium_program_ids: HashSet::new(),
+            pumpswap_program_ids: HashSet::new(),
+            http_client: Client::new(),
+            telemetry,
+        });
+
+        let mut source = HeliusWsSource {
+            runtime_config,
+            fetch_concurrency: 1,
+            ws_queue_capacity: 16,
+            output_queue_capacity: 16,
+            reorder_hold_ms: 1,
+            reorder_max_buffer: 8,
+            telemetry_report_seconds: 30,
+            pipeline: None,
+            reorder_buffer: BTreeMap::new(),
+        };
+
+        source.push_reorder_entry(FetchedObservation {
+            raw: RawSwapObservation {
+                // Lexicographically smaller signature should NOT win inside same slot.
+                signature: "A-signature".to_string(),
+                slot: 50,
+                signer: "wallet".to_string(),
+                token_in: SOL_MINT.to_string(),
+                token_out: "mint".to_string(),
+                amount_in: 1.0,
+                amount_out: 100.0,
+                program_ids: vec![],
+                dex_hint: "raydium".to_string(),
+                ts_utc: Utc::now(),
+            },
+            arrival_seq: 2,
+            fetch_latency_ms: 5,
+        });
+        source.push_reorder_entry(FetchedObservation {
+            raw: RawSwapObservation {
+                signature: "Z-signature".to_string(),
+                slot: 50,
+                signer: "wallet".to_string(),
+                token_in: SOL_MINT.to_string(),
+                token_out: "mint".to_string(),
+                amount_in: 1.0,
+                amount_out: 100.0,
+                program_ids: vec![],
+                dex_hint: "raydium".to_string(),
+                ts_utc: Utc::now(),
+            },
+            arrival_seq: 1,
+            fetch_latency_ms: 5,
+        });
+
+        source.reorder_max_buffer = 1;
+        let first = source.pop_ready_observation().expect("first observation");
+        assert_eq!(first.signature, "Z-signature");
+    }
+
+    #[test]
+    fn parse_logs_notification_ignores_subscribe_ack() {
+        let ack = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": 99,
+        })
+        .to_string();
+
+        assert!(HeliusWsSource::parse_logs_notification(&ack).is_none());
     }
 }

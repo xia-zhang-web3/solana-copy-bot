@@ -53,15 +53,20 @@ async fn main() -> Result<()> {
 
     let ingestion = IngestionService::build(&config.ingestion)
         .context("failed to initialize ingestion service")?;
+    let discovery_http_url = select_role_helius_http_url(
+        &config.discovery.helius_http_url,
+        &config.ingestion.helius_http_url,
+    );
+    let shadow_http_url = select_role_helius_http_url(
+        &config.shadow.helius_http_url,
+        &config.ingestion.helius_http_url,
+    );
     let discovery = DiscoveryService::new_with_helius(
         config.discovery.clone(),
         config.shadow.clone(),
-        Some(config.ingestion.helius_http_url.clone()),
+        discovery_http_url,
     );
-    let shadow = ShadowService::new_with_helius(
-        config.shadow.clone(),
-        Some(config.ingestion.helius_http_url.clone()),
-    );
+    let shadow = ShadowService::new_with_helius(config.shadow.clone(), shadow_http_url);
 
     run_app_loop(
         store,
@@ -73,6 +78,8 @@ async fn main() -> Result<()> {
         config.discovery.refresh_seconds,
         config.shadow.refresh_seconds,
         config.shadow.max_signal_lag_seconds,
+        config.shadow.causal_holdback_enabled,
+        config.shadow.causal_holdback_ms,
     )
     .await
 }
@@ -87,6 +94,20 @@ fn parse_config_arg() -> Option<PathBuf> {
             return Some(PathBuf::from(inline));
         }
     }
+    None
+}
+
+fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
+    let role_specific = role_specific.trim();
+    if !role_specific.is_empty() && !role_specific.contains("REPLACE_ME") {
+        return Some(role_specific.to_string());
+    }
+
+    let fallback = fallback.trim();
+    if !fallback.is_empty() && !fallback.contains("REPLACE_ME") {
+        return Some(fallback.to_string());
+    }
+
     None
 }
 
@@ -141,6 +162,8 @@ async fn run_app_loop(
     discovery_refresh_seconds: u64,
     shadow_refresh_seconds: u64,
     shadow_max_signal_lag_seconds: u64,
+    shadow_causal_holdback_enabled: bool,
+    shadow_causal_holdback_ms: u64,
 ) -> Result<()> {
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
     let mut discovery_interval =
@@ -171,6 +194,8 @@ async fn run_app_loop(
     let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
     let mut shadow_queue_backpressure_active = false;
     let mut shadow_scheduler_needs_reset = false;
+    let mut held_shadow_sells: HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>> = HashMap::new();
+    let mut shadow_holdback_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
 
     if !follow_snapshot.active.is_empty() {
         info!(
@@ -205,6 +230,21 @@ async fn run_app_loop(
                 SHADOW_WORKER_POOL_SIZE,
             );
         }
+        release_held_shadow_sells(
+            &mut held_shadow_sells,
+            &mut pending_shadow_tasks,
+            &mut pending_shadow_task_count,
+            &mut ready_shadow_keys,
+            &mut ready_shadow_key_set,
+            &inflight_shadow_keys,
+            &open_shadow_lots,
+            &mut shadow_drop_reason_counts,
+            &mut shadow_drop_stage_counts,
+            &mut shadow_queue_full_outcome_counts,
+            &mut shadow_holdback_counts,
+            SHADOW_PENDING_TASK_CAPACITY,
+            Utc::now(),
+        );
 
         let shadow_queue_full = pending_shadow_task_count >= SHADOW_PENDING_TASK_CAPACITY;
         if shadow_queue_full && !shadow_queue_backpressure_active {
@@ -331,6 +371,13 @@ async fn run_app_loop(
                             );
                             shadow_queue_full_outcome_counts.clear();
                         }
+                        if !shadow_holdback_counts.is_empty() {
+                            info!(
+                                holdback_outcomes = ?shadow_holdback_counts,
+                                "shadow causal holdback outcomes"
+                            );
+                            shadow_holdback_counts.clear();
+                        }
                     }
                     Ok(Err(error)) => {
                         warn!(error = %error, "shadow snapshot failed");
@@ -368,6 +415,7 @@ async fn run_app_loop(
                             token_out = %swap.token_out,
                             amount_in = swap.amount_in,
                             amount_out = swap.amount_out,
+                            ingestion_lag_ms = (Utc::now() - swap.ts_utc).num_milliseconds().max(0),
                             "observed swap stored"
                         );
 
@@ -434,6 +482,24 @@ async fn run_app_loop(
                             follow_snapshot: Arc::clone(&follow_snapshot),
                             key: task_key,
                         };
+                        if should_hold_sell_for_causality(
+                            shadow_causal_holdback_enabled,
+                            shadow_causal_holdback_ms,
+                            side,
+                            &task_input.key,
+                            &pending_shadow_tasks,
+                            &inflight_shadow_keys,
+                            &open_shadow_lots,
+                        ) {
+                            hold_sell_for_causality(
+                                &mut held_shadow_sells,
+                                task_input,
+                                shadow_causal_holdback_ms,
+                                Utc::now(),
+                                &mut shadow_holdback_counts,
+                            );
+                            continue;
+                        }
                         if should_process_shadow_inline(
                             shadow_queue_full,
                             shadow_scheduler_needs_reset,
@@ -657,6 +723,11 @@ struct ShadowTaskInput {
     key: ShadowTaskKey,
 }
 
+struct HeldShadowSell {
+    task_input: ShadowTaskInput,
+    hold_until: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ShadowTaskKey {
     wallet: String,
@@ -702,6 +773,136 @@ fn key_has_pending_or_inflight(
         || pending_shadow_tasks
             .get(key)
             .is_some_and(|pending| !pending.is_empty())
+}
+
+fn should_hold_sell_for_causality(
+    holdback_enabled: bool,
+    holdback_ms: u64,
+    side: ShadowSwapSide,
+    key: &ShadowTaskKey,
+    pending_shadow_tasks: &HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    inflight_shadow_keys: &HashSet<ShadowTaskKey>,
+    open_shadow_lots: &HashSet<(String, String)>,
+) -> bool {
+    if !holdback_enabled || holdback_ms == 0 || !matches!(side, ShadowSwapSide::Sell) {
+        return false;
+    }
+    if key_has_pending_or_inflight(key, pending_shadow_tasks, inflight_shadow_keys) {
+        return false;
+    }
+    let key_tuple = (key.wallet.clone(), key.token.clone());
+    !open_shadow_lots.contains(&key_tuple)
+}
+
+fn hold_sell_for_causality(
+    held_shadow_sells: &mut HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>>,
+    task_input: ShadowTaskInput,
+    holdback_ms: u64,
+    now: DateTime<Utc>,
+    shadow_holdback_counts: &mut BTreeMap<&'static str, u64>,
+) {
+    let hold_until = now + chrono::Duration::milliseconds(holdback_ms.max(1) as i64);
+    held_shadow_sells
+        .entry(task_input.key.clone())
+        .or_default()
+        .push_back(HeldShadowSell {
+            task_input,
+            hold_until,
+        });
+    *shadow_holdback_counts.entry("queued").or_insert(0) += 1;
+}
+
+fn release_held_shadow_sells(
+    held_shadow_sells: &mut HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>>,
+    pending_shadow_tasks: &mut HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    pending_shadow_task_count: &mut usize,
+    ready_shadow_keys: &mut VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: &mut HashSet<ShadowTaskKey>,
+    inflight_shadow_keys: &HashSet<ShadowTaskKey>,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_holdback_counts: &mut BTreeMap<&'static str, u64>,
+    capacity: usize,
+    now: DateTime<Utc>,
+) {
+    let keys: Vec<ShadowTaskKey> = held_shadow_sells.keys().cloned().collect();
+    for key in keys {
+        loop {
+            let release_reason = match held_shadow_sells.get(&key).and_then(|queue| queue.front()) {
+                Some(front) => {
+                    let key_tuple = (key.wallet.clone(), key.token.clone());
+                    if open_shadow_lots.contains(&key_tuple) {
+                        Some("released_open_lot")
+                    } else if key_has_pending_or_inflight(
+                        &key,
+                        pending_shadow_tasks,
+                        inflight_shadow_keys,
+                    ) {
+                        Some("released_key_busy")
+                    } else if now >= front.hold_until {
+                        Some("released_expired")
+                    } else {
+                        Some("hold")
+                    }
+                }
+                None => None,
+            };
+
+            let Some(release_reason) = release_reason else {
+                break;
+            };
+            if release_reason == "hold" {
+                break;
+            }
+
+            let held_task = {
+                let Some(queue) = held_shadow_sells.get_mut(&key) else {
+                    break;
+                };
+                queue.pop_front()
+            };
+            let Some(held_task) = held_task else {
+                break;
+            };
+            *shadow_holdback_counts.entry(release_reason).or_insert(0) += 1;
+
+            if let Err(dropped_task) = enqueue_shadow_task(
+                pending_shadow_tasks,
+                pending_shadow_task_count,
+                ready_shadow_keys,
+                ready_shadow_key_set,
+                inflight_shadow_keys,
+                capacity,
+                held_task.task_input,
+            ) {
+                *shadow_holdback_counts
+                    .entry("release_enqueue_overflow")
+                    .or_insert(0) += 1;
+                handle_shadow_enqueue_overflow(
+                    ShadowSwapSide::Sell,
+                    dropped_task,
+                    pending_shadow_tasks,
+                    pending_shadow_task_count,
+                    ready_shadow_keys,
+                    ready_shadow_key_set,
+                    inflight_shadow_keys,
+                    capacity,
+                    shadow_drop_reason_counts,
+                    shadow_drop_stage_counts,
+                    shadow_queue_full_outcome_counts,
+                );
+            }
+        }
+
+        let remove_key = held_shadow_sells
+            .get(&key)
+            .is_some_and(|queue| queue.is_empty());
+        if remove_key {
+            held_shadow_sells.remove(&key);
+        }
+    }
 }
 
 fn should_process_shadow_inline(
@@ -1598,5 +1799,102 @@ mod app_tests {
 
         assert!(snapshot.is_followed_at("w", promoted + chrono::Duration::minutes(10)));
         assert!(!snapshot.is_followed_at("w", demoted + chrono::Duration::seconds(1)));
+    }
+
+    #[test]
+    fn select_role_helius_http_url_prefers_role_specific() {
+        let selected = select_role_helius_http_url(
+            "https://role.endpoint/?api-key=abc",
+            "https://fallback.endpoint/?api-key=def",
+        );
+        assert_eq!(
+            selected.as_deref(),
+            Some("https://role.endpoint/?api-key=abc")
+        );
+    }
+
+    #[test]
+    fn select_role_helius_http_url_falls_back_and_rejects_placeholders() {
+        let selected = select_role_helius_http_url(
+            "https://role.endpoint/?api-key=REPLACE_ME",
+            "https://fallback.endpoint/?api-key=def",
+        );
+        assert_eq!(
+            selected.as_deref(),
+            Some("https://fallback.endpoint/?api-key=def")
+        );
+
+        let selected_none = select_role_helius_http_url("", "https://x/?api-key=REPLACE_ME");
+        assert!(selected_none.is_none());
+    }
+
+    #[test]
+    fn causal_holdback_holds_sell_without_open_lot_or_pending_key() {
+        let key = ShadowTaskKey {
+            wallet: "wallet-a".to_string(),
+            token: "token-x".to_string(),
+        };
+        let pending: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> = HashMap::new();
+        let inflight: HashSet<ShadowTaskKey> = HashSet::new();
+        let open_lots: HashSet<(String, String)> = HashSet::new();
+
+        assert!(should_hold_sell_for_causality(
+            true,
+            2500,
+            ShadowSwapSide::Sell,
+            &key,
+            &pending,
+            &inflight,
+            &open_lots,
+        ));
+    }
+
+    #[test]
+    fn causal_holdback_skips_when_open_lot_or_pending_exists() {
+        let key = ShadowTaskKey {
+            wallet: "wallet-a".to_string(),
+            token: "token-x".to_string(),
+        };
+        let pending_task = ShadowTaskInput {
+            swap: SwapEvent {
+                wallet: "wallet-a".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-x".to_string(),
+                amount_in: 1.0,
+                amount_out: 1000.0,
+                signature: "sig-pending".to_string(),
+                slot: 1,
+                ts_utc: Utc::now(),
+            },
+            follow_snapshot: Arc::new(FollowSnapshot::default()),
+            key: key.clone(),
+        };
+        let mut pending: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> = HashMap::new();
+        pending.insert(key.clone(), VecDeque::from([pending_task]));
+        let inflight: HashSet<ShadowTaskKey> = HashSet::new();
+        let open_lots: HashSet<(String, String)> = HashSet::new();
+
+        assert!(!should_hold_sell_for_causality(
+            true,
+            2500,
+            ShadowSwapSide::Sell,
+            &key,
+            &pending,
+            &inflight,
+            &open_lots,
+        ));
+
+        let pending_empty: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> = HashMap::new();
+        let open_lots_yes = HashSet::from([(key.wallet.clone(), key.token.clone())]);
+        assert!(!should_hold_sell_for_causality(
+            true,
+            2500,
+            ShadowSwapSide::Sell,
+            &key,
+            &pending_empty,
+            &inflight,
+            &open_lots_yes,
+        ));
     }
 }

@@ -42,6 +42,31 @@ SOLANA_COPY_BOT_HELIUS_HTTP_URL="https://mainnet.helius-rpc.com/?api-key=<YOUR_K
 cargo run -p copybot-app
 ```
 
+Use dedicated HTTP RPC endpoints for quality-refresh workloads (recommended):
+
+```bash
+SOLANA_COPY_BOT_DISCOVERY_HELIUS_HTTP_URL="https://mainnet.helius-rpc.com/?api-key=<DISCOVERY_KEY>" \
+SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL="https://mainnet.helius-rpc.com/?api-key=<SHADOW_KEY>"
+```
+
+Tune ingestion parallel pipeline from env:
+
+```bash
+SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY=12 \
+SOLANA_COPY_BOT_INGESTION_WS_QUEUE_CAPACITY=4096 \
+SOLANA_COPY_BOT_INGESTION_OUTPUT_QUEUE_CAPACITY=2048 \
+SOLANA_COPY_BOT_INGESTION_REORDER_HOLD_MS=1500 \
+SOLANA_COPY_BOT_INGESTION_REORDER_MAX_BUFFER=1024 \
+SOLANA_COPY_BOT_INGESTION_TELEMETRY_REPORT_SECONDS=30
+```
+
+Optional sell causal holdback controls:
+
+```bash
+SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED=true \
+SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_MS=2500
+```
+
 Optional program filters override:
 
 ```bash
@@ -60,7 +85,10 @@ SOLANA_COPY_BOT_PROGRAM_IDS="675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8,pAMMBa
 ## Notes
 
 - `ingestion.source="mock"` generates synthetic swaps and stores them in SQLite.
-- `ingestion.source="helius_ws"` uses `logsSubscribe` for target program IDs and `getTransaction` for full swap parsing.
+- `ingestion.source="helius_ws"` uses `logsSubscribe` for target program IDs and a bounded parallel `getTransaction` worker pool for full swap parsing.
+- ingestion includes bounded reorder-by-`(slot, arrival_seq, signature)` holdback to reduce out-of-order processing risk.
+- shadow scheduler supports per-`(wallet, token)` sell causal holdback before release into processing queue.
+- ingestion emits periodic pipeline metrics (`ws_to_fetch_queue_depth`, `ws_notifications_backpressured`, `fetch_latency_ms`, `ingestion_lag_ms`, `reorder_buffer_size`, RPC `429/5xx` counters).
 - discovery cycle runs every `discovery.refresh_seconds` and recalculates score/follow-list.
 - If URLs are invalid/missing key, bot fails closed for entries and keeps retrying stream connection.
 - Execution/copy trading logic is not implemented yet.

@@ -59,6 +59,12 @@ pub struct IngestionConfig {
     pub source: String,
     pub helius_ws_url: String,
     pub helius_http_url: String,
+    pub fetch_concurrency: usize,
+    pub ws_queue_capacity: usize,
+    pub output_queue_capacity: usize,
+    pub reorder_hold_ms: u64,
+    pub reorder_max_buffer: usize,
+    pub telemetry_report_seconds: u64,
     pub subscribe_program_ids: Vec<String>,
     pub raydium_program_ids: Vec<String>,
     pub pumpswap_program_ids: Vec<String>,
@@ -77,6 +83,12 @@ impl Default for IngestionConfig {
             source: "mock".to_string(),
             helius_ws_url: "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_url: "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
+            fetch_concurrency: 8,
+            ws_queue_capacity: 2048,
+            output_queue_capacity: 1024,
+            reorder_hold_ms: 2000,
+            reorder_max_buffer: 512,
+            telemetry_report_seconds: 30,
             subscribe_program_ids: Vec::new(),
             raydium_program_ids: vec![
                 "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
@@ -101,6 +113,7 @@ pub struct DiscoveryConfig {
     pub decay_window_days: u32,
     pub follow_top_n: u32,
     pub min_leader_notional_sol: f64,
+    pub helius_http_url: String,
     pub refresh_seconds: u64,
     pub min_trades: u32,
     pub min_active_days: u32,
@@ -121,6 +134,7 @@ impl Default for DiscoveryConfig {
             decay_window_days: 7,
             follow_top_n: 20,
             min_leader_notional_sol: 0.5,
+            helius_http_url: String::new(),
             refresh_seconds: 300,
             min_trades: 8,
             min_active_days: 3,
@@ -152,6 +166,9 @@ pub struct RiskConfig {
 #[serde(default)]
 pub struct ShadowConfig {
     pub enabled: bool,
+    pub helius_http_url: String,
+    pub causal_holdback_enabled: bool,
+    pub causal_holdback_ms: u64,
     pub refresh_seconds: u64,
     pub copy_notional_sol: f64,
     pub min_leader_notional_sol: f64,
@@ -168,6 +185,9 @@ impl Default for ShadowConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            helius_http_url: String::new(),
+            causal_holdback_enabled: true,
+            causal_holdback_ms: 2_500,
             refresh_seconds: 60,
             copy_notional_sol: 0.25,
             min_leader_notional_sol: 0.5,
@@ -220,6 +240,61 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(http_url) = env::var("SOLANA_COPY_BOT_HELIUS_HTTP_URL") {
         config.ingestion.helius_http_url = http_url;
     }
+    if let Some(fetch_concurrency) = env::var("SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.ingestion.fetch_concurrency = fetch_concurrency;
+    }
+    if let Some(ws_queue_capacity) = env::var("SOLANA_COPY_BOT_INGESTION_WS_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.ingestion.ws_queue_capacity = ws_queue_capacity;
+    }
+    if let Some(output_queue_capacity) = env::var("SOLANA_COPY_BOT_INGESTION_OUTPUT_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.ingestion.output_queue_capacity = output_queue_capacity;
+    }
+    if let Some(reorder_hold_ms) = env::var("SOLANA_COPY_BOT_INGESTION_REORDER_HOLD_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.reorder_hold_ms = reorder_hold_ms;
+    }
+    if let Some(reorder_max_buffer) = env::var("SOLANA_COPY_BOT_INGESTION_REORDER_MAX_BUFFER")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.ingestion.reorder_max_buffer = reorder_max_buffer;
+    }
+    if let Some(telemetry_report_seconds) =
+        env::var("SOLANA_COPY_BOT_INGESTION_TELEMETRY_REPORT_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.telemetry_report_seconds = telemetry_report_seconds;
+    }
+    if let Ok(discovery_http_url) = env::var("SOLANA_COPY_BOT_DISCOVERY_HELIUS_HTTP_URL") {
+        config.discovery.helius_http_url = discovery_http_url;
+    }
+    if let Ok(shadow_http_url) = env::var("SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL") {
+        config.shadow.helius_http_url = shadow_http_url;
+    }
+    if let Some(holdback_enabled) = env::var("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED")
+        .ok()
+        .and_then(parse_env_bool)
+    {
+        config.shadow.causal_holdback_enabled = holdback_enabled;
+    }
+    if let Some(holdback_ms) = env::var("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.causal_holdback_ms = holdback_ms;
+    }
     if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_PROGRAM_IDS") {
         let values: Vec<String> = program_ids_csv
             .split(',')
@@ -233,4 +308,12 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     }
 
     Ok((config, configured))
+}
+
+fn parse_env_bool(value: String) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
