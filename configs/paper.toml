@@ -14,9 +14,9 @@ source = "helius_ws"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_urls = []
-fetch_concurrency = 8
-ws_queue_capacity = 4096
-output_queue_capacity = 4096
+fetch_concurrency = 4
+ws_queue_capacity = 512
+output_queue_capacity = 2048
 prefetch_stale_drop_ms = 30000
 seen_signatures_ttl_ms = 600000
 queue_overflow_policy = "drop_oldest"
@@ -98,9 +98,9 @@ shadow_rug_loss_count_threshold = 3
 shadow_rug_loss_rate_sample_size = 200
 shadow_rug_loss_rate_threshold = 0.04
 shadow_infra_window_minutes = 20
-shadow_infra_lag_p95_threshold_ms = 30000
+shadow_infra_lag_p95_threshold_ms = 10000
 shadow_infra_lag_breach_minutes = 10
-shadow_infra_replaced_ratio_threshold = 0.97
+shadow_infra_replaced_ratio_threshold = 0.85
 shadow_infra_rpc429_delta_threshold = 5
 shadow_infra_rpc5xx_delta_threshold = 20
 shadow_universe_min_active_follow_wallets = 15
