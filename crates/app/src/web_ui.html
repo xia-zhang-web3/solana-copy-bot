@@ -26,6 +26,7 @@
       color: var(--text);
       background: var(--bg);
       min-height: 100vh;
+      overflow-x: hidden;
     }
     .brand-font {
       font-family: "Space Grotesk", sans-serif;
@@ -153,6 +154,11 @@
     .pager-btn:disabled {
       opacity: .45;
       cursor: not-allowed;
+    }
+    .event-line {
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
   </style>
 </head>
@@ -307,6 +313,7 @@
 
       <section id="view-discovery" class="view-pane space-y-4">
         <article class="panel p-4">
+          <div id="discoveryRuntime" class="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600"></div>
           <div class="mb-3 flex items-center justify-between gap-3">
             <h3 class="panel-title">Discovery Top Wallets</h3>
             <div class="flex items-center gap-2 text-xs">
@@ -340,7 +347,7 @@
             <h3 class="panel-title">Live Event Feed</h3>
             <span id="eventCount" class="text-xs text-slate-600">0 events</span>
           </div>
-          <div id="eventFeed" class="mono max-h-[72vh] space-y-1 overflow-auto rounded-xl border border-slate-300 bg-[#0f172a] p-3 text-xs text-slate-100"></div>
+          <div id="eventFeed" class="mono max-h-[72vh] space-y-1 overflow-auto overflow-x-hidden rounded-xl border border-slate-300 bg-[#0f172a] p-3 text-xs text-slate-100"></div>
         </article>
       </section>
     </main>
@@ -416,6 +423,7 @@
       alerts: document.getElementById("alerts"),
       riskSnapshot: document.getElementById("riskSnapshot"),
       pipelineSnapshot: document.getElementById("pipelineSnapshot"),
+      discoveryRuntime: document.getElementById("discoveryRuntime"),
       lotsTable: document.getElementById("lotsTable"),
       tradesTable: document.getElementById("tradesTable"),
       signalsTable: document.getElementById("signalsTable"),
@@ -706,7 +714,18 @@
       updatePager("signals", items.length);
     }
 
-    function renderDiscovery(metrics) {
+    function renderDiscovery(payload) {
+      const runtime = payload?.runtime || {};
+      const metrics = payload?.top_metrics || [];
+      const queryError = payload?.query_error || null;
+      els.discoveryRuntime.innerHTML = `
+        <div class="grid grid-cols-1 gap-1 md:grid-cols-3">
+          <div><span class="text-slate-500">Last cycle:</span> <span class="mono">${fmtTs(runtime.last_cycle_ts)}</span></div>
+          <div><span class="text-slate-500">Eligible wallets:</span> <span class="mono">${runtime.eligible_wallets ?? 0}</span></div>
+          <div><span class="text-slate-500">Active follow:</span> <span class="mono">${runtime.active_follow_wallets ?? 0}</span></div>
+        </div>
+        ${queryError ? `<div class="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800">Metrics query degraded: ${queryError}</div>` : ""}
+      `;
       if (!metrics || !metrics.length) {
         els.discoveryTable.innerHTML = tableEmptyRow(7);
         updatePager("discovery", 0);
@@ -739,8 +758,9 @@
           e.type === "risk_state_changed" ? "text-amber-300" :
           e.type === "lagged" ? "text-rose-300" :
           "text-sky-300";
-        const payload = typeof e.payload === "object" ? JSON.stringify(e.payload) : String(e.payload ?? "");
-        return `<div class="border-b border-slate-700/60 pb-1 ${color}">
+        const rawPayload = typeof e.payload === "object" ? JSON.stringify(e.payload) : String(e.payload ?? "");
+        const payload = rawPayload.length > 1200 ? `${rawPayload.slice(0, 1200)} …[truncated]` : rawPayload;
+        return `<div class="event-line border-b border-slate-700/60 pb-1 ${color}">
           [${fmtTs(e.ts)}] ${e.type}: <span class="text-slate-200">${payload}</span>
         </div>`;
       }).join("");
@@ -825,7 +845,7 @@
         return;
       }
       if (name === "discovery") {
-        renderDiscovery(data.top_metrics || []);
+        renderDiscovery(data);
       }
     }
 
