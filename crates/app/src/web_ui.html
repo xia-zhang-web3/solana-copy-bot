@@ -362,7 +362,6 @@
     const eventFeedLimit = 200;
     const refreshCooldownMs = 6000;
     const requestTimeoutMs = 10000;
-    const discoveryRequestTimeoutMs = 35000;
     const eventFeedRenderMs = 350;
     const wsViewTriggers = {
       overview: new Set(["lot_opened", "lot_closed", "signal_recorded", "risk_state_changed", "health_alert"]),
@@ -516,17 +515,10 @@
       return `${url.pathname}${url.search}`;
     }
 
-    function timeoutForPath(path) {
-      if (String(path || "").startsWith("/api/discovery")) {
-        return discoveryRequestTimeoutMs;
-      }
-      return requestTimeoutMs;
-    }
-
     async function apiGet(path) {
       if (!state.token) throw new Error("token is empty");
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutForPath(path));
+      const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
       let res;
       try {
         res = await fetch(apiPathWithToken(path), {
