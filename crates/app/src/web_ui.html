@@ -249,13 +249,30 @@
     const short = (s, n = 8) => s ? `${s.slice(0, n)}…${s.slice(-4)}` : "—";
     const toColor = (v) => (Number(v) >= 0 ? "text-emerald-300" : "text-rose-300");
     const eventFeedLimit = 200;
+    const refreshCooldownMs = 1200;
+    const requestTimeoutMs = 8000;
+    const wsRefreshFast = new Set(["lot_opened", "lot_closed", "signal_recorded", "discovery_cycle_done", "health_alert", "lagged"]);
+    const wsRefreshSlow = new Set(["signal_dropped", "risk_state_changed", "ingestion_snapshot", "queue_event", "shadow_error"]);
+
+    function normalizeToken(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      if (raw.toLowerCase().startsWith("bearer ")) {
+        return raw.slice(7).trim();
+      }
+      return raw;
+    }
 
     const state = {
-      token: localStorage.getItem("copybot_token") || "",
+      token: normalizeToken(localStorage.getItem("copybot_token")),
       ws: null,
       events: [],
       refreshTimer: null,
       wsRetryTimer: null,
+      refreshDebounceTimer: null,
+      refreshInFlight: false,
+      refreshQueued: false,
+      lastRefreshStartedAt: 0,
     };
 
     const els = {
@@ -293,11 +310,33 @@
       };
     }
 
+    function apiPathWithToken(path) {
+      const url = new URL(path, location.origin);
+      if (state.token) {
+        url.searchParams.set("token", state.token);
+      }
+      return `${url.pathname}${url.search}`;
+    }
+
     async function apiGet(path) {
       if (!state.token) throw new Error("token is empty");
-      const res = await fetch(path, {
-        headers: authHeaders(),
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+      let res;
+      try {
+        res = await fetch(apiPathWithToken(path), {
+          headers: authHeaders(),
+          signal: controller.signal,
+          cache: "no-store",
+        });
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          throw new Error(`timeout: ${path}`);
+        }
+        throw new Error(`network error: ${path}`);
+      } finally {
+        clearTimeout(timeout);
+      }
       if (!res.ok) {
         const payload = await res.json().catch(() => ({}));
         const msg = payload.error || `${res.status} ${res.statusText}`;
@@ -502,20 +541,56 @@
           return;
         }
         pushEvent(payload);
-        if (payload.type === "lagged") {
-          refreshAll();
+        if (wsRefreshFast.has(payload.type)) {
+          queueRefresh(true);
           return;
         }
-        if (["signal_recorded", "signal_dropped", "lot_opened", "lot_closed", "risk_state_changed", "ingestion_snapshot", "discovery_cycle_done", "health_alert"].includes(payload.type)) {
-          refreshAll();
+        if (wsRefreshSlow.has(payload.type)) {
+          queueRefresh(false);
         }
       };
     }
 
+    function queueRefresh(immediate = false) {
+      if (!state.token) return;
+      if (state.refreshInFlight) {
+        state.refreshQueued = true;
+        return;
+      }
+      const elapsed = Date.now() - state.lastRefreshStartedAt;
+      if (!immediate && elapsed < refreshCooldownMs) {
+        const waitMs = refreshCooldownMs - elapsed;
+        if (state.refreshDebounceTimer) return;
+        state.refreshDebounceTimer = setTimeout(() => {
+          state.refreshDebounceTimer = null;
+          queueRefresh(true);
+        }, waitMs);
+        return;
+      }
+      refreshAll();
+    }
+
+    function settledValue(result, name, failures) {
+      if (result.status === "fulfilled") return result.value;
+      const message = String(result.reason?.message || result.reason || "unknown error");
+      failures.push(`${name}: ${message}`);
+      return null;
+    }
+
     async function refreshAll() {
+      if (!state.token) {
+        setApiStatus("set token first", "bg-amber-400");
+        return;
+      }
+      if (state.refreshInFlight) {
+        state.refreshQueued = true;
+        return;
+      }
+      state.refreshInFlight = true;
+      state.lastRefreshStartedAt = Date.now();
       try {
         setApiStatus("loading", "bg-amber-400");
-        const [dashboard, lots, trades, signals, risk, ingestion, discovery] = await Promise.all([
+        const responses = await Promise.allSettled([
           apiGet("/api/dashboard"),
           apiGet("/api/lots?limit=200"),
           apiGet("/api/trades?limit=200"),
@@ -524,32 +599,70 @@
           apiGet("/api/ingestion"),
           apiGet("/api/discovery"),
         ]);
-        renderKpis(dashboard);
-        renderAlerts(dashboard.health_alerts || []);
-        renderRisk(risk.runtime || {});
-        renderPipeline(ingestion.runtime || {}, ingestion.scheduler || {});
-        renderLots(lots.lots || []);
-        renderTrades(trades.trades || []);
-        renderSignals(signals.items || []);
-        renderDiscovery(discovery.top_metrics || []);
-        setApiStatus("ok", "bg-emerald-400");
-        els.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+        const failures = [];
+        const dashboard = settledValue(responses[0], "dashboard", failures);
+        const lots = settledValue(responses[1], "lots", failures);
+        const trades = settledValue(responses[2], "trades", failures);
+        const signals = settledValue(responses[3], "signals", failures);
+        const risk = settledValue(responses[4], "risk", failures);
+        const ingestion = settledValue(responses[5], "ingestion", failures);
+        const discovery = settledValue(responses[6], "discovery", failures);
+
+        if (dashboard) {
+          renderKpis(dashboard);
+          renderAlerts(dashboard.health_alerts || []);
+        }
+        if (risk?.runtime) {
+          renderRisk(risk.runtime);
+        } else if (dashboard?.runtime?.risk) {
+          renderRisk(dashboard.runtime.risk);
+        }
+        if (ingestion?.runtime || ingestion?.scheduler) {
+          renderPipeline(ingestion.runtime || {}, ingestion.scheduler || {});
+        } else if (dashboard?.runtime?.ingestion || dashboard?.runtime?.scheduler) {
+          renderPipeline(dashboard.runtime.ingestion || {}, dashboard.runtime.scheduler || {});
+        }
+        if (lots?.lots) renderLots(lots.lots);
+        if (trades?.trades) renderTrades(trades.trades);
+        if (signals?.items) renderSignals(signals.items);
+        if (discovery?.top_metrics) renderDiscovery(discovery.top_metrics);
+
+        if (failures.length === 0) {
+          setApiStatus("ok", "bg-emerald-400");
+          els.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+        } else if (failures.length < responses.length) {
+          const summary = failures[0].slice(0, 90);
+          setApiStatus(`degraded: ${summary}`, "bg-amber-400");
+          if (dashboard || lots || trades || signals || risk || ingestion || discovery) {
+            els.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+          }
+        } else {
+          const summary = failures[0].slice(0, 90);
+          setApiStatus(summary, "bg-rose-400");
+        }
       } catch (err) {
-        setApiStatus(String(err.message || err), "bg-rose-400");
+        setApiStatus(String(err?.message || err), "bg-rose-400");
+      } finally {
+        state.refreshInFlight = false;
+        if (state.refreshQueued) {
+          state.refreshQueued = false;
+          queueRefresh(true);
+        }
       }
     }
 
     function saveToken() {
-      state.token = els.tokenInput.value.trim();
+      state.token = normalizeToken(els.tokenInput.value);
+      els.tokenInput.value = state.token;
       localStorage.setItem("copybot_token", state.token);
       state.events = [];
       pushEvent({ type: "local", ts: new Date().toISOString(), payload: { message: "token updated" }});
       connectWs();
-      refreshAll();
+      queueRefresh(true);
     }
 
     els.saveTokenBtn.addEventListener("click", saveToken);
-    els.refreshBtn.addEventListener("click", refreshAll);
+    els.refreshBtn.addEventListener("click", () => queueRefresh(true));
     els.tokenInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") saveToken();
     });
@@ -561,9 +674,9 @@
         return;
       }
       connectWs();
-      refreshAll();
+      queueRefresh(true);
       if (state.refreshTimer) clearInterval(state.refreshTimer);
-      state.refreshTimer = setInterval(refreshAll, 15000);
+      state.refreshTimer = setInterval(() => queueRefresh(false), 15000);
     }
 
     bootstrap();
