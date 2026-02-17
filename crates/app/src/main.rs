@@ -33,7 +33,6 @@ const RISK_DB_REFRESH_MIN_SECONDS: i64 = 5;
 const RISK_INFRA_SAMPLE_MIN_SECONDS: i64 = 10;
 const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
 const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
-const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -823,7 +822,6 @@ async fn run_app_loop(
     let mut open_shadow_lots = store
         .list_shadow_open_pairs()
         .context("failed to load open shadow lot index")?;
-    let stale_lot_max_hold_hours = risk_config.max_hold_hours;
     let mut shadow_risk_guard = ShadowRiskGuard::new(risk_config);
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -1515,27 +1513,6 @@ async fn run_app_loop(
                 )));
             }
             _ = shadow_interval.tick() => {
-                let cleanup_now = Utc::now();
-                match close_stale_shadow_lots(
-                    &store,
-                    web_runtime.as_ref(),
-                    &mut open_shadow_lots,
-                    stale_lot_max_hold_hours,
-                    cleanup_now,
-                ) {
-                    Ok((closed, skipped)) if closed > 0 || skipped > 0 => {
-                        info!(
-                            closed,
-                            skipped,
-                            max_hold_hours = stale_lot_max_hold_hours,
-                            "stale lot cleanup tick"
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        warn!(error = %error, "stale lot cleanup failed");
-                    }
-                }
                 if shadow_snapshot_handle.is_some() {
                     warn!("shadow snapshot still running, skipping scheduled trigger");
                     continue;
@@ -1557,118 +1534,6 @@ async fn run_app_loop(
         .record_heartbeat("copybot-app", "shutdown")
         .context("failed to write shutdown heartbeat")?;
     Ok(())
-}
-
-fn close_stale_shadow_lots(
-    store: &SqliteStore,
-    web_runtime: Option<&WebRuntimeHandle>,
-    open_shadow_lots: &mut HashSet<(String, String)>,
-    max_hold_hours: u32,
-    now: DateTime<Utc>,
-) -> Result<(u64, u64)> {
-    if max_hold_hours == 0 {
-        return Ok((0, 0));
-    }
-
-    let cutoff = now - chrono::Duration::hours(max_hold_hours as i64);
-    let stale_lots = store
-        .list_open_shadow_lots_older_than(cutoff, STALE_LOT_CLEANUP_BATCH_LIMIT)
-        .context("failed to list stale shadow lots")?;
-    if stale_lots.is_empty() {
-        return Ok((0, 0));
-    }
-
-    let mut closed = 0u64;
-    let mut skipped_unpriced = 0u64;
-
-    for lot in stale_lots {
-        if lot.qty <= 1e-12 {
-            continue;
-        }
-
-        let Some(exit_price_sol) = store.latest_token_sol_price(&lot.token, now)? else {
-            skipped_unpriced = skipped_unpriced.saturating_add(1);
-            continue;
-        };
-        if exit_price_sol <= 0.0 {
-            skipped_unpriced = skipped_unpriced.saturating_add(1);
-            continue;
-        }
-
-        let signal_id = format!("stale-close-{}-{}", lot.id, now.timestamp_millis());
-        let close = store
-            .close_shadow_lots_fifo_atomic(
-                &signal_id,
-                &lot.wallet_id,
-                &lot.token,
-                lot.qty,
-                exit_price_sol,
-                now,
-            )
-            .with_context(|| {
-                format!(
-                    "failed stale-close wallet={} token={} lot_id={}",
-                    lot.wallet_id, lot.token, lot.id
-                )
-            })?;
-        if close.closed_qty <= 1e-12 {
-            continue;
-        }
-
-        let key = (lot.wallet_id.clone(), lot.token.clone());
-        if close.has_open_lots_after {
-            open_shadow_lots.insert(key);
-        } else {
-            open_shadow_lots.remove(&key);
-        }
-
-        let age_seconds = (now - lot.opened_ts).num_seconds().max(0);
-        let payload = json!({
-            "stage": "stale_cleanup",
-            "reason": "max_hold_exceeded",
-            "lot_id": lot.id,
-            "signal_id": signal_id,
-            "wallet": lot.wallet_id,
-            "token": lot.token,
-            "max_hold_hours": max_hold_hours,
-            "age_seconds": age_seconds,
-            "qty": close.closed_qty,
-            "entry_cost_sol": lot.cost_sol,
-            "exit_price_sol": exit_price_sol,
-            "realized_pnl_sol": close.realized_pnl_sol,
-            "has_open_lots_after": close.has_open_lots_after,
-        });
-        let payload_json = payload.to_string();
-        if let Err(error) = store.insert_ui_event(
-            "lot_closed",
-            Some("stale_cleanup"),
-            Some("max_hold_exceeded"),
-            Some(&lot.wallet_id),
-            Some(&lot.token),
-            None,
-            Some(&payload_json),
-            now,
-        ) {
-            warn!(error = %error, "failed to persist stale lot close ui_event");
-        }
-        if let Some(web) = web_runtime {
-            web.publish_event("lot_closed", payload);
-        }
-
-        info!(
-            wallet = %lot.wallet_id,
-            token = %lot.token,
-            lot_id = lot.id,
-            age_seconds,
-            max_hold_hours,
-            closed_qty = close.closed_qty,
-            realized_pnl_sol = close.realized_pnl_sol,
-            "stale lot auto-closed"
-        );
-        closed = closed.saturating_add(1);
-    }
-
-    Ok((closed, skipped_unpriced))
 }
 
 fn reason_to_key(reason: ShadowDropReason) -> &'static str {
@@ -2559,7 +2424,6 @@ fn shadow_task(
 #[cfg(test)]
 mod app_tests {
     use super::*;
-    use copybot_core_types::SwapEvent;
     use std::path::{Path, PathBuf};
 
     fn make_test_store(name: &str) -> Result<(SqliteStore, PathBuf)> {
@@ -2576,49 +2440,6 @@ mod app_tests {
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
         Ok((store, db_path))
-    }
-
-    #[test]
-    fn stale_lot_cleanup_closes_old_lots_using_latest_price() -> Result<()> {
-        let (store, db_path) = make_test_store("stale-lot-cleanup")?;
-        let now = DateTime::parse_from_rfc3339("2026-02-17T15:00:00Z")
-            .context("failed to parse now ts")?
-            .with_timezone(&Utc);
-        let opened_ts = now - chrono::Duration::hours(12);
-        let wallet = "wallet-stale";
-        let token = "token-stale";
-        store.insert_shadow_lot(wallet, token, 100.0, 0.20, opened_ts)?;
-
-        let swap = SwapEvent {
-            signature: "sig-price-stale-cleanup".to_string(),
-            wallet: "oracle-wallet".to_string(),
-            dex: "raydium".to_string(),
-            token_in: token.to_string(),
-            token_out: "So11111111111111111111111111111111111111112".to_string(),
-            amount_in: 100.0,
-            amount_out: 0.20,
-            slot: 1,
-            ts_utc: now - chrono::Duration::minutes(1),
-        };
-        store.insert_observed_swap(&swap)?;
-
-        let mut open_pairs = store.list_shadow_open_pairs()?;
-        let (closed, skipped) = close_stale_shadow_lots(&store, None, &mut open_pairs, 8, now)?;
-        assert_eq!(closed, 1, "expected one stale lot to be closed");
-        assert_eq!(skipped, 0, "expected stale lot to be priced");
-        assert!(
-            !store.has_shadow_lots(wallet, token)?,
-            "stale lot should be fully closed"
-        );
-        let closed_trades = store.list_recent_shadow_closed_trades(10, 0)?;
-        assert_eq!(closed_trades.len(), 1, "expected one closed trade row");
-        assert!(
-            closed_trades[0].signal_id.starts_with("stale-close-"),
-            "stale cleanup should write synthetic signal id"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-        Ok(())
     }
 
     #[test]

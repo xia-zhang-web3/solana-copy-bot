@@ -1034,52 +1034,6 @@ impl SqliteStore {
         Ok(lots)
     }
 
-    pub fn list_open_shadow_lots_older_than(
-        &self,
-        cutoff: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<Vec<ShadowLotRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, wallet_id, token, qty, cost_sol, opened_ts
-                 FROM shadow_lots
-                 WHERE qty > 0
-                   AND opened_ts <= ?1
-                 ORDER BY opened_ts ASC, id ASC
-                 LIMIT ?2",
-            )
-            .context("failed to prepare stale open shadow lots query")?;
-        let mut rows = stmt
-            .query(params![cutoff.to_rfc3339(), limit.max(1) as i64])
-            .context("failed querying stale open shadow lots")?;
-
-        let mut lots = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .context("failed iterating stale open shadow lots")?
-        {
-            let opened_ts_raw: String = row
-                .get(5)
-                .context("failed reading stale shadow_lots.opened_ts")?;
-            lots.push(ShadowLotRow {
-                id: row.get(0).context("failed reading stale shadow_lots.id")?,
-                wallet_id: row
-                    .get(1)
-                    .context("failed reading stale shadow_lots.wallet_id")?,
-                token: row
-                    .get(2)
-                    .context("failed reading stale shadow_lots.token")?,
-                qty: row.get(3).context("failed reading stale shadow_lots.qty")?,
-                cost_sol: row
-                    .get(4)
-                    .context("failed reading stale shadow_lots.cost_sol")?,
-                opened_ts: parse_rfc3339_utc(&opened_ts_raw, "shadow_lots.opened_ts")?,
-            });
-        }
-        Ok(lots)
-    }
-
     pub fn list_recent_shadow_closed_trades(
         &self,
         limit: u32,

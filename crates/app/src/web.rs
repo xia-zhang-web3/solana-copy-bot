@@ -22,7 +22,7 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tokio::time::{self, MissedTickBehavior};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{info, warn};
+use tracing::info;
 
 pub const UI_EVENTS_RETENTION_HOURS: i64 = 48;
 const WS_HEARTBEAT_SECONDS: u64 = 10;
@@ -133,7 +133,7 @@ impl WebRuntimeHandle {
         let mut config_redacted = serde_json::to_value(config).unwrap_or_else(|_| json!({}));
         redact_sensitive_values(&mut config_redacted);
 
-        let discovery_stale_threshold_seconds = config.discovery.refresh_seconds.max(10) * 3 + 30;
+        let discovery_stale_threshold_seconds = config.discovery.refresh_seconds.max(10) * 2 + 15;
         let ingestion_stale_threshold_seconds = config.system.heartbeat_seconds.max(15) * 6;
         let shadow_stale_threshold_seconds = config.shadow.refresh_seconds.max(10) * 2 + 15;
         let infra_lag_threshold_ms = config.risk.shadow_infra_lag_p95_threshold_ms.max(1_000);
@@ -614,7 +614,6 @@ struct DiscoveryResponse {
     offset: u32,
     runtime: RuntimeDiscoverySnapshot,
     top_metrics: Vec<TopWalletMetricView>,
-    query_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -871,35 +870,20 @@ async fn api_discovery(
     let now = Utc::now();
     let runtime = state.runtime_bundle().discovery;
     let sqlite_path = state.sqlite_path();
-    let top_metrics_result = read_only_db(sqlite_path, move |store| {
+    let top_metrics = read_only_db(sqlite_path, move |store| {
         store.list_latest_wallet_metrics(limit, offset)
     })
-    .await;
-    let (top_metrics, query_error) = match top_metrics_result {
-        Ok(top_metrics) => (
-            top_metrics
-                .into_iter()
-                .map(to_top_wallet_metric_view)
-                .collect::<Vec<_>>(),
-            None,
-        ),
-        Err(error) => {
-            warn!(
-                error = %error.message,
-                limit,
-                offset,
-                "discovery metrics query failed"
-            );
-            (Vec::new(), Some(error.message))
-        }
-    };
+    .await?;
+    let top_metrics = top_metrics
+        .into_iter()
+        .map(to_top_wallet_metric_view)
+        .collect::<Vec<_>>();
     Ok(Json(DiscoveryResponse {
         ts: now,
         limit,
         offset,
         runtime,
         top_metrics,
-        query_error,
     }))
 }
 
