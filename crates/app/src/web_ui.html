@@ -121,6 +121,8 @@
             <input id="tokenInput" type="password" placeholder="Bearer token" class="w-56 rounded-xl border border-slate-600/70 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-300 md:w-72" />
             <button id="saveTokenBtn" class="rounded-xl bg-amber-400 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-amber-300">Save Token</button>
             <button id="refreshBtn" class="rounded-xl bg-sky-400 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-sky-300">Refresh</button>
+            <button id="pauseFeedBtn" class="rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-slate-500">Pause Feed</button>
+            <button id="toggleAutoBtn" class="rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-slate-500">Auto: ON</button>
           </div>
           <div class="flex flex-wrap gap-2 text-xs">
             <span id="wsStatus" class="status-pill"><span class="dot bg-slate-400"></span>WS: disconnected</span>
@@ -249,10 +251,10 @@
     const short = (s, n = 8) => s ? `${s.slice(0, n)}…${s.slice(-4)}` : "—";
     const toColor = (v) => (Number(v) >= 0 ? "text-emerald-300" : "text-rose-300");
     const eventFeedLimit = 200;
-    const refreshCooldownMs = 1200;
+    const refreshCooldownMs = 10000;
     const requestTimeoutMs = 8000;
-    const wsRefreshFast = new Set(["lot_opened", "lot_closed", "signal_recorded", "discovery_cycle_done", "health_alert", "lagged"]);
-    const wsRefreshSlow = new Set(["signal_dropped", "risk_state_changed", "ingestion_snapshot", "queue_event", "shadow_error"]);
+    const eventFeedRenderMs = 350;
+    const wsRefreshFast = new Set(["lot_opened", "lot_closed", "signal_recorded", "discovery_cycle_done"]);
 
     function normalizeToken(value) {
       const raw = String(value || "").trim();
@@ -273,12 +275,17 @@
       refreshInFlight: false,
       refreshQueued: false,
       lastRefreshStartedAt: 0,
+      autoRefreshEnabled: true,
+      feedPaused: false,
+      feedRenderTimer: null,
     };
 
     const els = {
       tokenInput: document.getElementById("tokenInput"),
       saveTokenBtn: document.getElementById("saveTokenBtn"),
       refreshBtn: document.getElementById("refreshBtn"),
+      pauseFeedBtn: document.getElementById("pauseFeedBtn"),
+      toggleAutoBtn: document.getElementById("toggleAutoBtn"),
       wsStatus: document.getElementById("wsStatus"),
       apiStatus: document.getElementById("apiStatus"),
       lastUpdate: document.getElementById("lastUpdate"),
@@ -302,6 +309,25 @@
 
     function setApiStatus(label, color) {
       els.apiStatus.innerHTML = `<span class="dot ${color}"></span>API: ${label}`;
+    }
+
+    function updatePauseFeedButton() {
+      els.pauseFeedBtn.textContent = state.feedPaused ? "Resume Feed" : "Pause Feed";
+      els.pauseFeedBtn.className = state.feedPaused
+        ? "rounded-xl bg-rose-500 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-rose-400"
+        : "rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-slate-500";
+    }
+
+    function updateAutoRefreshButton() {
+      els.toggleAutoBtn.textContent = state.autoRefreshEnabled ? "Auto: ON" : "Auto: OFF";
+      els.toggleAutoBtn.className = state.autoRefreshEnabled
+        ? "rounded-xl bg-emerald-500 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-emerald-400"
+        : "rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-slate-500";
+    }
+
+    function updateEventCount() {
+      const suffix = state.feedPaused ? " (paused)" : "";
+      els.eventCount.textContent = `${state.events.length} events${suffix}`;
     }
 
     function authHeaders() {
@@ -493,10 +519,12 @@
       `).join("");
     }
 
-    function pushEvent(event) {
-      state.events.unshift(event);
-      if (state.events.length > eventFeedLimit) state.events.length = eventFeedLimit;
-      els.eventCount.textContent = `${state.events.length} events`;
+    function renderEventFeed() {
+      const selection = window.getSelection ? window.getSelection() : null;
+      if (selection && selection.type === "Range") {
+        scheduleEventFeedRender();
+        return;
+      }
       els.eventFeed.innerHTML = state.events.map((e) => {
         const color =
           e.type === "signal_recorded" ? "text-emerald-300" :
@@ -509,6 +537,22 @@
           [${fmtTs(e.ts)}] ${e.type}: <span class="text-slate-300">${payload}</span>
         </div>`;
       }).join("");
+    }
+
+    function scheduleEventFeedRender() {
+      if (state.feedPaused) return;
+      if (state.feedRenderTimer) return;
+      state.feedRenderTimer = setTimeout(() => {
+        state.feedRenderTimer = null;
+        renderEventFeed();
+      }, eventFeedRenderMs);
+    }
+
+    function pushEvent(event) {
+      state.events.unshift(event);
+      if (state.events.length > eventFeedLimit) state.events.length = eventFeedLimit;
+      updateEventCount();
+      scheduleEventFeedRender();
     }
 
     function connectWs() {
@@ -541,17 +585,14 @@
           return;
         }
         pushEvent(payload);
-        if (wsRefreshFast.has(payload.type)) {
-          queueRefresh(true);
-          return;
-        }
-        if (wsRefreshSlow.has(payload.type)) {
+        if (state.autoRefreshEnabled && wsRefreshFast.has(payload.type)) {
           queueRefresh(false);
         }
       };
     }
 
     function queueRefresh(immediate = false) {
+      if (!immediate && !state.autoRefreshEnabled) return;
       if (!state.token) return;
       if (state.refreshInFlight) {
         state.refreshQueued = true;
@@ -592,9 +633,9 @@
         setApiStatus("loading", "bg-amber-400");
         const responses = await Promise.allSettled([
           apiGet("/api/dashboard"),
-          apiGet("/api/lots?limit=200"),
-          apiGet("/api/trades?limit=200"),
-          apiGet("/api/signals?limit=250"),
+          apiGet("/api/lots?limit=120"),
+          apiGet("/api/trades?limit=120"),
+          apiGet("/api/signals?limit=140"),
           apiGet("/api/risk"),
           apiGet("/api/ingestion"),
           apiGet("/api/discovery"),
@@ -656,6 +697,8 @@
       els.tokenInput.value = state.token;
       localStorage.setItem("copybot_token", state.token);
       state.events = [];
+      updateEventCount();
+      renderEventFeed();
       pushEvent({ type: "local", ts: new Date().toISOString(), payload: { message: "token updated" }});
       connectWs();
       queueRefresh(true);
@@ -663,11 +706,29 @@
 
     els.saveTokenBtn.addEventListener("click", saveToken);
     els.refreshBtn.addEventListener("click", () => queueRefresh(true));
+    els.pauseFeedBtn.addEventListener("click", () => {
+      state.feedPaused = !state.feedPaused;
+      updatePauseFeedButton();
+      updateEventCount();
+      if (!state.feedPaused) {
+        renderEventFeed();
+      }
+    });
+    els.toggleAutoBtn.addEventListener("click", () => {
+      state.autoRefreshEnabled = !state.autoRefreshEnabled;
+      updateAutoRefreshButton();
+      if (state.autoRefreshEnabled) {
+        queueRefresh(false);
+      }
+    });
     els.tokenInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") saveToken();
     });
 
     function bootstrap() {
+      updatePauseFeedButton();
+      updateAutoRefreshButton();
+      updateEventCount();
       if (!state.token) {
         setApiStatus("set token first", "bg-amber-400");
         setWsStatus("token missing", "bg-amber-400");
@@ -676,7 +737,7 @@
       connectWs();
       queueRefresh(true);
       if (state.refreshTimer) clearInterval(state.refreshTimer);
-      state.refreshTimer = setInterval(() => queueRefresh(false), 15000);
+      state.refreshTimer = setInterval(() => queueRefresh(false), 30000);
     }
 
     bootstrap();
