@@ -6,6 +6,12 @@ heartbeat_seconds = 15
 migrations_dir = "migrations"
 pause_new_trades_on_outage = true
 
+[web]
+enabled = true
+host = "127.0.0.1"
+port = 8080
+auth_token = "REPLACE_ME"
+
 [sqlite]
 path = "state/dev_copybot.db"
 
