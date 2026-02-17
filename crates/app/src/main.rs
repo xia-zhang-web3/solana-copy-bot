@@ -34,8 +34,6 @@ const RISK_INFRA_SAMPLE_MIN_SECONDS: i64 = 10;
 const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
 const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
-const UI_INGESTION_EVENT_MIN_INTERVAL_MS: i64 = 1_500;
-const UI_FOLLOW_DROP_SAMPLE_EVERY: u64 = 100;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -766,7 +764,7 @@ fn build_runtime_risk_snapshot(guard: &ShadowRiskGuard) -> RuntimeRiskSnapshot {
         universe_breach_streak: guard.universe_breach_streak,
         universe_blocked: guard.universe_blocked,
         infra_block_reason: guard.infra_block_reason.clone(),
-        updated_at: None,
+        updated_at: Some(Utc::now()),
     }
 }
 
@@ -778,18 +776,13 @@ fn sync_web_risk_snapshot(
     let Some(web) = web_runtime else {
         return;
     };
-    let mut snapshot = build_runtime_risk_snapshot(guard);
+    let snapshot = build_runtime_risk_snapshot(guard);
+    web.set_risk_snapshot(snapshot.clone());
     let changed = last_snapshot
         .as_ref()
-        .map(|last| {
-            let mut comparable_last = last.clone();
-            comparable_last.updated_at = None;
-            comparable_last != snapshot
-        })
+        .map(|last| last != &snapshot)
         .unwrap_or(true);
     if changed {
-        snapshot.updated_at = Some(Utc::now());
-        web.set_risk_snapshot(snapshot.clone());
         web.publish_event(
             "risk_state_changed",
             json!({
@@ -797,35 +790,7 @@ fn sync_web_risk_snapshot(
             }),
         );
         *last_snapshot = Some(snapshot);
-    } else if let Some(last) = last_snapshot.as_ref() {
-        web.set_risk_snapshot(last.clone());
     }
-}
-
-fn should_emit_periodic_event(
-    last_emitted_at: &mut Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
-    min_interval_ms: i64,
-) -> bool {
-    if min_interval_ms <= 0 {
-        *last_emitted_at = Some(now);
-        return true;
-    }
-    let allow = last_emitted_at
-        .map(|value| now - value >= chrono::Duration::milliseconds(min_interval_ms.max(1)))
-        .unwrap_or(true);
-    if allow {
-        *last_emitted_at = Some(now);
-    }
-    allow
-}
-
-fn should_sample_event(counter: &mut u64, every: u64) -> bool {
-    *counter = counter.saturating_add(1);
-    if every <= 1 {
-        return true;
-    }
-    *counter % every == 0
 }
 
 async fn run_app_loop(
@@ -877,8 +842,6 @@ async fn run_app_loop(
     let mut held_shadow_sells: HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>> = HashMap::new();
     let mut shadow_holdback_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut last_web_risk_snapshot: Option<RuntimeRiskSnapshot> = None;
-    let mut last_ingestion_event_emitted_at: Option<DateTime<Utc>> = None;
-    let mut follow_drop_event_counter: u64 = 0;
 
     if !follow_snapshot.active.is_empty() {
         info!(
@@ -1224,25 +1187,18 @@ async fn run_app_loop(
                     now,
                     ingestion.runtime_snapshot(),
                 );
-                let emit_ingestion_ui_event = should_emit_periodic_event(
-                    &mut last_ingestion_event_emitted_at,
-                    now,
-                    UI_INGESTION_EVENT_MIN_INTERVAL_MS,
-                );
                 if let Some(web) = web_runtime.as_ref() {
                     web.set_ingestion_snapshot(ingestion.runtime_snapshot(), Some(swap.ts_utc));
-                    if emit_ingestion_ui_event {
-                        web.publish_event(
-                            "ingestion_snapshot",
-                            json!({
-                                "signature": swap.signature.clone(),
-                                "wallet": swap.wallet.clone(),
-                                "token_in": swap.token_in.clone(),
-                                "token_out": swap.token_out.clone(),
-                                "ts": swap.ts_utc,
-                            }),
-                        );
-                    }
+                    web.publish_event(
+                        "ingestion_snapshot",
+                        json!({
+                            "signature": swap.signature.clone(),
+                            "wallet": swap.wallet.clone(),
+                            "token_in": swap.token_in.clone(),
+                            "token_out": swap.token_out.clone(),
+                            "ts": swap.ts_utc,
+                        }),
+                    );
                 }
 
                 match insert_observed_swap_with_retry(&store, &swap).await {
@@ -1265,19 +1221,17 @@ async fn run_app_loop(
                             swap.amount_in,
                             swap.amount_out
                         );
-                        if emit_ingestion_ui_event {
-                            if let Err(error) = store.insert_ui_event(
-                                "ingestion_event",
-                                Some("ingestion"),
-                                Some("observed_swap_stored"),
-                                Some(&swap.wallet),
-                                Some(&swap.token_out),
-                                Some(&swap.signature),
-                                Some(&payload_json),
-                                now,
-                            ) {
-                                warn!(error = %error, "failed to persist ingestion ui_event");
-                            }
+                        if let Err(error) = store.insert_ui_event(
+                            "ingestion_event",
+                            Some("ingestion"),
+                            Some("observed_swap_stored"),
+                            Some(&swap.wallet),
+                            Some(&swap.token_out),
+                            Some(&swap.signature),
+                            Some(&payload_json),
+                            now,
+                        ) {
+                            warn!(error = %error, "failed to persist ingestion ui_event");
                         }
 
                         let Some(side) = classify_swap_side(&swap) else {
@@ -1294,35 +1248,30 @@ async fn run_app_loop(
                                 sanitize_json_value(&swap.wallet),
                                 sanitize_json_value(&swap.token_out),
                             );
-                            if should_sample_event(
-                                &mut follow_drop_event_counter,
-                                UI_FOLLOW_DROP_SAMPLE_EVERY,
+                            if let Err(error) = store.insert_ui_event(
+                                "signal_dropped",
+                                Some("follow"),
+                                Some(reason),
+                                Some(&swap.wallet),
+                                Some(&swap.token_out),
+                                Some(&swap.signature),
+                                Some(&payload_json),
+                                now,
                             ) {
-                                if let Err(error) = store.insert_ui_event(
+                                warn!(error = %error, "failed to persist signal_dropped event");
+                            }
+                            if let Some(web) = web_runtime.as_ref() {
+                                web.publish_event(
                                     "signal_dropped",
-                                    Some("follow"),
-                                    Some(reason),
-                                    Some(&swap.wallet),
-                                    Some(&swap.token_out),
-                                    Some(&swap.signature),
-                                    Some(&payload_json),
-                                    now,
-                                ) {
-                                    warn!(error = %error, "failed to persist signal_dropped event");
-                                }
-                                if let Some(web) = web_runtime.as_ref() {
-                                    web.publish_event(
-                                        "signal_dropped",
-                                        json!({
-                                            "stage": "follow",
-                                            "reason": reason,
-                                            "side": "buy",
-                                            "wallet": swap.wallet.clone(),
-                                            "token": swap.token_out.clone(),
-                                            "signature": swap.signature.clone(),
-                                        }),
-                                    );
-                                }
+                                    json!({
+                                        "stage": "follow",
+                                        "reason": reason,
+                                        "side": "buy",
+                                        "wallet": swap.wallet.clone(),
+                                        "token": swap.token_out.clone(),
+                                        "signature": swap.signature.clone(),
+                                    }),
+                                );
                             }
                             debug!(
                                 stage = "follow",
@@ -1360,35 +1309,30 @@ async fn run_app_loop(
                                     sanitize_json_value(&swap.wallet),
                                     sanitize_json_value(&swap.token_in),
                                 );
-                                if should_sample_event(
-                                    &mut follow_drop_event_counter,
-                                    UI_FOLLOW_DROP_SAMPLE_EVERY,
+                                if let Err(error) = store.insert_ui_event(
+                                    "signal_dropped",
+                                    Some("follow"),
+                                    Some(reason),
+                                    Some(&swap.wallet),
+                                    Some(&swap.token_in),
+                                    Some(&swap.signature),
+                                    Some(&payload_json),
+                                    now,
                                 ) {
-                                    if let Err(error) = store.insert_ui_event(
+                                    warn!(error = %error, "failed to persist signal_dropped event");
+                                }
+                                if let Some(web) = web_runtime.as_ref() {
+                                    web.publish_event(
                                         "signal_dropped",
-                                        Some("follow"),
-                                        Some(reason),
-                                        Some(&swap.wallet),
-                                        Some(&swap.token_in),
-                                        Some(&swap.signature),
-                                        Some(&payload_json),
-                                        now,
-                                    ) {
-                                        warn!(error = %error, "failed to persist signal_dropped event");
-                                    }
-                                    if let Some(web) = web_runtime.as_ref() {
-                                        web.publish_event(
-                                            "signal_dropped",
-                                            json!({
-                                                "stage": "follow",
-                                                "reason": reason,
-                                                "side": "sell",
-                                                "wallet": swap.wallet.clone(),
-                                                "token": swap.token_in.clone(),
-                                                "signature": swap.signature.clone(),
-                                            }),
-                                        );
-                                    }
+                                        json!({
+                                            "stage": "follow",
+                                            "reason": reason,
+                                            "side": "sell",
+                                            "wallet": swap.wallet.clone(),
+                                            "token": swap.token_in.clone(),
+                                            "signature": swap.signature.clone(),
+                                        }),
+                                    );
                                 }
                                 debug!(
                                     stage = "follow",
