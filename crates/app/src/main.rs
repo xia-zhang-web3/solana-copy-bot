@@ -28,6 +28,7 @@ const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [
 const RISK_DB_REFRESH_MIN_SECONDS: i64 = 5;
 const RISK_INFRA_SAMPLE_MIN_SECONDS: i64 = 10;
 const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
+const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -197,6 +198,7 @@ struct ShadowRiskGuard {
     infra_samples: VecDeque<IngestionRuntimeSnapshot>,
     lag_breach_since: Option<DateTime<Utc>>,
     infra_block_reason: Option<String>,
+    infra_last_event_at: Option<DateTime<Utc>>,
     last_db_refresh_at: Option<DateTime<Utc>>,
     last_fail_closed_log_at: Option<DateTime<Utc>>,
 }
@@ -327,16 +329,26 @@ impl ShadowRiskGuard {
             if let Some(reason) = new_reason {
                 warn!(reason = %reason, "shadow risk infra stop activated");
                 let details_json = format!("{{\"reason\":\"{}\"}}", reason);
-                self.record_risk_event(store, "shadow_risk_infra_stop", "warn", now, &details_json);
+                if self.should_emit_infra_event(now) {
+                    self.record_risk_event(
+                        store,
+                        "shadow_risk_infra_stop",
+                        "warn",
+                        now,
+                        &details_json,
+                    );
+                }
             } else {
                 info!("shadow risk infra stop cleared");
-                self.record_risk_event(
-                    store,
-                    "shadow_risk_infra_cleared",
-                    "info",
-                    now,
-                    "{\"state\":\"cleared\"}",
-                );
+                if self.should_emit_infra_event(now) {
+                    self.record_risk_event(
+                        store,
+                        "shadow_risk_infra_cleared",
+                        "info",
+                        now,
+                        "{\"state\":\"cleared\"}",
+                    );
+                }
             }
         }
     }
@@ -652,6 +664,19 @@ impl ShadowRiskGuard {
                 "failed to persist shadow risk event"
             );
         }
+    }
+
+    fn should_emit_infra_event(&mut self, now: DateTime<Utc>) -> bool {
+        let allow = self
+            .infra_last_event_at
+            .map(|last| {
+                now - last >= chrono::Duration::seconds(RISK_INFRA_EVENT_THROTTLE_SECONDS.max(1))
+            })
+            .unwrap_or(true);
+        if allow {
+            self.infra_last_event_at = Some(now);
+        }
+        allow
     }
 }
 
@@ -2051,6 +2076,92 @@ mod app_tests {
                 reason: BuyRiskBlockReason::HardStop,
                 ..
             } => {}
+            other => panic!("expected hard stop block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_drawdown_1h_triggers_timed_pause() -> Result<()> {
+        let (store, db_path) = make_test_store("drawdown-1h")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -0.3;
+        cfg.shadow_drawdown_1h_pause_minutes = 30;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        store.insert_shadow_closed_trade(
+            "sig-dd1",
+            "wallet-a",
+            "token-a",
+            1.0,
+            1.0,
+            0.5,
+            -0.5,
+            now - chrono::Duration::minutes(10),
+            now - chrono::Duration::minutes(5),
+        )?;
+
+        let decision = guard.can_open_buy(&store, now);
+        match decision {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("drawdown_1h")),
+            other => panic!("expected timed pause block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_rug_loss_triggers_hard_stop() -> Result<()> {
+        let (store, db_path) = make_test_store("rug-stop")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_rug_loss_window_minutes = 120;
+        cfg.shadow_rug_loss_count_threshold = 2;
+        cfg.shadow_rug_loss_rate_sample_size = 10;
+        cfg.shadow_rug_loss_rate_threshold = 0.99;
+        cfg.shadow_rug_loss_return_threshold = -0.70;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-rug-1",
+            "wallet-a",
+            "token-a",
+            1.0,
+            1.0,
+            0.2,
+            -0.8,
+            now - chrono::Duration::minutes(30),
+            now - chrono::Duration::minutes(20),
+        )?;
+        store.insert_shadow_closed_trade(
+            "sig-rug-2",
+            "wallet-b",
+            "token-b",
+            1.0,
+            2.0,
+            0.3,
+            -1.7,
+            now - chrono::Duration::minutes(25),
+            now - chrono::Duration::minutes(10),
+        )?;
+
+        let decision = guard.can_open_buy(&store, now);
+        match decision {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::HardStop,
+                detail,
+            } => assert!(detail.contains("rug_loss")),
             other => panic!("expected hard stop block, got {other:?}"),
         }
 

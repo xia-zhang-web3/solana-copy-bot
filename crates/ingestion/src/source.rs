@@ -344,6 +344,7 @@ struct IngestionTelemetry {
     prefetch_stale_dropped: AtomicU64,
     rpc_429: AtomicU64,
     rpc_5xx: AtomicU64,
+    last_ingestion_lag_p95: AtomicU64,
     fetch_latency_ms_samples: Mutex<VecDeque<u64>>,
     ingestion_lag_ms_samples: Mutex<VecDeque<u64>>,
     reorder_hold_ms_samples: Mutex<VecDeque<u64>>,
@@ -369,6 +370,7 @@ impl Default for IngestionTelemetry {
             prefetch_stale_dropped: AtomicU64::new(0),
             rpc_429: AtomicU64::new(0),
             rpc_5xx: AtomicU64::new(0),
+            last_ingestion_lag_p95: AtomicU64::new(0),
             fetch_latency_ms_samples: Mutex::new(VecDeque::with_capacity(
                 TELEMETRY_SAMPLE_CAPACITY,
             )),
@@ -446,6 +448,9 @@ impl IngestionTelemetry {
             .ok()
             .map(|values| values.iter().copied().collect::<Vec<_>>())
             .unwrap_or_default();
+        let ingestion_lag_ms_p95 = percentile(&lag_samples, 0.95);
+        self.last_ingestion_lag_p95
+            .store(ingestion_lag_ms_p95, Ordering::Relaxed);
 
         info!(
             ws_notifications_seen = self.ws_notifications_seen.load(Ordering::Relaxed),
@@ -472,7 +477,7 @@ impl IngestionTelemetry {
             fetch_latency_ms_p95 = percentile(&fetch_samples, 0.95),
             fetch_latency_ms_p99 = percentile(&fetch_samples, 0.99),
             ingestion_lag_ms_p50 = percentile(&lag_samples, 0.50),
-            ingestion_lag_ms_p95 = percentile(&lag_samples, 0.95),
+            ingestion_lag_ms_p95,
             ingestion_lag_ms_p99 = percentile(&lag_samples, 0.99),
             reorder_hold_ms_p95 = percentile(&hold_samples, 0.95),
             reorder_buffer_size,
@@ -482,12 +487,10 @@ impl IngestionTelemetry {
     }
 
     fn snapshot(&self) -> IngestionRuntimeSnapshot {
-        let lag_samples = self
-            .ingestion_lag_ms_samples
-            .lock()
-            .ok()
-            .map(|values| values.iter().copied().collect::<Vec<_>>())
-            .unwrap_or_default();
+        let ingestion_lag_ms_p95 = match self.ingestion_lag_ms_samples.lock() {
+            Ok(values) => percentile(&values.iter().copied().collect::<Vec<_>>(), 0.95),
+            Err(_) => self.last_ingestion_lag_p95.load(Ordering::Relaxed),
+        };
         IngestionRuntimeSnapshot {
             ts_utc: Utc::now(),
             ws_notifications_enqueued: self.ws_notifications_enqueued.load(Ordering::Relaxed),
@@ -496,7 +499,7 @@ impl IngestionTelemetry {
                 .load(Ordering::Relaxed),
             rpc_429: self.rpc_429.load(Ordering::Relaxed),
             rpc_5xx: self.rpc_5xx.load(Ordering::Relaxed),
-            ingestion_lag_ms_p95: percentile(&lag_samples, 0.95),
+            ingestion_lag_ms_p95,
         }
     }
 }
