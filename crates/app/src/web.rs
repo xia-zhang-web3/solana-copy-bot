@@ -565,6 +565,7 @@ struct SignalTimelineItem {
 struct SignalsResponse {
     ts: DateTime<Utc>,
     limit: u32,
+    offset: u32,
     items: Vec<SignalTimelineItem>,
 }
 
@@ -609,6 +610,8 @@ struct UiEventView {
 #[derive(Debug, Serialize)]
 struct DiscoveryResponse {
     ts: DateTime<Utc>,
+    limit: u32,
+    offset: u32,
     runtime: RuntimeDiscoverySnapshot,
     top_metrics: Vec<TopWalletMetricView>,
 }
@@ -757,18 +760,32 @@ async fn api_signals(
 ) -> Result<Json<SignalsResponse>, ApiError> {
     ensure_authorized_request(&state, &headers, &uri)?;
     let limit = query.limit.unwrap_or(200).clamp(1, 1_000);
+    let offset = query.offset.unwrap_or(0);
     let now = Utc::now();
     let sqlite_path = state.sqlite_path();
 
     let mut items = read_only_db(sqlite_path, move |store| {
-        let recorded = store.list_recent_copy_signals(limit, 0)?;
-        let events = store.list_recent_ui_events(limit.saturating_mul(4))?;
+        let needed = limit.saturating_add(offset);
+        let recorded_limit = needed.saturating_mul(3).clamp(limit, 3_000);
+        let events_limit = needed
+            .saturating_mul(8)
+            .clamp(limit.saturating_mul(2), 8_000);
+
+        let recorded = store.list_recent_copy_signals(recorded_limit, 0)?;
+        let events = store.list_recent_ui_events(events_limit)?;
         let mut timeline = Vec::new();
         timeline.extend(recorded.into_iter().map(to_recorded_signal_timeline_item));
         timeline.extend(events.into_iter().filter_map(to_ui_signal_timeline_item));
         timeline.sort_by(|a, b| b.ts.cmp(&a.ts));
-        timeline.truncate(limit as usize);
-        Ok(timeline)
+        let start = offset as usize;
+        if start >= timeline.len() {
+            return Ok(Vec::new());
+        }
+        Ok(timeline
+            .into_iter()
+            .skip(start)
+            .take(limit as usize)
+            .collect())
     })
     .await?;
 
@@ -776,6 +793,7 @@ async fn api_signals(
     Ok(Json(SignalsResponse {
         ts: now,
         limit,
+        offset,
         items,
     }))
 }
@@ -844,13 +862,16 @@ async fn api_discovery(
     State(state): State<WebRuntimeHandle>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
+    Query(query): Query<PaginationQuery>,
 ) -> Result<Json<DiscoveryResponse>, ApiError> {
     ensure_authorized_request(&state, &headers, &uri)?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0);
     let now = Utc::now();
     let runtime = state.runtime_bundle().discovery;
     let sqlite_path = state.sqlite_path();
     let top_metrics = read_only_db(sqlite_path, move |store| {
-        store.list_latest_wallet_metrics(50)
+        store.list_latest_wallet_metrics(limit, offset)
     })
     .await?;
     let top_metrics = top_metrics
@@ -859,6 +880,8 @@ async fn api_discovery(
         .collect::<Vec<_>>();
     Ok(Json(DiscoveryResponse {
         ts: now,
+        limit,
+        offset,
         runtime,
         top_metrics,
     }))

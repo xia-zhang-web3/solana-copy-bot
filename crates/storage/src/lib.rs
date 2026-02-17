@@ -1857,7 +1857,11 @@ impl SqliteStore {
         })
     }
 
-    pub fn list_latest_wallet_metrics(&self, limit: u32) -> Result<Vec<LatestWalletMetricRow>> {
+    pub fn list_latest_wallet_metrics(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<LatestWalletMetricRow>> {
         let mut stmt = self
             .conn
             .prepare(
@@ -1880,11 +1884,11 @@ impl SqliteStore {
                  ON latest.wallet_id = wm.wallet_id
                  AND latest.max_id = wm.id
                  ORDER BY wm.score DESC, wm.trades DESC, wm.wallet_id ASC
-                 LIMIT ?1",
+                 LIMIT ?1 OFFSET ?2",
             )
             .context("failed to prepare latest wallet_metrics query")?;
         let mut rows = stmt
-            .query(params![limit.max(1) as i64])
+            .query(params![limit.max(1) as i64, offset as i64])
             .context("failed querying latest wallet_metrics")?;
 
         let mut out = Vec::new();
