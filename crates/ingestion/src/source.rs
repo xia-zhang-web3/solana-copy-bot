@@ -30,6 +30,16 @@ pub struct RawSwapObservation {
     pub ts_utc: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct IngestionRuntimeSnapshot {
+    pub ts_utc: DateTime<Utc>,
+    pub ws_notifications_enqueued: u64,
+    pub ws_notifications_replaced_oldest: u64,
+    pub rpc_429: u64,
+    pub rpc_5xx: u64,
+    pub ingestion_lag_ms_p95: u64,
+}
+
 pub enum IngestionSource {
     Mock(MockSource),
     HeliusWs(HeliusWsSource),
@@ -55,6 +65,13 @@ impl IngestionSource {
         match self {
             Self::Mock(source) => source.next_observation().await,
             Self::HeliusWs(source) => source.next_observation().await,
+        }
+    }
+
+    pub fn runtime_snapshot(&self) -> Option<IngestionRuntimeSnapshot> {
+        match self {
+            Self::Mock(_) => None,
+            Self::HeliusWs(source) => Some(source.runtime_snapshot()),
         }
     }
 }
@@ -462,6 +479,25 @@ impl IngestionTelemetry {
             reorder_buffer_max = self.max_reorder_buffer_size.load(Ordering::Relaxed),
             "ingestion pipeline metrics"
         );
+    }
+
+    fn snapshot(&self) -> IngestionRuntimeSnapshot {
+        let lag_samples = self
+            .ingestion_lag_ms_samples
+            .lock()
+            .ok()
+            .map(|values| values.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        IngestionRuntimeSnapshot {
+            ts_utc: Utc::now(),
+            ws_notifications_enqueued: self.ws_notifications_enqueued.load(Ordering::Relaxed),
+            ws_notifications_replaced_oldest: self
+                .ws_notifications_replaced_oldest
+                .load(Ordering::Relaxed),
+            rpc_429: self.rpc_429.load(Ordering::Relaxed),
+            rpc_5xx: self.rpc_5xx.load(Ordering::Relaxed),
+            ingestion_lag_ms_p95: percentile(&lag_samples, 0.95),
+        }
     }
 }
 
@@ -925,6 +961,10 @@ impl HeliusWsSource {
             output_depth,
             self.reorder_buffer.len(),
         );
+    }
+
+    fn runtime_snapshot(&self) -> IngestionRuntimeSnapshot {
+        self.runtime_config.telemetry.snapshot()
     }
 
     fn parse_logs_notification(text: &str) -> Option<LogsNotification> {

@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::load_from_env_or_default;
+use copybot_config::{load_from_env_or_default, RiskConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
-use copybot_ingestion::IngestionService;
+use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{
     FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
 };
@@ -25,6 +25,9 @@ const SHADOW_MAX_CONCURRENT_WORKERS: usize =
 const SHADOW_PENDING_TASK_CAPACITY: usize = 256;
 const OBSERVED_SWAP_WRITE_MAX_RETRIES: usize = 3;
 const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [50, 125, 250];
+const RISK_DB_REFRESH_MIN_SECONDS: i64 = 5;
+const RISK_INFRA_SAMPLE_MIN_SECONDS: i64 = 10;
+const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -73,6 +76,7 @@ async fn main() -> Result<()> {
         ingestion,
         discovery,
         shadow,
+        config.risk.clone(),
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
         config.discovery.refresh_seconds,
@@ -152,11 +156,515 @@ fn init_tracing(log_level: &str, json: bool) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuyRiskBlockReason {
+    HardStop,
+    TimedPause,
+    Infra,
+    Universe,
+    FailClosed,
+}
+
+impl BuyRiskBlockReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HardStop => "risk_hard_stop",
+            Self::TimedPause => "risk_timed_pause",
+            Self::Infra => "risk_infra_stop",
+            Self::Universe => "risk_universe_stop",
+            Self::FailClosed => "risk_fail_closed",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum BuyRiskDecision {
+    Allow,
+    Blocked {
+        reason: BuyRiskBlockReason,
+        detail: String,
+    },
+}
+
+#[derive(Debug, Default)]
+struct ShadowRiskGuard {
+    config: RiskConfig,
+    hard_stop_reason: Option<String>,
+    pause_until: Option<DateTime<Utc>>,
+    pause_reason: Option<String>,
+    universe_breach_streak: u64,
+    universe_blocked: bool,
+    infra_samples: VecDeque<IngestionRuntimeSnapshot>,
+    lag_breach_since: Option<DateTime<Utc>>,
+    infra_block_reason: Option<String>,
+    last_db_refresh_at: Option<DateTime<Utc>>,
+    last_fail_closed_log_at: Option<DateTime<Utc>>,
+}
+
+impl ShadowRiskGuard {
+    fn new(config: RiskConfig) -> Self {
+        Self {
+            config,
+            ..Self::default()
+        }
+    }
+
+    fn observe_discovery_cycle(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        eligible_wallets: usize,
+        active_follow_wallets: usize,
+    ) {
+        if !self.config.shadow_killswitch_enabled {
+            return;
+        }
+        let breached = (active_follow_wallets as u64)
+            < self.config.shadow_universe_min_active_follow_wallets
+            || (eligible_wallets as u64) < self.config.shadow_universe_min_eligible_wallets;
+        if breached {
+            self.universe_breach_streak = self.universe_breach_streak.saturating_add(1);
+        } else {
+            self.universe_breach_streak = 0;
+        }
+        let should_block =
+            self.universe_breach_streak >= self.config.shadow_universe_breach_cycles.max(1);
+        if should_block != self.universe_blocked {
+            self.universe_blocked = should_block;
+            if should_block {
+                let details_json = format!(
+                    "{{\"active_follow_wallets\":{},\"eligible_wallets\":{},\"streak\":{},\"min_active_follow_wallets\":{},\"min_eligible_wallets\":{}}}",
+                    active_follow_wallets,
+                    eligible_wallets,
+                    self.universe_breach_streak,
+                    self.config.shadow_universe_min_active_follow_wallets,
+                    self.config.shadow_universe_min_eligible_wallets
+                );
+                warn!(
+                    active_follow_wallets,
+                    eligible_wallets,
+                    streak = self.universe_breach_streak,
+                    min_active_follow_wallets =
+                        self.config.shadow_universe_min_active_follow_wallets,
+                    min_eligible_wallets = self.config.shadow_universe_min_eligible_wallets,
+                    "shadow risk universe stop activated"
+                );
+                self.record_risk_event(
+                    store,
+                    "shadow_risk_universe_stop",
+                    "warn",
+                    now,
+                    &details_json,
+                );
+            } else {
+                info!(
+                    active_follow_wallets,
+                    eligible_wallets, "shadow risk universe stop cleared"
+                );
+                self.record_risk_event(
+                    store,
+                    "shadow_risk_universe_cleared",
+                    "info",
+                    now,
+                    "{\"state\":\"cleared\"}",
+                );
+            }
+        }
+    }
+
+    fn observe_ingestion_snapshot(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        snapshot: Option<IngestionRuntimeSnapshot>,
+    ) {
+        if !self.config.shadow_killswitch_enabled {
+            return;
+        }
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let sample_ts = snapshot.ts_utc;
+        let min_interval = chrono::Duration::seconds(RISK_INFRA_SAMPLE_MIN_SECONDS.max(1));
+        let should_push = self
+            .infra_samples
+            .back()
+            .map(|last| sample_ts - last.ts_utc >= min_interval)
+            .unwrap_or(true);
+        if should_push {
+            self.infra_samples.push_back(snapshot);
+        } else if let Some(last) = self.infra_samples.back_mut() {
+            *last = snapshot;
+        }
+
+        let retention_minutes = self
+            .config
+            .shadow_infra_window_minutes
+            .max(self.config.shadow_infra_lag_breach_minutes)
+            .max(20)
+            .saturating_mul(2);
+        let cutoff = sample_ts - chrono::Duration::minutes(retention_minutes as i64);
+        while self
+            .infra_samples
+            .front()
+            .map(|sample| sample.ts_utc < cutoff)
+            .unwrap_or(false)
+        {
+            self.infra_samples.pop_front();
+        }
+
+        if snapshot.ingestion_lag_ms_p95 > self.config.shadow_infra_lag_p95_threshold_ms {
+            if self.lag_breach_since.is_none() {
+                self.lag_breach_since = Some(sample_ts);
+            }
+        } else {
+            self.lag_breach_since = None;
+        }
+
+        let new_reason = self.compute_infra_block_reason(sample_ts);
+        if new_reason != self.infra_block_reason {
+            self.infra_block_reason = new_reason.clone();
+            if let Some(reason) = new_reason {
+                warn!(reason = %reason, "shadow risk infra stop activated");
+                let details_json = format!("{{\"reason\":\"{}\"}}", reason);
+                self.record_risk_event(store, "shadow_risk_infra_stop", "warn", now, &details_json);
+            } else {
+                info!("shadow risk infra stop cleared");
+                self.record_risk_event(
+                    store,
+                    "shadow_risk_infra_cleared",
+                    "info",
+                    now,
+                    "{\"state\":\"cleared\"}",
+                );
+            }
+        }
+    }
+
+    fn can_open_buy(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> BuyRiskDecision {
+        if !self.config.shadow_killswitch_enabled {
+            return BuyRiskDecision::Allow;
+        }
+
+        if let Err(error) = self.maybe_refresh_db_state(store, now) {
+            let should_log = self
+                .last_fail_closed_log_at
+                .map(|logged_at| {
+                    now - logged_at
+                        >= chrono::Duration::seconds(RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS.max(1))
+                })
+                .unwrap_or(true);
+            if should_log {
+                self.last_fail_closed_log_at = Some(now);
+                warn!(error = %error, "shadow risk fail-closed activated");
+                let details_json = format!(
+                    "{{\"error\":\"{}\"}}",
+                    sanitize_json_value(&error.to_string())
+                );
+                self.record_risk_event(
+                    store,
+                    "shadow_risk_fail_closed",
+                    "error",
+                    now,
+                    &details_json,
+                );
+            }
+            return BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::FailClosed,
+                detail: format!("risk_check_error: {error}"),
+            };
+        }
+
+        if let Some(reason) = self.hard_stop_reason.as_deref() {
+            return BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::HardStop,
+                detail: reason.to_string(),
+            };
+        }
+
+        if let Some(until) = self.pause_until {
+            if now < until {
+                return BuyRiskDecision::Blocked {
+                    reason: BuyRiskBlockReason::TimedPause,
+                    detail: self
+                        .pause_reason
+                        .clone()
+                        .unwrap_or_else(|| format!("paused_until={}", until.to_rfc3339())),
+                };
+            }
+            self.pause_until = None;
+            self.pause_reason = None;
+        }
+
+        if self.universe_blocked {
+            return BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Universe,
+                detail: format!("universe_breach_streak={}", self.universe_breach_streak),
+            };
+        }
+
+        if let Some(reason) = self.infra_block_reason.as_deref() {
+            return BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Infra,
+                detail: reason.to_string(),
+            };
+        }
+
+        BuyRiskDecision::Allow
+    }
+
+    fn maybe_refresh_db_state(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        if self.hard_stop_reason.is_some() {
+            return Ok(());
+        }
+        if let Some(last_refresh) = self.last_db_refresh_at {
+            if now - last_refresh < chrono::Duration::seconds(RISK_DB_REFRESH_MIN_SECONDS.max(1)) {
+                return Ok(());
+            }
+        }
+        self.last_db_refresh_at = Some(now);
+
+        let exposure_sol = store.shadow_open_notional_sol()?;
+        if exposure_sol >= self.config.shadow_hard_exposure_cap_sol {
+            self.activate_hard_stop(
+                store,
+                now,
+                "exposure_hard_cap",
+                format!(
+                    "open_notional_sol={:.6} >= hard_cap={:.6}",
+                    exposure_sol, self.config.shadow_hard_exposure_cap_sol
+                ),
+            );
+            return Ok(());
+        }
+        if exposure_sol >= self.config.shadow_soft_exposure_cap_sol {
+            self.activate_pause(
+                store,
+                now,
+                chrono::Duration::minutes(self.config.shadow_soft_pause_minutes.max(1) as i64),
+                "exposure_soft_cap",
+                format!(
+                    "open_notional_sol={:.6} >= soft_cap={:.6}",
+                    exposure_sol, self.config.shadow_soft_exposure_cap_sol
+                ),
+            );
+        }
+
+        let (_, pnl_1h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(1))?;
+        let (_, pnl_6h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(6))?;
+        let (_, pnl_24h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(24))?;
+
+        if pnl_24h <= self.config.shadow_drawdown_24h_stop_sol {
+            self.activate_hard_stop(
+                store,
+                now,
+                "drawdown_24h",
+                format!(
+                    "pnl_24h={:.6} <= stop={:.6}",
+                    pnl_24h, self.config.shadow_drawdown_24h_stop_sol
+                ),
+            );
+            return Ok(());
+        }
+        if pnl_6h <= self.config.shadow_drawdown_6h_stop_sol {
+            self.activate_pause(
+                store,
+                now,
+                chrono::Duration::minutes(
+                    self.config.shadow_drawdown_6h_pause_minutes.max(1) as i64
+                ),
+                "drawdown_6h",
+                format!(
+                    "pnl_6h={:.6} <= stop={:.6}",
+                    pnl_6h, self.config.shadow_drawdown_6h_stop_sol
+                ),
+            );
+        }
+        if pnl_1h <= self.config.shadow_drawdown_1h_stop_sol {
+            self.activate_pause(
+                store,
+                now,
+                chrono::Duration::minutes(
+                    self.config.shadow_drawdown_1h_pause_minutes.max(1) as i64
+                ),
+                "drawdown_1h",
+                format!(
+                    "pnl_1h={:.6} <= stop={:.6}",
+                    pnl_1h, self.config.shadow_drawdown_1h_stop_sol
+                ),
+            );
+        }
+
+        let rug_window_start = now
+            - chrono::Duration::minutes(self.config.shadow_rug_loss_window_minutes.max(1) as i64);
+        let rug_count_since = store.shadow_rug_loss_count_since(
+            rug_window_start,
+            self.config.shadow_rug_loss_return_threshold,
+        )?;
+        let (_, rug_sample_total, rug_rate_recent) = store.shadow_rug_loss_rate_recent(
+            self.config.shadow_rug_loss_rate_sample_size.max(1),
+            self.config.shadow_rug_loss_return_threshold,
+        )?;
+        if rug_count_since >= self.config.shadow_rug_loss_count_threshold
+            || rug_rate_recent > self.config.shadow_rug_loss_rate_threshold
+        {
+            self.activate_hard_stop(
+                store,
+                now,
+                "rug_loss",
+                format!(
+                    "rug_count_since={} sample_total={} rug_rate_recent={:.4}",
+                    rug_count_since, rug_sample_total, rug_rate_recent
+                ),
+            );
+        }
+
+        Ok(())
+    }
+
+    fn compute_infra_block_reason(&self, now: DateTime<Utc>) -> Option<String> {
+        if self.infra_samples.is_empty() {
+            return None;
+        }
+
+        if let Some(started_at) = self.lag_breach_since {
+            if now - started_at
+                >= chrono::Duration::minutes(
+                    self.config.shadow_infra_lag_breach_minutes.max(1) as i64
+                )
+            {
+                return Some(format!(
+                    "lag_p95_over_threshold_for={}m threshold_ms={}",
+                    self.config.shadow_infra_lag_breach_minutes,
+                    self.config.shadow_infra_lag_p95_threshold_ms
+                ));
+            }
+        }
+
+        let window_start =
+            now - chrono::Duration::minutes(self.config.shadow_infra_window_minutes.max(1) as i64);
+        let latest = self.infra_samples.back().copied()?;
+        let baseline = self
+            .infra_samples
+            .iter()
+            .copied()
+            .find(|sample| sample.ts_utc >= window_start)
+            .unwrap_or_else(|| self.infra_samples.front().copied().unwrap_or(latest));
+
+        let delta_enqueued = latest
+            .ws_notifications_enqueued
+            .saturating_sub(baseline.ws_notifications_enqueued);
+        let delta_replaced = latest
+            .ws_notifications_replaced_oldest
+            .saturating_sub(baseline.ws_notifications_replaced_oldest);
+        let delta_rpc_429 = latest.rpc_429.saturating_sub(baseline.rpc_429);
+        let delta_rpc_5xx = latest.rpc_5xx.saturating_sub(baseline.rpc_5xx);
+
+        if delta_enqueued > 0 {
+            let replaced_ratio = delta_replaced as f64 / delta_enqueued as f64;
+            if replaced_ratio > self.config.shadow_infra_replaced_ratio_threshold {
+                return Some(format!(
+                    "replaced_ratio={:.4} delta_replaced={} delta_enqueued={}",
+                    replaced_ratio, delta_replaced, delta_enqueued
+                ));
+            }
+        }
+        if delta_rpc_429 >= self.config.shadow_infra_rpc429_delta_threshold {
+            return Some(format!(
+                "rpc_429_delta={} threshold={}",
+                delta_rpc_429, self.config.shadow_infra_rpc429_delta_threshold
+            ));
+        }
+        if delta_rpc_5xx >= self.config.shadow_infra_rpc5xx_delta_threshold {
+            return Some(format!(
+                "rpc_5xx_delta={} threshold={}",
+                delta_rpc_5xx, self.config.shadow_infra_rpc5xx_delta_threshold
+            ));
+        }
+        None
+    }
+
+    fn activate_hard_stop(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        stop_type: &str,
+        detail: String,
+    ) {
+        if self.hard_stop_reason.is_some() {
+            return;
+        }
+        let reason = format!("{stop_type}: {detail}");
+        self.hard_stop_reason = Some(reason.clone());
+        warn!(reason = %reason, "shadow risk hard stop activated");
+        let details_json = format!(
+            "{{\"stop_type\":\"{}\",\"detail\":\"{}\"}}",
+            sanitize_json_value(stop_type),
+            sanitize_json_value(&detail)
+        );
+        self.record_risk_event(store, "shadow_risk_hard_stop", "error", now, &details_json);
+    }
+
+    fn activate_pause(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        duration: chrono::Duration,
+        pause_type: &str,
+        detail: String,
+    ) {
+        let duration = if duration <= chrono::Duration::zero() {
+            chrono::Duration::minutes(1)
+        } else {
+            duration
+        };
+        let until = now + duration;
+        let should_update = self.pause_until.map(|value| until > value).unwrap_or(true);
+        if !should_update {
+            return;
+        }
+        self.pause_until = Some(until);
+        let reason = format!("{pause_type}: {detail}; until={}", until.to_rfc3339());
+        self.pause_reason = Some(reason.clone());
+        warn!(reason = %reason, "shadow risk timed pause activated");
+        let details_json = format!(
+            "{{\"pause_type\":\"{}\",\"detail\":\"{}\",\"until\":\"{}\"}}",
+            sanitize_json_value(pause_type),
+            sanitize_json_value(&detail),
+            until.to_rfc3339()
+        );
+        self.record_risk_event(store, "shadow_risk_pause", "warn", now, &details_json);
+    }
+
+    fn record_risk_event(
+        &self,
+        store: &SqliteStore,
+        event_type: &str,
+        severity: &str,
+        ts: DateTime<Utc>,
+        details_json: &str,
+    ) {
+        if let Err(error) = store.insert_risk_event(event_type, severity, ts, Some(details_json)) {
+            warn!(
+                error = %error,
+                event_type,
+                severity,
+                "failed to persist shadow risk event"
+            );
+        }
+    }
+}
+
+fn sanitize_json_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 async fn run_app_loop(
     store: SqliteStore,
     mut ingestion: IngestionService,
     discovery: DiscoveryService,
     shadow: ShadowService,
+    risk_config: RiskConfig,
     sqlite_path: String,
     heartbeat_seconds: u64,
     discovery_refresh_seconds: u64,
@@ -180,6 +688,7 @@ async fn run_app_loop(
     let mut open_shadow_lots = store
         .list_shadow_open_pairs()
         .context("failed to load open shadow lot index")?;
+    let mut shadow_risk_guard = ShadowRiskGuard::new(risk_config);
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -297,6 +806,12 @@ async fn run_app_loop(
                             follow_event_retention,
                         );
                         follow_snapshot = Arc::new(snapshot);
+                        shadow_risk_guard.observe_discovery_cycle(
+                            &store,
+                            discovery_output.cycle_ts,
+                            discovery_output.eligible_wallets,
+                            discovery_output.active_follow_wallets,
+                        );
                     }
                     Ok(Err(error)) => {
                         warn!(error = %error, "discovery cycle failed");
@@ -404,6 +919,12 @@ async fn run_app_loop(
                         continue;
                     }
                 };
+                let now = Utc::now();
+                shadow_risk_guard.observe_ingestion_snapshot(
+                    &store,
+                    now,
+                    ingestion.runtime_snapshot(),
+                );
 
                 match insert_observed_swap_with_retry(&store, &swap).await {
                     Ok(true) => {
@@ -468,6 +989,27 @@ async fn run_app_loop(
                                     "shadow gate dropped"
                                 );
                                 continue;
+                            }
+                        }
+
+                        if matches!(side, ShadowSwapSide::Buy) {
+                            match shadow_risk_guard.can_open_buy(&store, now) {
+                                BuyRiskDecision::Allow => {}
+                                BuyRiskDecision::Blocked { reason, detail } => {
+                                    let reason_key = reason.as_str();
+                                    *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
+                                    *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
+                                    debug!(
+                                        stage = "risk",
+                                        reason = reason_key,
+                                        detail = %detail,
+                                        side = "buy",
+                                        wallet = %swap.wallet,
+                                        signature = %swap.signature,
+                                        "shadow gate dropped"
+                                    );
+                                    continue;
+                                }
                             }
                         }
 
@@ -679,11 +1221,13 @@ fn spawn_discovery_task(
         let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
             format!("failed to open sqlite db for discovery task: {sqlite_path}")
         })?;
-        discovery.run_cycle(&store, now)?;
+        let summary = discovery.run_cycle(&store, now)?;
         let active_wallets = store.list_active_follow_wallets()?;
         Ok(DiscoveryTaskOutput {
             active_wallets,
             cycle_ts: now,
+            eligible_wallets: summary.eligible_wallets,
+            active_follow_wallets: summary.active_follow_wallets,
         })
     }
 }
@@ -710,6 +1254,8 @@ struct ShadowTaskOutput {
 struct DiscoveryTaskOutput {
     active_wallets: HashSet<String>,
     cycle_ts: DateTime<Utc>,
+    eligible_wallets: usize,
+    active_follow_wallets: usize,
 }
 
 struct ShadowTaskInput {
@@ -1385,6 +1931,132 @@ fn shadow_task(
 #[cfg(test)]
 mod app_tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn make_test_store(name: &str) -> Result<(SqliteStore, PathBuf)> {
+        let unique = format!(
+            "{}-{}-{}",
+            name,
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("copybot-app-{unique}.db"));
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+        Ok((store, db_path))
+    }
+
+    #[test]
+    fn risk_guard_infra_ratio_uses_window_delta_not_cumulative() -> Result<()> {
+        let (store, db_path) = make_test_store("infra-ratio")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_replaced_ratio_threshold = 0.80;
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(30),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 9_000,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 16_500_000,
+                ws_notifications_replaced_oldest: 14_400_000,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 16_500_176,
+                ws_notifications_replaced_oldest: 14_400_134,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+        assert!(
+            guard.compute_infra_block_reason(now).is_none(),
+            "rolling delta ratio (134/176 ~= 0.76) should not trigger threshold 0.80"
+        );
+
+        guard.observe_ingestion_snapshot(
+            &store,
+            now,
+            Some(IngestionRuntimeSnapshot {
+                ts_utc: now + chrono::Duration::seconds(20),
+                ws_notifications_enqueued: 16_500_300,
+                ws_notifications_replaced_oldest: 14_400_270,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            }),
+        );
+        assert!(
+            guard.infra_block_reason.is_some(),
+            "rolling delta ratio should trigger once it exceeds threshold"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_universe_stops_after_consecutive_breaches() -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 3;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        guard.observe_discovery_cycle(&store, now, 70, 14);
+        assert!(!guard.universe_blocked);
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(3), 70, 14);
+        assert!(!guard.universe_blocked);
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(6), 70, 14);
+        assert!(guard.universe_blocked);
+
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(9), 150, 30);
+        assert!(!guard.universe_blocked);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_hard_exposure_stop_blocks_new_buys() -> Result<()> {
+        let (store, db_path) = make_test_store("hard-exposure-stop")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_hard_exposure_cap_sol = 1.0;
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let opened_ts = DateTime::parse_from_rfc3339("2026-02-17T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let _ = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts)?;
+
+        let decision = guard.can_open_buy(&store, Utc::now());
+        match decision {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::HardStop,
+                ..
+            } => {}
+            other => panic!("expected hard stop block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
 
     #[test]
     fn scheduler_keeps_single_inflight_per_wallet_token_key() {

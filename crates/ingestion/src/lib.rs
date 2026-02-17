@@ -7,6 +7,8 @@ use copybot_core_types::SwapEvent;
 use parser::SwapParser;
 use source::{IngestionSource, RawSwapObservation};
 
+pub use source::IngestionRuntimeSnapshot;
+
 pub struct IngestionService {
     source: IngestionSource,
     parser: SwapParser,
@@ -33,6 +35,10 @@ impl IngestionService {
                 return Ok(Some(parsed));
             }
         }
+    }
+
+    pub fn runtime_snapshot(&self) -> Option<IngestionRuntimeSnapshot> {
+        self.source.runtime_snapshot()
     }
 }
 

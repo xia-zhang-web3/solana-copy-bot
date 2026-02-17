@@ -1247,6 +1247,18 @@ impl SqliteStore {
         Ok(value.max(0) as u64)
     }
 
+    pub fn shadow_open_notional_sol(&self) -> Result<f64> {
+        let notional: f64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(cost_sol), 0.0) FROM shadow_lots",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed querying shadow open notional")?;
+        Ok(notional.max(0.0))
+    }
+
     pub fn shadow_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
         let mut stmt = self
             .conn
@@ -1262,6 +1274,68 @@ impl SqliteStore {
             })
             .context("failed querying shadow pnl summary")?;
         Ok((trades.max(0) as u64, pnl))
+    }
+
+    pub fn shadow_rug_loss_count_since(
+        &self,
+        since: DateTime<Utc>,
+        return_threshold: f64,
+    ) -> Result<u64> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM shadow_closed_trades
+                 WHERE closed_ts >= ?1
+                   AND entry_cost_sol > 0
+                   AND pnl_sol <= entry_cost_sol * ?2",
+                params![since.to_rfc3339(), return_threshold],
+                |row| row.get(0),
+            )
+            .context("failed querying shadow rug-loss count since window")?;
+        Ok(count.max(0) as u64)
+    }
+
+    pub fn shadow_rug_loss_rate_recent(
+        &self,
+        sample_size: u64,
+        return_threshold: f64,
+    ) -> Result<(u64, u64, f64)> {
+        let limit = sample_size.max(1).min(i64::MAX as u64) as i64;
+        let (rug_count, total_count): (i64, i64) = self
+            .conn
+            .query_row(
+                "SELECT
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN entry_cost_sol > 0
+                                     AND pnl_sol <= entry_cost_sol * ?1
+                                THEN 1
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS rug_count,
+                    COUNT(*) AS total_count
+                 FROM (
+                    SELECT entry_cost_sol, pnl_sol
+                    FROM shadow_closed_trades
+                    ORDER BY closed_ts DESC, id DESC
+                    LIMIT ?2
+                 )",
+                params![return_threshold, limit],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .context("failed querying shadow rug-loss recent sample")?;
+        let rug_count = rug_count.max(0) as u64;
+        let total_count = total_count.max(0) as u64;
+        let rug_rate = if total_count > 0 {
+            rug_count as f64 / total_count as f64
+        } else {
+            0.0
+        };
+        Ok((rug_count, total_count, rug_rate))
     }
 
     fn read_migration_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
