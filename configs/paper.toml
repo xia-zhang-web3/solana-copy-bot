@@ -65,15 +65,15 @@ helius_http_url = ""
 causal_holdback_enabled = true
 causal_holdback_ms = 2500
 refresh_seconds = 60
-copy_notional_sol = 0.25
+copy_notional_sol = 0.10
 min_leader_notional_sol = 0.10
 max_signal_lag_seconds = 1200
 quality_gates_enabled = true
-min_token_age_seconds = 120
-min_holders = 30
-min_liquidity_sol = 5.0
-min_volume_5m_sol = 2.0
-min_unique_traders_5m = 3
+min_token_age_seconds = 30
+min_holders = 1
+min_liquidity_sol = 1.0
+min_volume_5m_sol = 0.5
+min_unique_traders_5m = 1
 
 [risk]
 max_position_sol = 0.5
