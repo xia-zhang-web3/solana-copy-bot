@@ -2,11 +2,17 @@
 set -euo pipefail
 
 WINDOW_HOURS="${1:-24}"
+RISK_EVENTS_MINUTES="${2:-120}"
 SERVICE="${SERVICE:-solana-copy-bot}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
 
 if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
   echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
+  exit 1
+fi
+
+if ! [[ "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+  echo "risk events minutes must be an integer (got: $RISK_EVENTS_MINUTES)" >&2
   exit 1
 fi
 
@@ -182,14 +188,14 @@ GROUP BY status
 ORDER BY cnt DESC;
 SQL
 echo
-echo "=== Recent Risk Events ==="
-sqlite3 "$DB_PATH" <<'SQL'
+echo "=== Recent Risk Events (${RISK_EVENTS_MINUTES}m) ==="
+sqlite3 "$DB_PATH" <<SQL
 .headers on
 .mode column
 SELECT ts, type, severity, COALESCE(details_json, '') AS details_json
 FROM risk_events
-ORDER BY ts DESC
-LIMIT 8;
+WHERE datetime(ts) >= datetime('now', '-${RISK_EVENTS_MINUTES} minutes')
+ORDER BY ts DESC;
 SQL
 
 collect_journal() {
