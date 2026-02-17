@@ -160,6 +160,7 @@ fn init_tracing(log_level: &str, json: bool) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuyRiskBlockReason {
     HardStop,
+    ExposureCap,
     TimedPause,
     Infra,
     Universe,
@@ -170,6 +171,7 @@ impl BuyRiskBlockReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::HardStop => "risk_hard_stop",
+            Self::ExposureCap => "risk_exposure_hard_cap",
             Self::TimedPause => "risk_timed_pause",
             Self::Infra => "risk_infra_stop",
             Self::Universe => "risk_universe_stop",
@@ -191,6 +193,8 @@ enum BuyRiskDecision {
 struct ShadowRiskGuard {
     config: RiskConfig,
     hard_stop_reason: Option<String>,
+    exposure_hard_blocked: bool,
+    exposure_hard_detail: Option<String>,
     pause_until: Option<DateTime<Utc>>,
     pause_reason: Option<String>,
     universe_breach_streak: u64,
@@ -394,6 +398,16 @@ impl ShadowRiskGuard {
             };
         }
 
+        if self.exposure_hard_blocked {
+            return BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::ExposureCap,
+                detail: self
+                    .exposure_hard_detail
+                    .clone()
+                    .unwrap_or_else(|| "exposure_hard_cap_active".to_string()),
+            };
+        }
+
         if let Some(until) = self.pause_until {
             if now < until {
                 return BuyRiskDecision::Blocked {
@@ -437,16 +451,46 @@ impl ShadowRiskGuard {
         self.last_db_refresh_at = Some(now);
 
         let exposure_sol = store.shadow_open_notional_sol()?;
+        let exposure_blocked_now = exposure_sol >= self.config.shadow_hard_exposure_cap_sol;
+        let exposure_detail = format!(
+            "open_notional_sol={:.6} hard_cap={:.6}",
+            exposure_sol, self.config.shadow_hard_exposure_cap_sol
+        );
+        if exposure_blocked_now != self.exposure_hard_blocked {
+            self.exposure_hard_blocked = exposure_blocked_now;
+            if exposure_blocked_now {
+                self.exposure_hard_detail = Some(exposure_detail.clone());
+                warn!(
+                    detail = %exposure_detail,
+                    "shadow risk exposure hard cap active"
+                );
+                let details_json = format!(
+                    "{{\"state\":\"active\",\"detail\":\"{}\"}}",
+                    sanitize_json_value(&exposure_detail)
+                );
+                self.record_risk_event(
+                    store,
+                    "shadow_risk_exposure_hard_cap",
+                    "warn",
+                    now,
+                    &details_json,
+                );
+            } else {
+                self.exposure_hard_detail = None;
+                info!("shadow risk exposure hard cap cleared");
+                self.record_risk_event(
+                    store,
+                    "shadow_risk_exposure_hard_cap_cleared",
+                    "info",
+                    now,
+                    "{\"state\":\"cleared\"}",
+                );
+            }
+        } else if exposure_blocked_now {
+            self.exposure_hard_detail = Some(exposure_detail);
+        }
+
         if exposure_sol >= self.config.shadow_hard_exposure_cap_sol {
-            self.activate_hard_stop(
-                store,
-                now,
-                "exposure_hard_cap",
-                format!(
-                    "open_notional_sol={:.6} >= hard_cap={:.6}",
-                    exposure_sol, self.config.shadow_hard_exposure_cap_sol
-                ),
-            );
             return Ok(());
         }
         if exposure_sol >= self.config.shadow_soft_exposure_cap_sol {
@@ -2059,7 +2103,7 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_hard_exposure_stop_blocks_new_buys() -> Result<()> {
+    fn risk_guard_hard_exposure_blocks_then_auto_clears() -> Result<()> {
         let (store, db_path) = make_test_store("hard-exposure-stop")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_hard_exposure_cap_sol = 1.0;
@@ -2068,15 +2112,26 @@ mod app_tests {
         let opened_ts = DateTime::parse_from_rfc3339("2026-02-17T00:00:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
-        let _ = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts)?;
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts)?;
+        let now = Utc::now();
 
-        let decision = guard.can_open_buy(&store, Utc::now());
+        let decision = guard.can_open_buy(&store, now);
         match decision {
             BuyRiskDecision::Blocked {
-                reason: BuyRiskBlockReason::HardStop,
+                reason: BuyRiskBlockReason::ExposureCap,
                 ..
             } => {}
-            other => panic!("expected hard stop block, got {other:?}"),
+            other => panic!("expected exposure-cap block, got {other:?}"),
+        }
+
+        store.delete_shadow_lot(lot_id)?;
+        let decision_after_clear = guard.can_open_buy(
+            &store,
+            now + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 1).max(6)),
+        );
+        match decision_after_clear {
+            BuyRiskDecision::Allow => {}
+            other => panic!("expected auto-clear after exposure normalizes, got {other:?}"),
         }
 
         let _ = std::fs::remove_file(db_path);
