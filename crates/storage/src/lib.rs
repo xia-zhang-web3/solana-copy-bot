@@ -2,8 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::SwapEvent;
 use reqwest::blocking::Client;
-use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension};
-use serde::Serialize;
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -17,7 +16,7 @@ pub struct SqliteStore {
     conn: Connection,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct WalletMetricRow {
     pub wallet_id: String,
     pub window_start: DateTime<Utc>,
@@ -32,7 +31,7 @@ pub struct WalletMetricRow {
     pub rug_ratio: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct WalletUpsertRow {
     pub wallet_id: String,
     pub first_seen: DateTime<Utc>,
@@ -40,13 +39,13 @@ pub struct WalletUpsertRow {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FollowlistUpdateResult {
     pub activated: usize,
     pub deactivated: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct CopySignalRow {
     pub signal_id: String,
     pub wallet_id: String,
@@ -57,7 +56,7 @@ pub struct CopySignalRow {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ShadowLotRow {
     pub id: i64,
     pub wallet_id: String,
@@ -67,14 +66,14 @@ pub struct ShadowLotRow {
     pub opened_ts: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ShadowCloseOutcome {
     pub closed_qty: f64,
     pub realized_pnl_sol: f64,
     pub has_open_lots_after: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct TokenMarketStats {
     pub first_seen: Option<DateTime<Utc>>,
     pub holders_proxy: u64,
@@ -83,7 +82,7 @@ pub struct TokenMarketStats {
     pub unique_traders_5m: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct TokenQualityCacheRow {
     pub mint: String,
     pub holders: Option<u64>,
@@ -92,90 +91,11 @@ pub struct TokenQualityCacheRow {
     pub fetched_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct TokenQualityRpcRow {
     pub holders: Option<u64>,
     pub liquidity_sol: Option<f64>,
     pub token_age_seconds: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct UiEventRow {
-    pub id: i64,
-    pub event_type: String,
-    pub stage: Option<String>,
-    pub reason: Option<String>,
-    pub wallet_id: Option<String>,
-    pub token: Option<String>,
-    pub signature: Option<String>,
-    pub payload_json: Option<String>,
-    pub ts: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RiskEventRow {
-    pub event_id: String,
-    pub event_type: String,
-    pub severity: String,
-    pub ts: DateTime<Utc>,
-    pub details_json: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopySignalViewRow {
-    pub signal_id: String,
-    pub wallet_id: String,
-    pub side: String,
-    pub token: String,
-    pub notional_sol: f64,
-    pub ts: DateTime<Utc>,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ShadowClosedTradeViewRow {
-    pub id: i64,
-    pub signal_id: String,
-    pub wallet_id: String,
-    pub token: String,
-    pub qty: f64,
-    pub entry_cost_sol: f64,
-    pub exit_value_sol: f64,
-    pub pnl_sol: f64,
-    pub opened_ts: DateTime<Utc>,
-    pub closed_ts: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DashboardKpis {
-    pub open_lots: u64,
-    pub open_notional_sol: f64,
-    pub closed_trades_1h: u64,
-    pub closed_trades_6h: u64,
-    pub closed_trades_24h: u64,
-    pub realized_pnl_1h: f64,
-    pub realized_pnl_6h: f64,
-    pub realized_pnl_24h: f64,
-    pub wins_24h: u64,
-    pub losses_24h: u64,
-    pub win_rate_24h: f64,
-    pub active_follow_wallets: u64,
-    pub copy_signals_24h: u64,
-    pub dropped_signals_24h: u64,
-    pub risk_events_24h: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LatestWalletMetricRow {
-    pub wallet_id: String,
-    pub window_start: DateTime<Utc>,
-    pub score: f64,
-    pub trades: u32,
-    pub pnl: f64,
-    pub win_rate: f64,
-    pub buy_total: u32,
-    pub tradable_ratio: f64,
-    pub rug_ratio: f64,
 }
 
 impl SqliteStore {
@@ -204,16 +124,6 @@ impl SqliteStore {
         )
         .context("failed to create schema_migrations table")?;
 
-        Ok(Self { conn })
-    }
-
-    pub fn open_read_only(path: &Path) -> Result<Self> {
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .with_context(|| format!("failed to open sqlite db read-only: {}", path.display()))?;
-        conn.busy_timeout(StdDuration::from_secs(5))
-            .context("failed to set sqlite busy_timeout for read-only connection")?;
-        conn.pragma_update(None, "query_only", "ON")
-            .context("failed to enable sqlite query_only mode")?;
         Ok(Self { conn })
     }
 
@@ -302,100 +212,6 @@ impl SqliteStore {
             )
             .context("failed to insert risk event")?;
         Ok(())
-    }
-
-    pub fn insert_ui_event(
-        &self,
-        event_type: &str,
-        stage: Option<&str>,
-        reason: Option<&str>,
-        wallet_id: Option<&str>,
-        token: Option<&str>,
-        signature: Option<&str>,
-        payload_json: Option<&str>,
-        ts: DateTime<Utc>,
-    ) -> Result<()> {
-        self.execute_with_retry(|conn| {
-            conn.execute(
-                "INSERT INTO ui_events(
-                    event_type,
-                    stage,
-                    reason,
-                    wallet_id,
-                    token,
-                    signature,
-                    payload_json,
-                    ts
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    event_type,
-                    stage,
-                    reason,
-                    wallet_id,
-                    token,
-                    signature,
-                    payload_json,
-                    ts.to_rfc3339(),
-                ],
-            )
-        })
-        .context("failed to insert ui event")?;
-        Ok(())
-    }
-
-    pub fn list_recent_ui_events(&self, limit: u32) -> Result<Vec<UiEventRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT
-                    id,
-                    event_type,
-                    stage,
-                    reason,
-                    wallet_id,
-                    token,
-                    signature,
-                    payload_json,
-                    ts
-                 FROM ui_events
-                 ORDER BY ts DESC, id DESC
-                 LIMIT ?1",
-            )
-            .context("failed to prepare ui_events query")?;
-        let mut rows = stmt
-            .query(params![limit.max(1) as i64])
-            .context("failed querying ui_events")?;
-
-        let mut events = Vec::new();
-        while let Some(row) = rows.next().context("failed iterating ui_events rows")? {
-            let ts_raw: String = row.get(8).context("failed reading ui_events.ts")?;
-            events.push(UiEventRow {
-                id: row.get(0).context("failed reading ui_events.id")?,
-                event_type: row.get(1).context("failed reading ui_events.event_type")?,
-                stage: row.get(2).context("failed reading ui_events.stage")?,
-                reason: row.get(3).context("failed reading ui_events.reason")?,
-                wallet_id: row.get(4).context("failed reading ui_events.wallet_id")?,
-                token: row.get(5).context("failed reading ui_events.token")?,
-                signature: row.get(6).context("failed reading ui_events.signature")?,
-                payload_json: row
-                    .get(7)
-                    .context("failed reading ui_events.payload_json")?,
-                ts: parse_rfc3339_utc(&ts_raw, "ui_events.ts")?,
-            });
-        }
-        Ok(events)
-    }
-
-    pub fn cleanup_ui_events_older_than(&self, cutoff: DateTime<Utc>) -> Result<u64> {
-        let changed = self
-            .execute_with_retry(|conn| {
-                conn.execute(
-                    "DELETE FROM ui_events WHERE ts < ?1",
-                    params![cutoff.to_rfc3339()],
-                )
-            })
-            .context("failed cleaning up expired ui_events")?;
-        Ok(changed.max(0) as u64)
     }
 
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
@@ -1003,178 +819,6 @@ impl SqliteStore {
         Ok(pairs)
     }
 
-    pub fn list_open_shadow_lots(&self, limit: u32, offset: u32) -> Result<Vec<ShadowLotRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, wallet_id, token, qty, cost_sol, opened_ts
-                 FROM shadow_lots
-                 WHERE qty > 0
-                 ORDER BY opened_ts DESC, id DESC
-                 LIMIT ?1 OFFSET ?2",
-            )
-            .context("failed to prepare open shadow lots query")?;
-        let mut rows = stmt
-            .query(params![limit.max(1) as i64, offset as i64])
-            .context("failed querying open shadow lots")?;
-
-        let mut lots = Vec::new();
-        while let Some(row) = rows.next().context("failed iterating open shadow lots")? {
-            let opened_ts_raw: String =
-                row.get(5).context("failed reading shadow_lots.opened_ts")?;
-            lots.push(ShadowLotRow {
-                id: row.get(0).context("failed reading shadow_lots.id")?,
-                wallet_id: row.get(1).context("failed reading shadow_lots.wallet_id")?,
-                token: row.get(2).context("failed reading shadow_lots.token")?,
-                qty: row.get(3).context("failed reading shadow_lots.qty")?,
-                cost_sol: row.get(4).context("failed reading shadow_lots.cost_sol")?,
-                opened_ts: parse_rfc3339_utc(&opened_ts_raw, "shadow_lots.opened_ts")?,
-            });
-        }
-        Ok(lots)
-    }
-
-    pub fn list_recent_shadow_closed_trades(
-        &self,
-        limit: u32,
-        offset: u32,
-    ) -> Result<Vec<ShadowClosedTradeViewRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT
-                    id,
-                    signal_id,
-                    wallet_id,
-                    token,
-                    qty,
-                    entry_cost_sol,
-                    exit_value_sol,
-                    pnl_sol,
-                    opened_ts,
-                    closed_ts
-                 FROM shadow_closed_trades
-                 ORDER BY closed_ts DESC, id DESC
-                 LIMIT ?1 OFFSET ?2",
-            )
-            .context("failed to prepare shadow closed trades query")?;
-        let mut rows = stmt
-            .query(params![limit.max(1) as i64, offset as i64])
-            .context("failed querying shadow closed trades")?;
-
-        let mut trades = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .context("failed iterating shadow closed trades")?
-        {
-            let opened_ts_raw: String = row
-                .get(8)
-                .context("failed reading shadow_closed_trades.opened_ts")?;
-            let closed_ts_raw: String = row
-                .get(9)
-                .context("failed reading shadow_closed_trades.closed_ts")?;
-            trades.push(ShadowClosedTradeViewRow {
-                id: row
-                    .get(0)
-                    .context("failed reading shadow_closed_trades.id")?,
-                signal_id: row
-                    .get(1)
-                    .context("failed reading shadow_closed_trades.signal_id")?,
-                wallet_id: row
-                    .get(2)
-                    .context("failed reading shadow_closed_trades.wallet_id")?,
-                token: row
-                    .get(3)
-                    .context("failed reading shadow_closed_trades.token")?,
-                qty: row
-                    .get(4)
-                    .context("failed reading shadow_closed_trades.qty")?,
-                entry_cost_sol: row
-                    .get(5)
-                    .context("failed reading shadow_closed_trades.entry_cost_sol")?,
-                exit_value_sol: row
-                    .get(6)
-                    .context("failed reading shadow_closed_trades.exit_value_sol")?,
-                pnl_sol: row
-                    .get(7)
-                    .context("failed reading shadow_closed_trades.pnl_sol")?,
-                opened_ts: parse_rfc3339_utc(&opened_ts_raw, "shadow_closed_trades.opened_ts")?,
-                closed_ts: parse_rfc3339_utc(&closed_ts_raw, "shadow_closed_trades.closed_ts")?,
-            });
-        }
-        Ok(trades)
-    }
-
-    pub fn list_recent_copy_signals(
-        &self,
-        limit: u32,
-        offset: u32,
-    ) -> Result<Vec<CopySignalViewRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT signal_id, wallet_id, side, token, notional_sol, ts, status
-                 FROM copy_signals
-                 ORDER BY ts DESC, signal_id DESC
-                 LIMIT ?1 OFFSET ?2",
-            )
-            .context("failed to prepare copy_signals query")?;
-        let mut rows = stmt
-            .query(params![limit.max(1) as i64, offset as i64])
-            .context("failed querying copy_signals")?;
-
-        let mut signals = Vec::new();
-        while let Some(row) = rows.next().context("failed iterating copy_signals")? {
-            let ts_raw: String = row.get(5).context("failed reading copy_signals.ts")?;
-            signals.push(CopySignalViewRow {
-                signal_id: row
-                    .get(0)
-                    .context("failed reading copy_signals.signal_id")?,
-                wallet_id: row
-                    .get(1)
-                    .context("failed reading copy_signals.wallet_id")?,
-                side: row.get(2).context("failed reading copy_signals.side")?,
-                token: row.get(3).context("failed reading copy_signals.token")?,
-                notional_sol: row
-                    .get(4)
-                    .context("failed reading copy_signals.notional_sol")?,
-                ts: parse_rfc3339_utc(&ts_raw, "copy_signals.ts")?,
-                status: row.get(6).context("failed reading copy_signals.status")?,
-            });
-        }
-        Ok(signals)
-    }
-
-    pub fn list_recent_risk_events(&self, limit: u32) -> Result<Vec<RiskEventRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT event_id, type, severity, ts, details_json
-                 FROM risk_events
-                 ORDER BY ts DESC, event_id DESC
-                 LIMIT ?1",
-            )
-            .context("failed to prepare risk_events query")?;
-        let mut rows = stmt
-            .query(params![limit.max(1) as i64])
-            .context("failed querying risk_events")?;
-
-        let mut events = Vec::new();
-        while let Some(row) = rows.next().context("failed iterating risk_events")? {
-            let ts_raw: String = row.get(3).context("failed reading risk_events.ts")?;
-            events.push(RiskEventRow {
-                event_id: row.get(0).context("failed reading risk_events.event_id")?,
-                event_type: row.get(1).context("failed reading risk_events.type")?,
-                severity: row.get(2).context("failed reading risk_events.severity")?,
-                ts: parse_rfc3339_utc(&ts_raw, "risk_events.ts")?,
-                details_json: row
-                    .get(4)
-                    .context("failed reading risk_events.details_json")?,
-            });
-        }
-        Ok(events)
-    }
-
     pub fn close_shadow_lots_fifo_atomic(
         &self,
         signal_id: &str,
@@ -1424,42 +1068,6 @@ impl SqliteStore {
             volume_5m_sol,
             unique_traders_5m: unique_traders_5m_raw.max(0) as u64,
         })
-    }
-
-    pub fn latest_token_sol_price(&self, token: &str, as_of: DateTime<Utc>) -> Result<Option<f64>> {
-        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-        let row: Option<(String, String, f64, f64)> = self
-            .conn
-            .query_row(
-                "SELECT token_in, token_out, qty_in, qty_out
-                 FROM observed_swaps
-                 WHERE ts <= ?1
-                   AND (
-                        (token_in = ?2 AND token_out = ?3)
-                        OR
-                        (token_in = ?3 AND token_out = ?2)
-                   )
-                 ORDER BY ts DESC, slot DESC, signature DESC
-                 LIMIT 1",
-                params![as_of.to_rfc3339(), token, SOL_MINT],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()
-            .context("failed querying latest token/SOL price")?;
-
-        let Some((token_in, token_out, qty_in, qty_out)) = row else {
-            return Ok(None);
-        };
-        if qty_in <= 0.0 || qty_out <= 0.0 {
-            return Ok(None);
-        }
-        if token_in == SOL_MINT && token_out == token {
-            return Ok(Some(qty_in / qty_out));
-        }
-        if token_in == token && token_out == SOL_MINT {
-            return Ok(Some(qty_out / qty_in));
-        }
-        Ok(None)
     }
 
     pub fn get_token_quality_cache(&self, mint: &str) -> Result<Option<TokenQualityCacheRow>> {
@@ -1730,198 +1338,6 @@ impl SqliteStore {
         Ok((rug_count, total_count, rug_rate))
     }
 
-    pub fn dashboard_kpis(&self, now: DateTime<Utc>) -> Result<DashboardKpis> {
-        let open_lots_raw: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM shadow_lots WHERE qty > 0",
-                [],
-                |row| row.get(0),
-            )
-            .context("failed querying open shadow lots count for dashboard")?;
-        let open_notional_sol: f64 = self
-            .conn
-            .query_row(
-                "SELECT COALESCE(SUM(cost_sol), 0.0) FROM shadow_lots WHERE qty > 0",
-                [],
-                |row| row.get(0),
-            )
-            .context("failed querying open notional for dashboard")?;
-
-        let since_1h = (now - Duration::hours(1)).to_rfc3339();
-        let since_6h = (now - Duration::hours(6)).to_rfc3339();
-        let since_24h = (now - Duration::hours(24)).to_rfc3339();
-
-        let (closed_trades_1h_raw, realized_pnl_1h): (i64, f64) = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(pnl_sol), 0.0)
-                 FROM shadow_closed_trades
-                 WHERE closed_ts >= ?1",
-                params![&since_1h],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .context("failed querying 1h closed trade kpis")?;
-        let (closed_trades_6h_raw, realized_pnl_6h): (i64, f64) = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(pnl_sol), 0.0)
-                 FROM shadow_closed_trades
-                 WHERE closed_ts >= ?1",
-                params![&since_6h],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .context("failed querying 6h closed trade kpis")?;
-        let (closed_trades_24h_raw, realized_pnl_24h): (i64, f64) = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(pnl_sol), 0.0)
-                 FROM shadow_closed_trades
-                 WHERE closed_ts >= ?1",
-                params![&since_24h],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .context("failed querying 24h closed trade kpis")?;
-        let (wins_24h_raw, losses_24h_raw): (i64, i64) = self
-            .conn
-            .query_row(
-                "SELECT
-                    COALESCE(SUM(CASE WHEN pnl_sol > 0 THEN 1 ELSE 0 END), 0) AS wins,
-                    COALESCE(SUM(CASE WHEN pnl_sol < 0 THEN 1 ELSE 0 END), 0) AS losses
-                 FROM shadow_closed_trades
-                 WHERE closed_ts >= ?1",
-                params![&since_24h],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .context("failed querying 24h win/loss counts")?;
-        let active_follow_wallets_raw: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM followlist WHERE active = 1",
-                [],
-                |row| row.get(0),
-            )
-            .context("failed querying active follow wallets for dashboard")?;
-        let copy_signals_24h_raw: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM copy_signals WHERE ts >= ?1",
-                params![&since_24h],
-                |row| row.get(0),
-            )
-            .context("failed querying copy_signals 24h count")?;
-        let dropped_signals_24h_raw: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*)
-                 FROM ui_events
-                 WHERE event_type = 'signal_dropped'
-                   AND ts >= ?1",
-                params![&since_24h],
-                |row| row.get(0),
-            )
-            .context("failed querying dropped signals 24h count")?;
-        let risk_events_24h_raw: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM risk_events WHERE ts >= ?1",
-                params![&since_24h],
-                |row| row.get(0),
-            )
-            .context("failed querying risk events 24h count")?;
-
-        let closed_trades_24h = closed_trades_24h_raw.max(0) as u64;
-        let wins_24h = wins_24h_raw.max(0) as u64;
-        let win_rate_24h = if closed_trades_24h > 0 {
-            wins_24h as f64 / closed_trades_24h as f64
-        } else {
-            0.0
-        };
-
-        Ok(DashboardKpis {
-            open_lots: open_lots_raw.max(0) as u64,
-            open_notional_sol: open_notional_sol.max(0.0),
-            closed_trades_1h: closed_trades_1h_raw.max(0) as u64,
-            closed_trades_6h: closed_trades_6h_raw.max(0) as u64,
-            closed_trades_24h,
-            realized_pnl_1h,
-            realized_pnl_6h,
-            realized_pnl_24h,
-            wins_24h,
-            losses_24h: losses_24h_raw.max(0) as u64,
-            win_rate_24h,
-            active_follow_wallets: active_follow_wallets_raw.max(0) as u64,
-            copy_signals_24h: copy_signals_24h_raw.max(0) as u64,
-            dropped_signals_24h: dropped_signals_24h_raw.max(0) as u64,
-            risk_events_24h: risk_events_24h_raw.max(0) as u64,
-        })
-    }
-
-    pub fn list_latest_wallet_metrics(&self, limit: u32) -> Result<Vec<LatestWalletMetricRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT
-                    wm.wallet_id,
-                    wm.window_start,
-                    wm.score,
-                    wm.trades,
-                    wm.pnl,
-                    wm.win_rate,
-                    wm.buy_total,
-                    wm.tradable_ratio,
-                    wm.rug_ratio
-                 FROM wallet_metrics wm
-                 JOIN (
-                    SELECT wallet_id, MAX(id) AS max_id
-                    FROM wallet_metrics
-                    GROUP BY wallet_id
-                 ) latest
-                 ON latest.wallet_id = wm.wallet_id
-                 AND latest.max_id = wm.id
-                 ORDER BY wm.score DESC, wm.trades DESC, wm.wallet_id ASC
-                 LIMIT ?1",
-            )
-            .context("failed to prepare latest wallet_metrics query")?;
-        let mut rows = stmt
-            .query(params![limit.max(1) as i64])
-            .context("failed querying latest wallet_metrics")?;
-
-        let mut out = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .context("failed iterating latest wallet_metrics")?
-        {
-            let window_start_raw: String = row
-                .get(1)
-                .context("failed reading wallet_metrics.window_start")?;
-            let trades_raw: i64 = row.get(3).context("failed reading wallet_metrics.trades")?;
-            let buy_total_raw: i64 = row
-                .get(6)
-                .context("failed reading wallet_metrics.buy_total")?;
-            out.push(LatestWalletMetricRow {
-                wallet_id: row
-                    .get(0)
-                    .context("failed reading wallet_metrics.wallet_id")?,
-                window_start: parse_rfc3339_utc(&window_start_raw, "wallet_metrics.window_start")?,
-                score: row.get(2).context("failed reading wallet_metrics.score")?,
-                trades: trades_raw.max(0) as u32,
-                pnl: row.get(4).context("failed reading wallet_metrics.pnl")?,
-                win_rate: row
-                    .get(5)
-                    .context("failed reading wallet_metrics.win_rate")?,
-                buy_total: buy_total_raw.max(0) as u32,
-                tradable_ratio: row
-                    .get(7)
-                    .context("failed reading wallet_metrics.tradable_ratio")?,
-                rug_ratio: row
-                    .get(8)
-                    .context("failed reading wallet_metrics.rug_ratio")?,
-            });
-        }
-        Ok(out)
-    }
-
     fn read_migration_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         let entries = fs::read_dir(dir)
             .with_context(|| format!("failed to read migrations dir {}", dir.display()))?;
@@ -2020,12 +1436,6 @@ mod tests {
 
 fn rpc_result<'a>(payload: &'a Value) -> &'a Value {
     payload.get("result").unwrap_or(payload)
-}
-
-fn parse_rfc3339_utc(raw: &str, field: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .map(|value| value.with_timezone(&Utc))
-        .with_context(|| format!("invalid {field} rfc3339 value: {raw}"))
 }
 
 fn is_retryable_sqlite_message(message: &str) -> bool {

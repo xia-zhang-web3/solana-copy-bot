@@ -31,44 +31,6 @@ cd solana-copy-bot
 SOLANA_COPY_BOT_CONFIG=configs/paper.toml cargo run -p copybot-app
 ```
 
-## Real-Time Dashboard (Axum)
-
-`copybot-app` now serves a built-in real-time web UI and JSON/WS API.
-
-Set web auth token (required for non-localhost bindings):
-
-```bash
-export SOLANA_COPY_BOT_WEB_AUTH_TOKEN="change-me-strong-token"
-```
-
-Run app and open dashboard:
-
-```bash
-cargo run -p copybot-app -- --config configs/dev.toml
-# open: http://127.0.0.1:8080
-```
-
-Use the same token in UI input (or send `Authorization: Bearer <token>` for API).
-
-Web env overrides:
-
-- `SOLANA_COPY_BOT_WEB_ENABLED`
-- `SOLANA_COPY_BOT_WEB_HOST`
-- `SOLANA_COPY_BOT_WEB_PORT`
-- `SOLANA_COPY_BOT_WEB_AUTH_TOKEN`
-
-API/WS endpoints:
-
-- `GET /api/dashboard`
-- `GET /api/lots`
-- `GET /api/trades`
-- `GET /api/signals`
-- `GET /api/risk`
-- `GET /api/ingestion`
-- `GET /api/discovery`
-- `GET /api/config`
-- `WS /ws/live`
-
 Run shadow ingestion against Helius WebSocket + HTTP RPC (no execution logic, only ingest + persist):
 
 ```bash

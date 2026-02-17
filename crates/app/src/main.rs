@@ -1,6 +1,4 @@
-mod web;
-
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{load_from_env_or_default, RiskConfig};
 use copybot_core_types::SwapEvent;
@@ -10,7 +8,6 @@ use copybot_shadow::{
     FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
 };
 use copybot_storage::{is_retryable_sqlite_anyhow_error, SqliteStore};
-use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -19,7 +16,6 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
-use web::{RuntimeRiskSnapshot, WebRuntimeHandle, UI_EVENTS_RETENTION_HOURS};
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
@@ -76,25 +72,6 @@ async fn main() -> Result<()> {
     );
     let shadow = ShadowService::new_with_helius(config.shadow.clone(), shadow_http_url);
 
-    let web_runtime = if config.web.enabled {
-        let runtime = WebRuntimeHandle::new(config.sqlite.path.clone(), &config);
-        if !runtime.auth_token_is_configured() {
-            return Err(anyhow!(
-                "web.auth_token is required; set SOLANA_COPY_BOT_WEB_AUTH_TOKEN"
-            ));
-        }
-        let runtime_for_server = runtime.clone();
-        let web_cfg = config.web.clone();
-        tokio::spawn(async move {
-            if let Err(error) = runtime_for_server.run_server(web_cfg).await {
-                warn!(error = %error, "web server stopped with error");
-            }
-        });
-        Some(runtime)
-    } else {
-        None
-    };
-
     run_app_loop(
         store,
         ingestion,
@@ -108,7 +85,6 @@ async fn main() -> Result<()> {
         config.shadow.max_signal_lag_seconds,
         config.shadow.causal_holdback_enabled,
         config.shadow.causal_holdback_ms,
-        web_runtime,
     )
     .await
 }
@@ -752,46 +728,6 @@ fn sanitize_json_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn build_runtime_risk_snapshot(guard: &ShadowRiskGuard) -> RuntimeRiskSnapshot {
-    RuntimeRiskSnapshot {
-        killswitch_enabled: guard.config.shadow_killswitch_enabled,
-        hard_stop_reason: guard.hard_stop_reason.clone(),
-        exposure_hard_blocked: guard.exposure_hard_blocked,
-        exposure_hard_detail: guard.exposure_hard_detail.clone(),
-        pause_until: guard.pause_until,
-        pause_reason: guard.pause_reason.clone(),
-        universe_breach_streak: guard.universe_breach_streak,
-        universe_blocked: guard.universe_blocked,
-        infra_block_reason: guard.infra_block_reason.clone(),
-        updated_at: Some(Utc::now()),
-    }
-}
-
-fn sync_web_risk_snapshot(
-    web_runtime: Option<&WebRuntimeHandle>,
-    guard: &ShadowRiskGuard,
-    last_snapshot: &mut Option<RuntimeRiskSnapshot>,
-) {
-    let Some(web) = web_runtime else {
-        return;
-    };
-    let snapshot = build_runtime_risk_snapshot(guard);
-    web.set_risk_snapshot(snapshot.clone());
-    let changed = last_snapshot
-        .as_ref()
-        .map(|last| last != &snapshot)
-        .unwrap_or(true);
-    if changed {
-        web.publish_event(
-            "risk_state_changed",
-            json!({
-                "risk": snapshot,
-            }),
-        );
-        *last_snapshot = Some(snapshot);
-    }
-}
-
 async fn run_app_loop(
     store: SqliteStore,
     mut ingestion: IngestionService,
@@ -805,7 +741,6 @@ async fn run_app_loop(
     shadow_max_signal_lag_seconds: u64,
     shadow_causal_holdback_enabled: bool,
     shadow_causal_holdback_ms: u64,
-    web_runtime: Option<WebRuntimeHandle>,
 ) -> Result<()> {
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
     let mut discovery_interval =
@@ -839,26 +774,11 @@ async fn run_app_loop(
     let mut shadow_scheduler_needs_reset = false;
     let mut held_shadow_sells: HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>> = HashMap::new();
     let mut shadow_holdback_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
-    let mut last_web_risk_snapshot: Option<RuntimeRiskSnapshot> = None;
 
     if !follow_snapshot.active.is_empty() {
         info!(
             active_follow_wallets = follow_snapshot.active.len(),
             "active follow wallets loaded"
-        );
-    }
-    if let Some(web) = web_runtime.as_ref() {
-        web.set_follow_snapshot(follow_snapshot.as_ref());
-        sync_web_risk_snapshot(Some(web), &shadow_risk_guard, &mut last_web_risk_snapshot);
-        web.set_ingestion_snapshot(ingestion.runtime_snapshot(), None);
-        web.set_scheduler_snapshot(
-            pending_shadow_task_count,
-            SHADOW_PENDING_TASK_CAPACITY,
-            inflight_shadow_keys.len(),
-            shadow_workers.len(),
-            held_shadow_sells.len(),
-            shadow_queue_backpressure_active,
-            shadow_scheduler_needs_reset,
         );
     }
 
@@ -907,7 +827,6 @@ async fn run_app_loop(
         let shadow_queue_full = pending_shadow_task_count >= SHADOW_PENDING_TASK_CAPACITY;
         if shadow_queue_full && !shadow_queue_backpressure_active {
             shadow_queue_backpressure_active = true;
-            let now = Utc::now();
             warn!(
                 pending_shadow_task_count,
                 shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
@@ -917,88 +836,25 @@ async fn run_app_loop(
                 "{{\"reason\":\"queue_backpressure\",\"pending\":{},\"capacity\":{}}}",
                 pending_shadow_task_count, SHADOW_PENDING_TASK_CAPACITY
             );
-            if let Err(error) =
-                store.insert_risk_event("shadow_queue_saturated", "warn", now, Some(&details_json))
-            {
+            if let Err(error) = store.insert_risk_event(
+                "shadow_queue_saturated",
+                "warn",
+                Utc::now(),
+                Some(&details_json),
+            ) {
                 warn!(
                     error = %error,
                     "failed to persist shadow queue backpressure risk event"
                 );
             }
-            if let Err(error) = store.insert_ui_event(
-                "queue_event",
-                Some("scheduler"),
-                Some("queue_backpressure_active"),
-                None,
-                None,
-                None,
-                Some(&details_json),
-                now,
-            ) {
-                warn!(error = %error, "failed to persist ui queue event");
-            }
-            if let Some(web) = web_runtime.as_ref() {
-                web.publish_event(
-                    "queue_event",
-                    json!({
-                        "state": "active",
-                        "pending": pending_shadow_task_count,
-                        "capacity": SHADOW_PENDING_TASK_CAPACITY,
-                    }),
-                );
-            }
         } else if !shadow_queue_full && shadow_queue_backpressure_active {
             shadow_queue_backpressure_active = false;
-            let now = Utc::now();
             info!(
                 pending_shadow_task_count,
                 shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
                 "shadow queue backpressure cleared"
             );
-            let details_json = format!(
-                "{{\"reason\":\"queue_backpressure_cleared\",\"pending\":{},\"capacity\":{}}}",
-                pending_shadow_task_count, SHADOW_PENDING_TASK_CAPACITY
-            );
-            if let Err(error) = store.insert_ui_event(
-                "queue_event",
-                Some("scheduler"),
-                Some("queue_backpressure_cleared"),
-                None,
-                None,
-                None,
-                Some(&details_json),
-                now,
-            ) {
-                warn!(error = %error, "failed to persist ui queue event clear");
-            }
-            if let Some(web) = web_runtime.as_ref() {
-                web.publish_event(
-                    "queue_event",
-                    json!({
-                        "state": "cleared",
-                        "pending": pending_shadow_task_count,
-                        "capacity": SHADOW_PENDING_TASK_CAPACITY,
-                    }),
-                );
-            }
         }
-
-        if let Some(web) = web_runtime.as_ref() {
-            web.set_scheduler_snapshot(
-                pending_shadow_task_count,
-                SHADOW_PENDING_TASK_CAPACITY,
-                inflight_shadow_keys.len(),
-                shadow_workers.len(),
-                held_shadow_sells.len(),
-                shadow_queue_backpressure_active,
-                shadow_scheduler_needs_reset,
-            );
-        }
-        sync_web_risk_snapshot(
-            web_runtime.as_ref(),
-            &shadow_risk_guard,
-            &mut last_web_risk_snapshot,
-        );
 
         tokio::select! {
             discovery_result = async {
@@ -1025,39 +881,6 @@ async fn run_app_loop(
                             discovery_output.eligible_wallets,
                             discovery_output.active_follow_wallets,
                         );
-                        if let Some(web) = web_runtime.as_ref() {
-                            web.set_follow_snapshot(follow_snapshot.as_ref());
-                            web.set_discovery_snapshot(
-                                discovery_output.cycle_ts,
-                                discovery_output.eligible_wallets,
-                                discovery_output.active_follow_wallets,
-                                discovery_output.top_wallets.clone(),
-                            );
-                            web.publish_event(
-                                "discovery_cycle_done",
-                                json!({
-                                    "cycle_ts": discovery_output.cycle_ts,
-                                    "eligible_wallets": discovery_output.eligible_wallets,
-                                    "active_follow_wallets": discovery_output.active_follow_wallets,
-                                    "top_wallets": discovery_output.top_wallets,
-                                }),
-                            );
-                        }
-                        let retention_cutoff = Utc::now()
-                            - chrono::Duration::hours(UI_EVENTS_RETENTION_HOURS.max(1));
-                        match store.cleanup_ui_events_older_than(retention_cutoff) {
-                            Ok(deleted) if deleted > 0 => {
-                                info!(
-                                    deleted,
-                                    retention_hours = UI_EVENTS_RETENTION_HOURS,
-                                    "ui_events retention cleanup completed"
-                                );
-                            }
-                            Ok(_) => {}
-                            Err(error) => {
-                                warn!(error = %error, "failed ui_events retention cleanup");
-                            }
-                        }
                     }
                     Ok(Err(error)) => {
                         warn!(error = %error, "discovery cycle failed");
@@ -1079,8 +902,6 @@ async fn run_app_loop(
                         );
                         handle_shadow_task_output(
                             task_output,
-                            &store,
-                            web_runtime.as_ref(),
                             &mut open_shadow_lots,
                             &mut shadow_drop_reason_counts,
                             &mut shadow_drop_stage_counts,
@@ -1118,18 +939,6 @@ async fn run_app_loop(
                             active_follow_wallets = follow_snapshot.active.len(),
                             "shadow snapshot"
                         );
-                        if let Some(web) = web_runtime.as_ref() {
-                            web.set_shadow_snapshot(snapshot, Utc::now());
-                            web.publish_event(
-                                "shadow_snapshot",
-                                json!({
-                                    "closed_trades_24h": snapshot.closed_trades_24h,
-                                    "realized_pnl_sol_24h": snapshot.realized_pnl_sol_24h,
-                                    "open_lots": snapshot.open_lots,
-                                    "active_follow_wallets": follow_snapshot.active.len(),
-                                }),
-                            );
-                        }
                         if !shadow_drop_reason_counts.is_empty() {
                             info!(
                                 drop_counts = ?shadow_drop_reason_counts,
@@ -1185,19 +994,6 @@ async fn run_app_loop(
                     now,
                     ingestion.runtime_snapshot(),
                 );
-                if let Some(web) = web_runtime.as_ref() {
-                    web.set_ingestion_snapshot(ingestion.runtime_snapshot(), Some(swap.ts_utc));
-                    web.publish_event(
-                        "ingestion_snapshot",
-                        json!({
-                            "signature": swap.signature.clone(),
-                            "wallet": swap.wallet.clone(),
-                            "token_in": swap.token_in.clone(),
-                            "token_out": swap.token_out.clone(),
-                            "ts": swap.ts_utc,
-                        }),
-                    );
-                }
 
                 match insert_observed_swap_with_retry(&store, &swap).await {
                     Ok(true) => {
@@ -1212,25 +1008,6 @@ async fn run_app_loop(
                             ingestion_lag_ms = (Utc::now() - swap.ts_utc).num_milliseconds().max(0),
                             "observed swap stored"
                         );
-                        let payload_json = format!(
-                            "{{\"dex\":\"{}\",\"side_hint\":\"{}\",\"amount_in\":{},\"amount_out\":{}}}",
-                            sanitize_json_value(&swap.dex),
-                            sanitize_json_value(&format!("{}->{}", swap.token_in, swap.token_out)),
-                            swap.amount_in,
-                            swap.amount_out
-                        );
-                        if let Err(error) = store.insert_ui_event(
-                            "ingestion_event",
-                            Some("ingestion"),
-                            Some("observed_swap_stored"),
-                            Some(&swap.wallet),
-                            Some(&swap.token_out),
-                            Some(&swap.signature),
-                            Some(&payload_json),
-                            now,
-                        ) {
-                            warn!(error = %error, "failed to persist ingestion ui_event");
-                        }
 
                         let Some(side) = classify_swap_side(&swap) else {
                             continue;
@@ -1241,36 +1018,6 @@ async fn run_app_loop(
                             let reason = "not_followed";
                             *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
                             *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
-                            let payload_json = format!(
-                                "{{\"side\":\"buy\",\"wallet\":\"{}\",\"token\":\"{}\"}}",
-                                sanitize_json_value(&swap.wallet),
-                                sanitize_json_value(&swap.token_out),
-                            );
-                            if let Err(error) = store.insert_ui_event(
-                                "signal_dropped",
-                                Some("follow"),
-                                Some(reason),
-                                Some(&swap.wallet),
-                                Some(&swap.token_out),
-                                Some(&swap.signature),
-                                Some(&payload_json),
-                                now,
-                            ) {
-                                warn!(error = %error, "failed to persist signal_dropped event");
-                            }
-                            if let Some(web) = web_runtime.as_ref() {
-                                web.publish_event(
-                                    "signal_dropped",
-                                    json!({
-                                        "stage": "follow",
-                                        "reason": reason,
-                                        "side": "buy",
-                                        "wallet": swap.wallet.clone(),
-                                        "token": swap.token_out.clone(),
-                                        "signature": swap.signature.clone(),
-                                    }),
-                                );
-                            }
                             debug!(
                                 stage = "follow",
                                 reason,
@@ -1302,36 +1049,6 @@ async fn run_app_loop(
                                 let reason = "not_followed";
                                 *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
                                 *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
-                                let payload_json = format!(
-                                    "{{\"side\":\"sell\",\"wallet\":\"{}\",\"token\":\"{}\"}}",
-                                    sanitize_json_value(&swap.wallet),
-                                    sanitize_json_value(&swap.token_in),
-                                );
-                                if let Err(error) = store.insert_ui_event(
-                                    "signal_dropped",
-                                    Some("follow"),
-                                    Some(reason),
-                                    Some(&swap.wallet),
-                                    Some(&swap.token_in),
-                                    Some(&swap.signature),
-                                    Some(&payload_json),
-                                    now,
-                                ) {
-                                    warn!(error = %error, "failed to persist signal_dropped event");
-                                }
-                                if let Some(web) = web_runtime.as_ref() {
-                                    web.publish_event(
-                                        "signal_dropped",
-                                        json!({
-                                            "stage": "follow",
-                                            "reason": reason,
-                                            "side": "sell",
-                                            "wallet": swap.wallet.clone(),
-                                            "token": swap.token_in.clone(),
-                                            "signature": swap.signature.clone(),
-                                        }),
-                                    );
-                                }
                                 debug!(
                                     stage = "follow",
                                     reason,
@@ -1351,38 +1068,6 @@ async fn run_app_loop(
                                     let reason_key = reason.as_str();
                                     *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
                                     *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
-                                    let payload_json = format!(
-                                        "{{\"side\":\"buy\",\"wallet\":\"{}\",\"token\":\"{}\",\"detail\":\"{}\"}}",
-                                        sanitize_json_value(&swap.wallet),
-                                        sanitize_json_value(&swap.token_out),
-                                        sanitize_json_value(&detail),
-                                    );
-                                    if let Err(error) = store.insert_ui_event(
-                                        "signal_dropped",
-                                        Some("risk"),
-                                        Some(reason_key),
-                                        Some(&swap.wallet),
-                                        Some(&swap.token_out),
-                                        Some(&swap.signature),
-                                        Some(&payload_json),
-                                        now,
-                                    ) {
-                                        warn!(error = %error, "failed to persist signal_dropped event");
-                                    }
-                                    if let Some(web) = web_runtime.as_ref() {
-                                        web.publish_event(
-                                            "signal_dropped",
-                                            json!({
-                                                "stage": "risk",
-                                                "reason": reason_key,
-                                                "detail": detail.clone(),
-                                                "side": "buy",
-                                                "wallet": swap.wallet.clone(),
-                                                "token": swap.token_out.clone(),
-                                                "signature": swap.signature.clone(),
-                                            }),
-                                        );
-                                    }
                                     debug!(
                                         stage = "risk",
                                         reason = reason_key,
@@ -1612,7 +1297,6 @@ fn spawn_discovery_task(
             cycle_ts: now,
             eligible_wallets: summary.eligible_wallets,
             active_follow_wallets: summary.active_follow_wallets,
-            top_wallets: summary.top_wallets,
         })
     }
 }
@@ -1641,7 +1325,6 @@ struct DiscoveryTaskOutput {
     cycle_ts: DateTime<Utc>,
     eligible_wallets: usize,
     active_follow_wallets: usize,
-    top_wallets: Vec<String>,
 }
 
 struct ShadowTaskInput {
@@ -2246,79 +1929,28 @@ fn mark_shadow_task_complete(
 
 fn handle_shadow_task_output(
     task_output: ShadowTaskOutput,
-    store: &SqliteStore,
-    web_runtime: Option<&WebRuntimeHandle>,
     open_shadow_lots: &mut HashSet<(String, String)>,
     shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
     shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
 ) {
-    let signature = task_output.signature.clone();
-    let key_wallet = task_output.key.wallet.clone();
-    let key_token = task_output.key.token.clone();
     match task_output.outcome {
         Ok(ShadowProcessOutcome::Recorded(result)) => {
-            let signal_id = result.signal_id.clone();
-            let wallet_id = result.wallet_id.clone();
-            let side = result.side.clone();
-            let token = result.token.clone();
-            let notional_sol = result.notional_sol;
-            let latency_ms = result.latency_ms;
-            let closed_qty = result.closed_qty;
-            let realized_pnl_sol = result.realized_pnl_sol;
-            let has_open_lots_after_signal = result.has_open_lots_after_signal.unwrap_or(false);
             info!(
-                signal_id = %signal_id,
-                wallet = %wallet_id,
-                side = %side,
-                token = %token,
-                notional_sol,
-                latency_ms,
-                closed_qty,
-                realized_pnl_sol,
+                signal_id = %result.signal_id,
+                wallet = %result.wallet_id,
+                side = %result.side,
+                token = %result.token,
+                notional_sol = result.notional_sol,
+                latency_ms = result.latency_ms,
+                closed_qty = result.closed_qty,
+                realized_pnl_sol = result.realized_pnl_sol,
                 "shadow signal recorded"
             );
-            let payload_json = format!(
-                "{{\"signal_id\":\"{}\",\"side\":\"{}\",\"notional_sol\":{},\"latency_ms\":{},\"closed_qty\":{},\"realized_pnl_sol\":{}}}",
-                sanitize_json_value(&signal_id),
-                sanitize_json_value(&side),
-                notional_sol,
-                latency_ms,
-                closed_qty,
-                realized_pnl_sol,
-            );
-            if let Err(error) = store.insert_ui_event(
-                "signal_recorded",
-                Some("recorded"),
-                None,
-                Some(&wallet_id),
-                Some(&token),
-                Some(&signature),
-                Some(&payload_json),
-                Utc::now(),
-            ) {
-                warn!(error = %error, "failed to persist signal_recorded event");
-            }
-            if let Some(web) = web_runtime {
-                web.publish_event(
-                    "signal_recorded",
-                    json!({
-                        "signal_id": signal_id.clone(),
-                        "wallet": wallet_id.clone(),
-                        "side": side.clone(),
-                        "token": token.clone(),
-                        "notional_sol": notional_sol,
-                        "latency_ms": latency_ms,
-                        "closed_qty": closed_qty,
-                        "realized_pnl_sol": realized_pnl_sol,
-                        "signature": signature.clone(),
-                    }),
-                );
-            }
-            let key = (wallet_id, token);
-            if side == "buy" {
+            let key = (result.wallet_id, result.token);
+            if result.side == "buy" {
                 open_shadow_lots.insert(key);
-            } else if side == "sell" {
-                if has_open_lots_after_signal {
+            } else if result.side == "sell" {
+                if result.has_open_lots_after_signal.unwrap_or(false) {
                     open_shadow_lots.insert(key);
                 } else {
                     open_shadow_lots.remove(&key);
@@ -2330,67 +1962,11 @@ fn handle_shadow_task_output(
             let stage_key = reason_to_stage(reason);
             *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
             *shadow_drop_stage_counts.entry(stage_key).or_insert(0) += 1;
-            let payload_json = format!(
-                "{{\"stage\":\"{}\",\"reason\":\"{}\"}}",
-                sanitize_json_value(stage_key),
-                sanitize_json_value(reason_key),
-            );
-            if let Err(error) = store.insert_ui_event(
-                "signal_dropped",
-                Some(stage_key),
-                Some(reason_key),
-                Some(&key_wallet),
-                Some(&key_token),
-                Some(&signature),
-                Some(&payload_json),
-                Utc::now(),
-            ) {
-                warn!(error = %error, "failed to persist signal_dropped event");
-            }
-            if let Some(web) = web_runtime {
-                web.publish_event(
-                    "signal_dropped",
-                    json!({
-                        "stage": stage_key,
-                        "reason": reason_key,
-                        "wallet": key_wallet,
-                        "token": key_token,
-                        "signature": signature,
-                    }),
-                );
-            }
         }
         Err(error) => {
-            let details_json = format!(
-                "{{\"error\":\"{}\"}}",
-                sanitize_json_value(&error.to_string())
-            );
-            if let Err(store_error) = store.insert_ui_event(
-                "shadow_error",
-                Some("shadow_worker"),
-                Some("processing_failed"),
-                Some(&key_wallet),
-                Some(&key_token),
-                Some(&signature),
-                Some(&details_json),
-                Utc::now(),
-            ) {
-                warn!(error = %store_error, "failed to persist shadow_error event");
-            }
-            if let Some(web) = web_runtime {
-                web.publish_event(
-                    "shadow_error",
-                    json!({
-                        "wallet": key_wallet,
-                        "token": key_token,
-                        "signature": signature.clone(),
-                        "error": error.to_string(),
-                    }),
-                );
-            }
             warn!(
                 error = %error,
-                signature = %signature,
+                signature = %task_output.signature,
                 "shadow processing failed"
             );
         }

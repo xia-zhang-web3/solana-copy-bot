@@ -6,12 +6,6 @@ heartbeat_seconds = 20
 migrations_dir = "migrations"
 pause_new_trades_on_outage = true
 
-[web]
-enabled = true
-host = "0.0.0.0"
-port = 8080
-auth_token = "REPLACE_ME"
-
 [sqlite]
 path = "state/paper_copybot.db"
 

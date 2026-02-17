@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-axum = { version = "0.8", features = ["json", "ws"] }
 chrono.workspace = true
 copybot-config = { path = "../config" }
 copybot-core-types = { path = "../core-types" }
@@ -13,10 +12,6 @@ copybot-discovery = { path = "../discovery" }
 copybot-ingestion = { path = "../ingestion" }
 copybot-shadow = { path = "../shadow" }
 copybot-storage = { path = "../storage" }
-futures-util = "0.3"
-serde.workspace = true
-serde_json = "1.0"
 tokio.workspace = true
-tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

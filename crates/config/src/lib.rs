@@ -1,14 +1,13 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct AppConfig {
     pub system: SystemConfig,
-    pub web: WebConfig,
     pub sqlite: SqliteConfig,
     pub ingestion: IngestionConfig,
     pub discovery: DiscoveryConfig,
@@ -16,7 +15,7 @@ pub struct AppConfig {
     pub risk: RiskConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SystemConfig {
     pub env: String,
@@ -40,27 +39,7 @@ impl Default for SystemConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct WebConfig {
-    pub enabled: bool,
-    pub host: String,
-    pub port: u16,
-    pub auth_token: String,
-}
-
-impl Default for WebConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            auth_token: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SqliteConfig {
     pub path: String,
@@ -74,7 +53,7 @@ impl Default for SqliteConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct IngestionConfig {
     pub source: String,
@@ -143,7 +122,7 @@ impl Default for IngestionConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DiscoveryConfig {
     pub scoring_window_days: u32,
@@ -187,7 +166,7 @@ impl Default for DiscoveryConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct RiskConfig {
     pub max_position_sol: f64,
@@ -222,7 +201,7 @@ pub struct RiskConfig {
     pub shadow_universe_breach_cycles: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ShadowConfig {
     pub enabled: bool,
@@ -316,27 +295,6 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
 
     if let Ok(source) = env::var("SOLANA_COPY_BOT_INGESTION_SOURCE") {
         config.ingestion.source = source;
-    }
-    if let Some(enabled) = env::var("SOLANA_COPY_BOT_WEB_ENABLED")
-        .ok()
-        .and_then(parse_env_bool)
-    {
-        config.web.enabled = enabled;
-    }
-    if let Ok(host) = env::var("SOLANA_COPY_BOT_WEB_HOST") {
-        let host = host.trim();
-        if !host.is_empty() {
-            config.web.host = host.to_string();
-        }
-    }
-    if let Some(port) = env::var("SOLANA_COPY_BOT_WEB_PORT")
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-    {
-        config.web.port = port;
-    }
-    if let Ok(auth_token) = env::var("SOLANA_COPY_BOT_WEB_AUTH_TOKEN") {
-        config.web.auth_token = auth_token;
     }
     if let Ok(ws_url) = env::var("SOLANA_COPY_BOT_HELIUS_WS_URL") {
         config.ingestion.helius_ws_url = ws_url;
