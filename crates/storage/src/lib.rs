@@ -783,6 +783,47 @@ impl SqliteStore {
         Ok(lots)
     }
 
+    pub fn list_open_shadow_lots_older_than(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<ShadowLotRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, wallet_id, token, qty, cost_sol, opened_ts
+                 FROM shadow_lots
+                 WHERE qty > 0
+                   AND opened_ts <= ?1
+                 ORDER BY opened_ts ASC, id ASC
+                 LIMIT ?2",
+            )
+            .context("failed to prepare stale shadow lot query")?;
+        let mut rows = stmt
+            .query(params![cutoff.to_rfc3339(), limit.max(1) as i64])
+            .context("failed querying stale shadow lots")?;
+
+        let mut lots = Vec::new();
+        while let Some(row) = rows.next().context("failed iterating stale shadow lots")? {
+            let opened_raw: String = row.get(5).context("failed reading shadow_lots.opened_ts")?;
+            let opened_ts = DateTime::parse_from_rfc3339(&opened_raw)
+                .map(|dt| dt.with_timezone(&Utc))
+                .with_context(|| {
+                    format!("invalid shadow_lots.opened_ts rfc3339 value: {opened_raw}")
+                })?;
+            lots.push(ShadowLotRow {
+                id: row.get(0).context("failed reading shadow_lots.id")?,
+                wallet_id: row.get(1).context("failed reading shadow_lots.wallet_id")?,
+                token: row.get(2).context("failed reading shadow_lots.token")?,
+                qty: row.get(3).context("failed reading shadow_lots.qty")?,
+                cost_sol: row.get(4).context("failed reading shadow_lots.cost_sol")?,
+                opened_ts,
+            });
+        }
+
+        Ok(lots)
+    }
+
     pub fn has_shadow_lots(&self, wallet_id: &str, token: &str) -> Result<bool> {
         let count: i64 = self
             .conn
@@ -817,6 +858,41 @@ impl SqliteStore {
             pairs.insert((wallet_id, token));
         }
         Ok(pairs)
+    }
+
+    pub fn latest_token_sol_price(&self, token: &str, as_of: DateTime<Utc>) -> Result<Option<f64>> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let as_of_raw = as_of.to_rfc3339();
+        let price: Option<f64> = self
+            .conn
+            .query_row(
+                "SELECT price
+                 FROM (
+                    SELECT qty_in / qty_out AS price, ts
+                    FROM observed_swaps
+                    WHERE token_in = ?1
+                      AND token_out = ?2
+                      AND qty_in > 0
+                      AND qty_out > 0
+                      AND ts <= ?3
+                    UNION ALL
+                    SELECT qty_out / qty_in AS price, ts
+                    FROM observed_swaps
+                    WHERE token_in = ?2
+                      AND token_out = ?1
+                      AND qty_in > 0
+                      AND qty_out > 0
+                      AND ts <= ?3
+                 )
+                 ORDER BY ts DESC
+                 LIMIT 1",
+                params![SOL_MINT, token, as_of_raw],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed querying latest token/sol price")?;
+
+        Ok(price.filter(|value| value.is_finite() && *value > 0.0))
     }
 
     pub fn close_shadow_lots_fifo_atomic(
