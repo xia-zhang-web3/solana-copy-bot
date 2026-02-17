@@ -355,11 +355,8 @@ impl ShadowRiskGuard {
         }
 
         let new_reason = self.compute_infra_block_reason(sample_ts);
-        let was_blocked = self.infra_block_reason.is_some();
-        let is_blocked = new_reason.is_some();
-        self.infra_block_reason = new_reason.clone();
-
-        if !was_blocked && is_blocked {
+        if new_reason != self.infra_block_reason {
+            self.infra_block_reason = new_reason.clone();
             if let Some(reason) = new_reason {
                 warn!(reason = %reason, "shadow risk infra stop activated");
                 let details_json = format!("{{\"reason\":\"{}\"}}", reason);
@@ -372,17 +369,17 @@ impl ShadowRiskGuard {
                         &details_json,
                     );
                 }
-            }
-        } else if was_blocked && !is_blocked {
-            info!("shadow risk infra stop cleared");
-            if self.should_emit_infra_event(now) {
-                self.record_risk_event(
-                    store,
-                    "shadow_risk_infra_cleared",
-                    "info",
-                    now,
-                    "{\"state\":\"cleared\"}",
-                );
+            } else {
+                info!("shadow risk infra stop cleared");
+                if self.should_emit_infra_event(now) {
+                    self.record_risk_event(
+                        store,
+                        "shadow_risk_infra_cleared",
+                        "info",
+                        now,
+                        "{\"state\":\"cleared\"}",
+                    );
+                }
             }
         }
     }
