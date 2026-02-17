@@ -6,67 +6,58 @@
   <title>CopyBot Real-Time Control Plane</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     :root {
-      --bg: #eef2f7;
-      --panel: #ffffff;
-      --panel-dark: #111a2c;
-      --line: #d6dfeb;
-      --text: #0f172a;
-      --muted: #607089;
-      --good: #059669;
-      --bad: #dc2626;
-      --warn: #b45309;
-      --accent: #1d4ed8;
+      --bg-a: #0b1118;
+      --bg-b: #121d29;
+      --panel: rgba(15, 23, 36, 0.84);
+      --line: rgba(148, 163, 184, 0.18);
+      --text: #e5edf5;
+      --muted: #9ab0c7;
+      --good: #34d399;
+      --bad: #f87171;
+      --warn: #fbbf24;
+      --info: #38bdf8;
+      --accent: #f59e0b;
     }
     body {
       font-family: Manrope, sans-serif;
       color: var(--text);
-      background: var(--bg);
+      background:
+        radial-gradient(circle at 10% 20%, rgba(56, 189, 248, 0.16), transparent 40%),
+        radial-gradient(circle at 85% 15%, rgba(245, 158, 11, 0.12), transparent 38%),
+        linear-gradient(145deg, var(--bg-a), var(--bg-b));
       min-height: 100vh;
     }
-    .brand-font {
-      font-family: "Space Grotesk", sans-serif;
-    }
+    .brand-font { font-family: "Space Grotesk", sans-serif; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 1rem;
-      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-    }
-    .panel-dark {
-      background: var(--panel-dark);
-      border: 1px solid #26364f;
-      border-radius: 1rem;
-      box-shadow: 0 14px 34px rgba(2, 6, 23, 0.32);
-      color: #d8e5ff;
+      backdrop-filter: blur(14px);
+      box-shadow: 0 16px 42px rgba(0, 0, 0, 0.28);
     }
     .panel-title {
-      color: #5c6b7f;
+      color: #c6d5e3;
       text-transform: uppercase;
       letter-spacing: .08em;
       font-size: .72rem;
-      font-weight: 800;
+      font-weight: 700;
     }
     .kpi-value {
-      font-size: 1.55rem;
+      font-size: 1.6rem;
       line-height: 1.1;
       font-weight: 800;
       letter-spacing: -.01em;
     }
     .status-pill {
-      border: 1px solid #324764;
-      background: rgba(15, 23, 42, 0.35);
+      border: 1px solid var(--line);
       border-radius: 999px;
-      padding: .23rem .75rem;
-      font-size: .73rem;
+      padding: .2rem .7rem;
+      font-size: .72rem;
       font-weight: 700;
-      letter-spacing: .02em;
-      color: #d6e3fd;
-      display: inline-flex;
-      align-items: center;
+      letter-spacing: .03em;
     }
     .dot {
       width: .5rem;
@@ -77,273 +68,180 @@
     }
     .table-wrap {
       overflow: auto;
-      border-radius: .95rem;
+      border-radius: 1rem;
       border: 1px solid var(--line);
-      max-height: min(62vh, 680px);
-      background: #fff;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 900px;
+      min-width: 860px;
     }
     th {
       position: sticky;
       top: 0;
-      background: #0f172a;
-      color: #d4deec;
+      background: rgba(12, 20, 31, .95);
       z-index: 2;
-      font-size: .73rem;
+      font-size: .74rem;
       text-transform: uppercase;
       letter-spacing: .08em;
+      color: #9eb4ca;
       font-weight: 700;
-      padding: .72rem .78rem;
-      border-bottom: 1px solid #23314a;
+      padding: .75rem .8rem;
+      border-bottom: 1px solid var(--line);
       text-align: left;
     }
     td {
-      padding: .64rem .78rem;
-      border-bottom: 1px solid #e4eaf3;
+      padding: .66rem .8rem;
+      border-bottom: 1px solid rgba(148, 163, 184, .12);
       font-size: .83rem;
-      color: #142135;
+      color: #d9e4ef;
       white-space: nowrap;
     }
-    tr:hover td {
-      background: #f4f8ff;
+    tr:hover td { background: rgba(56, 189, 248, .05); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .fade-in {
+      animation: fadeIn .35s ease forwards;
     }
-    .mono {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-    }
-    .nav-btn {
-      width: 100%;
-      border: 1px solid #2a3e5d;
-      background: #17233a;
-      color: #d7e4fc;
-      border-radius: .75rem;
-      text-align: left;
-      padding: .58rem .72rem;
-      font-size: .86rem;
-      font-weight: 700;
-      transition: .15s ease;
-    }
-    .nav-btn:hover {
-      background: #20314d;
-      border-color: #36507a;
-    }
-    .nav-btn.active {
-      background: #e8f0ff;
-      color: #0d1b33;
-      border-color: #8eb3ff;
-    }
-    .view-pane {
-      display: none;
-    }
-    .view-pane.active {
-      display: block;
-    }
-    .pager-btn {
-      border: 1px solid #c7d2e5;
-      background: #fff;
-      border-radius: .6rem;
-      padding: .35rem .7rem;
-      font-size: .75rem;
-      font-weight: 700;
-      color: #20314d;
-    }
-    .pager-btn:disabled {
-      opacity: .45;
-      cursor: not-allowed;
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(3px); }
+      to { opacity: 1; transform: translateY(0); }
     }
   </style>
 </head>
-<body class="p-3 md:p-5">
-  <div class="mx-auto flex max-w-[1900px] flex-col gap-4 lg:flex-row">
-    <aside class="panel-dark w-full p-4 lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)] lg:w-64 lg:shrink-0 lg:overflow-auto">
-      <div>
-        <h1 class="brand-font text-xl font-bold">CopyBot Console</h1>
-        <p class="mt-1 text-xs text-slate-300">Real-time control plane</p>
-      </div>
-
-      <nav id="viewNav" class="mt-4 space-y-2">
-        <button class="nav-btn" data-view="overview">Overview</button>
-        <button class="nav-btn" data-view="positions">Positions</button>
-        <button class="nav-btn" data-view="signals">Signals</button>
-        <button class="nav-btn" data-view="discovery">Discovery</button>
-        <button class="nav-btn" data-view="events">Live Feed</button>
-      </nav>
-
-      <div class="mt-4 border-t border-slate-700/60 pt-3">
-        <div class="space-y-2 text-xs">
-          <span id="wsStatus" class="status-pill"><span class="dot bg-slate-400"></span>WS: disconnected</span>
-          <span id="apiStatus" class="status-pill"><span class="dot bg-slate-400"></span>API: idle</span>
-          <span id="lastUpdate" class="status-pill">Last update: never</span>
+<body class="px-4 py-5 md:px-8">
+  <div class="mx-auto max-w-[1700px] space-y-5">
+    <header class="panel rounded-2xl p-4 md:p-5 fade-in">
+      <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 class="brand-font text-2xl font-bold md:text-3xl">CopyBot Real-Time Control Plane</h1>
+          <p class="mt-1 text-sm text-slate-300">Live view of signals, positions, PnL, ingestion, risk, and discovery state.</p>
         </div>
-      </div>
-    </aside>
-
-    <main class="flex-1 space-y-4">
-      <header class="panel p-4 md:p-5">
-        <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div>
-            <h2 class="brand-font text-2xl font-bold text-slate-900 md:text-3xl">CopyBot Real-Time Control Plane</h2>
-            <p class="mt-1 text-sm text-slate-600">Signals, positions, PnL, ingestion, risk and discovery in one place.</p>
-          </div>
+        <div class="flex flex-col gap-2 md:items-end">
           <div class="flex flex-wrap items-center gap-2">
-            <input id="tokenInput" type="password" placeholder="Bearer token" class="w-56 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-400 md:w-80" />
+            <input id="tokenInput" type="password" placeholder="Bearer token" class="w-56 rounded-xl border border-slate-600/70 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-300 md:w-72" />
             <button id="saveTokenBtn" class="rounded-xl bg-amber-400 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-amber-300">Save Token</button>
-            <button id="refreshBtn" class="rounded-xl bg-blue-600 px-3 py-2 text-sm font-bold text-white transition hover:bg-blue-500">Refresh</button>
-            <button id="pauseFeedBtn" class="rounded-xl bg-slate-700 px-3 py-2 text-sm font-bold text-white transition hover:bg-slate-600">Pause Feed</button>
-            <button id="toggleAutoBtn" class="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-bold text-white transition hover:bg-emerald-500">Auto: ON</button>
+            <button id="refreshBtn" class="rounded-xl bg-sky-400 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-sky-300">Refresh</button>
+            <button id="pauseFeedBtn" class="rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-slate-500">Pause Feed</button>
+            <button id="toggleAutoBtn" class="rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-slate-500">Auto: ON</button>
+          </div>
+          <div class="flex flex-wrap gap-2 text-xs">
+            <span id="wsStatus" class="status-pill"><span class="dot bg-slate-400"></span>WS: disconnected</span>
+            <span id="apiStatus" class="status-pill"><span class="dot bg-slate-400"></span>API: idle</span>
+            <span id="lastUpdate" class="status-pill">Last update: never</span>
           </div>
         </div>
-      </header>
+      </div>
+    </header>
 
-      <section id="view-overview" class="view-pane active space-y-4">
-        <section class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8" id="kpiGrid"></section>
+    <section class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8 fade-in" id="kpiGrid"></section>
 
-        <section class="grid grid-cols-1 gap-4 xl:grid-cols-3">
-          <article class="panel p-4">
-            <h3 class="panel-title mb-2">Health Alerts</h3>
-            <div id="alerts" class="space-y-2 text-sm text-slate-900"></div>
-          </article>
-          <article class="panel p-4">
-            <h3 class="panel-title mb-2">Risk State</h3>
-            <div id="riskSnapshot" class="space-y-1 text-sm text-slate-900"></div>
-          </article>
-          <article class="panel p-4">
-            <h3 class="panel-title mb-2">Pipeline State</h3>
-            <div id="pipelineSnapshot" class="space-y-1 text-sm text-slate-900"></div>
-          </article>
-        </section>
-      </section>
+    <section class="grid grid-cols-1 gap-4 xl:grid-cols-3">
+      <article class="panel rounded-2xl p-4 fade-in">
+        <h2 class="panel-title mb-2">Health Alerts</h2>
+        <div id="alerts" class="space-y-2 text-sm text-slate-200"></div>
+      </article>
+      <article class="panel rounded-2xl p-4 fade-in">
+        <h2 class="panel-title mb-2">Risk State</h2>
+        <div id="riskSnapshot" class="space-y-1 text-sm text-slate-200"></div>
+      </article>
+      <article class="panel rounded-2xl p-4 fade-in">
+        <h2 class="panel-title mb-2">Pipeline State</h2>
+        <div id="pipelineSnapshot" class="space-y-1 text-sm text-slate-200"></div>
+      </article>
+    </section>
 
-      <section id="view-positions" class="view-pane space-y-4">
-        <article class="panel p-4">
-          <div class="mb-3 flex items-center justify-between gap-3">
-            <h3 class="panel-title">Open Lots</h3>
-            <div class="flex items-center gap-2 text-xs">
-              <button id="lotsPrevBtn" class="pager-btn">Prev</button>
-              <span id="lotsPageInfo" class="mono text-slate-600">0</span>
-              <button id="lotsNextBtn" class="pager-btn">Next</button>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Opened</th>
-                  <th>Wallet</th>
-                  <th>Token</th>
-                  <th>Qty</th>
-                  <th>Cost (SOL)</th>
-                  <th>Mark</th>
-                  <th>uPnL (SOL)</th>
-                  <th>uPnL %</th>
-                </tr>
-              </thead>
-              <tbody id="lotsTable"></tbody>
-            </table>
-          </div>
-        </article>
+    <section class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <article class="panel rounded-2xl p-4 fade-in">
+        <h2 class="panel-title mb-3">Open Lots</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Opened</th>
+                <th>Wallet</th>
+                <th>Token</th>
+                <th>Qty</th>
+                <th>Cost (SOL)</th>
+                <th>Mark</th>
+                <th>uPnL (SOL)</th>
+                <th>uPnL %</th>
+              </tr>
+            </thead>
+            <tbody id="lotsTable"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="panel rounded-2xl p-4 fade-in">
+        <h2 class="panel-title mb-3">Closed Trades</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Closed</th>
+                <th>Wallet</th>
+                <th>Token</th>
+                <th>Qty</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>PnL</th>
+                <th>Hold</th>
+              </tr>
+            </thead>
+            <tbody id="tradesTable"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
 
-        <article class="panel p-4">
-          <div class="mb-3 flex items-center justify-between gap-3">
-            <h3 class="panel-title">Closed Trades</h3>
-            <div class="flex items-center gap-2 text-xs">
-              <button id="tradesPrevBtn" class="pager-btn">Prev</button>
-              <span id="tradesPageInfo" class="mono text-slate-600">0</span>
-              <button id="tradesNextBtn" class="pager-btn">Next</button>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Closed</th>
-                  <th>Wallet</th>
-                  <th>Token</th>
-                  <th>Qty</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <th>PnL</th>
-                  <th>Hold</th>
-                </tr>
-              </thead>
-              <tbody id="tradesTable"></tbody>
-            </table>
-          </div>
-        </article>
-      </section>
+    <section class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <article class="panel rounded-2xl p-4 fade-in">
+        <h2 class="panel-title mb-3">Signals Timeline</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Kind</th>
+                <th>Wallet</th>
+                <th>Token</th>
+                <th>Side</th>
+                <th>Reason</th>
+                <th>Status</th>
+                <th>Signature</th>
+              </tr>
+            </thead>
+            <tbody id="signalsTable"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="panel rounded-2xl p-4 fade-in">
+        <h2 class="panel-title mb-3">Discovery Top Wallets</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Wallet</th>
+                <th>Score</th>
+                <th>Trades</th>
+                <th>PnL</th>
+                <th>Win Rate</th>
+                <th>Tradable</th>
+                <th>Rug</th>
+              </tr>
+            </thead>
+            <tbody id="discoveryTable"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
 
-      <section id="view-signals" class="view-pane space-y-4">
-        <article class="panel p-4">
-          <div class="mb-3 flex items-center justify-between gap-3">
-            <h3 class="panel-title">Signals Timeline</h3>
-            <div class="flex items-center gap-2 text-xs">
-              <button id="signalsPrevBtn" class="pager-btn">Prev</button>
-              <span id="signalsPageInfo" class="mono text-slate-600">0</span>
-              <button id="signalsNextBtn" class="pager-btn">Next</button>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Kind</th>
-                  <th>Wallet</th>
-                  <th>Token</th>
-                  <th>Side</th>
-                  <th>Reason</th>
-                  <th>Status</th>
-                  <th>Signature</th>
-                </tr>
-              </thead>
-              <tbody id="signalsTable"></tbody>
-            </table>
-          </div>
-        </article>
-      </section>
-
-      <section id="view-discovery" class="view-pane space-y-4">
-        <article class="panel p-4">
-          <div class="mb-3 flex items-center justify-between gap-3">
-            <h3 class="panel-title">Discovery Top Wallets</h3>
-            <div class="flex items-center gap-2 text-xs">
-              <button id="discoveryPrevBtn" class="pager-btn">Prev</button>
-              <span id="discoveryPageInfo" class="mono text-slate-600">0</span>
-              <button id="discoveryNextBtn" class="pager-btn">Next</button>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Wallet</th>
-                  <th>Score</th>
-                  <th>Trades</th>
-                  <th>PnL</th>
-                  <th>Win Rate</th>
-                  <th>Tradable</th>
-                  <th>Rug</th>
-                </tr>
-              </thead>
-              <tbody id="discoveryTable"></tbody>
-            </table>
-          </div>
-        </article>
-      </section>
-
-      <section id="view-events" class="view-pane space-y-4">
-        <article class="panel p-4">
-          <div class="mb-3 flex items-center justify-between">
-            <h3 class="panel-title">Live Event Feed</h3>
-            <span id="eventCount" class="text-xs text-slate-600">0 events</span>
-          </div>
-          <div id="eventFeed" class="mono max-h-[72vh] space-y-1 overflow-auto rounded-xl border border-slate-300 bg-[#0f172a] p-3 text-xs text-slate-100"></div>
-        </article>
-      </section>
-    </main>
+    <section class="panel rounded-2xl p-4 fade-in">
+      <div class="mb-3 flex items-center justify-between">
+        <h2 class="panel-title">Live Event Feed</h2>
+        <span id="eventCount" class="text-xs text-slate-300">0 events</span>
+      </div>
+      <div id="eventFeed" class="max-h-72 space-y-1 overflow-auto rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 text-xs"></div>
+    </section>
   </div>
 
   <script>
@@ -351,26 +249,12 @@
     const fmtPct = (v) => (v === null || v === undefined || Number.isNaN(Number(v))) ? "—" : `${(Number(v) * 100).toFixed(2)}%`;
     const fmtTs = (v) => v ? new Date(v).toLocaleString() : "—";
     const short = (s, n = 8) => s ? `${s.slice(0, n)}…${s.slice(-4)}` : "—";
-    const toColor = (v) => (Number(v) >= 0 ? "text-emerald-600" : "text-rose-600");
+    const toColor = (v) => (Number(v) >= 0 ? "text-emerald-300" : "text-rose-300");
     const eventFeedLimit = 200;
-    const refreshCooldownMs = 6000;
-    const requestTimeoutMs = 10000;
+    const refreshCooldownMs = 10000;
+    const requestTimeoutMs = 8000;
     const eventFeedRenderMs = 350;
-    const wsViewTriggers = {
-      overview: new Set(["lot_opened", "lot_closed", "signal_recorded", "risk_state_changed", "health_alert"]),
-      positions: new Set(["lot_opened", "lot_closed"]),
-      signals: new Set(["signal_recorded", "signal_dropped"]),
-      discovery: new Set(["discovery_cycle_done"]),
-      events: new Set([]),
-    };
-    const validViews = new Set(Object.keys(wsViewTriggers));
-
-    const PAGE_LIMITS = {
-      lots: 40,
-      trades: 40,
-      signals: 50,
-      discovery: 40,
-    };
+    const wsRefreshFast = new Set(["lot_opened", "lot_closed", "signal_recorded", "discovery_cycle_done"]);
 
     function normalizeToken(value) {
       const raw = String(value || "").trim();
@@ -383,7 +267,6 @@
 
     const state = {
       token: normalizeToken(localStorage.getItem("copybot_token")),
-      activeView: localStorage.getItem("copybot_view") || "overview",
       ws: null,
       events: [],
       refreshTimer: null,
@@ -395,12 +278,6 @@
       autoRefreshEnabled: true,
       feedPaused: false,
       feedRenderTimer: null,
-      pagination: {
-        lots: { page: 0, limit: PAGE_LIMITS.lots, hasMore: false, count: 0 },
-        trades: { page: 0, limit: PAGE_LIMITS.trades, hasMore: false, count: 0 },
-        signals: { page: 0, limit: PAGE_LIMITS.signals, hasMore: false, count: 0 },
-        discovery: { page: 0, limit: PAGE_LIMITS.discovery, hasMore: false, count: 0 },
-      }
     };
 
     const els = {
@@ -422,31 +299,9 @@
       discoveryTable: document.getElementById("discoveryTable"),
       eventFeed: document.getElementById("eventFeed"),
       eventCount: document.getElementById("eventCount"),
-      viewButtons: Array.from(document.querySelectorAll("#viewNav [data-view]")),
-      panes: Array.from(document.querySelectorAll(".view-pane")),
-      pagers: {
-        lots: {
-          prev: document.getElementById("lotsPrevBtn"),
-          next: document.getElementById("lotsNextBtn"),
-          info: document.getElementById("lotsPageInfo"),
-        },
-        trades: {
-          prev: document.getElementById("tradesPrevBtn"),
-          next: document.getElementById("tradesNextBtn"),
-          info: document.getElementById("tradesPageInfo"),
-        },
-        signals: {
-          prev: document.getElementById("signalsPrevBtn"),
-          next: document.getElementById("signalsNextBtn"),
-          info: document.getElementById("signalsPageInfo"),
-        },
-        discovery: {
-          prev: document.getElementById("discoveryPrevBtn"),
-          next: document.getElementById("discoveryNextBtn"),
-          info: document.getElementById("discoveryPageInfo"),
-        }
-      }
     };
+
+    els.tokenInput.value = state.token;
 
     function setWsStatus(label, color) {
       els.wsStatus.innerHTML = `<span class="dot ${color}"></span>WS: ${label}`;
@@ -459,38 +314,20 @@
     function updatePauseFeedButton() {
       els.pauseFeedBtn.textContent = state.feedPaused ? "Resume Feed" : "Pause Feed";
       els.pauseFeedBtn.className = state.feedPaused
-        ? "rounded-xl bg-rose-600 px-3 py-2 text-sm font-bold text-white transition hover:bg-rose-500"
-        : "rounded-xl bg-slate-700 px-3 py-2 text-sm font-bold text-white transition hover:bg-slate-600";
+        ? "rounded-xl bg-rose-500 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-rose-400"
+        : "rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-slate-500";
     }
 
     function updateAutoRefreshButton() {
       els.toggleAutoBtn.textContent = state.autoRefreshEnabled ? "Auto: ON" : "Auto: OFF";
       els.toggleAutoBtn.className = state.autoRefreshEnabled
-        ? "rounded-xl bg-emerald-600 px-3 py-2 text-sm font-bold text-white transition hover:bg-emerald-500"
-        : "rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-white transition hover:bg-slate-500";
+        ? "rounded-xl bg-emerald-500 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-emerald-400"
+        : "rounded-xl bg-slate-600 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-slate-500";
     }
 
     function updateEventCount() {
       const suffix = state.feedPaused ? " (paused)" : "";
       els.eventCount.textContent = `${state.events.length} events${suffix}`;
-    }
-
-    function updateNavButtons() {
-      els.viewButtons.forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.view === state.activeView);
-      });
-    }
-
-    function setActiveView(view, triggerRefresh = true) {
-      state.activeView = view;
-      localStorage.setItem("copybot_view", view);
-      els.panes.forEach((pane) => {
-        pane.classList.toggle("active", pane.id === `view-${view}`);
-      });
-      updateNavButtons();
-      if (triggerRefresh) {
-        queueRefresh(true);
-      }
     }
 
     function authHeaders() {
@@ -534,33 +371,33 @@
       return res.json();
     }
 
-    async function fetchNamed(name, path) {
-      try {
-        return { name, ok: true, data: await apiGet(path) };
-      } catch (error) {
-        return { name, ok: false, error };
-      }
+    function solscanTx(sig) {
+      return sig ? `https://solscan.io/tx/${sig}` : "#";
     }
 
-    function tableEmptyRow(colspan, text = "No data") {
-      return `<tr><td colspan="${colspan}" class="text-center text-slate-500">${text}</td></tr>`;
+    function solscanToken(token) {
+      return token ? `https://solscan.io/token/${token}` : "#";
+    }
+
+    function solscanWallet(wallet) {
+      return wallet ? `https://solscan.io/account/${wallet}` : "#";
     }
 
     function renderKpis(dashboard) {
       const k = dashboard.kpis;
       const alerts = dashboard.health_alerts?.length || 0;
       const cards = [
-        ["PnL 1h", fmtNum(k.realized_pnl_1h), Number(k.realized_pnl_1h) >= 0 ? "text-emerald-600" : "text-rose-600"],
-        ["PnL 6h", fmtNum(k.realized_pnl_6h), Number(k.realized_pnl_6h) >= 0 ? "text-emerald-600" : "text-rose-600"],
-        ["PnL 24h", fmtNum(k.realized_pnl_24h), Number(k.realized_pnl_24h) >= 0 ? "text-emerald-600" : "text-rose-600"],
-        ["Win Rate 24h", fmtPct(k.win_rate_24h), "text-blue-700"],
-        ["Open Lots", k.open_lots, "text-amber-700"],
-        ["Open Notional", fmtNum(k.open_notional_sol), "text-amber-700"],
-        ["Signals 24h", k.copy_signals_24h, "text-blue-700"],
-        ["Alerts", alerts, alerts > 0 ? "text-rose-700" : "text-emerald-700"],
+        ["PnL 1h", fmtNum(k.realized_pnl_1h), Number(k.realized_pnl_1h) >= 0 ? "text-emerald-300" : "text-rose-300"],
+        ["PnL 6h", fmtNum(k.realized_pnl_6h), Number(k.realized_pnl_6h) >= 0 ? "text-emerald-300" : "text-rose-300"],
+        ["PnL 24h", fmtNum(k.realized_pnl_24h), Number(k.realized_pnl_24h) >= 0 ? "text-emerald-300" : "text-rose-300"],
+        ["Win Rate 24h", fmtPct(k.win_rate_24h), "text-sky-300"],
+        ["Open Lots", k.open_lots, "text-amber-300"],
+        ["Open Notional", fmtNum(k.open_notional_sol), "text-amber-300"],
+        ["Signals 24h", k.copy_signals_24h, "text-sky-300"],
+        ["Alerts", alerts, alerts > 0 ? "text-rose-300" : "text-emerald-300"],
       ];
       els.kpiGrid.innerHTML = cards.map(([name, value, color]) => `
-        <div class="panel p-3">
+        <div class="panel rounded-xl p-3">
           <div class="panel-title">${name}</div>
           <div class="kpi-value mt-2 ${color}">${value}</div>
         </div>
@@ -569,11 +406,11 @@
 
     function renderAlerts(alerts) {
       if (!alerts || !alerts.length) {
-        els.alerts.innerHTML = `<div class="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-emerald-800">No active alerts.</div>`;
+        els.alerts.innerHTML = `<div class="rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-emerald-200">No active alerts.</div>`;
         return;
       }
       els.alerts.innerHTML = alerts.map((a) => {
-        const cls = a.severity === "error" ? "border-rose-300 bg-rose-50 text-rose-800" : "border-amber-300 bg-amber-50 text-amber-900";
+        const cls = a.severity === "error" ? "border-rose-400/40 bg-rose-400/10 text-rose-200" : "border-amber-400/40 bg-amber-400/10 text-amber-100";
         return `<div class="rounded-lg border px-3 py-2 ${cls}">
           <div class="font-semibold">${a.code}</div>
           <div class="text-xs opacity-90">${a.message}</div>
@@ -591,7 +428,7 @@
         ["Exposure blocked", String(risk.exposure_hard_blocked)],
         ["Updated", fmtTs(risk.updated_at)],
       ];
-      els.riskSnapshot.innerHTML = rows.map(([k, v]) => `<div><span class="text-slate-500">${k}:</span> <span class="mono">${v}</span></div>`).join("");
+      els.riskSnapshot.innerHTML = rows.map(([k, v]) => `<div><span class="text-slate-400">${k}:</span> <span class="mono">${v}</span></div>`).join("");
     }
 
     function renderPipeline(ingestion, scheduler) {
@@ -607,69 +444,37 @@
         ["Inflight keys", scheduler.inflight_keys],
         ["Workers", scheduler.worker_count],
       ];
-      els.pipelineSnapshot.innerHTML = rows.map(([k, v]) => `<div><span class="text-slate-500">${k}:</span> <span class="mono">${v ?? "—"}</span></div>`).join("");
-    }
-
-    function solscanTx(sig) {
-      return sig ? `https://solscan.io/tx/${sig}` : "#";
-    }
-
-    function solscanToken(token) {
-      return token ? `https://solscan.io/token/${token}` : "#";
-    }
-
-    function solscanWallet(wallet) {
-      return wallet ? `https://solscan.io/account/${wallet}` : "#";
-    }
-
-    function updatePager(key, count) {
-      const p = state.pagination[key];
-      p.count = count;
-      p.hasMore = count >= p.limit;
-      const start = count > 0 ? p.page * p.limit + 1 : 0;
-      const end = count > 0 ? p.page * p.limit + count : 0;
-      els.pagers[key].info.textContent = count > 0 ? `${start}-${end}` : "0";
-      els.pagers[key].prev.disabled = p.page === 0;
-      els.pagers[key].next.disabled = !p.hasMore;
+      els.pipelineSnapshot.innerHTML = rows.map(([k, v]) => `<div><span class="text-slate-400">${k}:</span> <span class="mono">${v}</span></div>`).join("");
     }
 
     function renderLots(lots) {
-      if (!lots || !lots.length) {
-        els.lotsTable.innerHTML = tableEmptyRow(8);
-        updatePager("lots", 0);
-        return;
-      }
-      els.lotsTable.innerHTML = lots.map((lot) => {
+      els.lotsTable.innerHTML = (lots || []).map((lot) => {
         const pnlClass = toColor(lot.unrealized_pnl_sol || 0);
+        const wallet = short(lot.wallet_id, 6);
+        const token = short(lot.token, 6);
         return `
           <tr>
             <td>${fmtTs(lot.opened_ts)}</td>
-            <td><a class="text-blue-700 hover:underline mono" href="${solscanWallet(lot.wallet_id)}" target="_blank">${short(lot.wallet_id, 6)}</a></td>
-            <td><a class="text-blue-700 hover:underline mono" href="${solscanToken(lot.token)}" target="_blank">${short(lot.token, 6)}</a></td>
+            <td><a class="text-sky-300 hover:underline mono" href="${solscanWallet(lot.wallet_id)}" target="_blank">${wallet}</a></td>
+            <td><a class="text-sky-300 hover:underline mono" href="${solscanToken(lot.token)}" target="_blank">${token}</a></td>
             <td class="mono">${fmtNum(lot.qty, 6)}</td>
             <td class="mono">${fmtNum(lot.cost_sol, 5)}</td>
-            <td class="mono">${lot.mark_price_sol_per_token === null ? "<span class='text-amber-700'>N/A</span>" : fmtNum(lot.mark_price_sol_per_token, 8)}</td>
+            <td class="mono">${lot.mark_price_sol_per_token === null ? "<span class='text-amber-300'>N/A</span>" : fmtNum(lot.mark_price_sol_per_token, 8)}</td>
             <td class="mono ${pnlClass}">${lot.unrealized_pnl_sol === null ? "N/A" : fmtNum(lot.unrealized_pnl_sol, 5)}</td>
             <td class="mono ${pnlClass}">${lot.unrealized_return_pct === null ? "N/A" : fmtPct(lot.unrealized_return_pct)}</td>
           </tr>
         `;
       }).join("");
-      updatePager("lots", lots.length);
     }
 
     function renderTrades(trades) {
-      if (!trades || !trades.length) {
-        els.tradesTable.innerHTML = tableEmptyRow(8);
-        updatePager("trades", 0);
-        return;
-      }
-      els.tradesTable.innerHTML = trades.map((t) => {
+      els.tradesTable.innerHTML = (trades || []).map((t) => {
         const pnlClass = toColor(t.pnl_sol);
         return `
           <tr>
             <td>${fmtTs(t.closed_ts)}</td>
-            <td><a class="text-blue-700 hover:underline mono" href="${solscanWallet(t.wallet_id)}" target="_blank">${short(t.wallet_id, 6)}</a></td>
-            <td><a class="text-blue-700 hover:underline mono" href="${solscanToken(t.token)}" target="_blank">${short(t.token, 6)}</a></td>
+            <td><a class="text-sky-300 hover:underline mono" href="${solscanWallet(t.wallet_id)}" target="_blank">${short(t.wallet_id, 6)}</a></td>
+            <td><a class="text-sky-300 hover:underline mono" href="${solscanToken(t.token)}" target="_blank">${short(t.token, 6)}</a></td>
             <td class="mono">${fmtNum(t.qty, 6)}</td>
             <td class="mono">${fmtNum(t.entry_price_sol_per_token, 8)}</td>
             <td class="mono">${fmtNum(t.exit_price_sol_per_token, 8)}</td>
@@ -678,43 +483,32 @@
           </tr>
         `;
       }).join("");
-      updatePager("trades", trades.length);
     }
 
     function renderSignals(items) {
-      if (!items || !items.length) {
-        els.signalsTable.innerHTML = tableEmptyRow(8);
-        updatePager("signals", 0);
-        return;
-      }
-      els.signalsTable.innerHTML = items.map((s) => {
-        const kindCls = s.kind === "dropped" ? "text-rose-700" : "text-emerald-700";
-        const sig = s.signature ? `<a class="text-blue-700 hover:underline mono" href="${solscanTx(s.signature)}" target="_blank">${short(s.signature, 8)}</a>` : "—";
+      els.signalsTable.innerHTML = (items || []).map((s) => {
+        const kindCls = s.kind === "dropped" ? "text-rose-300" : "text-emerald-300";
+        const reason = s.reason || "—";
+        const sig = s.signature ? `<a class="text-sky-300 hover:underline mono" href="${solscanTx(s.signature)}" target="_blank">${short(s.signature, 8)}</a>` : "—";
         return `
           <tr>
             <td>${fmtTs(s.ts)}</td>
             <td class="${kindCls} font-semibold">${s.kind}</td>
-            <td>${s.wallet_id ? `<a class="text-blue-700 hover:underline mono" href="${solscanWallet(s.wallet_id)}" target="_blank">${short(s.wallet_id, 6)}</a>` : "—"}</td>
-            <td>${s.token ? `<a class="text-blue-700 hover:underline mono" href="${solscanToken(s.token)}" target="_blank">${short(s.token, 6)}</a>` : "—"}</td>
+            <td>${s.wallet_id ? `<a class="text-sky-300 hover:underline mono" href="${solscanWallet(s.wallet_id)}" target="_blank">${short(s.wallet_id, 6)}</a>` : "—"}</td>
+            <td>${s.token ? `<a class="text-sky-300 hover:underline mono" href="${solscanToken(s.token)}" target="_blank">${short(s.token, 6)}</a>` : "—"}</td>
             <td class="mono">${s.side || "—"}</td>
-            <td class="mono">${s.reason || "—"}</td>
+            <td class="mono">${reason}</td>
             <td class="mono">${s.status || "—"}</td>
             <td>${sig}</td>
           </tr>
         `;
       }).join("");
-      updatePager("signals", items.length);
     }
 
     function renderDiscovery(metrics) {
-      if (!metrics || !metrics.length) {
-        els.discoveryTable.innerHTML = tableEmptyRow(7);
-        updatePager("discovery", 0);
-        return;
-      }
-      els.discoveryTable.innerHTML = metrics.map((m) => `
+      els.discoveryTable.innerHTML = (metrics || []).map((m) => `
         <tr>
-          <td><a class="text-blue-700 hover:underline mono" href="${solscanWallet(m.wallet_id)}" target="_blank">${short(m.wallet_id, 6)}</a></td>
+          <td><a class="text-sky-300 hover:underline mono" href="${solscanWallet(m.wallet_id)}" target="_blank">${short(m.wallet_id, 6)}</a></td>
           <td class="mono">${fmtNum(m.score, 4)}</td>
           <td class="mono">${m.trades}</td>
           <td class="mono ${toColor(m.pnl)}">${fmtNum(m.pnl, 4)}</td>
@@ -723,7 +517,6 @@
           <td class="mono">${fmtPct(m.rug_ratio)}</td>
         </tr>
       `).join("");
-      updatePager("discovery", metrics.length);
     }
 
     function renderEventFeed() {
@@ -740,8 +533,8 @@
           e.type === "lagged" ? "text-rose-300" :
           "text-sky-300";
         const payload = typeof e.payload === "object" ? JSON.stringify(e.payload) : String(e.payload ?? "");
-        return `<div class="border-b border-slate-700/60 pb-1 ${color}">
-          [${fmtTs(e.ts)}] ${e.type}: <span class="text-slate-200">${payload}</span>
+        return `<div class="mono border-b border-slate-700/60 pb-1 ${color}">
+          [${fmtTs(e.ts)}] ${e.type}: <span class="text-slate-300">${payload}</span>
         </div>`;
       }).join("");
     }
@@ -760,143 +553,6 @@
       if (state.events.length > eventFeedLimit) state.events.length = eventFeedLimit;
       updateEventCount();
       scheduleEventFeedRender();
-    }
-
-    function currentOffset(key) {
-      const p = state.pagination[key];
-      return p.page * p.limit;
-    }
-
-    function pagePath(key) {
-      const p = state.pagination[key];
-      const offset = currentOffset(key);
-      if (key === "lots") return `/api/lots?limit=${p.limit}&offset=${offset}`;
-      if (key === "trades") return `/api/trades?limit=${p.limit}&offset=${offset}`;
-      if (key === "signals") return `/api/signals?limit=${p.limit}&offset=${offset}`;
-      return `/api/discovery?limit=${p.limit}&offset=${offset}`;
-    }
-
-    function buildPlanForView() {
-      switch (state.activeView) {
-        case "overview":
-          return [
-            { name: "dashboard", path: "/api/dashboard" },
-            { name: "risk", path: "/api/risk" },
-            { name: "ingestion", path: "/api/ingestion" },
-          ];
-        case "positions":
-          return [
-            { name: "lots", path: pagePath("lots") },
-            { name: "trades", path: pagePath("trades") },
-          ];
-        case "signals":
-          return [{ name: "signals", path: pagePath("signals") }];
-        case "discovery":
-          return [{ name: "discovery", path: pagePath("discovery") }];
-        default:
-          return [];
-      }
-    }
-
-    function applyResponse(name, data) {
-      if (name === "dashboard") {
-        renderKpis(data);
-        renderAlerts(data.health_alerts || []);
-        return;
-      }
-      if (name === "risk") {
-        renderRisk(data.runtime || {});
-        return;
-      }
-      if (name === "ingestion") {
-        renderPipeline(data.runtime || {}, data.scheduler || {});
-        return;
-      }
-      if (name === "lots") {
-        renderLots(data.lots || []);
-        return;
-      }
-      if (name === "trades") {
-        renderTrades(data.trades || []);
-        return;
-      }
-      if (name === "signals") {
-        renderSignals(data.items || []);
-        return;
-      }
-      if (name === "discovery") {
-        renderDiscovery(data.top_metrics || []);
-      }
-    }
-
-    function queueRefresh(immediate = false) {
-      if (!immediate && !state.autoRefreshEnabled) return;
-      if (!state.token) return;
-      if (state.refreshInFlight) {
-        state.refreshQueued = true;
-        return;
-      }
-      const elapsed = Date.now() - state.lastRefreshStartedAt;
-      if (!immediate && elapsed < refreshCooldownMs) {
-        const waitMs = refreshCooldownMs - elapsed;
-        if (state.refreshDebounceTimer) return;
-        state.refreshDebounceTimer = setTimeout(() => {
-          state.refreshDebounceTimer = null;
-          queueRefresh(true);
-        }, waitMs);
-        return;
-      }
-      refreshCurrentView();
-    }
-
-    async function refreshCurrentView() {
-      if (!state.token) {
-        setApiStatus("set token first", "bg-amber-400");
-        return;
-      }
-      if (state.refreshInFlight) {
-        state.refreshQueued = true;
-        return;
-      }
-      const plan = buildPlanForView();
-      if (!plan.length) {
-        setApiStatus("ok", "bg-emerald-400");
-        return;
-      }
-
-      state.refreshInFlight = true;
-      state.lastRefreshStartedAt = Date.now();
-      try {
-        setApiStatus("loading", "bg-amber-400");
-        const responses = await Promise.all(plan.map((item) => fetchNamed(item.name, item.path)));
-        const failures = [];
-        let successCount = 0;
-
-        responses.forEach((entry) => {
-          if (!entry.ok) {
-            failures.push(`${entry.name}: ${String(entry.error?.message || entry.error || "unknown")}`);
-            return;
-          }
-          successCount += 1;
-          applyResponse(entry.name, entry.data);
-        });
-
-        if (failures.length === 0) {
-          setApiStatus("ok", "bg-emerald-400");
-          els.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
-        } else if (successCount > 0) {
-          setApiStatus(`degraded: ${failures[0].slice(0, 95)}`, "bg-amber-400");
-          els.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
-        } else {
-          setApiStatus(failures[0].slice(0, 95), "bg-rose-400");
-        }
-      } finally {
-        state.refreshInFlight = false;
-        if (state.refreshQueued) {
-          state.refreshQueued = false;
-          queueRefresh(true);
-        }
-      }
     }
 
     function connectWs() {
@@ -929,97 +585,155 @@
           return;
         }
         pushEvent(payload);
-        if (state.autoRefreshEnabled) {
-          const allowed = wsViewTriggers[state.activeView] || wsViewTriggers.events;
-          if (allowed.has(payload.type)) {
-            queueRefresh(false);
-          }
+        if (state.autoRefreshEnabled && wsRefreshFast.has(payload.type)) {
+          queueRefresh(false);
         }
       };
     }
 
-    function goPage(key, direction) {
-      const page = state.pagination[key].page + direction;
-      if (page < 0) return;
-      if (direction > 0 && !state.pagination[key].hasMore) return;
-      state.pagination[key].page = page;
-      queueRefresh(true);
+    function queueRefresh(immediate = false) {
+      if (!immediate && !state.autoRefreshEnabled) return;
+      if (!state.token) return;
+      if (state.refreshInFlight) {
+        state.refreshQueued = true;
+        return;
+      }
+      const elapsed = Date.now() - state.lastRefreshStartedAt;
+      if (!immediate && elapsed < refreshCooldownMs) {
+        const waitMs = refreshCooldownMs - elapsed;
+        if (state.refreshDebounceTimer) return;
+        state.refreshDebounceTimer = setTimeout(() => {
+          state.refreshDebounceTimer = null;
+          queueRefresh(true);
+        }, waitMs);
+        return;
+      }
+      refreshAll();
     }
 
-    function bindPager(key) {
-      els.pagers[key].prev.addEventListener("click", () => goPage(key, -1));
-      els.pagers[key].next.addEventListener("click", () => goPage(key, 1));
-      updatePager(key, 0);
+    function settledValue(result, name, failures) {
+      if (result.status === "fulfilled") return result.value;
+      const message = String(result.reason?.message || result.reason || "unknown error");
+      failures.push(`${name}: ${message}`);
+      return null;
     }
 
-    function resetPagination() {
-      Object.keys(state.pagination).forEach((key) => {
-        state.pagination[key].page = 0;
-        state.pagination[key].hasMore = false;
-        state.pagination[key].count = 0;
-        updatePager(key, 0);
-      });
+    async function refreshAll() {
+      if (!state.token) {
+        setApiStatus("set token first", "bg-amber-400");
+        return;
+      }
+      if (state.refreshInFlight) {
+        state.refreshQueued = true;
+        return;
+      }
+      state.refreshInFlight = true;
+      state.lastRefreshStartedAt = Date.now();
+      try {
+        setApiStatus("loading", "bg-amber-400");
+        const responses = await Promise.allSettled([
+          apiGet("/api/dashboard"),
+          apiGet("/api/lots?limit=120"),
+          apiGet("/api/trades?limit=120"),
+          apiGet("/api/signals?limit=140"),
+          apiGet("/api/risk"),
+          apiGet("/api/ingestion"),
+          apiGet("/api/discovery"),
+        ]);
+        const failures = [];
+        const dashboard = settledValue(responses[0], "dashboard", failures);
+        const lots = settledValue(responses[1], "lots", failures);
+        const trades = settledValue(responses[2], "trades", failures);
+        const signals = settledValue(responses[3], "signals", failures);
+        const risk = settledValue(responses[4], "risk", failures);
+        const ingestion = settledValue(responses[5], "ingestion", failures);
+        const discovery = settledValue(responses[6], "discovery", failures);
+
+        if (dashboard) {
+          renderKpis(dashboard);
+          renderAlerts(dashboard.health_alerts || []);
+        }
+        if (risk?.runtime) {
+          renderRisk(risk.runtime);
+        } else if (dashboard?.runtime?.risk) {
+          renderRisk(dashboard.runtime.risk);
+        }
+        if (ingestion?.runtime || ingestion?.scheduler) {
+          renderPipeline(ingestion.runtime || {}, ingestion.scheduler || {});
+        } else if (dashboard?.runtime?.ingestion || dashboard?.runtime?.scheduler) {
+          renderPipeline(dashboard.runtime.ingestion || {}, dashboard.runtime.scheduler || {});
+        }
+        if (lots?.lots) renderLots(lots.lots);
+        if (trades?.trades) renderTrades(trades.trades);
+        if (signals?.items) renderSignals(signals.items);
+        if (discovery?.top_metrics) renderDiscovery(discovery.top_metrics);
+
+        if (failures.length === 0) {
+          setApiStatus("ok", "bg-emerald-400");
+          els.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+        } else if (failures.length < responses.length) {
+          const summary = failures[0].slice(0, 90);
+          setApiStatus(`degraded: ${summary}`, "bg-amber-400");
+          if (dashboard || lots || trades || signals || risk || ingestion || discovery) {
+            els.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+          }
+        } else {
+          const summary = failures[0].slice(0, 90);
+          setApiStatus(summary, "bg-rose-400");
+        }
+      } catch (err) {
+        setApiStatus(String(err?.message || err), "bg-rose-400");
+      } finally {
+        state.refreshInFlight = false;
+        if (state.refreshQueued) {
+          state.refreshQueued = false;
+          queueRefresh(true);
+        }
+      }
     }
 
     function saveToken() {
       state.token = normalizeToken(els.tokenInput.value);
       els.tokenInput.value = state.token;
       localStorage.setItem("copybot_token", state.token);
-      resetPagination();
       state.events = [];
       updateEventCount();
       renderEventFeed();
-      pushEvent({ type: "local", ts: new Date().toISOString(), payload: { message: "token updated" } });
+      pushEvent({ type: "local", ts: new Date().toISOString(), payload: { message: "token updated" }});
       connectWs();
       queueRefresh(true);
     }
 
-    function bootstrap() {
-      if (!validViews.has(state.activeView)) {
-        state.activeView = "overview";
+    els.saveTokenBtn.addEventListener("click", saveToken);
+    els.refreshBtn.addEventListener("click", () => queueRefresh(true));
+    els.pauseFeedBtn.addEventListener("click", () => {
+      state.feedPaused = !state.feedPaused;
+      updatePauseFeedButton();
+      updateEventCount();
+      if (!state.feedPaused) {
+        renderEventFeed();
       }
-      els.tokenInput.value = state.token;
-      bindPager("lots");
-      bindPager("trades");
-      bindPager("signals");
-      bindPager("discovery");
+    });
+    els.toggleAutoBtn.addEventListener("click", () => {
+      state.autoRefreshEnabled = !state.autoRefreshEnabled;
+      updateAutoRefreshButton();
+      if (state.autoRefreshEnabled) {
+        queueRefresh(false);
+      }
+    });
+    els.tokenInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") saveToken();
+    });
 
-      els.viewButtons.forEach((btn) => {
-        btn.addEventListener("click", () => setActiveView(btn.dataset.view, true));
-      });
-
-      els.saveTokenBtn.addEventListener("click", saveToken);
-      els.refreshBtn.addEventListener("click", () => queueRefresh(true));
-      els.pauseFeedBtn.addEventListener("click", () => {
-        state.feedPaused = !state.feedPaused;
-        updatePauseFeedButton();
-        updateEventCount();
-        if (!state.feedPaused) {
-          renderEventFeed();
-        }
-      });
-      els.toggleAutoBtn.addEventListener("click", () => {
-        state.autoRefreshEnabled = !state.autoRefreshEnabled;
-        updateAutoRefreshButton();
-        if (state.autoRefreshEnabled) {
-          queueRefresh(false);
-        }
-      });
-      els.tokenInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") saveToken();
-      });
-
+    function bootstrap() {
       updatePauseFeedButton();
       updateAutoRefreshButton();
       updateEventCount();
-      setActiveView(state.activeView, false);
-
       if (!state.token) {
         setApiStatus("set token first", "bg-amber-400");
         setWsStatus("token missing", "bg-amber-400");
         return;
       }
-
       connectWs();
       queueRefresh(true);
       if (state.refreshTimer) clearInterval(state.refreshTimer);
