@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{OriginalUri, Query, State};
+use axum::extract::{Query, State};
 use axum::http::header::AUTHORIZATION;
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -636,10 +636,9 @@ async fn index_html() -> impl IntoResponse {
 
 async fn api_dashboard(
     State(state): State<WebRuntimeHandle>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<DashboardResponse>, ApiError> {
-    ensure_authorized_request(&state, &headers, &uri)?;
+    ensure_authorized(&state, &headers, None)?;
     let now = Utc::now();
     let sqlite_path = state.sqlite_path();
     let kpis = read_only_db(sqlite_path, move |store| store.dashboard_kpis(now)).await?;
@@ -656,11 +655,10 @@ async fn api_dashboard(
 
 async fn api_lots(
     State(state): State<WebRuntimeHandle>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<PaginationQuery>,
 ) -> Result<Json<LotsResponse>, ApiError> {
-    ensure_authorized_request(&state, &headers, &uri)?;
+    ensure_authorized(&state, &headers, None)?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
     let now = Utc::now();
@@ -722,11 +720,10 @@ async fn api_lots(
 
 async fn api_trades(
     State(state): State<WebRuntimeHandle>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<PaginationQuery>,
 ) -> Result<Json<TradesResponse>, ApiError> {
-    ensure_authorized_request(&state, &headers, &uri)?;
+    ensure_authorized(&state, &headers, None)?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
     let now = Utc::now();
@@ -751,11 +748,10 @@ async fn api_trades(
 
 async fn api_signals(
     State(state): State<WebRuntimeHandle>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<PaginationQuery>,
 ) -> Result<Json<SignalsResponse>, ApiError> {
-    ensure_authorized_request(&state, &headers, &uri)?;
+    ensure_authorized(&state, &headers, None)?;
     let limit = query.limit.unwrap_or(200).clamp(1, 1_000);
     let now = Utc::now();
     let sqlite_path = state.sqlite_path();
@@ -782,10 +778,9 @@ async fn api_signals(
 
 async fn api_risk(
     State(state): State<WebRuntimeHandle>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<RiskResponse>, ApiError> {
-    ensure_authorized_request(&state, &headers, &uri)?;
+    ensure_authorized(&state, &headers, None)?;
     let now = Utc::now();
     let runtime = state.runtime_bundle().risk;
     let sqlite_path = state.sqlite_path();
@@ -809,10 +804,9 @@ async fn api_risk(
 
 async fn api_ingestion(
     State(state): State<WebRuntimeHandle>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<IngestionResponse>, ApiError> {
-    ensure_authorized_request(&state, &headers, &uri)?;
+    ensure_authorized(&state, &headers, None)?;
     let now = Utc::now();
     let runtime = state.runtime_bundle();
     let sqlite_path = state.sqlite_path();
@@ -842,10 +836,9 @@ async fn api_ingestion(
 
 async fn api_discovery(
     State(state): State<WebRuntimeHandle>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<DiscoveryResponse>, ApiError> {
-    ensure_authorized_request(&state, &headers, &uri)?;
+    ensure_authorized(&state, &headers, None)?;
     let now = Utc::now();
     let runtime = state.runtime_bundle().discovery;
     let sqlite_path = state.sqlite_path();
@@ -866,10 +859,9 @@ async fn api_discovery(
 
 async fn api_config(
     State(state): State<WebRuntimeHandle>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    ensure_authorized_request(&state, &headers, &uri)?;
+    ensure_authorized(&state, &headers, None)?;
     Ok(Json(state.inner.config_redacted.clone()))
 }
 
@@ -979,28 +971,6 @@ fn ensure_authorized(
     }
 
     Err(ApiError::unauthorized("invalid bearer token"))
-}
-
-fn ensure_authorized_request(
-    state: &WebRuntimeHandle,
-    headers: &HeaderMap,
-    uri: &Uri,
-) -> Result<(), ApiError> {
-    let query_token = query_token_from_uri(uri);
-    ensure_authorized(state, headers, query_token.as_deref())
-}
-
-fn query_token_from_uri(uri: &Uri) -> Option<String> {
-    uri.query().and_then(|query| {
-        query.split('&').find_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let key = parts.next()?;
-            if key != "token" {
-                return None;
-            }
-            Some(parts.next().unwrap_or_default().to_string())
-        })
-    })
 }
 
 async fn read_only_db<T, F>(sqlite_path: String, action: F) -> Result<T, ApiError>
