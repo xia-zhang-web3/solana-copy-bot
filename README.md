@@ -54,6 +54,8 @@ SOLANA_COPY_BOT_HELIUS_HTTP_URL="https://mainnet.helius-rpc.com/?api-key=<YOUR_K
 cargo run -p copybot-app
 ```
 
+Use the exact scheme/host provided by your gRPC vendor (`https://...` for TLS endpoints, `http://...` only for explicit plaintext/local setups).
+
 Use dedicated HTTP RPC endpoints for quality-refresh workloads (recommended):
 
 ```bash
@@ -122,6 +124,12 @@ CONFIG_PATH=configs/paper.toml \
 Systemd wiring example for watchdog and override profile:
 
 - `ops/ingestion_failover_watchdog.md`
+
+Quick recovery from failover:
+
+```bash
+rm -f state/ingestion_source_override.env state/ingestion_failover_cooldown.json
+```
 
 ## Layout
 

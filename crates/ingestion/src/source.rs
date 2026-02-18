@@ -18,9 +18,9 @@ use tracing::{debug, info, warn};
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::{
     subscribe_update, CommitmentLevel, CompiledInstruction, InnerInstruction,
-    Message as SolMessage, SubscribeRequest, SubscribeRequestFilterTransactions, SubscribeUpdate,
-    SubscribeUpdateTransaction, SubscribeUpdateTransactionInfo, TransactionStatusMeta,
-    UiTokenAmount,
+    Message as SolMessage, SubscribeRequest, SubscribeRequestFilterTransactions,
+    SubscribeRequestPing, SubscribeUpdate, SubscribeUpdateTransaction,
+    SubscribeUpdateTransactionInfo, TransactionStatusMeta, UiTokenAmount,
 };
 
 #[derive(Debug, Clone)]
@@ -1334,7 +1334,7 @@ impl Drop for YellowstonePipeline {
 
 struct YellowstoneRuntimeConfig {
     grpc_url: String,
-    x_token: Option<String>,
+    x_token: String,
     connect_timeout_ms: u64,
     subscribe_timeout_ms: u64,
     reconnect_initial_ms: u64,
@@ -1362,6 +1362,11 @@ enum YellowstoneRecvOutcome {
     Item(FetchedObservation),
     QueueClosed,
     TimedOut,
+}
+
+enum YellowstoneParsedUpdate {
+    Observation(RawSwapObservation),
+    Ping,
 }
 
 impl YellowstoneGrpcSource {
@@ -1396,16 +1401,26 @@ impl YellowstoneGrpcSource {
             );
         }
 
+        let grpc_url = config.yellowstone_grpc_url.trim();
+        if grpc_url.is_empty()
+            || grpc_url.contains("REPLACE_ME")
+            || !(grpc_url.starts_with("http://") || grpc_url.starts_with("https://"))
+        {
+            return Err(anyhow!(
+                "yellowstone_grpc requires ingestion.yellowstone_grpc_url with explicit http(s):// endpoint"
+            ));
+        }
+
         let x_token = config.yellowstone_x_token.trim();
-        let x_token = if x_token.is_empty() || x_token.contains("REPLACE_ME") {
-            None
-        } else {
-            Some(x_token.to_string())
-        };
+        if x_token.is_empty() || x_token.contains("REPLACE_ME") {
+            return Err(anyhow!(
+                "yellowstone_grpc requires ingestion.yellowstone_x_token (x-token auth)"
+            ));
+        }
 
         let runtime_config = YellowstoneRuntimeConfig {
-            grpc_url: config.yellowstone_grpc_url.clone(),
-            x_token,
+            grpc_url: grpc_url.to_string(),
+            x_token: x_token.to_string(),
             connect_timeout_ms: config.yellowstone_connect_timeout_ms.max(500),
             subscribe_timeout_ms: config.yellowstone_subscribe_timeout_ms.max(1_000),
             reconnect_initial_ms: config.yellowstone_reconnect_initial_ms.max(200),
@@ -1483,9 +1498,10 @@ impl YellowstoneGrpcSource {
     fn spawn_pipeline(&self) -> Result<YellowstonePipeline> {
         if self.runtime_config.grpc_url.trim().is_empty()
             || self.runtime_config.grpc_url.contains("REPLACE_ME")
+            || self.runtime_config.x_token.trim().is_empty()
         {
             return Err(anyhow!(
-                "configure ingestion.yellowstone_grpc_url with real QuickNode Yellowstone endpoint"
+                "configure ingestion.yellowstone_grpc_url and ingestion.yellowstone_x_token with real QuickNode credentials"
             ));
         }
 
@@ -1637,18 +1653,14 @@ async fn yellowstone_stream_loop(
 
     loop {
         let subscribe_request = build_yellowstone_subscribe_request(runtime_config.as_ref());
-        let stream = connect_yellowstone_stream(runtime_config.as_ref(), subscribe_request).await;
-        let mut stream = match stream {
-            Ok(stream) => {
-                next_backoff_ms = runtime_config.reconnect_initial_ms;
-                stream
-            }
+        let builder = match GeyserGrpcClient::build_from_shared(runtime_config.grpc_url.clone()) {
+            Ok(builder) => builder,
             Err(error) => {
                 runtime_config
                     .telemetry
                     .reconnect_count
                     .fetch_add(1, Ordering::Relaxed);
-                warn!(error = %error, "yellowstone gRPC connect/subscribe failed");
+                warn!(error = %error, "invalid yellowstone endpoint");
                 sleep_with_backoff(
                     &mut next_backoff_ms,
                     runtime_config.reconnect_initial_ms,
@@ -1658,6 +1670,80 @@ async fn yellowstone_stream_loop(
                 continue;
             }
         };
+        let builder = match builder.x_token(Some(runtime_config.x_token.as_str())) {
+            Ok(builder) => builder,
+            Err(error) => {
+                runtime_config
+                    .telemetry
+                    .reconnect_count
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(error = %error, "invalid yellowstone x-token metadata");
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
+                continue;
+            }
+        };
+        let mut client = match builder
+            .connect_timeout(Duration::from_millis(runtime_config.connect_timeout_ms))
+            .timeout(Duration::from_millis(runtime_config.subscribe_timeout_ms))
+            .http2_adaptive_window(true)
+            .tcp_nodelay(true)
+            .connect()
+            .await
+        {
+            Ok(client) => client,
+            Err(error) => {
+                runtime_config
+                    .telemetry
+                    .reconnect_count
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(error = %error, "failed connecting yellowstone endpoint");
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
+                continue;
+            }
+        };
+
+        let (mut subscribe_tx, mut stream) = match client.subscribe().await {
+            Ok(parts) => parts,
+            Err(error) => {
+                runtime_config
+                    .telemetry
+                    .reconnect_count
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(error = %error, "failed opening yellowstone subscription stream");
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
+                continue;
+            }
+        };
+        if let Err(error) = subscribe_tx.send(subscribe_request).await {
+            runtime_config
+                .telemetry
+                .reconnect_count
+                .fetch_add(1, Ordering::Relaxed);
+            warn!(error = %error, "failed sending yellowstone subscribe request");
+            sleep_with_backoff(
+                &mut next_backoff_ms,
+                runtime_config.reconnect_initial_ms,
+                runtime_config.reconnect_max_ms,
+            )
+            .await;
+            continue;
+        };
+        next_backoff_ms = runtime_config.reconnect_initial_ms;
 
         loop {
             let next_message =
@@ -1670,7 +1756,7 @@ async fn yellowstone_stream_loop(
                         .fetch_add(1, Ordering::Relaxed);
 
                     match parse_yellowstone_update(update, runtime_config.as_ref()) {
-                        Ok(Some(raw)) => {
+                        Ok(Some(YellowstoneParsedUpdate::Observation(raw))) => {
                             let now = Instant::now();
                             prune_seen_signatures(
                                 &mut seen_signatures_map,
@@ -1758,6 +1844,20 @@ async fn yellowstone_stream_loop(
                                     output_queue.close().await;
                                     return;
                                 }
+                            }
+                        }
+                        Ok(Some(YellowstoneParsedUpdate::Ping)) => {
+                            let ping_request = SubscribeRequest {
+                                ping: Some(SubscribeRequestPing { id: 1 }),
+                                ..Default::default()
+                            };
+                            if let Err(error) = subscribe_tx.send(ping_request).await {
+                                runtime_config
+                                    .telemetry
+                                    .reconnect_count
+                                    .fetch_add(1, Ordering::Relaxed);
+                                warn!(error = %error, "failed sending yellowstone ping response");
+                                break;
                             }
                         }
                         Ok(None) => {}
@@ -1852,51 +1952,22 @@ fn build_yellowstone_subscribe_request(
     }
 }
 
-async fn connect_yellowstone_stream(
-    runtime_config: &YellowstoneRuntimeConfig,
-    subscribe_request: SubscribeRequest,
-) -> Result<impl StreamExt<Item = std::result::Result<SubscribeUpdate, tonic::Status>>> {
-    let builder = GeyserGrpcClient::build_from_shared(runtime_config.grpc_url.clone())
-        .map_err(|error| anyhow!("invalid yellowstone endpoint: {error}"))?;
-
-    let builder = if let Some(token) = runtime_config.x_token.as_deref() {
-        builder
-            .x_token(Some(token))
-            .map_err(|error| anyhow!("invalid yellowstone x-token metadata: {error}"))?
-    } else {
-        builder
-            .x_token::<String>(None)
-            .map_err(|error| anyhow!("failed setting empty yellowstone x-token: {error}"))?
-    };
-
-    let mut client = builder
-        .connect_timeout(Duration::from_millis(runtime_config.connect_timeout_ms))
-        .timeout(Duration::from_millis(runtime_config.subscribe_timeout_ms))
-        .http2_adaptive_window(true)
-        .tcp_nodelay(true)
-        .connect()
-        .await
-        .map_err(|error| anyhow!("failed connecting yellowstone endpoint: {error}"))?;
-
-    client
-        .subscribe_once(subscribe_request)
-        .await
-        .map_err(|error| anyhow!("failed opening yellowstone subscription: {error}"))
-}
-
 fn parse_yellowstone_update(
     update: SubscribeUpdate,
     runtime_config: &YellowstoneRuntimeConfig,
-) -> Result<Option<RawSwapObservation>> {
+) -> Result<Option<YellowstoneParsedUpdate>> {
     let created_at = update.created_at.clone();
     let Some(update_oneof) = update.update_oneof else {
         return Ok(None);
     };
-    let subscribe_update::UpdateOneof::Transaction(transaction_update) = update_oneof else {
-        return Ok(None);
-    };
-
-    parse_yellowstone_transaction_update(transaction_update, created_at, runtime_config)
+    match update_oneof {
+        subscribe_update::UpdateOneof::Transaction(transaction_update) => {
+            parse_yellowstone_transaction_update(transaction_update, created_at, runtime_config)
+                .map(|raw| raw.map(YellowstoneParsedUpdate::Observation))
+        }
+        subscribe_update::UpdateOneof::Ping(_) => Ok(Some(YellowstoneParsedUpdate::Ping)),
+        _ => Ok(None),
+    }
 }
 
 fn parse_yellowstone_transaction_update(
@@ -1930,16 +2001,7 @@ fn parse_yellowstone_transaction_update(
         return Ok(None);
     }
 
-    let signer_index = if message
-        .header
-        .as_ref()
-        .map(|header| header.num_required_signatures > 0)
-        .unwrap_or(true)
-    {
-        0
-    } else {
-        0
-    };
+    let signer_index = 0;
     let signer = account_keys.get(signer_index).cloned().unwrap_or_default();
     if signer.is_empty() {
         return Ok(None);
@@ -2091,13 +2153,17 @@ fn infer_swap_from_proto_balances(
 
     for item in &meta.pre_token_balances {
         if item.owner == signer {
-            let amount = parse_proto_ui_amount(item.ui_token_amount.as_ref())?;
+            let Some(amount) = parse_proto_ui_amount(item.ui_token_amount.as_ref()) else {
+                continue;
+            };
             *mint_deltas.entry(item.mint.clone()).or_default() -= amount;
         }
     }
     for item in &meta.post_token_balances {
         if item.owner == signer {
-            let amount = parse_proto_ui_amount(item.ui_token_amount.as_ref())?;
+            let Some(amount) = parse_proto_ui_amount(item.ui_token_amount.as_ref()) else {
+                continue;
+            };
             *mint_deltas.entry(item.mint.clone()).or_default() += amount;
         }
     }
@@ -3205,7 +3271,7 @@ mod tests {
         interested.insert("Program1111111111111111111111111111111111".to_string());
         let runtime_config = YellowstoneRuntimeConfig {
             grpc_url: "https://example.quicknode.com:10000".to_string(),
-            x_token: Some("token".to_string()),
+            x_token: "token".to_string(),
             connect_timeout_ms: 5_000,
             subscribe_timeout_ms: 15_000,
             reconnect_initial_ms: 500,

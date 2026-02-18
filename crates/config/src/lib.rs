@@ -100,7 +100,7 @@ impl Default for IngestionConfig {
             helius_ws_url: "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_url: "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_urls: Vec::new(),
-            yellowstone_grpc_url: "https://example.quicknode.com:10000".to_string(),
+            yellowstone_grpc_url: "REPLACE_ME".to_string(),
             yellowstone_x_token: "REPLACE_ME".to_string(),
             yellowstone_connect_timeout_ms: 5_000,
             yellowstone_subscribe_timeout_ms: 15_000,

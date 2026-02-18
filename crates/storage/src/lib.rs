@@ -953,7 +953,12 @@ impl SqliteStore {
             ) {
                 Ok(outcome) => return Ok(outcome),
                 Err(error) => {
-                    if attempt < SQLITE_WRITE_MAX_RETRIES && is_retryable_sqlite_error(&error) {
+                    let retryable = is_retryable_sqlite_error(&error);
+                    if retryable {
+                        note_sqlite_busy_error();
+                    }
+                    if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                        note_sqlite_write_retry();
                         std::thread::sleep(StdDuration::from_millis(
                             SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
                         ));

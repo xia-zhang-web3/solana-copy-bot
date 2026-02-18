@@ -9,4 +9,14 @@ lag_breach_consecutive = 5
 replaced_ratio_threshold = 0.93
 replaced_ratio_breach_consecutive = 5
 
+reconnect_storm_window_seconds = 300
+reconnect_storm_threshold = 6
+
+reject_rate_window_seconds = 300
+reject_rate_threshold = 0.20
+reject_rate_min_denominator = 500
+
+no_processed_window_seconds = 120
+no_processed_min_inbound = 200
+
 allow_restart = false

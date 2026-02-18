@@ -42,13 +42,11 @@ async fn main() -> Result<()> {
     let cli_config = parse_config_arg();
     let default_path = cli_config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
     let (mut config, loaded_config_path) = load_from_env_or_default(&default_path)?;
+    let mut applied_source_override: Option<String> = None;
     if env::var("SOLANA_COPY_BOT_INGESTION_SOURCE").is_err() {
         if let Some(source_override) = load_ingestion_source_override() {
-            info!(
-                source = %source_override,
-                "applying ingestion source override from failover file"
-            );
-            config.ingestion.source = source_override;
+            config.ingestion.source = source_override.clone();
+            applied_source_override = Some(source_override);
         }
     }
 
@@ -58,6 +56,12 @@ async fn main() -> Result<()> {
         env = %config.system.env,
         "configuration loaded"
     );
+    if let Some(source_override) = applied_source_override.as_deref() {
+        info!(
+            source = %source_override,
+            "applying ingestion source override from failover file"
+        );
+    }
 
     let mut store = SqliteStore::open(Path::new(&config.sqlite.path))
         .context("failed to initialize sqlite store")?;
@@ -143,7 +147,9 @@ fn parse_ingestion_source_override(content: &str) -> Option<String> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let (key, value) = trimmed.split_once('=')?;
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
         if key.trim() != "SOLANA_COPY_BOT_INGESTION_SOURCE" {
             continue;
         }
@@ -3145,6 +3151,7 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws
         let content = r#"
 FOO=bar
 SOLANA_COPY_BOT_INGESTION_SOURCE=
+this-is-not-a-valid-line
 "#;
         assert!(parse_ingestion_source_override(content).is_none());
     }

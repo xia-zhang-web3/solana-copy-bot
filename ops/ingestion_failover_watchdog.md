@@ -8,6 +8,14 @@ Edit thresholds in:
 
 - `ops/ingestion_failover_policy.toml`
 
+Implemented trigger set:
+
+1. `lag_p95 > threshold` for consecutive runs
+2. `replaced_ratio > threshold` for consecutive runs
+3. reconnect storm (`delta(reconnect_count)` over window)
+4. decode/parse reject rate (`(delta(parse_rejected_total)+delta(grpc_decode_errors))/delta(grpc_message_total)`)
+5. no processed swaps while inbound stream is active (`delta(ws_notifications_enqueued)==0 && delta(grpc_message_total)>=min`)
+
 ## 2) One-shot smoke run
 
 ```bash
@@ -78,4 +86,21 @@ After unit changes:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl restart solana-copy-bot
+```
+
+## 5) Recovery back to gRPC after fallback
+
+If failover was false-positive and you want to restore `yellowstone_grpc`:
+
+```bash
+cd /var/www/solana-copy-bot
+rm -f state/ingestion_source_override.env
+rm -f state/ingestion_failover_cooldown.json
+sudo systemctl restart solana-copy-bot
+```
+
+Optional: clear watchdog rolling state to reset streak/window counters:
+
+```bash
+rm -f state/ingestion_failover_state.json
 ```
