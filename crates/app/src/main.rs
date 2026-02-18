@@ -30,6 +30,7 @@ const RISK_INFRA_SAMPLE_MIN_SECONDS: i64 = 10;
 const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
 const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
+const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -194,6 +195,8 @@ enum BuyRiskDecision {
 struct ShadowRiskGuard {
     config: RiskConfig,
     hard_stop_reason: Option<String>,
+    hard_stop_clear_healthy_streak: u64,
+    last_db_refresh_error: Option<String>,
     exposure_hard_blocked: bool,
     exposure_hard_detail: Option<String>,
     pause_until: Option<DateTime<Utc>>,
@@ -364,15 +367,8 @@ impl ShadowRiskGuard {
         }
 
         if let Err(error) = self.maybe_refresh_db_state(store, now) {
-            let should_log = self
-                .last_fail_closed_log_at
-                .map(|logged_at| {
-                    now - logged_at
-                        >= chrono::Duration::seconds(RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS.max(1))
-                })
-                .unwrap_or(true);
+            let should_log = self.on_risk_refresh_error(now);
             if should_log {
-                self.last_fail_closed_log_at = Some(now);
                 warn!(error = %error, "shadow risk fail-closed activated");
                 let details_json = format!(
                     "{{\"error\":\"{}\"}}",
@@ -440,143 +436,195 @@ impl ShadowRiskGuard {
         BuyRiskDecision::Allow
     }
 
+    fn on_risk_refresh_error(&mut self, now: DateTime<Utc>) -> bool {
+        self.hard_stop_clear_healthy_streak = 0;
+        let should_log = self
+            .last_fail_closed_log_at
+            .map(|logged_at| {
+                now - logged_at
+                    >= chrono::Duration::seconds(RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS.max(1))
+            })
+            .unwrap_or(true);
+        if should_log {
+            self.last_fail_closed_log_at = Some(now);
+        }
+        should_log
+    }
+
     fn maybe_refresh_db_state(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
-        if self.hard_stop_reason.is_some() {
+        if !self.config.shadow_killswitch_enabled {
+            self.last_db_refresh_error = None;
             return Ok(());
         }
+
         if let Some(last_refresh) = self.last_db_refresh_at {
             if now - last_refresh < chrono::Duration::seconds(RISK_DB_REFRESH_MIN_SECONDS.max(1)) {
+                if let Some(cached_error) = self.last_db_refresh_error.as_deref() {
+                    return Err(anyhow::anyhow!(
+                        "risk refresh cached error (within throttle window): {}",
+                        cached_error
+                    ));
+                }
                 return Ok(());
             }
         }
         self.last_db_refresh_at = Some(now);
 
-        let exposure_sol = store.shadow_open_notional_sol()?;
-        let exposure_blocked_now = exposure_sol >= self.config.shadow_hard_exposure_cap_sol;
-        let exposure_detail = format!(
-            "open_notional_sol={:.6} hard_cap={:.6}",
-            exposure_sol, self.config.shadow_hard_exposure_cap_sol
-        );
-        if exposure_blocked_now != self.exposure_hard_blocked {
-            self.exposure_hard_blocked = exposure_blocked_now;
-            if exposure_blocked_now {
-                self.exposure_hard_detail = Some(exposure_detail.clone());
-                warn!(
-                    detail = %exposure_detail,
-                    "shadow risk exposure hard cap active"
-                );
-                let details_json = format!(
-                    "{{\"state\":\"active\",\"detail\":\"{}\"}}",
-                    sanitize_json_value(&exposure_detail)
-                );
-                self.record_risk_event(
-                    store,
-                    "shadow_risk_exposure_hard_cap",
-                    "warn",
-                    now,
-                    &details_json,
-                );
+        let refresh_result = (|| -> Result<()> {
+            let (_, pnl_1h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(1))?;
+            let (_, pnl_6h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(6))?;
+            let (_, pnl_24h) =
+                store.shadow_realized_pnl_since(now - chrono::Duration::hours(24))?;
+
+            let rug_window_start = now
+                - chrono::Duration::minutes(self.config.shadow_rug_loss_window_minutes.max(1) as i64);
+            let rug_count_since = store.shadow_rug_loss_count_since(
+                rug_window_start,
+                self.config.shadow_rug_loss_return_threshold,
+            )?;
+            let (_, rug_sample_total, rug_rate_recent) = store.shadow_rug_loss_rate_recent(
+                self.config.shadow_rug_loss_rate_sample_size.max(1),
+                self.config.shadow_rug_loss_return_threshold,
+            )?;
+
+            let hard_stop_breach = if pnl_24h <= self.config.shadow_drawdown_24h_stop_sol {
+                Some((
+                    "drawdown_24h",
+                    format!(
+                        "pnl_24h={:.6} <= stop={:.6}",
+                        pnl_24h, self.config.shadow_drawdown_24h_stop_sol
+                    ),
+                ))
+            } else if rug_count_since >= self.config.shadow_rug_loss_count_threshold
+                || rug_rate_recent > self.config.shadow_rug_loss_rate_threshold
+            {
+                Some((
+                    "rug_loss",
+                    format!(
+                        "rug_count_since={} sample_total={} rug_rate_recent={:.4}",
+                        rug_count_since, rug_sample_total, rug_rate_recent
+                    ),
+                ))
             } else {
-                self.exposure_hard_detail = None;
-                info!("shadow risk exposure hard cap cleared");
-                self.record_risk_event(
+                None
+            };
+
+            if let Some((stop_type, detail)) = hard_stop_breach {
+                self.hard_stop_clear_healthy_streak = 0;
+                self.activate_hard_stop(store, now, stop_type, detail);
+                return Ok(());
+            }
+
+            if self.hard_stop_reason.is_some() {
+                self.hard_stop_clear_healthy_streak = self
+                    .hard_stop_clear_healthy_streak
+                    .saturating_add(1)
+                    .min(HARD_STOP_CLEAR_HEALTHY_REFRESHES);
+                if self.hard_stop_clear_healthy_streak < HARD_STOP_CLEAR_HEALTHY_REFRESHES {
+                    return Ok(());
+                }
+                self.clear_hard_stop(store, now);
+            } else {
+                self.hard_stop_clear_healthy_streak = 0;
+            }
+
+            let exposure_sol = store.shadow_open_notional_sol()?;
+            let exposure_blocked_now = exposure_sol >= self.config.shadow_hard_exposure_cap_sol;
+            let exposure_detail = format!(
+                "open_notional_sol={:.6} hard_cap={:.6}",
+                exposure_sol, self.config.shadow_hard_exposure_cap_sol
+            );
+            if exposure_blocked_now != self.exposure_hard_blocked {
+                self.exposure_hard_blocked = exposure_blocked_now;
+                if exposure_blocked_now {
+                    self.exposure_hard_detail = Some(exposure_detail.clone());
+                    warn!(
+                        detail = %exposure_detail,
+                        "shadow risk exposure hard cap active"
+                    );
+                    let details_json = format!(
+                        "{{\"state\":\"active\",\"detail\":\"{}\"}}",
+                        sanitize_json_value(&exposure_detail)
+                    );
+                    self.record_risk_event(
+                        store,
+                        "shadow_risk_exposure_hard_cap",
+                        "warn",
+                        now,
+                        &details_json,
+                    );
+                } else {
+                    self.exposure_hard_detail = None;
+                    info!("shadow risk exposure hard cap cleared");
+                    self.record_risk_event(
+                        store,
+                        "shadow_risk_exposure_hard_cap_cleared",
+                        "info",
+                        now,
+                        "{\"state\":\"cleared\"}",
+                    );
+                }
+            } else if exposure_blocked_now {
+                self.exposure_hard_detail = Some(exposure_detail);
+            }
+
+            if exposure_sol >= self.config.shadow_hard_exposure_cap_sol {
+                return Ok(());
+            }
+            if exposure_sol >= self.config.shadow_soft_exposure_cap_sol {
+                self.activate_pause(
                     store,
-                    "shadow_risk_exposure_hard_cap_cleared",
-                    "info",
                     now,
-                    "{\"state\":\"cleared\"}",
+                    chrono::Duration::minutes(self.config.shadow_soft_pause_minutes.max(1) as i64),
+                    "exposure_soft_cap",
+                    format!(
+                        "open_notional_sol={:.6} >= soft_cap={:.6}",
+                        exposure_sol, self.config.shadow_soft_exposure_cap_sol
+                    ),
                 );
             }
-        } else if exposure_blocked_now {
-            self.exposure_hard_detail = Some(exposure_detail);
-        }
+            if pnl_6h <= self.config.shadow_drawdown_6h_stop_sol {
+                self.activate_pause(
+                    store,
+                    now,
+                    chrono::Duration::minutes(
+                        self.config.shadow_drawdown_6h_pause_minutes.max(1) as i64
+                    ),
+                    "drawdown_6h",
+                    format!(
+                        "pnl_6h={:.6} <= stop={:.6}",
+                        pnl_6h, self.config.shadow_drawdown_6h_stop_sol
+                    ),
+                );
+            }
+            if pnl_1h <= self.config.shadow_drawdown_1h_stop_sol {
+                self.activate_pause(
+                    store,
+                    now,
+                    chrono::Duration::minutes(
+                        self.config.shadow_drawdown_1h_pause_minutes.max(1) as i64
+                    ),
+                    "drawdown_1h",
+                    format!(
+                        "pnl_1h={:.6} <= stop={:.6}",
+                        pnl_1h, self.config.shadow_drawdown_1h_stop_sol
+                    ),
+                );
+            }
 
-        if exposure_sol >= self.config.shadow_hard_exposure_cap_sol {
-            return Ok(());
-        }
-        if exposure_sol >= self.config.shadow_soft_exposure_cap_sol {
-            self.activate_pause(
-                store,
-                now,
-                chrono::Duration::minutes(self.config.shadow_soft_pause_minutes.max(1) as i64),
-                "exposure_soft_cap",
-                format!(
-                    "open_notional_sol={:.6} >= soft_cap={:.6}",
-                    exposure_sol, self.config.shadow_soft_exposure_cap_sol
-                ),
-            );
-        }
+            Ok(())
+        })();
 
-        let (_, pnl_1h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(1))?;
-        let (_, pnl_6h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(6))?;
-        let (_, pnl_24h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(24))?;
-
-        if pnl_24h <= self.config.shadow_drawdown_24h_stop_sol {
-            self.activate_hard_stop(
-                store,
-                now,
-                "drawdown_24h",
-                format!(
-                    "pnl_24h={:.6} <= stop={:.6}",
-                    pnl_24h, self.config.shadow_drawdown_24h_stop_sol
-                ),
-            );
-            return Ok(());
+        match refresh_result {
+            Ok(()) => {
+                self.last_db_refresh_error = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.last_db_refresh_error = Some(error.to_string());
+                Err(error)
+            }
         }
-        if pnl_6h <= self.config.shadow_drawdown_6h_stop_sol {
-            self.activate_pause(
-                store,
-                now,
-                chrono::Duration::minutes(
-                    self.config.shadow_drawdown_6h_pause_minutes.max(1) as i64
-                ),
-                "drawdown_6h",
-                format!(
-                    "pnl_6h={:.6} <= stop={:.6}",
-                    pnl_6h, self.config.shadow_drawdown_6h_stop_sol
-                ),
-            );
-        }
-        if pnl_1h <= self.config.shadow_drawdown_1h_stop_sol {
-            self.activate_pause(
-                store,
-                now,
-                chrono::Duration::minutes(
-                    self.config.shadow_drawdown_1h_pause_minutes.max(1) as i64
-                ),
-                "drawdown_1h",
-                format!(
-                    "pnl_1h={:.6} <= stop={:.6}",
-                    pnl_1h, self.config.shadow_drawdown_1h_stop_sol
-                ),
-            );
-        }
-
-        let rug_window_start = now
-            - chrono::Duration::minutes(self.config.shadow_rug_loss_window_minutes.max(1) as i64);
-        let rug_count_since = store.shadow_rug_loss_count_since(
-            rug_window_start,
-            self.config.shadow_rug_loss_return_threshold,
-        )?;
-        let (_, rug_sample_total, rug_rate_recent) = store.shadow_rug_loss_rate_recent(
-            self.config.shadow_rug_loss_rate_sample_size.max(1),
-            self.config.shadow_rug_loss_return_threshold,
-        )?;
-        if rug_count_since >= self.config.shadow_rug_loss_count_threshold
-            || rug_rate_recent > self.config.shadow_rug_loss_rate_threshold
-        {
-            self.activate_hard_stop(
-                store,
-                now,
-                "rug_loss",
-                format!(
-                    "rug_count_since={} sample_total={} rug_rate_recent={:.4}",
-                    rug_count_since, rug_sample_total, rug_rate_recent
-                ),
-            );
-        }
-
-        Ok(())
     }
 
     fn compute_infra_block_reason(&self, now: DateTime<Utc>) -> Option<String> {
@@ -648,6 +696,7 @@ impl ShadowRiskGuard {
         stop_type: &str,
         detail: String,
     ) {
+        self.hard_stop_clear_healthy_streak = 0;
         if self.hard_stop_reason.is_some() {
             return;
         }
@@ -660,6 +709,28 @@ impl ShadowRiskGuard {
             sanitize_json_value(&detail)
         );
         self.record_risk_event(store, "shadow_risk_hard_stop", "error", now, &details_json);
+    }
+
+    fn clear_hard_stop(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+        self.hard_stop_clear_healthy_streak = 0;
+        let Some(previous_reason) = self.hard_stop_reason.take() else {
+            return;
+        };
+        info!(
+            previous_reason = %previous_reason,
+            "shadow risk hard stop cleared"
+        );
+        let details_json = format!(
+            "{{\"state\":\"cleared\",\"previous_reason\":\"{}\"}}",
+            sanitize_json_value(&previous_reason)
+        );
+        self.record_risk_event(
+            store,
+            "shadow_risk_hard_stop_cleared",
+            "info",
+            now,
+            &details_json,
+        );
     }
 
     fn activate_pause(
@@ -744,10 +815,13 @@ async fn run_app_loop(
     shadow_causal_holdback_ms: u64,
 ) -> Result<()> {
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
+    let mut risk_refresh_interval =
+        time::interval(Duration::from_secs(RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64));
     let mut discovery_interval =
         time::interval(Duration::from_secs(discovery_refresh_seconds.max(10)));
     let mut shadow_interval = time::interval(Duration::from_secs(shadow_refresh_seconds.max(10)));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    risk_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     discovery_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     shadow_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let initial_active_wallets = store
@@ -976,6 +1050,17 @@ async fn run_app_loop(
             _ = interval.tick() => {
                 if let Err(error) = store.record_heartbeat("copybot-app", "alive") {
                     warn!(error = %error, "heartbeat write failed");
+                }
+            }
+            _ = risk_refresh_interval.tick() => {
+                if !shadow_risk_guard.config.shadow_killswitch_enabled {
+                    continue;
+                }
+                let now = Utc::now();
+                if let Err(error) = shadow_risk_guard.maybe_refresh_db_state(&store, now) {
+                    if shadow_risk_guard.on_risk_refresh_error(now) {
+                        warn!(error = %error, "shadow risk background refresh failed");
+                    }
                 }
             }
             maybe_swap = ingestion.next_swap() => {
@@ -2345,6 +2430,159 @@ mod app_tests {
             } => assert!(detail.contains("rug_loss")),
             other => panic!("expected hard stop block, got {other:?}"),
         }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_hard_stop_auto_clears_without_restart() -> Result<()> {
+        let (store, db_path) = make_test_store("hard-stop-autoclear")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_24h_stop_sol = -0.5;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-hard-stop-loss",
+            "wallet-a",
+            "token-a",
+            1.0,
+            1.0,
+            0.2,
+            -0.8,
+            now - chrono::Duration::minutes(30),
+            now - chrono::Duration::minutes(20),
+        )?;
+
+        match guard.can_open_buy(&store, now) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::HardStop,
+                ..
+            } => {}
+            other => panic!("expected hard-stop block after drawdown breach, got {other:?}"),
+        }
+        assert!(
+            guard.hard_stop_reason.is_some(),
+            "hard stop should be set after drawdown breach"
+        );
+
+        store.insert_shadow_closed_trade(
+            "sig-hard-stop-recover",
+            "wallet-b",
+            "token-b",
+            1.0,
+            1.0,
+            3.0,
+            2.0,
+            now - chrono::Duration::minutes(10),
+            now - chrono::Duration::minutes(5),
+        )?;
+
+        let refresh_step_seconds = (RISK_DB_REFRESH_MIN_SECONDS + 1).max(6);
+        for cycle in 1..HARD_STOP_CLEAR_HEALTHY_REFRESHES {
+            let cycle_ts = now + chrono::Duration::seconds(refresh_step_seconds * cycle as i64);
+            match guard.can_open_buy(&store, cycle_ts) {
+                BuyRiskDecision::Blocked {
+                    reason: BuyRiskBlockReason::HardStop,
+                    ..
+                } => {}
+                other => panic!(
+                    "expected hard-stop to remain active during healthy cooldown (cycle {cycle}), got {other:?}"
+                ),
+            }
+            assert!(
+                guard.hard_stop_reason.is_some(),
+                "hard stop should stay active until healthy cooldown is satisfied"
+            );
+        }
+
+        let decision_after_recovery = guard.can_open_buy(
+            &store,
+            now + chrono::Duration::seconds(
+                refresh_step_seconds * HARD_STOP_CLEAR_HEALTHY_REFRESHES as i64,
+            ),
+        );
+        match decision_after_recovery {
+            BuyRiskDecision::Allow => {}
+            other => panic!("expected hard-stop auto-clear after recovery, got {other:?}"),
+        }
+        assert!(
+            guard.hard_stop_reason.is_none(),
+            "hard stop should clear after metrics normalize"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_refresh_error_resets_hard_stop_clear_streak() {
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        guard.hard_stop_clear_healthy_streak = 4;
+        let now = Utc::now();
+
+        assert!(guard.on_risk_refresh_error(now));
+        assert_eq!(
+            guard.hard_stop_clear_healthy_streak, 0,
+            "refresh error must reset healthy streak to enforce consecutive healthy refreshes"
+        );
+
+        // Subsequent errors inside throttle window should be suppressed.
+        assert!(!guard.on_risk_refresh_error(now + chrono::Duration::seconds(1)));
+    }
+
+    #[test]
+    fn risk_guard_cached_refresh_error_blocks_buy_within_throttle_window() -> Result<()> {
+        let (store, db_path) = make_test_store("cached-refresh-error")?;
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        let now = Utc::now();
+        guard.last_db_refresh_at = Some(now);
+        guard.last_db_refresh_error = Some("simulated refresh failure".to_string());
+
+        match guard.can_open_buy(&store, now + chrono::Duration::seconds(1)) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::FailClosed,
+                detail,
+            } => assert!(
+                detail.contains("cached error"),
+                "expected cached refresh error in fail-closed detail, got: {detail}"
+            ),
+            other => panic!(
+                "expected fail-closed block from cached refresh error, got {other:?}"
+            ),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_refresh_is_noop_when_killswitch_disabled() -> Result<()> {
+        let unique = format!(
+            "risk-noop-disabled-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let store = SqliteStore::open(Path::new(&db_path))?;
+
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_killswitch_enabled = false;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        guard.last_db_refresh_error = Some("stale error".to_string());
+
+        guard.maybe_refresh_db_state(&store, Utc::now())?;
+        assert!(
+            guard.last_db_refresh_error.is_none(),
+            "killswitch-disabled refresh should clear cached refresh errors"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
