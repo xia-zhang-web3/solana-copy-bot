@@ -5,7 +5,8 @@ use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{
-    FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
+    FollowSnapshot, LiveIneligibleReason, ShadowDropReason, ShadowProcessOutcome, ShadowService,
+    ShadowSnapshot,
 };
 use copybot_storage::{is_retryable_sqlite_anyhow_error, SqliteStore};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -79,6 +80,7 @@ async fn main() -> Result<()> {
         ingestion,
         discovery,
         shadow,
+        config.shadow.enabled,
         config.risk.clone(),
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
@@ -477,7 +479,9 @@ impl ShadowRiskGuard {
                 store.shadow_realized_pnl_since(now - chrono::Duration::hours(24))?;
 
             let rug_window_start = now
-                - chrono::Duration::minutes(self.config.shadow_rug_loss_window_minutes.max(1) as i64);
+                - chrono::Duration::minutes(
+                    self.config.shadow_rug_loss_window_minutes.max(1) as i64
+                );
             let rug_count_since = store.shadow_rug_loss_count_since(
                 rug_window_start,
                 self.config.shadow_rug_loss_return_threshold,
@@ -805,6 +809,7 @@ async fn run_app_loop(
     mut ingestion: IngestionService,
     discovery: DiscoveryService,
     shadow: ShadowService,
+    shadow_enabled: bool,
     risk_config: RiskConfig,
     sqlite_path: String,
     heartbeat_seconds: u64,
@@ -815,8 +820,9 @@ async fn run_app_loop(
     shadow_causal_holdback_ms: u64,
 ) -> Result<()> {
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
-    let mut risk_refresh_interval =
-        time::interval(Duration::from_secs(RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64));
+    let mut risk_refresh_interval = time::interval(Duration::from_secs(
+        RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64,
+    ));
     let mut discovery_interval =
         time::interval(Duration::from_secs(discovery_refresh_seconds.max(10)));
     let mut shadow_interval = time::interval(Duration::from_secs(shadow_refresh_seconds.max(10)));
@@ -836,6 +842,7 @@ async fn run_app_loop(
     let mut shadow_risk_guard = ShadowRiskGuard::new(risk_config);
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut shadow_live_ineligible_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_workers: JoinSet<ShadowTaskOutput> = JoinSet::new();
@@ -981,6 +988,7 @@ async fn run_app_loop(
                             &mut open_shadow_lots,
                             &mut shadow_drop_reason_counts,
                             &mut shadow_drop_stage_counts,
+                            &mut shadow_live_ineligible_reason_counts,
                         );
                     }
                     Some(Err(error)) => {
@@ -1012,6 +1020,9 @@ async fn run_app_loop(
                             closed_trades_24h = snapshot.closed_trades_24h,
                             realized_pnl_sol_24h = snapshot.realized_pnl_sol_24h,
                             open_lots = snapshot.open_lots,
+                            closed_trades_24h_live = snapshot.closed_trades_24h_live,
+                            realized_pnl_sol_24h_live = snapshot.realized_pnl_sol_24h_live,
+                            open_lots_live = snapshot.open_lots_live,
                             active_follow_wallets = follow_snapshot.active.len(),
                             "shadow snapshot"
                         );
@@ -1038,6 +1049,13 @@ async fn run_app_loop(
                             );
                             shadow_holdback_counts.clear();
                         }
+                        if !shadow_live_ineligible_reason_counts.is_empty() {
+                            info!(
+                                live_ineligible_reasons = ?shadow_live_ineligible_reason_counts,
+                                "shadow live ineligible reasons"
+                            );
+                            shadow_live_ineligible_reason_counts.clear();
+                        }
                     }
                     Ok(Err(error)) => {
                         warn!(error = %error, "shadow snapshot failed");
@@ -1053,7 +1071,7 @@ async fn run_app_loop(
                 }
             }
             _ = risk_refresh_interval.tick() => {
-                if !shadow_risk_guard.config.shadow_killswitch_enabled {
+                if !shadow_enabled || !shadow_risk_guard.config.shadow_killswitch_enabled {
                     continue;
                 }
                 let now = Utc::now();
@@ -2108,6 +2126,7 @@ fn handle_shadow_task_output(
     open_shadow_lots: &mut HashSet<(String, String)>,
     shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
     shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+    shadow_live_ineligible_reason_counts: &mut BTreeMap<&'static str, u64>,
 ) {
     match task_output.outcome {
         Ok(ShadowProcessOutcome::Recorded(result)) => {
@@ -2120,8 +2139,16 @@ fn handle_shadow_task_output(
                 latency_ms = result.latency_ms,
                 closed_qty = result.closed_qty,
                 realized_pnl_sol = result.realized_pnl_sol,
+                live_eligible_buy = ?result.live_eligible_buy,
+                live_closed_qty = result.live_closed_qty,
+                live_realized_pnl_sol = result.live_realized_pnl_sol,
                 "shadow signal recorded"
             );
+            if let Some(live_reason) = result.live_ineligible_reason {
+                *shadow_live_ineligible_reason_counts
+                    .entry(live_reason.as_str())
+                    .or_insert(0) += 1;
+            }
             let key = (result.wallet_id, result.token);
             if result.side == "buy" {
                 open_shadow_lots.insert(key);
@@ -2288,7 +2315,7 @@ mod app_tests {
         let opened_ts = DateTime::parse_from_rfc3339("2026-02-17T00:00:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
-        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts)?;
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts, false)?;
         let now = Utc::now();
 
         let decision = guard.can_open_buy(&store, now);
@@ -2331,7 +2358,7 @@ mod app_tests {
             slot: 1,
             ts_utc: now - chrono::Duration::minutes(5),
         })?;
-        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts, false)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
         let (closed, skipped) = close_stale_shadow_lots(&store, &mut open_pairs, 8, now)?;
@@ -2369,6 +2396,7 @@ mod app_tests {
             -0.5,
             now - chrono::Duration::minutes(10),
             now - chrono::Duration::minutes(5),
+            false,
         )?;
 
         let decision = guard.can_open_buy(&store, now);
@@ -2409,6 +2437,7 @@ mod app_tests {
             -0.8,
             now - chrono::Duration::minutes(30),
             now - chrono::Duration::minutes(20),
+            false,
         )?;
         store.insert_shadow_closed_trade(
             "sig-rug-2",
@@ -2420,6 +2449,7 @@ mod app_tests {
             -1.7,
             now - chrono::Duration::minutes(25),
             now - chrono::Duration::minutes(10),
+            false,
         )?;
 
         let decision = guard.can_open_buy(&store, now);
@@ -2457,6 +2487,7 @@ mod app_tests {
             -0.8,
             now - chrono::Duration::minutes(30),
             now - chrono::Duration::minutes(20),
+            false,
         )?;
 
         match guard.can_open_buy(&store, now) {
@@ -2481,6 +2512,7 @@ mod app_tests {
             2.0,
             now - chrono::Duration::minutes(10),
             now - chrono::Duration::minutes(5),
+            false,
         )?;
 
         let refresh_step_seconds = (RISK_DB_REFRESH_MIN_SECONDS + 1).max(6);
@@ -2552,9 +2584,7 @@ mod app_tests {
                 detail.contains("cached error"),
                 "expected cached refresh error in fail-closed detail, got: {detail}"
             ),
-            other => panic!(
-                "expected fail-closed block from cached refresh error, got {other:?}"
-            ),
+            other => panic!("expected fail-closed block from cached refresh error, got {other:?}"),
         }
 
         let _ = std::fs::remove_file(db_path);
@@ -2586,6 +2616,55 @@ mod app_tests {
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
+    }
+
+    #[test]
+    fn handle_shadow_task_output_tracks_live_ineligible_reasons_separately() {
+        let task_output = ShadowTaskOutput {
+            signature: "sig-live-ineligible".to_string(),
+            key: ShadowTaskKey {
+                wallet: "wallet-a".to_string(),
+                token: "token-a".to_string(),
+            },
+            outcome: Ok(ShadowProcessOutcome::Recorded(
+                copybot_shadow::ShadowSignalResult {
+                    signal_id: "shadow:sig-live-ineligible:wallet-a:buy:token-a".to_string(),
+                    wallet_id: "wallet-a".to_string(),
+                    side: "buy".to_string(),
+                    token: "token-a".to_string(),
+                    notional_sol: 0.1,
+                    latency_ms: 1200,
+                    closed_qty: 0.0,
+                    realized_pnl_sol: 0.0,
+                    live_eligible_buy: Some(false),
+                    live_ineligible_reason: Some(LiveIneligibleReason::LowHolders),
+                    live_closed_qty: 0.0,
+                    live_realized_pnl_sol: 0.0,
+                    has_open_lots_after_signal: Some(true),
+                },
+            )),
+        };
+
+        let mut open_shadow_lots = HashSet::new();
+        let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut shadow_live_ineligible_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+
+        handle_shadow_task_output(
+            task_output,
+            &mut open_shadow_lots,
+            &mut shadow_drop_reason_counts,
+            &mut shadow_drop_stage_counts,
+            &mut shadow_live_ineligible_reason_counts,
+        );
+
+        assert!(shadow_drop_reason_counts.is_empty());
+        assert!(shadow_drop_stage_counts.is_empty());
+        assert_eq!(
+            shadow_live_ineligible_reason_counts.get("low_holders"),
+            Some(&1)
+        );
+        assert!(open_shadow_lots.contains(&("wallet-a".to_string(), "token-a".to_string())));
     }
 
     #[test]

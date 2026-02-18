@@ -74,6 +74,13 @@ min_holders = 1
 min_liquidity_sol = 1.0
 min_volume_5m_sol = 0.5
 min_unique_traders_5m = 1
+live_sim_enabled = true
+live_min_token_age_seconds = 300
+live_min_holders = 50
+live_min_liquidity_sol = 10.0
+live_min_volume_5m_sol = 5.0
+live_min_unique_traders_5m = 3
+live_max_signal_lag_seconds = 30
 
 [risk]
 max_position_sol = 0.5

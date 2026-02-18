@@ -218,6 +218,13 @@ pub struct ShadowConfig {
     pub min_liquidity_sol: f64,
     pub min_volume_5m_sol: f64,
     pub min_unique_traders_5m: u64,
+    pub live_sim_enabled: bool,
+    pub live_min_token_age_seconds: u64,
+    pub live_min_holders: u64,
+    pub live_min_liquidity_sol: f64,
+    pub live_min_volume_5m_sol: f64,
+    pub live_min_unique_traders_5m: u64,
+    pub live_max_signal_lag_seconds: u64,
 }
 
 impl Default for ShadowConfig {
@@ -237,6 +244,13 @@ impl Default for ShadowConfig {
             min_liquidity_sol: 0.0,
             min_volume_5m_sol: 0.0,
             min_unique_traders_5m: 0,
+            live_sim_enabled: false,
+            live_min_token_age_seconds: 300,
+            live_min_holders: 50,
+            live_min_liquidity_sol: 10.0,
+            live_min_volume_5m_sol: 5.0,
+            live_min_unique_traders_5m: 3,
+            live_max_signal_lag_seconds: 30,
         }
     }
 }
@@ -437,6 +451,51 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.shadow.causal_holdback_ms = holdback_ms;
     }
+    if let Some(live_sim_enabled) = env::var("SOLANA_COPY_BOT_SHADOW_LIVE_SIM_ENABLED")
+        .ok()
+        .and_then(parse_env_bool)
+    {
+        config.shadow.live_sim_enabled = live_sim_enabled;
+    }
+    if let Some(live_min_token_age_seconds) =
+        env::var("SOLANA_COPY_BOT_SHADOW_LIVE_MIN_TOKEN_AGE_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.live_min_token_age_seconds = live_min_token_age_seconds;
+    }
+    if let Some(live_min_holders) = env::var("SOLANA_COPY_BOT_SHADOW_LIVE_MIN_HOLDERS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.live_min_holders = live_min_holders;
+    }
+    if let Some(live_min_liquidity_sol) = env::var("SOLANA_COPY_BOT_SHADOW_LIVE_MIN_LIQUIDITY_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.shadow.live_min_liquidity_sol = live_min_liquidity_sol;
+    }
+    if let Some(live_min_volume_5m_sol) = env::var("SOLANA_COPY_BOT_SHADOW_LIVE_MIN_VOLUME_5M_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.shadow.live_min_volume_5m_sol = live_min_volume_5m_sol;
+    }
+    if let Some(live_min_unique_traders_5m) =
+        env::var("SOLANA_COPY_BOT_SHADOW_LIVE_MIN_UNIQUE_TRADERS_5M")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.live_min_unique_traders_5m = live_min_unique_traders_5m;
+    }
+    if let Some(live_max_signal_lag_seconds) =
+        env::var("SOLANA_COPY_BOT_SHADOW_LIVE_MAX_SIGNAL_LAG_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.live_max_signal_lag_seconds = live_max_signal_lag_seconds;
+    }
     if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_PROGRAM_IDS") {
         let values: Vec<String> = program_ids_csv
             .split(',')
@@ -457,5 +516,45 @@ fn parse_env_bool(value: String) -> Option<bool> {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shadow_live_defaults_are_applied() {
+        let shadow = ShadowConfig::default();
+        assert!(!shadow.live_sim_enabled);
+        assert_eq!(shadow.live_min_token_age_seconds, 300);
+        assert_eq!(shadow.live_min_holders, 50);
+        assert!((shadow.live_min_liquidity_sol - 10.0).abs() < f64::EPSILON);
+        assert!((shadow.live_min_volume_5m_sol - 5.0).abs() < f64::EPSILON);
+        assert_eq!(shadow.live_min_unique_traders_5m, 3);
+        assert_eq!(shadow.live_max_signal_lag_seconds, 30);
+    }
+
+    #[test]
+    fn shadow_live_fields_deserialize_from_toml() -> Result<()> {
+        let raw = r#"
+[shadow]
+live_sim_enabled = true
+live_min_token_age_seconds = 123
+live_min_holders = 77
+live_min_liquidity_sol = 11.5
+live_min_volume_5m_sol = 9.25
+live_min_unique_traders_5m = 6
+live_max_signal_lag_seconds = 44
+"#;
+        let cfg: AppConfig = toml::from_str(raw).context("failed to parse inline toml")?;
+        assert!(cfg.shadow.live_sim_enabled);
+        assert_eq!(cfg.shadow.live_min_token_age_seconds, 123);
+        assert_eq!(cfg.shadow.live_min_holders, 77);
+        assert!((cfg.shadow.live_min_liquidity_sol - 11.5).abs() < f64::EPSILON);
+        assert!((cfg.shadow.live_min_volume_5m_sol - 9.25).abs() < f64::EPSILON);
+        assert_eq!(cfg.shadow.live_min_unique_traders_5m, 6);
+        assert_eq!(cfg.shadow.live_max_signal_lag_seconds, 44);
+        Ok(())
     }
 }

@@ -28,7 +28,69 @@ pub struct ShadowSignalResult {
     pub latency_ms: i64,
     pub closed_qty: f64,
     pub realized_pnl_sol: f64,
+    pub live_eligible_buy: Option<bool>,
+    pub live_ineligible_reason: Option<LiveIneligibleReason>,
+    pub live_closed_qty: f64,
+    pub live_realized_pnl_sol: f64,
     pub has_open_lots_after_signal: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LiveIneligibleReason {
+    LagExceeded,
+    TooNew,
+    LowHolders,
+    LowLiquidity,
+    LowVolume,
+    ThinMarket,
+}
+
+impl LiveIneligibleReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LagExceeded => "lag_exceeded",
+            Self::TooNew => "too_new",
+            Self::LowHolders => "low_holders",
+            Self::LowLiquidity => "low_liquidity",
+            Self::LowVolume => "low_volume",
+            Self::ThinMarket => "thin_market",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QualitySnapshotSource {
+    RpcCache,
+    RpcCacheStale,
+    DbProxy,
+    CacheOnly,
+}
+
+impl QualitySnapshotSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RpcCache => "rpc_cache",
+            Self::RpcCacheStale => "rpc_cache_stale",
+            Self::DbProxy => "db_proxy",
+            Self::CacheOnly => "cache_only",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenQualitySnapshot {
+    pub token_age_seconds: u64,
+    pub holders: u64,
+    pub liquidity_sol: f64,
+    pub volume_5m_sol: f64,
+    pub unique_traders_5m: u64,
+    source: QualitySnapshotSource,
+}
+
+impl TokenQualitySnapshot {
+    pub fn source_label(&self) -> &'static str {
+        self.source.as_str()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,6 +141,9 @@ pub struct ShadowSnapshot {
     pub closed_trades_24h: u64,
     pub realized_pnl_sol_24h: f64,
     pub open_lots: u64,
+    pub closed_trades_24h_live: u64,
+    pub realized_pnl_sol_24h_live: f64,
+    pub open_lots_live: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -239,10 +304,14 @@ impl ShadowService {
             );
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::LagExceeded));
         }
-        if candidate.side == "buy" {
-            if let Some(reason) =
-                self.drop_reason_for_buy_quality_gate(store, &candidate.token, swap.ts_utc, now)?
-            {
+        let mut buy_quality_snapshot: Option<TokenQualitySnapshot> = None;
+        if candidate.side == "buy"
+            && (self.config.quality_gates_enabled || self.config.live_sim_enabled)
+        {
+            let (drop_reason, snapshot) =
+                self.drop_reason_for_buy_quality_gate(store, &candidate.token, swap.ts_utc, now)?;
+            buy_quality_snapshot = Some(snapshot);
+            if let Some(reason) = drop_reason {
                 Self::log_gate_drop(
                     "quality",
                     reason,
@@ -305,9 +374,25 @@ impl ShadowService {
             ));
         }
 
+        let mut live_eligible_buy = None;
+        let mut live_ineligible_reason = None;
         let (close, has_open_lots_after_signal) = match candidate.side.as_str() {
             "buy" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
+                let live_eligible = if self.config.live_sim_enabled {
+                    let snapshot = buy_quality_snapshot.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "live classification invariant violated: missing BUY quality snapshot"
+                        )
+                    })?;
+                    let (eligible, reason) =
+                        Self::classify_live(snapshot, latency_ms, &self.config);
+                    live_ineligible_reason = reason;
+                    eligible
+                } else {
+                    false
+                };
+                live_eligible_buy = Some(live_eligible);
                 if qty > EPS {
                     let _ = store.insert_shadow_lot(
                         &swap.wallet,
@@ -315,6 +400,7 @@ impl ShadowService {
                         qty,
                         copy_notional_sol,
                         swap.ts_utc,
+                        live_eligible,
                     )?;
                 }
                 (copybot_storage::ShadowCloseOutcome::default(), Some(true))
@@ -357,6 +443,10 @@ impl ShadowService {
             latency_ms,
             closed_qty: close.closed_qty,
             realized_pnl_sol: close.realized_pnl_sol,
+            live_eligible_buy,
+            live_ineligible_reason,
+            live_closed_qty: close.live_closed_qty,
+            live_realized_pnl_sol: close.live_realized_pnl_sol,
             has_open_lots_after_signal,
         }))
     }
@@ -364,11 +454,17 @@ impl ShadowService {
     pub fn snapshot_24h(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<ShadowSnapshot> {
         let since = now - Duration::hours(24);
         let (closed_trades_24h, realized_pnl_sol_24h) = store.shadow_realized_pnl_since(since)?;
+        let (closed_trades_24h_live, realized_pnl_sol_24h_live) =
+            store.shadow_realized_pnl_since_live(since)?;
         let open_lots = store.shadow_open_lots_count()?;
+        let open_lots_live = store.shadow_open_lots_count_live()?;
         Ok(ShadowSnapshot {
             closed_trades_24h,
             realized_pnl_sol_24h,
             open_lots,
+            closed_trades_24h_live,
+            realized_pnl_sol_24h_live,
+            open_lots_live,
         })
     }
 
@@ -378,76 +474,135 @@ impl ShadowService {
         token: &str,
         signal_ts: DateTime<Utc>,
         now: DateTime<Utc>,
-    ) -> Result<Option<ShadowDropReason>> {
-        if !self.config.quality_gates_enabled {
-            return Ok(None);
-        }
+    ) -> Result<(Option<ShadowDropReason>, TokenQualitySnapshot)> {
+        let allow_rpc_refresh = self.config.quality_gates_enabled;
+        let snapshot =
+            self.build_token_quality_snapshot(store, token, signal_ts, now, allow_rpc_refresh)?;
+        let drop_reason = if self.config.quality_gates_enabled {
+            Self::classify_quality_drop_reason(&snapshot, &self.config)
+        } else {
+            None
+        };
+        Ok((drop_reason, snapshot))
+    }
 
+    fn build_token_quality_snapshot(
+        &self,
+        store: &SqliteStore,
+        token: &str,
+        signal_ts: DateTime<Utc>,
+        now: DateTime<Utc>,
+        allow_rpc_refresh: bool,
+    ) -> Result<TokenQualitySnapshot> {
         let stats = store.token_market_stats(token, signal_ts)?;
-        let rpc_quality = self.resolve_token_quality(store, token, now)?;
+        let cached_quality = if allow_rpc_refresh {
+            self.resolve_token_quality(store, token, now)?
+        } else {
+            store.get_token_quality_cache(token)?
+        };
         let proxy_age_seconds = stats
             .first_seen
             .map(|first_seen| (signal_ts - first_seen).num_seconds().max(0))
             .unwrap_or(0) as u64;
-        let token_age_seconds = rpc_quality
-            .as_ref()
-            .and_then(|row| row.token_age_seconds)
-            .unwrap_or(proxy_age_seconds);
-        let holders = rpc_quality
-            .as_ref()
-            .and_then(|row| row.holders)
-            .unwrap_or(stats.holders_proxy);
-        let liquidity_sol = rpc_quality
-            .as_ref()
-            .and_then(|row| row.liquidity_sol)
-            .unwrap_or(stats.liquidity_sol_proxy);
-        let quality_source = if let Some(row) = rpc_quality.as_ref() {
-            if now - row.fetched_at <= Duration::seconds(QUALITY_CACHE_TTL_SECONDS) {
-                "rpc_cache"
+        let snapshot = TokenQualitySnapshot {
+            token_age_seconds: cached_quality
+                .as_ref()
+                .and_then(|row| row.token_age_seconds)
+                .unwrap_or(proxy_age_seconds),
+            holders: cached_quality
+                .as_ref()
+                .and_then(|row| row.holders)
+                .unwrap_or(stats.holders_proxy),
+            liquidity_sol: cached_quality
+                .as_ref()
+                .and_then(|row| row.liquidity_sol)
+                .unwrap_or(stats.liquidity_sol_proxy),
+            volume_5m_sol: stats.volume_5m_sol,
+            unique_traders_5m: stats.unique_traders_5m,
+            source: if let Some(row) = cached_quality.as_ref() {
+                if allow_rpc_refresh {
+                    if now - row.fetched_at <= Duration::seconds(QUALITY_CACHE_TTL_SECONDS) {
+                        QualitySnapshotSource::RpcCache
+                    } else {
+                        QualitySnapshotSource::RpcCacheStale
+                    }
+                } else {
+                    QualitySnapshotSource::CacheOnly
+                }
             } else {
-                "rpc_cache_stale"
-            }
-        } else {
-            "db_proxy"
+                QualitySnapshotSource::DbProxy
+            },
         };
         info!(
             token = %token,
-            quality_source,
-            token_age_seconds,
-            holders,
-            liquidity_sol,
+            quality_source = snapshot.source_label(),
+            token_age_seconds = snapshot.token_age_seconds,
+            holders = snapshot.holders,
+            liquidity_sol = snapshot.liquidity_sol,
+            volume_5m_sol = snapshot.volume_5m_sol,
+            unique_traders_5m = snapshot.unique_traders_5m,
             "shadow quality metrics evaluated"
         );
+        Ok(snapshot)
+    }
 
-        if self.config.min_token_age_seconds > 0 {
-            if token_age_seconds < self.config.min_token_age_seconds {
-                return Ok(Some(ShadowDropReason::TooNew));
-            }
-        }
-
-        if self.config.min_holders > 0 && holders < self.config.min_holders {
-            return Ok(Some(ShadowDropReason::LowHolders));
-        }
-
-        if self.config.min_liquidity_sol > 0.0
-            && liquidity_sol + EPS < self.config.min_liquidity_sol
+    fn classify_quality_drop_reason(
+        snapshot: &TokenQualitySnapshot,
+        config: &ShadowConfig,
+    ) -> Option<ShadowDropReason> {
+        if config.min_token_age_seconds > 0
+            && snapshot.token_age_seconds < config.min_token_age_seconds
         {
-            return Ok(Some(ShadowDropReason::LowLiquidity));
+            return Some(ShadowDropReason::TooNew);
         }
 
-        if self.config.min_volume_5m_sol > 0.0
-            && stats.volume_5m_sol + EPS < self.config.min_volume_5m_sol
+        if config.min_holders > 0 && snapshot.holders < config.min_holders {
+            return Some(ShadowDropReason::LowHolders);
+        }
+
+        if config.min_liquidity_sol > 0.0 && snapshot.liquidity_sol + EPS < config.min_liquidity_sol
         {
-            return Ok(Some(ShadowDropReason::LowVolume));
+            return Some(ShadowDropReason::LowLiquidity);
         }
 
-        if self.config.min_unique_traders_5m > 0
-            && stats.unique_traders_5m < self.config.min_unique_traders_5m
+        if config.min_volume_5m_sol > 0.0 && snapshot.volume_5m_sol + EPS < config.min_volume_5m_sol
         {
-            return Ok(Some(ShadowDropReason::ThinMarket));
+            return Some(ShadowDropReason::LowVolume);
         }
 
-        Ok(None)
+        if config.min_unique_traders_5m > 0
+            && snapshot.unique_traders_5m < config.min_unique_traders_5m
+        {
+            return Some(ShadowDropReason::ThinMarket);
+        }
+
+        None
+    }
+
+    fn classify_live(
+        snapshot: &TokenQualitySnapshot,
+        latency_ms: i64,
+        config: &ShadowConfig,
+    ) -> (bool, Option<LiveIneligibleReason>) {
+        if latency_ms > (config.live_max_signal_lag_seconds as i64 * 1_000) {
+            return (false, Some(LiveIneligibleReason::LagExceeded));
+        }
+        if snapshot.token_age_seconds < config.live_min_token_age_seconds {
+            return (false, Some(LiveIneligibleReason::TooNew));
+        }
+        if snapshot.holders < config.live_min_holders {
+            return (false, Some(LiveIneligibleReason::LowHolders));
+        }
+        if snapshot.liquidity_sol + EPS < config.live_min_liquidity_sol {
+            return (false, Some(LiveIneligibleReason::LowLiquidity));
+        }
+        if snapshot.volume_5m_sol + EPS < config.live_min_volume_5m_sol {
+            return (false, Some(LiveIneligibleReason::LowVolume));
+        }
+        if snapshot.unique_traders_5m < config.live_min_unique_traders_5m {
+            return (false, Some(LiveIneligibleReason::ThinMarket));
+        }
+        (true, None)
     }
 
     fn log_gate_drop(
@@ -853,6 +1008,100 @@ mod tests {
 
         let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
         outcome.expect_dropped(ShadowDropReason::TooNew, "buy should be dropped by age");
+        Ok(())
+    }
+
+    #[test]
+    fn buy_marks_live_eligible_and_persists_flag_to_shadow_lot() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-live-eligible-buy.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let follow = follow_snapshot(&["leader-wallet"]);
+        let mut cfg = ShadowConfig::default();
+        cfg.quality_gates_enabled = false;
+        cfg.live_sim_enabled = true;
+        cfg.live_min_token_age_seconds = 0;
+        cfg.live_min_holders = 0;
+        cfg.live_min_liquidity_sol = 0.0;
+        cfg.live_min_volume_5m_sol = 0.0;
+        cfg.live_min_unique_traders_5m = 0;
+        cfg.live_max_signal_lag_seconds = 3600;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-02-13T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMintLive".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-live-eligible".to_string(),
+            slot: 1,
+            ts_utc: buy_ts,
+        };
+        let result = service
+            .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
+            .expect_recorded("buy should be recorded");
+        assert_eq!(result.live_eligible_buy, Some(true));
+        assert!(result.live_ineligible_reason.is_none());
+
+        let lots = store.list_shadow_lots("leader-wallet", "TokenMintLive")?;
+        assert_eq!(lots.len(), 1);
+        assert!(
+            lots[0].live_eligible,
+            "BUY lot should be marked live_eligible"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_ineligible_does_not_drop_buy_when_quality_gate_disabled() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-live-ineligible-no-drop.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let follow = follow_snapshot(&["leader-wallet"]);
+        let mut cfg = ShadowConfig::default();
+        cfg.quality_gates_enabled = false;
+        cfg.live_sim_enabled = true;
+        cfg.live_min_token_age_seconds = 0;
+        cfg.live_min_holders = 9_999;
+        cfg.live_min_liquidity_sol = 0.0;
+        cfg.live_min_volume_5m_sol = 0.0;
+        cfg.live_min_unique_traders_5m = 0;
+        cfg.live_max_signal_lag_seconds = 3600;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-02-13T11:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMintLive2".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-live-ineligible".to_string(),
+            slot: 2,
+            ts_utc: buy_ts,
+        };
+        let result = service
+            .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
+            .expect_recorded("BUY must still be recorded with quality gate disabled");
+        assert_eq!(result.live_eligible_buy, Some(false));
+        assert_eq!(
+            result.live_ineligible_reason,
+            Some(LiveIneligibleReason::LowHolders)
+        );
         Ok(())
     }
 

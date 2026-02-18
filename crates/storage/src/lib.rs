@@ -64,12 +64,15 @@ pub struct ShadowLotRow {
     pub qty: f64,
     pub cost_sol: f64,
     pub opened_ts: DateTime<Utc>,
+    pub live_eligible: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ShadowCloseOutcome {
     pub closed_qty: f64,
     pub realized_pnl_sol: f64,
+    pub live_closed_qty: f64,
+    pub live_realized_pnl_sol: f64,
     pub has_open_lots_after: bool,
 }
 
@@ -737,12 +740,20 @@ impl SqliteStore {
         qty: f64,
         cost_sol: f64,
         opened_ts: DateTime<Utc>,
+        live_eligible: bool,
     ) -> Result<i64> {
         self.execute_with_retry(|conn| {
             conn.execute(
-                "INSERT INTO shadow_lots(wallet_id, token, qty, cost_sol, opened_ts)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![wallet_id, token, qty, cost_sol, opened_ts.to_rfc3339()],
+                "INSERT INTO shadow_lots(wallet_id, token, qty, cost_sol, opened_ts, live_eligible)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    wallet_id,
+                    token,
+                    qty,
+                    cost_sol,
+                    opened_ts.to_rfc3339(),
+                    if live_eligible { 1 } else { 0 }
+                ],
             )
         })
         .context("failed to insert shadow lot")?;
@@ -753,7 +764,7 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, wallet_id, token, qty, cost_sol, opened_ts
+                "SELECT id, wallet_id, token, qty, cost_sol, opened_ts, live_eligible
                  FROM shadow_lots
                  WHERE wallet_id = ?1 AND token = ?2
                  ORDER BY id ASC",
@@ -778,6 +789,10 @@ impl SqliteStore {
                 qty: row.get(3).context("failed reading shadow_lots.qty")?,
                 cost_sol: row.get(4).context("failed reading shadow_lots.cost_sol")?,
                 opened_ts,
+                live_eligible: row
+                    .get::<_, i64>(6)
+                    .context("failed reading shadow_lots.live_eligible")?
+                    != 0,
             });
         }
         Ok(lots)
@@ -791,7 +806,7 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, wallet_id, token, qty, cost_sol, opened_ts
+                "SELECT id, wallet_id, token, qty, cost_sol, opened_ts, live_eligible
                  FROM shadow_lots
                  WHERE qty > 0
                    AND opened_ts <= ?1
@@ -818,6 +833,10 @@ impl SqliteStore {
                 qty: row.get(3).context("failed reading shadow_lots.qty")?,
                 cost_sol: row.get(4).context("failed reading shadow_lots.cost_sol")?,
                 opened_ts,
+                live_eligible: row
+                    .get::<_, i64>(6)
+                    .context("failed reading shadow_lots.live_eligible")?
+                    != 0,
             });
         }
 
@@ -954,22 +973,30 @@ impl SqliteStore {
             let mut qty_remaining = target_qty;
             let mut closed_qty = 0.0;
             let mut realized_pnl_sol = 0.0;
+            let mut live_closed_qty = 0.0;
+            let mut live_realized_pnl_sol = 0.0;
 
             let mut stmt = self.conn.prepare(
-                "SELECT id, qty, cost_sol, opened_ts
+                "SELECT id, qty, cost_sol, opened_ts, live_eligible
                  FROM shadow_lots
                  WHERE wallet_id = ?1 AND token = ?2
                  ORDER BY id ASC",
             )?;
             let mut rows = stmt.query(params![wallet_id, token])?;
-            let mut lots: Vec<(i64, f64, f64, String)> = Vec::new();
+            let mut lots: Vec<(i64, f64, f64, String, bool)> = Vec::new();
             while let Some(row) = rows.next()? {
-                lots.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
+                lots.push((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get::<_, i64>(4)? != 0,
+                ));
             }
             drop(rows);
             drop(stmt);
 
-            for (lot_id, lot_qty, lot_cost_sol, lot_opened_ts) in lots {
+            for (lot_id, lot_qty, lot_cost_sol, lot_opened_ts, lot_live_eligible) in lots {
                 if qty_remaining <= EPS {
                     break;
                 }
@@ -1007,8 +1034,9 @@ impl SqliteStore {
                         exit_value_sol,
                         pnl_sol,
                         opened_ts,
-                        closed_ts
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        closed_ts,
+                        live_eligible
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         signal_id,
                         wallet_id,
@@ -1019,12 +1047,17 @@ impl SqliteStore {
                         pnl_sol,
                         lot_opened_ts,
                         closed_ts.to_rfc3339(),
+                        if lot_live_eligible { 1 } else { 0 },
                     ],
                 )?;
 
                 qty_remaining -= take_qty;
                 closed_qty += take_qty;
                 realized_pnl_sol += pnl_sol;
+                if lot_live_eligible {
+                    live_closed_qty += take_qty;
+                    live_realized_pnl_sol += pnl_sol;
+                }
             }
 
             let remaining_lots: i64 = self.conn.query_row(
@@ -1038,6 +1071,8 @@ impl SqliteStore {
             Ok(ShadowCloseOutcome {
                 closed_qty,
                 realized_pnl_sol,
+                live_closed_qty,
+                live_realized_pnl_sol,
                 has_open_lots_after: remaining_lots > 0,
             })
         })();
@@ -1284,6 +1319,7 @@ impl SqliteStore {
         pnl_sol: f64,
         opened_ts: DateTime<Utc>,
         closed_ts: DateTime<Utc>,
+        live_eligible: bool,
     ) -> Result<()> {
         self.execute_with_retry(|conn| {
             conn.execute(
@@ -1296,8 +1332,9 @@ impl SqliteStore {
                     exit_value_sol,
                     pnl_sol,
                     opened_ts,
-                    closed_ts
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    closed_ts,
+                    live_eligible
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     signal_id,
                     wallet_id,
@@ -1308,6 +1345,7 @@ impl SqliteStore {
                     pnl_sol,
                     opened_ts.to_rfc3339(),
                     closed_ts.to_rfc3339(),
+                    if live_eligible { 1 } else { 0 },
                 ],
             )
         })
@@ -1335,6 +1373,36 @@ impl SqliteStore {
         Ok(notional.max(0.0))
     }
 
+    pub fn shadow_open_lots_count_live(&self) -> Result<u64> {
+        let value: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM shadow_lots
+                 WHERE live_eligible = 1
+                   AND qty > 0",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed querying live shadow open lots count")?;
+        Ok(value.max(0) as u64)
+    }
+
+    pub fn shadow_open_notional_sol_live(&self) -> Result<f64> {
+        let notional: f64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(cost_sol), 0.0)
+                 FROM shadow_lots
+                 WHERE live_eligible = 1
+                   AND qty > 0",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed querying live shadow open notional")?;
+        Ok(notional.max(0.0))
+    }
+
     pub fn shadow_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
         let mut stmt = self
             .conn
@@ -1349,6 +1417,24 @@ impl SqliteStore {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .context("failed querying shadow pnl summary")?;
+        Ok((trades.max(0) as u64, pnl))
+    }
+
+    pub fn shadow_realized_pnl_since_live(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT COUNT(*) as trades, COALESCE(SUM(pnl_sol), 0.0) as pnl
+                 FROM shadow_closed_trades
+                 WHERE closed_ts >= ?1
+                   AND live_eligible = 1",
+            )
+            .context("failed to prepare live shadow pnl query")?;
+        let (trades, pnl): (i64, f64) = stmt
+            .query_row(params![since.to_rfc3339()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .context("failed querying live shadow pnl summary")?;
         Ok((trades.max(0) as u64, pnl))
     }
 
@@ -1435,6 +1521,7 @@ impl SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -1448,7 +1535,7 @@ mod tests {
         let opened_ts = DateTime::parse_from_rfc3339("2026-02-15T10:00:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
-        seed_store.insert_shadow_lot("wallet", "token", 100.0, 1.0, opened_ts)?;
+        seed_store.insert_shadow_lot("wallet", "token", 100.0, 1.0, opened_ts, false)?;
         drop(seed_store);
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
@@ -1506,6 +1593,191 @@ mod tests {
             "all lots should be closed exactly once"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn migration_0009_adds_live_columns_on_existing_schema() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("migration-live-eligible.db");
+        let full_migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let legacy_migration_dir = temp.path().join("legacy-migrations");
+        fs::create_dir_all(&legacy_migration_dir)
+            .context("failed to create legacy migration dir")?;
+
+        for version in 1..=8 {
+            let filename = format!("{version:04}_");
+            let source_path = fs::read_dir(&full_migration_dir)
+                .context("failed to read migration dir")?
+                .filter_map(|entry| entry.ok().map(|e| e.path()))
+                .find(|path| {
+                    path.file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|name| name.starts_with(&filename))
+                })
+                .ok_or_else(|| anyhow!("missing migration file with prefix {}", filename))?;
+            let target_path = legacy_migration_dir.join(
+                source_path
+                    .file_name()
+                    .ok_or_else(|| anyhow!("invalid migration filename"))?,
+            );
+            fs::copy(&source_path, &target_path).with_context(|| {
+                format!(
+                    "failed copying legacy migration {} -> {}",
+                    source_path.display(),
+                    target_path.display()
+                )
+            })?;
+        }
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migration_dir)?;
+        let shadow_lots_live_before: i64 = legacy_store.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('shadow_lots') WHERE name='live_eligible'",
+            [],
+            |row| row.get(0),
+        )?;
+        let shadow_closed_live_before: i64 = legacy_store.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('shadow_closed_trades') WHERE name='live_eligible'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(shadow_lots_live_before, 0);
+        assert_eq!(shadow_closed_live_before, 0);
+        drop(legacy_store);
+
+        let mut upgraded_store = SqliteStore::open(Path::new(&db_path))?;
+        let applied = upgraded_store.run_migrations(&full_migration_dir)?;
+        assert!(
+            applied >= 1,
+            "expected at least one migration (0009) to be applied"
+        );
+        let shadow_lots_live_after: i64 = upgraded_store.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('shadow_lots') WHERE name='live_eligible'",
+            [],
+            |row| row.get(0),
+        )?;
+        let shadow_closed_live_after: i64 = upgraded_store.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('shadow_closed_trades') WHERE name='live_eligible'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(shadow_lots_live_after, 1);
+        assert_eq!(shadow_closed_live_after, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn close_shadow_lots_fifo_atomic_propagates_live_eligibility_and_split() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("mixed-live-fifo.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let opened_ts = DateTime::parse_from_rfc3339("2026-02-16T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.insert_shadow_lot("wallet", "token", 100.0, 1.0, opened_ts, true)?;
+        store.insert_shadow_lot(
+            "wallet",
+            "token",
+            100.0,
+            1.0,
+            opened_ts + Duration::seconds(1),
+            false,
+        )?;
+
+        let outcome = store.close_shadow_lots_fifo_atomic(
+            "signal-mixed-close",
+            "wallet",
+            "token",
+            150.0,
+            0.015,
+            opened_ts + Duration::minutes(5),
+        )?;
+        assert!((outcome.closed_qty - 150.0).abs() < 1e-9);
+        assert!((outcome.live_closed_qty - 100.0).abs() < 1e-9);
+        assert!((outcome.realized_pnl_sol - 0.75).abs() < 1e-9);
+        assert!((outcome.live_realized_pnl_sol - 0.5).abs() < 1e-9);
+        assert!(outcome.has_open_lots_after);
+
+        let non_live_closed_qty = outcome.closed_qty - outcome.live_closed_qty;
+        let non_live_realized_pnl_sol = outcome.realized_pnl_sol - outcome.live_realized_pnl_sol;
+        assert!((non_live_closed_qty - 50.0).abs() < 1e-9);
+        assert!((non_live_realized_pnl_sol - 0.25).abs() < 1e-9);
+
+        let mut stmt = store.conn.prepare(
+            "SELECT qty, pnl_sol, live_eligible
+             FROM shadow_closed_trades
+             WHERE signal_id = ?1
+             ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query(params!["signal-mixed-close"])?;
+        let mut closed_rows: Vec<(f64, f64, i64)> = Vec::new();
+        while let Some(row) = rows.next()? {
+            closed_rows.push((row.get(0)?, row.get(1)?, row.get(2)?));
+        }
+        assert_eq!(closed_rows.len(), 2);
+        assert!((closed_rows[0].0 - 100.0).abs() < 1e-9);
+        assert_eq!(closed_rows[0].2, 1);
+        assert!((closed_rows[1].0 - 50.0).abs() < 1e-9);
+        assert_eq!(closed_rows[1].2, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn live_shadow_sql_apis_return_expected_values_for_mixed_dataset() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-apis.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-16T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.insert_shadow_lot("w1", "t1", 50.0, 0.5, now - Duration::minutes(20), true)?;
+        store.insert_shadow_lot("w2", "t2", 25.0, 0.2, now - Duration::minutes(10), false)?;
+
+        store.insert_shadow_closed_trade(
+            "sig-live",
+            "w1",
+            "t1",
+            50.0,
+            0.5,
+            0.8,
+            0.3,
+            now - Duration::minutes(30),
+            now - Duration::minutes(5),
+            true,
+        )?;
+        store.insert_shadow_closed_trade(
+            "sig-non-live",
+            "w2",
+            "t2",
+            25.0,
+            0.2,
+            0.1,
+            -0.1,
+            now - Duration::minutes(25),
+            now - Duration::minutes(3),
+            false,
+        )?;
+
+        let (all_trades, all_pnl) = store.shadow_realized_pnl_since(now - Duration::hours(1))?;
+        let (live_trades, live_pnl) =
+            store.shadow_realized_pnl_since_live(now - Duration::hours(1))?;
+        assert_eq!(all_trades, 2);
+        assert!((all_pnl - 0.2).abs() < 1e-9);
+        assert_eq!(live_trades, 1);
+        assert!((live_pnl - 0.3).abs() < 1e-9);
+
+        let open_live_count = store.shadow_open_lots_count_live()?;
+        let open_live_notional = store.shadow_open_notional_sol_live()?;
+        assert_eq!(open_live_count, 1);
+        assert!((open_live_notional - 0.5).abs() < 1e-9);
         Ok(())
     }
 }

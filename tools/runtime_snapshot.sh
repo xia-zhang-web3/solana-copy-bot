@@ -72,6 +72,16 @@ FROM shadow_lots;
 ")"
 IFS='|' read -r OPEN_LOTS OPEN_NOTIONAL_SOL OPEN_WALLETS OPEN_TOKENS <<< "$open_row"
 
+open_live_row="$(sql_row "
+SELECT
+  COUNT(*) AS open_lots_live,
+  COALESCE(SUM(cost_sol), 0.0) AS open_notional_sol_live
+FROM shadow_lots
+WHERE live_eligible = 1
+  AND qty > 0;
+")"
+IFS='|' read -r OPEN_LOTS_LIVE OPEN_NOTIONAL_SOL_LIVE <<< "$open_live_row"
+
 closed_24h_row="$(sql_row "
 SELECT
   COUNT(*) AS closed_trades_24h,
@@ -83,6 +93,18 @@ WHERE datetime(closed_ts) >= datetime('now', '-24 hours');
 ")"
 IFS='|' read -r CLOSED_24H PNL_24H WINS_24H LOSSES_24H <<< "$closed_24h_row"
 
+closed_24h_live_row="$(sql_row "
+SELECT
+  COUNT(*) AS closed_trades_24h_live,
+  COALESCE(SUM(pnl_sol), 0.0) AS pnl_24h_live,
+  COALESCE(SUM(CASE WHEN pnl_sol > 0 THEN 1 ELSE 0 END), 0) AS wins_24h_live,
+  COALESCE(SUM(CASE WHEN pnl_sol <= 0 THEN 1 ELSE 0 END), 0) AS losses_24h_live
+FROM shadow_closed_trades
+WHERE datetime(closed_ts) >= datetime('now', '-24 hours')
+  AND live_eligible = 1;
+")"
+IFS='|' read -r CLOSED_24H_LIVE PNL_24H_LIVE WINS_24H_LIVE LOSSES_24H_LIVE <<< "$closed_24h_live_row"
+
 closed_window_row="$(sql_row "
 SELECT
   COUNT(*) AS closed_trades_window,
@@ -91,6 +113,16 @@ FROM shadow_closed_trades
 WHERE datetime(closed_ts) >= datetime('now', '-${WINDOW_HOURS} hours');
 ")"
 IFS='|' read -r CLOSED_WINDOW PNL_WINDOW <<< "$closed_window_row"
+
+closed_window_live_row="$(sql_row "
+SELECT
+  COUNT(*) AS closed_trades_window_live,
+  COALESCE(SUM(pnl_sol), 0.0) AS pnl_window_live
+FROM shadow_closed_trades
+WHERE datetime(closed_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+  AND live_eligible = 1;
+")"
+IFS='|' read -r CLOSED_WINDOW_LIVE PNL_WINDOW_LIVE <<< "$closed_window_live_row"
 
 signal_window_row="$(sql_row "
 SELECT
@@ -139,9 +171,16 @@ format_pct() {
 }
 
 WIN_RATE_24H="$(format_pct "$WINS_24H" "$CLOSED_24H")"
+WIN_RATE_24H_LIVE="$(format_pct "$WINS_24H_LIVE" "$CLOSED_24H_LIVE")"
 USAGE_SOFT="$(format_pct "$OPEN_NOTIONAL_SOL" "${SOFT_CAP_SOL:-0}")"
 USAGE_HARD="$(format_pct "$OPEN_NOTIONAL_SOL" "${HARD_CAP_SOL:-0}")"
 USAGE_TOTAL="$(format_pct "$OPEN_NOTIONAL_SOL" "${MAX_TOTAL_EXPOSURE_SOL:-0}")"
+DELTA_OPEN_LOTS=$(( OPEN_LOTS - OPEN_LOTS_LIVE ))
+DELTA_CLOSED_WINDOW=$(( CLOSED_WINDOW - CLOSED_WINDOW_LIVE ))
+DELTA_CLOSED_24H=$(( CLOSED_24H - CLOSED_24H_LIVE ))
+DELTA_OPEN_NOTIONAL_SOL="$(awk -v shadow="${OPEN_NOTIONAL_SOL:-0}" -v live="${OPEN_NOTIONAL_SOL_LIVE:-0}" 'BEGIN { printf "%.10f", shadow - live }')"
+DELTA_PNL_WINDOW_SOL="$(awk -v shadow="${PNL_WINDOW:-0}" -v live="${PNL_WINDOW_LIVE:-0}" 'BEGIN { printf "%.10f", shadow - live }')"
+DELTA_PNL_24H_SOL="$(awk -v shadow="${PNL_24H:-0}" -v live="${PNL_24H_LIVE:-0}" 'BEGIN { printf "%.10f", shadow - live }')"
 
 echo "=== CopyBot Runtime Snapshot ==="
 echo "utc_now: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -166,6 +205,21 @@ echo "realized_pnl_window_sol: $PNL_WINDOW"
 echo "closed_trades_24h: $CLOSED_24H"
 echo "realized_pnl_24h_sol: $PNL_24H"
 echo "winrate_24h: $WIN_RATE_24H"
+echo
+echo "=== Live Simulation ==="
+echo "open_lots_live: $OPEN_LOTS_LIVE"
+echo "open_notional_sol_live: $OPEN_NOTIONAL_SOL_LIVE"
+echo "closed_trades_window_live: $CLOSED_WINDOW_LIVE"
+echo "realized_pnl_window_live_sol: $PNL_WINDOW_LIVE"
+echo "closed_trades_24h_live: $CLOSED_24H_LIVE"
+echo "realized_pnl_24h_live_sol: $PNL_24H_LIVE"
+echo "winrate_24h_live: $WIN_RATE_24H_LIVE"
+echo "delta_open_lots_vs_shadow: $DELTA_OPEN_LOTS"
+echo "delta_open_notional_sol_vs_shadow: $DELTA_OPEN_NOTIONAL_SOL"
+echo "delta_closed_trades_window_vs_shadow: $DELTA_CLOSED_WINDOW"
+echo "delta_realized_pnl_window_sol_vs_shadow: $DELTA_PNL_WINDOW_SOL"
+echo "delta_closed_trades_24h_vs_shadow: $DELTA_CLOSED_24H"
+echo "delta_realized_pnl_24h_sol_vs_shadow: $DELTA_PNL_24H_SOL"
 echo
 echo "=== Risk Limits ==="
 echo "killswitch_enabled: ${KILLSWITCH_ENABLED:-unknown}"
