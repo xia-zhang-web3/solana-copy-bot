@@ -5,8 +5,7 @@ use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{
-    FollowSnapshot, LiveIneligibleReason, ShadowDropReason, ShadowProcessOutcome, ShadowService,
-    ShadowSnapshot,
+    FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
 };
 use copybot_storage::{is_retryable_sqlite_anyhow_error, SqliteStore};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -2637,7 +2636,7 @@ mod app_tests {
                     closed_qty: 0.0,
                     realized_pnl_sol: 0.0,
                     live_eligible_buy: Some(false),
-                    live_ineligible_reason: Some(LiveIneligibleReason::LowHolders),
+                    live_ineligible_reason: Some(copybot_shadow::LiveIneligibleReason::LowHolders),
                     live_closed_qty: 0.0,
                     live_realized_pnl_sol: 0.0,
                     has_open_lots_after_signal: Some(true),
