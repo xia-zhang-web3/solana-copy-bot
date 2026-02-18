@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Interval};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tonic::transport::ClientTlsConfig;
 use tracing::{debug, info, warn};
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::{
@@ -1687,6 +1688,24 @@ async fn yellowstone_stream_loop(
                 continue;
             }
         };
+        let tls_config = ClientTlsConfig::new().with_native_roots();
+        let builder = match builder.tls_config(tls_config) {
+            Ok(builder) => builder,
+            Err(error) => {
+                runtime_config
+                    .telemetry
+                    .reconnect_count
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(error = ?error, "invalid yellowstone TLS config");
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
+                continue;
+            }
+        };
         let mut client = match builder
             .connect_timeout(Duration::from_millis(runtime_config.connect_timeout_ms))
             .timeout(Duration::from_millis(runtime_config.subscribe_timeout_ms))
@@ -1701,7 +1720,7 @@ async fn yellowstone_stream_loop(
                     .telemetry
                     .reconnect_count
                     .fetch_add(1, Ordering::Relaxed);
-                warn!(error = %error, "failed connecting yellowstone endpoint");
+                warn!(error = ?error, "failed connecting yellowstone endpoint");
                 sleep_with_backoff(
                     &mut next_backoff_ms,
                     runtime_config.reconnect_initial_ms,
