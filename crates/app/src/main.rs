@@ -185,8 +185,11 @@ fn enforce_quality_gate_http_url(
     quality_gates_enabled: bool,
     endpoint: Option<String>,
 ) -> Result<Option<String>> {
+    let env_norm = env.trim().to_ascii_lowercase();
     let enforce = quality_gates_enabled
-        && matches!(env.trim().to_ascii_lowercase().as_str(), "paper" | "prod");
+        && (matches!(env_norm.as_str(), "paper" | "prod")
+            || env_norm.starts_with("paper-")
+            || env_norm.starts_with("prod-"));
     if enforce && endpoint.is_none() {
         return Err(anyhow!(
             "{role} requires a valid helius_http_url (role-specific or ingestion fallback) when quality gates are enabled in {env}"
@@ -3114,6 +3117,9 @@ mod app_tests {
     #[test]
     fn enforce_quality_gate_http_url_requires_endpoint_for_paper_prod() {
         let result = enforce_quality_gate_http_url("shadow", "paper", true, None);
+        assert!(result.is_err());
+
+        let result = enforce_quality_gate_http_url("shadow", "paper-canary", true, None);
         assert!(result.is_err());
 
         let result = enforce_quality_gate_http_url(

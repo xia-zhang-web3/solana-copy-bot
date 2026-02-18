@@ -87,7 +87,8 @@ Live gate targets:
 2. Keep fallback-ready:
    - valid `helius_ws_url` + `helius_http_url`
    - watchdog timer enabled
-3. Restart service and capture reports:
+3. Restart service.
+4. Capture post-cutover health report (single-service checkpoint, not A/B decision gate):
 
 ```bash
 cd /var/www/solana-copy-bot
@@ -97,10 +98,12 @@ cd /var/www/solana-copy-bot
   --candidate-service solana-copy-bot \
   --mode live \
   --window-minutes 60 \
+  --buy-target-pct 0 \
+  --sell-max-degrade-pct 100 \
   --output-json state/ab_report_prod_1h.json
 ```
 
-Repeat at 6h and 24h with updated `--window-minutes`.
+Repeat at 6h and 24h with updated `--window-minutes` (same neutral capture thresholds).
 
 ## 6) Rollback Procedure
 
