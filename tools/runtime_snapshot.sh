@@ -220,16 +220,19 @@ import sys
 
 text = sys.argv[1]
 rows = []
+sqlite_rows = []
 for line in text.splitlines():
-    if "ingestion pipeline metrics" not in line:
-        continue
     m = re.search(r'(\{.*\})\s*$', line)
     if not m:
         continue
     try:
-        rows.append(json.loads(m.group(1)))
+        payload = json.loads(m.group(1))
     except json.JSONDecodeError:
         continue
+    if "ingestion pipeline metrics" in line:
+        rows.append(payload)
+    elif "sqlite contention counters" in line:
+        sqlite_rows.append(payload)
 
 if not rows:
     print("no ingestion metric samples found")
@@ -244,6 +247,11 @@ keys = [
     "fetch_concurrency_inflight",
     "ws_notifications_enqueued",
     "ws_notifications_replaced_oldest",
+    "reconnect_count",
+    "stream_gap_detected",
+    "parse_rejected_total",
+    "grpc_message_total",
+    "grpc_decode_errors",
     "rpc_429",
     "rpc_5xx",
 ]
@@ -258,6 +266,11 @@ if len(rows) >= 2:
         print(f"replaced_ratio_last_interval: {delta_replaced / delta_enqueued:.4f}")
     else:
         print("replaced_ratio_last_interval: n/a")
+
+if sqlite_rows:
+    sqlite_last = sqlite_rows[-1]
+    print(f"sqlite_write_retry_total: {sqlite_last.get('sqlite_write_retry_total')}")
+    print(f"sqlite_busy_error_total: {sqlite_last.get('sqlite_busy_error_total')}")
 PY
 else
   echo "journal access unavailable for service '$SERVICE' (try running with sudo)"

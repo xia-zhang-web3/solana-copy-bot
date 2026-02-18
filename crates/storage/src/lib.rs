@@ -7,13 +7,37 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
 const SQLITE_WRITE_RETRY_BACKOFF_MS: [u64; SQLITE_WRITE_MAX_RETRIES] = [100, 300, 700];
+static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 pub struct SqliteStore {
     conn: Connection,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SqliteContentionSnapshot {
+    pub write_retry_total: u64,
+    pub busy_error_total: u64,
+}
+
+pub fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
+    SqliteContentionSnapshot {
+        write_retry_total: SQLITE_WRITE_RETRY_TOTAL.load(Ordering::Relaxed),
+        busy_error_total: SQLITE_BUSY_ERROR_TOTAL.load(Ordering::Relaxed),
+    }
+}
+
+pub fn note_sqlite_write_retry() {
+    SQLITE_WRITE_RETRY_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn note_sqlite_busy_error() {
+    SQLITE_BUSY_ERROR_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 #[derive(Debug, Clone)]
@@ -253,7 +277,12 @@ impl SqliteStore {
             match operation(&self.conn) {
                 Ok(changed) => return Ok(changed),
                 Err(error) => {
-                    if attempt < SQLITE_WRITE_MAX_RETRIES && is_retryable_sqlite_error(&error) {
+                    let retryable = is_retryable_sqlite_error(&error);
+                    if retryable {
+                        note_sqlite_busy_error();
+                    }
+                    if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                        note_sqlite_write_retry();
                         std::thread::sleep(StdDuration::from_millis(
                             SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
                         ));

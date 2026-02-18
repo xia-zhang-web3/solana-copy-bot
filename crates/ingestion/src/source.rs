@@ -15,6 +15,13 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Interval};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
+use yellowstone_grpc_client::GeyserGrpcClient;
+use yellowstone_grpc_proto::prelude::{
+    subscribe_update, CommitmentLevel, CompiledInstruction, InnerInstruction,
+    Message as SolMessage, SubscribeRequest, SubscribeRequestFilterTransactions, SubscribeUpdate,
+    SubscribeUpdateTransaction, SubscribeUpdateTransactionInfo, TransactionStatusMeta,
+    UiTokenAmount,
+};
 
 #[derive(Debug, Clone)]
 pub struct RawSwapObservation {
@@ -43,6 +50,7 @@ pub struct IngestionRuntimeSnapshot {
 pub enum IngestionSource {
     Mock(MockSource),
     HeliusWs(HeliusWsSource),
+    YellowstoneGrpc(YellowstoneGrpcSource),
 }
 
 impl IngestionSource {
@@ -57,6 +65,9 @@ impl IngestionSource {
                     .unwrap_or_default(),
             ))),
             "helius" | "helius_ws" => Ok(Self::HeliusWs(HeliusWsSource::new(config)?)),
+            "yellowstone" | "yellowstone_grpc" => {
+                Ok(Self::YellowstoneGrpc(YellowstoneGrpcSource::new(config)?))
+            }
             other => Err(anyhow!("unknown ingestion.source: {other}")),
         }
     }
@@ -65,6 +76,7 @@ impl IngestionSource {
         match self {
             Self::Mock(source) => source.next_observation().await,
             Self::HeliusWs(source) => source.next_observation().await,
+            Self::YellowstoneGrpc(source) => source.next_observation().await,
         }
     }
 
@@ -72,6 +84,7 @@ impl IngestionSource {
         match self {
             Self::Mock(_) => None,
             Self::HeliusWs(source) => Some(source.runtime_snapshot()),
+            Self::YellowstoneGrpc(source) => Some(source.runtime_snapshot()),
         }
     }
 }
@@ -172,23 +185,23 @@ enum QueuePushResult {
 }
 
 #[derive(Debug)]
-struct NotificationQueueState {
-    deque: VecDeque<LogsNotification>,
+struct OverflowQueueState<T> {
+    deque: VecDeque<T>,
     closed: bool,
 }
 
 #[derive(Debug)]
-struct NotificationQueue {
-    state: AsyncMutex<NotificationQueueState>,
+struct OverflowQueue<T> {
+    state: AsyncMutex<OverflowQueueState<T>>,
     capacity: usize,
     not_empty: Notify,
     not_full: Notify,
 }
 
-impl NotificationQueue {
+impl<T> OverflowQueue<T> {
     fn new(capacity: usize) -> Self {
         Self {
-            state: AsyncMutex::new(NotificationQueueState {
+            state: AsyncMutex::new(OverflowQueueState {
                 deque: VecDeque::with_capacity(capacity),
                 closed: false,
             }),
@@ -198,11 +211,7 @@ impl NotificationQueue {
         }
     }
 
-    async fn push(
-        &self,
-        item: LogsNotification,
-        policy: QueueOverflowPolicy,
-    ) -> Option<QueuePushResult> {
+    async fn push(&self, item: T, policy: QueueOverflowPolicy) -> Option<QueuePushResult> {
         let mut pending = Some(item);
         let mut was_backpressured = false;
         loop {
@@ -240,7 +249,7 @@ impl NotificationQueue {
         }
     }
 
-    async fn pop(&self) -> Option<LogsNotification> {
+    async fn pop(&self) -> Option<T> {
         loop {
             let mut guard = self.state.lock().await;
             if let Some(item) = guard.deque.pop_front() {
@@ -255,7 +264,18 @@ impl NotificationQueue {
             self.not_empty.notified().await;
         }
     }
+
+    async fn close(&self) {
+        let mut guard = self.state.lock().await;
+        guard.closed = true;
+        drop(guard);
+        self.not_empty.notify_waiters();
+        self.not_full.notify_waiters();
+    }
 }
+
+type NotificationQueue = OverflowQueue<LogsNotification>;
+type RawObservationQueue = OverflowQueue<FetchedObservation>;
 
 #[derive(Debug)]
 struct TokenBucketState {
@@ -334,6 +354,11 @@ struct IngestionTelemetry {
     ws_notifications_backpressured: AtomicU64,
     ws_notifications_dropped: AtomicU64,
     ws_notifications_replaced_oldest: AtomicU64,
+    reconnect_count: AtomicU64,
+    stream_gap_detected: AtomicU64,
+    parse_rejected_total: AtomicU64,
+    grpc_message_total: AtomicU64,
+    grpc_decode_errors: AtomicU64,
     fetch_inflight: AtomicU64,
     fetch_success: AtomicU64,
     fetch_failed: AtomicU64,
@@ -360,6 +385,11 @@ impl Default for IngestionTelemetry {
             ws_notifications_backpressured: AtomicU64::new(0),
             ws_notifications_dropped: AtomicU64::new(0),
             ws_notifications_replaced_oldest: AtomicU64::new(0),
+            reconnect_count: AtomicU64::new(0),
+            stream_gap_detected: AtomicU64::new(0),
+            parse_rejected_total: AtomicU64::new(0),
+            grpc_message_total: AtomicU64::new(0),
+            grpc_decode_errors: AtomicU64::new(0),
             fetch_inflight: AtomicU64::new(0),
             fetch_success: AtomicU64::new(0),
             fetch_failed: AtomicU64::new(0),
@@ -461,6 +491,11 @@ impl IngestionTelemetry {
             ws_notifications_replaced_oldest = self
                 .ws_notifications_replaced_oldest
                 .load(Ordering::Relaxed),
+            reconnect_count = self.reconnect_count.load(Ordering::Relaxed),
+            stream_gap_detected = self.stream_gap_detected.load(Ordering::Relaxed),
+            parse_rejected_total = self.parse_rejected_total.load(Ordering::Relaxed),
+            grpc_message_total = self.grpc_message_total.load(Ordering::Relaxed),
+            grpc_decode_errors = self.grpc_decode_errors.load(Ordering::Relaxed),
             ws_to_fetch_queue_depth,
             fetch_to_output_queue_depth,
             fetch_concurrency_inflight = self.fetch_inflight.load(Ordering::Relaxed),
@@ -1283,6 +1318,879 @@ impl HeliusWsSource {
         }
         "unknown".to_string()
     }
+}
+
+struct YellowstonePipeline {
+    output_queue: Arc<RawObservationQueue>,
+    output_queue_depth: Arc<AtomicUsize>,
+    stream_task: JoinHandle<()>,
+}
+
+impl Drop for YellowstonePipeline {
+    fn drop(&mut self) {
+        self.stream_task.abort();
+    }
+}
+
+struct YellowstoneRuntimeConfig {
+    grpc_url: String,
+    x_token: Option<String>,
+    connect_timeout_ms: u64,
+    subscribe_timeout_ms: u64,
+    reconnect_initial_ms: u64,
+    reconnect_max_ms: u64,
+    stream_buffer_capacity: usize,
+    seen_signatures_limit: usize,
+    seen_signatures_ttl: Duration,
+    interested_program_ids: HashSet<String>,
+    raydium_program_ids: HashSet<String>,
+    pumpswap_program_ids: HashSet<String>,
+    telemetry: Arc<IngestionTelemetry>,
+}
+
+pub struct YellowstoneGrpcSource {
+    runtime_config: Arc<YellowstoneRuntimeConfig>,
+    queue_overflow_policy: QueueOverflowPolicy,
+    reorder_hold_ms: u64,
+    reorder_max_buffer: usize,
+    telemetry_report_seconds: u64,
+    pipeline: Option<YellowstonePipeline>,
+    reorder_buffer: BTreeMap<(u64, u64, String), ReorderEntry>,
+}
+
+enum YellowstoneRecvOutcome {
+    Item(FetchedObservation),
+    QueueClosed,
+    TimedOut,
+}
+
+impl YellowstoneGrpcSource {
+    pub fn new(config: &IngestionConfig) -> Result<Self> {
+        let mut interested_program_ids: HashSet<String> =
+            config.yellowstone_program_ids.iter().cloned().collect();
+        if interested_program_ids.is_empty() {
+            interested_program_ids.extend(config.subscribe_program_ids.iter().cloned());
+        }
+        if interested_program_ids.is_empty() {
+            interested_program_ids.extend(config.raydium_program_ids.iter().cloned());
+            interested_program_ids.extend(config.pumpswap_program_ids.iter().cloned());
+        }
+
+        if interested_program_ids.is_empty() {
+            return Err(anyhow!(
+                "yellowstone_grpc requires at least one program id (yellowstone_program_ids / subscribe_program_ids / raydium+pumpswap)"
+            ));
+        }
+
+        let raw_queue_policy = config.queue_overflow_policy.trim();
+        let queue_overflow_policy = QueueOverflowPolicy::parse(raw_queue_policy);
+        let normalized_queue_policy = raw_queue_policy.to_ascii_lowercase();
+        if !raw_queue_policy.is_empty()
+            && normalized_queue_policy != "block"
+            && normalized_queue_policy != "drop_oldest"
+            && normalized_queue_policy != "drop-oldest"
+        {
+            warn!(
+                policy = %raw_queue_policy,
+                "unknown ingestion.queue_overflow_policy; falling back to block"
+            );
+        }
+
+        let x_token = config.yellowstone_x_token.trim();
+        let x_token = if x_token.is_empty() || x_token.contains("REPLACE_ME") {
+            None
+        } else {
+            Some(x_token.to_string())
+        };
+
+        let runtime_config = YellowstoneRuntimeConfig {
+            grpc_url: config.yellowstone_grpc_url.clone(),
+            x_token,
+            connect_timeout_ms: config.yellowstone_connect_timeout_ms.max(500),
+            subscribe_timeout_ms: config.yellowstone_subscribe_timeout_ms.max(1_000),
+            reconnect_initial_ms: config.yellowstone_reconnect_initial_ms.max(200),
+            reconnect_max_ms: config
+                .yellowstone_reconnect_max_ms
+                .max(config.yellowstone_reconnect_initial_ms.max(200)),
+            stream_buffer_capacity: config.yellowstone_stream_buffer_capacity.max(64),
+            seen_signatures_limit: config.seen_signatures_limit.max(500),
+            seen_signatures_ttl: Duration::from_millis(config.seen_signatures_ttl_ms.max(1_000)),
+            interested_program_ids,
+            raydium_program_ids: config.raydium_program_ids.iter().cloned().collect(),
+            pumpswap_program_ids: config.pumpswap_program_ids.iter().cloned().collect(),
+            telemetry: Arc::new(IngestionTelemetry::default()),
+        };
+
+        Ok(Self {
+            runtime_config: Arc::new(runtime_config),
+            queue_overflow_policy,
+            reorder_hold_ms: config.reorder_hold_ms.max(1),
+            reorder_max_buffer: config.reorder_max_buffer.max(16),
+            telemetry_report_seconds: config.telemetry_report_seconds.max(5),
+            pipeline: None,
+            reorder_buffer: BTreeMap::new(),
+        })
+    }
+
+    async fn next_observation(&mut self) -> Result<Option<RawSwapObservation>> {
+        loop {
+            self.ensure_pipeline_running()?;
+
+            if let Some(raw) = self.pop_ready_observation() {
+                self.maybe_report_pipeline_metrics();
+                return Ok(Some(raw));
+            }
+
+            let wait_for_ready = self.reorder_wait_duration();
+            match self.recv_from_pipeline(wait_for_ready).await {
+                YellowstoneRecvOutcome::Item(item) => {
+                    self.push_reorder_entry(item);
+                    self.maybe_report_pipeline_metrics();
+                }
+                YellowstoneRecvOutcome::TimedOut => {
+                    self.maybe_report_pipeline_metrics();
+                    continue;
+                }
+                YellowstoneRecvOutcome::QueueClosed => {
+                    warn!("yellowstone stream queue closed; restarting pipeline");
+                    self.pipeline = None;
+                    if let Some(raw) = self.pop_earliest_observation() {
+                        self.maybe_report_pipeline_metrics();
+                        return Ok(Some(raw));
+                    }
+                    self.maybe_report_pipeline_metrics();
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn ensure_pipeline_running(&mut self) -> Result<()> {
+        let needs_restart = self
+            .pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.stream_task.is_finished())
+            .unwrap_or(true);
+        if needs_restart {
+            if self.pipeline.is_some() {
+                warn!("yellowstone ingestion pipeline became unhealthy; recreating stream task");
+            }
+            self.pipeline = Some(self.spawn_pipeline()?);
+        }
+        Ok(())
+    }
+
+    fn spawn_pipeline(&self) -> Result<YellowstonePipeline> {
+        if self.runtime_config.grpc_url.trim().is_empty()
+            || self.runtime_config.grpc_url.contains("REPLACE_ME")
+        {
+            return Err(anyhow!(
+                "configure ingestion.yellowstone_grpc_url with real QuickNode Yellowstone endpoint"
+            ));
+        }
+
+        let output_queue = Arc::new(RawObservationQueue::new(
+            self.runtime_config.stream_buffer_capacity,
+        ));
+        let output_queue_depth = Arc::new(AtomicUsize::new(0));
+        let stream_task = {
+            let runtime_config = Arc::clone(&self.runtime_config);
+            let output_queue = Arc::clone(&output_queue);
+            let output_queue_depth = Arc::clone(&output_queue_depth);
+            let queue_overflow_policy = self.queue_overflow_policy;
+            tokio::spawn(async move {
+                yellowstone_stream_loop(
+                    runtime_config,
+                    output_queue,
+                    output_queue_depth,
+                    queue_overflow_policy,
+                )
+                .await;
+            })
+        };
+
+        Ok(YellowstonePipeline {
+            output_queue,
+            output_queue_depth,
+            stream_task,
+        })
+    }
+
+    async fn recv_from_pipeline(&mut self, wait: Option<Duration>) -> YellowstoneRecvOutcome {
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return YellowstoneRecvOutcome::QueueClosed;
+        };
+
+        if let Some(wait) = wait {
+            match time::timeout(wait, pipeline.output_queue.pop()).await {
+                Ok(Some(item)) => {
+                    decrement_atomic_usize(&pipeline.output_queue_depth);
+                    YellowstoneRecvOutcome::Item(item)
+                }
+                Ok(None) => YellowstoneRecvOutcome::QueueClosed,
+                Err(_) => YellowstoneRecvOutcome::TimedOut,
+            }
+        } else {
+            match pipeline.output_queue.pop().await {
+                Some(item) => {
+                    decrement_atomic_usize(&pipeline.output_queue_depth);
+                    YellowstoneRecvOutcome::Item(item)
+                }
+                None => YellowstoneRecvOutcome::QueueClosed,
+            }
+        }
+    }
+
+    fn push_reorder_entry(&mut self, fetched: FetchedObservation) {
+        let key = (
+            fetched.raw.slot,
+            fetched.arrival_seq,
+            fetched.raw.signature.clone(),
+        );
+        self.reorder_buffer.entry(key).or_insert(ReorderEntry {
+            raw: fetched.raw,
+            enqueued_at: Instant::now(),
+        });
+        self.runtime_config
+            .telemetry
+            .note_reorder_buffer_size(self.reorder_buffer.len());
+    }
+
+    fn pop_ready_observation(&mut self) -> Option<RawSwapObservation> {
+        if self.reorder_buffer.is_empty() {
+            return None;
+        }
+
+        let first_key = self.reorder_buffer.keys().next()?.clone();
+        let first_entry = self.reorder_buffer.get(&first_key)?;
+        let hold_elapsed = first_entry.enqueued_at.elapsed();
+        let hold_target = Duration::from_millis(self.reorder_hold_ms.max(1));
+
+        let should_release =
+            self.reorder_buffer.len() > self.reorder_max_buffer || hold_elapsed >= hold_target;
+        if !should_release {
+            return None;
+        }
+
+        let entry = self.reorder_buffer.remove(&first_key)?;
+        let hold_ms = entry.enqueued_at.elapsed().as_millis() as u64;
+        self.runtime_config.telemetry.push_reorder_hold(hold_ms);
+        let lag_ms = (Utc::now() - entry.raw.ts_utc).num_milliseconds().max(0) as u64;
+        self.runtime_config.telemetry.push_ingestion_lag(lag_ms);
+        Some(entry.raw)
+    }
+
+    fn pop_earliest_observation(&mut self) -> Option<RawSwapObservation> {
+        let first_key = self.reorder_buffer.keys().next()?.clone();
+        let entry = self.reorder_buffer.remove(&first_key)?;
+        let hold_ms = entry.enqueued_at.elapsed().as_millis() as u64;
+        self.runtime_config.telemetry.push_reorder_hold(hold_ms);
+        let lag_ms = (Utc::now() - entry.raw.ts_utc).num_milliseconds().max(0) as u64;
+        self.runtime_config.telemetry.push_ingestion_lag(lag_ms);
+        Some(entry.raw)
+    }
+
+    fn reorder_wait_duration(&self) -> Option<Duration> {
+        let first_entry = self.reorder_buffer.values().next()?;
+        if self.reorder_buffer.len() > self.reorder_max_buffer {
+            return Some(Duration::from_millis(0));
+        }
+
+        let hold_target = Duration::from_millis(self.reorder_hold_ms.max(1));
+        let elapsed = first_entry.enqueued_at.elapsed();
+        if elapsed >= hold_target {
+            Some(Duration::from_millis(0))
+        } else {
+            Some(hold_target - elapsed)
+        }
+    }
+
+    fn maybe_report_pipeline_metrics(&self) {
+        let queue_depth = self
+            .pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.output_queue_depth.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        self.runtime_config.telemetry.maybe_report(
+            self.telemetry_report_seconds,
+            queue_depth,
+            0,
+            self.reorder_buffer.len(),
+        );
+    }
+
+    fn runtime_snapshot(&self) -> IngestionRuntimeSnapshot {
+        self.runtime_config.telemetry.snapshot()
+    }
+}
+
+async fn yellowstone_stream_loop(
+    runtime_config: Arc<YellowstoneRuntimeConfig>,
+    output_queue: Arc<RawObservationQueue>,
+    output_queue_depth: Arc<AtomicUsize>,
+    queue_overflow_policy: QueueOverflowPolicy,
+) {
+    let mut next_backoff_ms = runtime_config.reconnect_initial_ms;
+    let mut arrival_seq: u64 = 0;
+    let mut seen_signatures_queue: VecDeque<SeenSignatureEntry> = VecDeque::new();
+    let mut seen_signatures_map: HashMap<String, Instant> = HashMap::new();
+
+    loop {
+        let subscribe_request = build_yellowstone_subscribe_request(runtime_config.as_ref());
+        let stream = connect_yellowstone_stream(runtime_config.as_ref(), subscribe_request).await;
+        let mut stream = match stream {
+            Ok(stream) => {
+                next_backoff_ms = runtime_config.reconnect_initial_ms;
+                stream
+            }
+            Err(error) => {
+                runtime_config
+                    .telemetry
+                    .reconnect_count
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(error = %error, "yellowstone gRPC connect/subscribe failed");
+                sleep_with_backoff(
+                    &mut next_backoff_ms,
+                    runtime_config.reconnect_initial_ms,
+                    runtime_config.reconnect_max_ms,
+                )
+                .await;
+                continue;
+            }
+        };
+
+        loop {
+            let next_message =
+                time::timeout(Duration::from_secs(WS_IDLE_TIMEOUT_SECS), stream.next()).await;
+            match next_message {
+                Ok(Some(Ok(update))) => {
+                    runtime_config
+                        .telemetry
+                        .grpc_message_total
+                        .fetch_add(1, Ordering::Relaxed);
+
+                    match parse_yellowstone_update(update, runtime_config.as_ref()) {
+                        Ok(Some(raw)) => {
+                            let now = Instant::now();
+                            prune_seen_signatures(
+                                &mut seen_signatures_map,
+                                &mut seen_signatures_queue,
+                                runtime_config.seen_signatures_limit,
+                                runtime_config.seen_signatures_ttl,
+                                now,
+                            );
+
+                            if is_seen_signature(
+                                &seen_signatures_map,
+                                &raw.signature,
+                                runtime_config.seen_signatures_ttl,
+                                now,
+                            ) {
+                                continue;
+                            }
+
+                            arrival_seq = arrival_seq.saturating_add(1);
+                            let signature = raw.signature.clone();
+                            let fetched = FetchedObservation {
+                                raw,
+                                arrival_seq,
+                                fetch_latency_ms: 0,
+                            };
+
+                            match output_queue.push(fetched, queue_overflow_policy).await {
+                                Some(QueuePushResult::Enqueued { backpressured }) => {
+                                    mark_seen_signature(
+                                        &mut seen_signatures_map,
+                                        &mut seen_signatures_queue,
+                                        runtime_config.seen_signatures_limit,
+                                        runtime_config.seen_signatures_ttl,
+                                        signature,
+                                        now,
+                                    );
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_seen
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_enqueued
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    if backpressured {
+                                        runtime_config
+                                            .telemetry
+                                            .ws_notifications_backpressured
+                                            .fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    increment_atomic_usize(&output_queue_depth);
+                                }
+                                Some(QueuePushResult::ReplacedOldest) => {
+                                    mark_seen_signature(
+                                        &mut seen_signatures_map,
+                                        &mut seen_signatures_queue,
+                                        runtime_config.seen_signatures_limit,
+                                        runtime_config.seen_signatures_ttl,
+                                        signature,
+                                        now,
+                                    );
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_seen
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_enqueued
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_backpressured
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_replaced_oldest
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                                None => {
+                                    runtime_config
+                                        .telemetry
+                                        .ws_notifications_dropped
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    warn!("yellowstone output queue closed; stopping stream loop");
+                                    output_queue.close().await;
+                                    return;
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            runtime_config
+                                .telemetry
+                                .parse_rejected_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            debug!(error = %error, "failed parsing yellowstone transaction update");
+                        }
+                    }
+                }
+                Ok(Some(Err(error))) => {
+                    runtime_config
+                        .telemetry
+                        .grpc_decode_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    runtime_config
+                        .telemetry
+                        .reconnect_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    warn!(error = %error, "yellowstone stream update error");
+                    break;
+                }
+                Ok(None) => {
+                    runtime_config
+                        .telemetry
+                        .reconnect_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    warn!("yellowstone stream ended");
+                    break;
+                }
+                Err(_) => {
+                    runtime_config
+                        .telemetry
+                        .stream_gap_detected
+                        .fetch_add(1, Ordering::Relaxed);
+                    runtime_config
+                        .telemetry
+                        .reconnect_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        idle_timeout_seconds = WS_IDLE_TIMEOUT_SECS,
+                        "yellowstone stream idle timeout; reconnecting"
+                    );
+                    break;
+                }
+            }
+        }
+
+        sleep_with_backoff(
+            &mut next_backoff_ms,
+            runtime_config.reconnect_initial_ms,
+            runtime_config.reconnect_max_ms,
+        )
+        .await;
+    }
+}
+
+fn build_yellowstone_subscribe_request(
+    runtime_config: &YellowstoneRuntimeConfig,
+) -> SubscribeRequest {
+    let mut transactions = HashMap::new();
+    transactions.insert(
+        "copybot-swaps".to_string(),
+        SubscribeRequestFilterTransactions {
+            vote: Some(false),
+            failed: Some(false),
+            signature: None,
+            account_include: runtime_config
+                .interested_program_ids
+                .iter()
+                .cloned()
+                .collect(),
+            account_exclude: Vec::new(),
+            account_required: Vec::new(),
+        },
+    );
+
+    SubscribeRequest {
+        accounts: HashMap::new(),
+        slots: HashMap::new(),
+        transactions,
+        transactions_status: HashMap::new(),
+        blocks: HashMap::new(),
+        blocks_meta: HashMap::new(),
+        entry: HashMap::new(),
+        commitment: Some(CommitmentLevel::Confirmed as i32),
+        accounts_data_slice: Vec::new(),
+        ping: None,
+        from_slot: None,
+    }
+}
+
+async fn connect_yellowstone_stream(
+    runtime_config: &YellowstoneRuntimeConfig,
+    subscribe_request: SubscribeRequest,
+) -> Result<impl StreamExt<Item = std::result::Result<SubscribeUpdate, tonic::Status>>> {
+    let builder = GeyserGrpcClient::build_from_shared(runtime_config.grpc_url.clone())
+        .map_err(|error| anyhow!("invalid yellowstone endpoint: {error}"))?;
+
+    let builder = if let Some(token) = runtime_config.x_token.as_deref() {
+        builder
+            .x_token(Some(token))
+            .map_err(|error| anyhow!("invalid yellowstone x-token metadata: {error}"))?
+    } else {
+        builder
+            .x_token::<String>(None)
+            .map_err(|error| anyhow!("failed setting empty yellowstone x-token: {error}"))?
+    };
+
+    let mut client = builder
+        .connect_timeout(Duration::from_millis(runtime_config.connect_timeout_ms))
+        .timeout(Duration::from_millis(runtime_config.subscribe_timeout_ms))
+        .http2_adaptive_window(true)
+        .tcp_nodelay(true)
+        .connect()
+        .await
+        .map_err(|error| anyhow!("failed connecting yellowstone endpoint: {error}"))?;
+
+    client
+        .subscribe_once(subscribe_request)
+        .await
+        .map_err(|error| anyhow!("failed opening yellowstone subscription: {error}"))
+}
+
+fn parse_yellowstone_update(
+    update: SubscribeUpdate,
+    runtime_config: &YellowstoneRuntimeConfig,
+) -> Result<Option<RawSwapObservation>> {
+    let created_at = update.created_at.clone();
+    let Some(update_oneof) = update.update_oneof else {
+        return Ok(None);
+    };
+    let subscribe_update::UpdateOneof::Transaction(transaction_update) = update_oneof else {
+        return Ok(None);
+    };
+
+    parse_yellowstone_transaction_update(transaction_update, created_at, runtime_config)
+}
+
+fn parse_yellowstone_transaction_update(
+    tx_update: SubscribeUpdateTransaction,
+    created_at: Option<yellowstone_grpc_proto::prost_types::Timestamp>,
+    runtime_config: &YellowstoneRuntimeConfig,
+) -> Result<Option<RawSwapObservation>> {
+    let Some(tx_info) = tx_update.transaction else {
+        return Ok(None);
+    };
+    if tx_info.is_vote {
+        return Ok(None);
+    }
+
+    let Some(meta) = tx_info.meta.as_ref() else {
+        return Ok(None);
+    };
+    if tx_meta_has_error(meta) {
+        return Ok(None);
+    }
+
+    let Some(transaction) = tx_info.transaction.as_ref() else {
+        return Ok(None);
+    };
+    let Some(message) = transaction.message.as_ref() else {
+        return Ok(None);
+    };
+
+    let account_keys = proto_account_keys(message, meta);
+    if account_keys.is_empty() {
+        return Ok(None);
+    }
+
+    let signer_index = if message
+        .header
+        .as_ref()
+        .map(|header| header.num_required_signatures > 0)
+        .unwrap_or(true)
+    {
+        0
+    } else {
+        0
+    };
+    let signer = account_keys.get(signer_index).cloned().unwrap_or_default();
+    if signer.is_empty() {
+        return Ok(None);
+    }
+
+    let mut program_ids = extract_program_ids_from_proto(message, meta, &account_keys);
+    if program_ids.is_empty() {
+        program_ids.extend(runtime_config.interested_program_ids.iter().cloned());
+    } else if !program_ids
+        .iter()
+        .any(|program| runtime_config.interested_program_ids.contains(program))
+    {
+        return Ok(None);
+    }
+
+    let (token_in, amount_in, token_out, amount_out) =
+        match infer_swap_from_proto_balances(meta, signer_index, &signer) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+    if amount_in <= 0.0 || amount_out <= 0.0 {
+        return Ok(None);
+    }
+
+    let signature = decode_signature_from_proto(&tx_info)
+        .ok_or_else(|| anyhow!("missing transaction signature in yellowstone update"))?;
+    let logs = meta.log_messages.clone();
+    let dex_hint = HeliusWsSource::detect_dex_hint(
+        &program_ids,
+        &logs,
+        &runtime_config.raydium_program_ids,
+        &runtime_config.pumpswap_program_ids,
+    );
+
+    let ts_utc = created_at
+        .as_ref()
+        .and_then(|timestamp| {
+            if timestamp.nanos < 0 || timestamp.nanos >= 1_000_000_000 {
+                return None;
+            }
+            DateTime::<Utc>::from_timestamp(timestamp.seconds, timestamp.nanos as u32)
+        })
+        .unwrap_or_else(Utc::now);
+
+    Ok(Some(RawSwapObservation {
+        signature,
+        slot: tx_update.slot,
+        signer,
+        token_in,
+        token_out,
+        amount_in,
+        amount_out,
+        program_ids: program_ids.into_iter().collect(),
+        dex_hint,
+        ts_utc,
+    }))
+}
+
+fn tx_meta_has_error(meta: &TransactionStatusMeta) -> bool {
+    meta.err.as_ref().is_some_and(|err| !err.err.is_empty())
+}
+
+fn decode_signature_from_proto(tx_info: &SubscribeUpdateTransactionInfo) -> Option<String> {
+    if !tx_info.signature.is_empty() {
+        return Some(bs58::encode(&tx_info.signature).into_string());
+    }
+    tx_info
+        .transaction
+        .as_ref()
+        .and_then(|tx| tx.signatures.first())
+        .map(|sig| bs58::encode(sig).into_string())
+}
+
+fn proto_account_keys(message: &SolMessage, meta: &TransactionStatusMeta) -> Vec<String> {
+    let mut out = message
+        .account_keys
+        .iter()
+        .map(|raw| bs58::encode(raw).into_string())
+        .collect::<Vec<_>>();
+    out.extend(
+        meta.loaded_writable_addresses
+            .iter()
+            .map(|raw| bs58::encode(raw).into_string()),
+    );
+    out.extend(
+        meta.loaded_readonly_addresses
+            .iter()
+            .map(|raw| bs58::encode(raw).into_string()),
+    );
+    out
+}
+
+fn extract_program_ids_from_proto(
+    message: &SolMessage,
+    meta: &TransactionStatusMeta,
+    account_keys: &[String],
+) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for instruction in &message.instructions {
+        if let Some(program) =
+            decode_program_id_from_compiled_instruction(instruction, account_keys)
+        {
+            set.insert(program);
+        }
+    }
+    for group in &meta.inner_instructions {
+        for instruction in &group.instructions {
+            if let Some(program) =
+                decode_program_id_from_inner_instruction(instruction, account_keys)
+            {
+                set.insert(program);
+            }
+        }
+    }
+    for log in &meta.log_messages {
+        if let Some(program_id) = HeliusWsSource::extract_program_id_from_log(log) {
+            set.insert(program_id);
+        }
+    }
+    set
+}
+
+fn decode_program_id_from_compiled_instruction(
+    instruction: &CompiledInstruction,
+    account_keys: &[String],
+) -> Option<String> {
+    account_keys
+        .get(instruction.program_id_index as usize)
+        .cloned()
+}
+
+fn decode_program_id_from_inner_instruction(
+    instruction: &InnerInstruction,
+    account_keys: &[String],
+) -> Option<String> {
+    account_keys
+        .get(instruction.program_id_index as usize)
+        .cloned()
+}
+
+fn infer_swap_from_proto_balances(
+    meta: &TransactionStatusMeta,
+    signer_index: usize,
+    signer: &str,
+) -> Option<(String, f64, String, f64)> {
+    const TOKEN_EPS: f64 = 1e-12;
+    const SOL_EPS: f64 = 1e-8;
+    let mut mint_deltas: HashMap<String, f64> = HashMap::new();
+
+    for item in &meta.pre_token_balances {
+        if item.owner == signer {
+            let amount = parse_proto_ui_amount(item.ui_token_amount.as_ref())?;
+            *mint_deltas.entry(item.mint.clone()).or_default() -= amount;
+        }
+    }
+    for item in &meta.post_token_balances {
+        if item.owner == signer {
+            let amount = parse_proto_ui_amount(item.ui_token_amount.as_ref())?;
+            *mint_deltas.entry(item.mint.clone()).or_default() += amount;
+        }
+    }
+
+    let mut token_in_candidates = Vec::new();
+    let mut token_out_candidates = Vec::new();
+    for (mint, delta) in &mint_deltas {
+        if *delta < -TOKEN_EPS {
+            token_in_candidates.push((mint.clone(), delta.abs()));
+        } else if *delta > TOKEN_EPS {
+            token_out_candidates.push((mint.clone(), *delta));
+        }
+    }
+    token_in_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    token_out_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let sol_token_delta = mint_deltas.get(SOL_MINT).copied().unwrap_or(0.0);
+    if sol_token_delta < -TOKEN_EPS {
+        if let Some((out_mint, out_amt)) =
+            HeliusWsSource::dominant_non_sol_leg(&token_out_candidates)
+        {
+            return Some((
+                SOL_MINT.to_string(),
+                sol_token_delta.abs(),
+                out_mint,
+                out_amt,
+            ));
+        }
+    }
+    if sol_token_delta > TOKEN_EPS {
+        if let Some((in_mint, in_amt)) = HeliusWsSource::dominant_non_sol_leg(&token_in_candidates)
+        {
+            return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_token_delta));
+        }
+    }
+
+    let sol_delta = signer_sol_delta_from_proto(meta, signer_index).unwrap_or(0.0);
+    if sol_delta < -SOL_EPS {
+        if let Some((out_mint, out_amt)) =
+            HeliusWsSource::dominant_non_sol_leg(&token_out_candidates)
+        {
+            return Some((SOL_MINT.to_string(), sol_delta.abs(), out_mint, out_amt));
+        }
+    }
+    if sol_delta > SOL_EPS {
+        if let Some((in_mint, in_amt)) = HeliusWsSource::dominant_non_sol_leg(&token_in_candidates)
+        {
+            return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_delta));
+        }
+    }
+
+    if sol_delta.abs() <= SOL_EPS && sol_token_delta.abs() <= TOKEN_EPS {
+        let token_in_non_sol: Vec<_> = token_in_candidates
+            .iter()
+            .filter(|(mint, _)| mint != SOL_MINT)
+            .cloned()
+            .collect();
+        let token_out_non_sol: Vec<_> = token_out_candidates
+            .iter()
+            .filter(|(mint, _)| mint != SOL_MINT)
+            .cloned()
+            .collect();
+        if token_in_non_sol.len() == 1 && token_out_non_sol.len() == 1 {
+            let (in_mint, in_amt) = token_in_non_sol[0].clone();
+            let (out_mint, out_amt) = token_out_non_sol[0].clone();
+            if in_mint != out_mint {
+                return Some((in_mint, in_amt, out_mint, out_amt));
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_proto_ui_amount(ui_amount: Option<&UiTokenAmount>) -> Option<f64> {
+    let ui_amount = ui_amount?;
+    if !ui_amount.ui_amount_string.is_empty() {
+        return ui_amount.ui_amount_string.parse::<f64>().ok();
+    }
+    if !ui_amount.amount.is_empty() {
+        let raw = ui_amount.amount.parse::<f64>().ok()?;
+        return Some(raw / 10f64.powi(ui_amount.decimals as i32));
+    }
+    if ui_amount.ui_amount.is_finite() {
+        return Some(ui_amount.ui_amount);
+    }
+    None
+}
+
+fn signer_sol_delta_from_proto(meta: &TransactionStatusMeta, signer_index: usize) -> Option<f64> {
+    let pre_sol = *meta.pre_balances.get(signer_index)? as f64 / 1_000_000_000.0;
+    let post_sol = *meta.post_balances.get(signer_index)? as f64 / 1_000_000_000.0;
+    Some(post_sol - pre_sol)
 }
 
 async fn ws_reader_loop(
@@ -2289,5 +3197,79 @@ mod tests {
         .to_string();
 
         assert!(HeliusWsSource::parse_logs_notification(&ack).is_none());
+    }
+
+    #[test]
+    fn yellowstone_subscribe_request_uses_confirmed_commitment_and_program_filters() {
+        let mut interested = HashSet::new();
+        interested.insert("Program1111111111111111111111111111111111".to_string());
+        let runtime_config = YellowstoneRuntimeConfig {
+            grpc_url: "https://example.quicknode.com:10000".to_string(),
+            x_token: Some("token".to_string()),
+            connect_timeout_ms: 5_000,
+            subscribe_timeout_ms: 15_000,
+            reconnect_initial_ms: 500,
+            reconnect_max_ms: 8_000,
+            stream_buffer_capacity: 512,
+            seen_signatures_limit: 5_000,
+            seen_signatures_ttl: Duration::from_secs(60),
+            interested_program_ids: interested,
+            raydium_program_ids: HashSet::new(),
+            pumpswap_program_ids: HashSet::new(),
+            telemetry: Arc::new(IngestionTelemetry::default()),
+        };
+
+        let request = build_yellowstone_subscribe_request(&runtime_config);
+        assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
+        let tx_filter = request
+            .transactions
+            .get("copybot-swaps")
+            .expect("transaction filter should be present");
+        assert_eq!(tx_filter.vote, Some(false));
+        assert_eq!(tx_filter.failed, Some(false));
+        assert_eq!(tx_filter.account_include.len(), 1);
+    }
+
+    #[test]
+    fn infer_swap_from_proto_prefers_sol_leg_with_lamport_delta() {
+        let signer = "Leader111111111111111111111111111111111";
+        let pre_token = yellowstone_grpc_proto::prelude::TokenBalance {
+            account_index: 0,
+            mint: "TokenMintA".to_string(),
+            ui_token_amount: Some(UiTokenAmount {
+                ui_amount: 0.0,
+                decimals: 6,
+                amount: "0".to_string(),
+                ui_amount_string: "0".to_string(),
+            }),
+            owner: signer.to_string(),
+            program_id: String::new(),
+        };
+        let post_token = yellowstone_grpc_proto::prelude::TokenBalance {
+            account_index: 0,
+            mint: "TokenMintA".to_string(),
+            ui_token_amount: Some(UiTokenAmount {
+                ui_amount: 100.0,
+                decimals: 6,
+                amount: "100000000".to_string(),
+                ui_amount_string: "100".to_string(),
+            }),
+            owner: signer.to_string(),
+            program_id: String::new(),
+        };
+        let meta = TransactionStatusMeta {
+            pre_balances: vec![2_000_000_000],
+            post_balances: vec![1_000_000_000],
+            pre_token_balances: vec![pre_token],
+            post_token_balances: vec![post_token],
+            ..Default::default()
+        };
+
+        let inferred = infer_swap_from_proto_balances(&meta, 0, signer)
+            .expect("expected SOL->token inference");
+        assert_eq!(inferred.0, SOL_MINT);
+        assert_eq!(inferred.2, "TokenMintA");
+        assert!((inferred.1 - 1.0).abs() < 1e-9);
+        assert!((inferred.3 - 100.0).abs() < 1e-9);
     }
 }

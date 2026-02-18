@@ -1,0 +1,12 @@
+service_name = "solana-copy-bot"
+runtime_snapshot_window_hours = 1
+runtime_snapshot_risk_minutes = 15
+cooldown_minutes = 15
+
+lag_p95_threshold_ms = 10000
+lag_breach_consecutive = 5
+
+replaced_ratio_threshold = 0.93
+replaced_ratio_breach_consecutive = 5
+
+allow_restart = false

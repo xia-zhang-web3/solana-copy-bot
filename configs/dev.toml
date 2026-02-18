@@ -14,6 +14,14 @@ source = "mock"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_urls = []
+yellowstone_grpc_url = "https://example.quicknode.com:10000"
+yellowstone_x_token = "REPLACE_ME"
+yellowstone_connect_timeout_ms = 5000
+yellowstone_subscribe_timeout_ms = 15000
+yellowstone_stream_buffer_capacity = 2048
+yellowstone_reconnect_initial_ms = 500
+yellowstone_reconnect_max_ms = 8000
+yellowstone_program_ids = []
 fetch_concurrency = 8
 ws_queue_capacity = 2048
 output_queue_capacity = 1024

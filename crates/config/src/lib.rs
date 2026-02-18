@@ -60,6 +60,14 @@ pub struct IngestionConfig {
     pub helius_ws_url: String,
     pub helius_http_url: String,
     pub helius_http_urls: Vec<String>,
+    pub yellowstone_grpc_url: String,
+    pub yellowstone_x_token: String,
+    pub yellowstone_connect_timeout_ms: u64,
+    pub yellowstone_subscribe_timeout_ms: u64,
+    pub yellowstone_stream_buffer_capacity: usize,
+    pub yellowstone_reconnect_initial_ms: u64,
+    pub yellowstone_reconnect_max_ms: u64,
+    pub yellowstone_program_ids: Vec<String>,
     pub fetch_concurrency: usize,
     pub ws_queue_capacity: usize,
     pub output_queue_capacity: usize,
@@ -92,6 +100,14 @@ impl Default for IngestionConfig {
             helius_ws_url: "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_url: "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_urls: Vec::new(),
+            yellowstone_grpc_url: "https://example.quicknode.com:10000".to_string(),
+            yellowstone_x_token: "REPLACE_ME".to_string(),
+            yellowstone_connect_timeout_ms: 5_000,
+            yellowstone_subscribe_timeout_ms: 15_000,
+            yellowstone_stream_buffer_capacity: 2_048,
+            yellowstone_reconnect_initial_ms: 500,
+            yellowstone_reconnect_max_ms: 8_000,
+            yellowstone_program_ids: Vec::new(),
             fetch_concurrency: 8,
             ws_queue_capacity: 2048,
             output_queue_capacity: 1024,
@@ -302,6 +318,58 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(http_url) = env::var("SOLANA_COPY_BOT_HELIUS_HTTP_URL") {
         config.ingestion.helius_http_url = http_url;
     }
+    if let Ok(grpc_url) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_GRPC_URL") {
+        config.ingestion.yellowstone_grpc_url = grpc_url;
+    }
+    if let Ok(x_token) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_X_TOKEN") {
+        config.ingestion.yellowstone_x_token = x_token;
+    }
+    if let Some(connect_timeout_ms) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.yellowstone_connect_timeout_ms = connect_timeout_ms;
+    }
+    if let Some(subscribe_timeout_ms) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_SUBSCRIBE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.yellowstone_subscribe_timeout_ms = subscribe_timeout_ms;
+    }
+    if let Some(stream_buffer_capacity) =
+        env::var("SOLANA_COPY_BOT_YELLOWSTONE_STREAM_BUFFER_CAPACITY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.ingestion.yellowstone_stream_buffer_capacity = stream_buffer_capacity;
+    }
+    if let Some(reconnect_initial_ms) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_RECONNECT_INITIAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.yellowstone_reconnect_initial_ms = reconnect_initial_ms;
+    }
+    if let Some(reconnect_max_ms) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_RECONNECT_MAX_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.yellowstone_reconnect_max_ms = reconnect_max_ms;
+    }
+    if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_PROGRAM_IDS") {
+        let values: Vec<String> = program_ids_csv
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .split(',')
+            .map(str::trim)
+            .map(|value| value.trim_matches('"').trim_matches('\''))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        if !values.is_empty() {
+            config.ingestion.yellowstone_program_ids = values;
+        }
+    }
     if let Ok(http_urls_csv) = env::var("SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS") {
         let values: Vec<String> = http_urls_csv
             .trim()
@@ -457,5 +525,23 @@ fn parse_env_bool(value: String) -> Option<bool> {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ingestion_yellowstone_defaults_are_applied() {
+        let ingestion = IngestionConfig::default();
+        assert_eq!(ingestion.yellowstone_grpc_url, "REPLACE_ME");
+        assert_eq!(ingestion.yellowstone_x_token, "REPLACE_ME");
+        assert_eq!(ingestion.yellowstone_connect_timeout_ms, 5_000);
+        assert_eq!(ingestion.yellowstone_subscribe_timeout_ms, 15_000);
+        assert_eq!(ingestion.yellowstone_stream_buffer_capacity, 2_048);
+        assert_eq!(ingestion.yellowstone_reconnect_initial_ms, 500);
+        assert_eq!(ingestion.yellowstone_reconnect_max_ms, 8_000);
+        assert!(ingestion.yellowstone_program_ids.is_empty());
     }
 }

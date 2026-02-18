@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{load_from_env_or_default, RiskConfig};
 use copybot_core_types::SwapEvent;
@@ -7,7 +7,10 @@ use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{
     FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
 };
-use copybot_storage::{is_retryable_sqlite_anyhow_error, SqliteStore};
+use copybot_storage::{
+    is_retryable_sqlite_anyhow_error, note_sqlite_busy_error, note_sqlite_write_retry,
+    sqlite_contention_snapshot, SqliteStore,
+};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -67,6 +70,18 @@ async fn main() -> Result<()> {
         &config.shadow.helius_http_url,
         &config.ingestion.helius_http_url,
     );
+    let discovery_http_url = enforce_quality_gate_http_url(
+        "discovery",
+        &config.system.env,
+        config.shadow.quality_gates_enabled,
+        discovery_http_url,
+    )?;
+    let shadow_http_url = enforce_quality_gate_http_url(
+        "shadow",
+        &config.system.env,
+        config.shadow.quality_gates_enabled,
+        shadow_http_url,
+    )?;
     let discovery = DiscoveryService::new_with_helius(
         config.discovery.clone(),
         config.shadow.clone(),
@@ -116,6 +131,22 @@ fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<St
     }
 
     None
+}
+
+fn enforce_quality_gate_http_url(
+    role: &str,
+    env: &str,
+    quality_gates_enabled: bool,
+    endpoint: Option<String>,
+) -> Result<Option<String>> {
+    let enforce = quality_gates_enabled
+        && matches!(env.trim().to_ascii_lowercase().as_str(), "paper" | "prod");
+    if enforce && endpoint.is_none() {
+        return Err(anyhow!(
+            "{role} requires a valid helius_http_url (role-specific or ingestion fallback) when quality gates are enabled in {env}"
+        ));
+    }
+    Ok(endpoint)
 }
 
 fn resolve_migrations_dir(config_path: &Path, configured_migrations_dir: &str) -> PathBuf {
@@ -1051,6 +1082,12 @@ async fn run_app_loop(
                 if let Err(error) = store.record_heartbeat("copybot-app", "alive") {
                     warn!(error = %error, "heartbeat write failed");
                 }
+                let sqlite_contention = sqlite_contention_snapshot();
+                info!(
+                    sqlite_write_retry_total = sqlite_contention.write_retry_total,
+                    sqlite_busy_error_total = sqlite_contention.busy_error_total,
+                    "sqlite contention counters"
+                );
             }
             _ = risk_refresh_interval.tick() => {
                 if !shadow_risk_guard.config.shadow_killswitch_enabled {
@@ -1424,9 +1461,12 @@ async fn insert_observed_swap_with_retry(store: &SqliteStore, swap: &SwapEvent) 
         match store.insert_observed_swap(swap) {
             Ok(written) => return Ok(written),
             Err(error) => {
-                if attempt < OBSERVED_SWAP_WRITE_MAX_RETRIES
-                    && is_retryable_sqlite_anyhow_error(&error)
-                {
+                let retryable = is_retryable_sqlite_anyhow_error(&error);
+                if retryable {
+                    note_sqlite_busy_error();
+                }
+                if attempt < OBSERVED_SWAP_WRITE_MAX_RETRIES && retryable {
+                    note_sqlite_write_retry();
                     let backoff_ms = OBSERVED_SWAP_RETRY_BACKOFF_MS[attempt];
                     debug!(
                         signature = %swap.signature,
@@ -3023,6 +3063,29 @@ mod app_tests {
 
         let selected_none = select_role_helius_http_url("", "https://x/?api-key=REPLACE_ME");
         assert!(selected_none.is_none());
+    }
+
+    #[test]
+    fn enforce_quality_gate_http_url_requires_endpoint_for_paper_prod() {
+        let result = enforce_quality_gate_http_url("shadow", "paper", true, None);
+        assert!(result.is_err());
+
+        let result = enforce_quality_gate_http_url(
+            "shadow",
+            "prod",
+            true,
+            Some("https://endpoint".to_string()),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_quality_gate_http_url_is_lenient_for_dev_or_disabled_gates() {
+        let result = enforce_quality_gate_http_url("shadow", "dev", true, None);
+        assert!(result.is_ok());
+
+        let result = enforce_quality_gate_http_url("shadow", "paper", false, None);
+        assert!(result.is_ok());
     }
 
     #[test]
