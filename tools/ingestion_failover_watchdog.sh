@@ -57,6 +57,17 @@ parse_float() {
   fi
 }
 
+epoch_to_iso_utc() {
+  local epoch="$1"
+  python3 - "${epoch}" <<'PY'
+import sys
+from datetime import datetime, timezone
+
+epoch = int(sys.argv[1])
+print(datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+}
+
 atomic_rename_with_fsync() {
   local tmp_path="$1"
   local target_path="$2"
@@ -277,7 +288,7 @@ if [[ -z "${reason}" ]]; then
 fi
 
 cooldown_until_epoch=$((now_epoch + COOLDOWN_MINUTES * 60))
-cooldown_until_ts="$(date -u -r "${cooldown_until_epoch}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v+${COOLDOWN_MINUTES}M +"%Y-%m-%dT%H:%M:%SZ")"
+cooldown_until_ts="$(epoch_to_iso_utc "${cooldown_until_epoch}")"
 
 tmp_override="$(mktemp "${OVERRIDE_FILE}.tmp.XXXXXX")"
 cat > "${tmp_override}" <<EOF

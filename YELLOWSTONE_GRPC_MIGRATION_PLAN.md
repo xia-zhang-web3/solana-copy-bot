@@ -402,16 +402,16 @@ Mapping template (must be filled during Phase A):
 
 | Logical Field | Proto Path | Required | Fallback Rule | Drop Reason Key | Notes |
 | --- | --- | --- | --- | --- | --- |
-| signature | TBD | yes | none | `missing_signature` | |
-| slot | TBD | yes | none | `missing_slot` | |
-| tx_status | TBD | yes | none | `missing_status` | success/failed normalization |
-| signer | TBD | yes | none | `missing_signer` | derivation policy |
-| pre_token_balances | TBD | no | fallback to SOL legs | `missing_pre_token_balances` | |
-| post_token_balances | TBD | no | fallback to SOL legs | `missing_post_token_balances` | |
-| pre_sol_balances | TBD | no | none | `missing_pre_sol_balances` | |
-| post_sol_balances | TBD | no | none | `missing_post_sol_balances` | |
-| block_time | TBD | no | `Utc::now()` for lag baseline | `missing_block_time` | |
-| program_ids | TBD | yes | none | `missing_program_ids` | filter contract |
+| signature | `SubscribeUpdateTransaction.transaction.signature` | yes | fallback to `SubscribeUpdateTransaction.transaction.transaction.signatures[0]` | `missing_signature` | both are base58-encoded before emit |
+| slot | `SubscribeUpdateTransaction.slot` | yes | none | `missing_slot` | |
+| tx_status | `SubscribeUpdateTransaction.transaction.meta.err.err` | yes | none | `missing_status` | failed when `err.err` is non-empty |
+| signer | `SubscribeUpdateTransaction.transaction.transaction.message.account_keys[0]` | yes | none | `missing_signer` | signer policy in v1 is fixed `signer_index = 0` (index resolution also appends `meta.loaded_writable_addresses` and `meta.loaded_readonly_addresses`) |
+| pre_token_balances | `SubscribeUpdateTransaction.transaction.meta.pre_token_balances[]` | no | fallback to SOL leg inference | `missing_pre_token_balances` | only balances where `owner == signer` are considered |
+| post_token_balances | `SubscribeUpdateTransaction.transaction.meta.post_token_balances[]` | no | fallback to SOL leg inference | `missing_post_token_balances` | only balances where `owner == signer` are considered |
+| pre_sol_balances | `SubscribeUpdateTransaction.transaction.meta.pre_balances[signer_index]` | no | none | `missing_pre_sol_balances` | signer lamports / 1e9 |
+| post_sol_balances | `SubscribeUpdateTransaction.transaction.meta.post_balances[signer_index]` | no | none | `missing_post_sol_balances` | signer lamports / 1e9 |
+| block_time | `SubscribeUpdate.created_at` | no | `Utc::now()` for lag baseline | `missing_block_time` | protobuf `Timestamp` on envelope update |
+| program_ids | `message.instructions[].program_id_index` + `meta.inner_instructions[].instructions[].program_id_index` (+ `meta.log_messages[]` extraction) | yes | if extracted set is empty, seed with runtime `interested_program_ids` | `missing_program_ids` | subscribe filter also enforces `transactions["copybot-swaps"].account_include = interested_program_ids`, `commitment = confirmed`, `vote=false`, `failed=false` |
 
 Required invariants:
 
