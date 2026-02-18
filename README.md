@@ -131,6 +131,36 @@ Quick recovery from failover:
 rm -f state/ingestion_source_override.env state/ingestion_failover_cooldown.json
 ```
 
+A/B gate report for replay or live canary (`control` vs `candidate`):
+
+```bash
+cd solana-copy-bot
+./tools/ingestion_ab_report.sh \
+  --control-config configs/paper.toml \
+  --candidate-config configs/paper.toml \
+  --mode replay \
+  --fixture-id replay-2026-02-18 \
+  --fixture-sha256 <FIXTURE_SHA256> \
+  --output-json state/ab_report.json
+```
+
+Live canary variant with telemetry gates from journald:
+
+```bash
+./tools/ingestion_ab_report.sh \
+  --control-config configs/paper.toml \
+  --candidate-config configs/paper-canary-yellowstone.toml \
+  --control-service solana-copy-bot \
+  --candidate-service solana-copy-bot-canary \
+  --mode live \
+  --window-minutes 360 \
+  --output-json state/ab_report_live.json
+```
+
+Cutover runbook:
+
+- `ops/yellowstone_rollout_runbook.md`
+
 ## Layout
 
 - `crates/app`: runtime entrypoint.

@@ -2,14 +2,14 @@
 
 Date: 2026-02-18
 Owner: copybot runtime team
-Status: Pre-implementation (Phase A gates pending)
+Status: Implementation completed through Phase E.5; Phase F/G rollout in progress
 
 ## Readiness Status
 
-Current state: **Pre-implementation**.
+Current state: **Rollout-ready implementation (operational gating pending)**.
 
-- Allowed now: Phase A contract/probe work.
-- Blocked now: Phase B+ coding until all Hard Gates in section 0 are closed and committed.
+- Allowed now: Phase F canary/replay gates and Phase G cutover execution.
+- Blocked now: production promotion until replay + live canary acceptance targets pass and are documented.
 
 ## 0) Hard Gates Before Coding
 
