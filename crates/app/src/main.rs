@@ -202,6 +202,7 @@ struct ShadowRiskGuard {
     exposure_hard_detail: Option<String>,
     pause_until: Option<DateTime<Utc>>,
     pause_reason: Option<String>,
+    pause_type: Option<String>,
     universe_breach_streak: u64,
     universe_blocked: bool,
     infra_samples: VecDeque<IngestionRuntimeSnapshot>,
@@ -416,8 +417,7 @@ impl ShadowRiskGuard {
                         .unwrap_or_else(|| format!("paused_until={}", until.to_rfc3339())),
                 };
             }
-            self.pause_until = None;
-            self.pause_reason = None;
+            self.clear_pause(store, now);
         }
 
         if self.universe_blocked {
@@ -743,7 +743,7 @@ impl ShadowRiskGuard {
         duration: chrono::Duration,
         pause_type: &str,
         detail: String,
-    ) {
+    ) -> bool {
         let duration = if duration <= chrono::Duration::zero() {
             chrono::Duration::minutes(1)
         } else {
@@ -752,19 +752,52 @@ impl ShadowRiskGuard {
         let until = now + duration;
         let should_update = self.pause_until.map(|value| until > value).unwrap_or(true);
         if !should_update {
-            return;
+            return false;
         }
+        let should_emit_event = self.pause_type.as_deref() != Some(pause_type);
         self.pause_until = Some(until);
+        self.pause_type = Some(pause_type.to_string());
         let reason = format!("{pause_type}: {detail}; until={}", until.to_rfc3339());
         self.pause_reason = Some(reason.clone());
-        warn!(reason = %reason, "shadow risk timed pause activated");
-        let details_json = format!(
-            "{{\"pause_type\":\"{}\",\"detail\":\"{}\",\"until\":\"{}\"}}",
-            sanitize_json_value(pause_type),
-            sanitize_json_value(&detail),
-            until.to_rfc3339()
+        if should_emit_event {
+            warn!(reason = %reason, "shadow risk timed pause activated");
+            let details_json = format!(
+                "{{\"pause_type\":\"{}\",\"detail\":\"{}\",\"until\":\"{}\"}}",
+                sanitize_json_value(pause_type),
+                sanitize_json_value(&detail),
+                until.to_rfc3339()
+            );
+            self.record_risk_event(store, "shadow_risk_pause", "warn", now, &details_json);
+        }
+        should_emit_event
+    }
+
+    fn clear_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+        self.pause_until = None;
+        let previous_reason = self.pause_reason.take();
+        let previous_type = self.pause_type.take();
+        if previous_reason.is_none() && previous_type.is_none() {
+            return;
+        }
+        let previous_reason = previous_reason.unwrap_or_else(|| "unknown".to_string());
+        let previous_type = previous_type.unwrap_or_else(|| "unknown".to_string());
+        info!(
+            previous_type = %previous_type,
+            previous_reason = %previous_reason,
+            "shadow risk timed pause cleared"
         );
-        self.record_risk_event(store, "shadow_risk_pause", "warn", now, &details_json);
+        let details_json = format!(
+            "{{\"state\":\"cleared\",\"pause_type\":\"{}\",\"previous_reason\":\"{}\"}}",
+            sanitize_json_value(&previous_type),
+            sanitize_json_value(&previous_reason)
+        );
+        self.record_risk_event(
+            store,
+            "shadow_risk_pause_cleared",
+            "info",
+            now,
+            &details_json,
+        );
     }
 
     fn record_risk_event(
@@ -801,6 +834,10 @@ impl ShadowRiskGuard {
 
 fn sanitize_json_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn should_run_background_risk_refresh(shadow_enabled: bool, risk_guard: &ShadowRiskGuard) -> bool {
+    shadow_enabled && risk_guard.config.shadow_killswitch_enabled
 }
 
 async fn run_app_loop(
@@ -1070,7 +1107,7 @@ async fn run_app_loop(
                 }
             }
             _ = risk_refresh_interval.tick() => {
-                if !shadow_enabled || !shadow_risk_guard.config.shadow_killswitch_enabled {
+                if !should_run_background_risk_refresh(shadow_enabled, &shadow_risk_guard) {
                     continue;
                 }
                 let now = Utc::now();
@@ -2412,6 +2449,87 @@ mod app_tests {
     }
 
     #[test]
+    fn risk_guard_pause_activation_is_deduped_for_same_pause_type() -> Result<()> {
+        let (store, db_path) = make_test_store("pause-dedupe")?;
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        let now = Utc::now();
+
+        assert!(guard.activate_pause(
+            &store,
+            now,
+            chrono::Duration::minutes(15),
+            "exposure_soft_cap",
+            "open_notional_sol=10.2 >= soft_cap=10.0".to_string(),
+        ));
+        assert!(
+            !guard.activate_pause(
+                &store,
+                now + chrono::Duration::seconds(5),
+                chrono::Duration::minutes(15),
+                "exposure_soft_cap",
+                "open_notional_sol=10.4 >= soft_cap=10.0".to_string(),
+            ),
+            "same pause type must not emit duplicate activation event"
+        );
+        assert!(guard.activate_pause(
+            &store,
+            now + chrono::Duration::seconds(10),
+            chrono::Duration::minutes(30),
+            "drawdown_1h",
+            "pnl_1h=-0.9 <= stop=-0.7".to_string(),
+        ));
+        assert_eq!(
+            store.count_risk_events_by_type("shadow_risk_pause")?,
+            2,
+            "must persist exactly one event per distinct pause type activation"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_pause_state_clears_after_expiry() -> Result<()> {
+        let (store, db_path) = make_test_store("pause-clear")?;
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        let now = Utc::now();
+        guard.activate_pause(
+            &store,
+            now,
+            chrono::Duration::minutes(1),
+            "exposure_soft_cap",
+            "open_notional_sol=10.2 >= soft_cap=10.0".to_string(),
+        );
+        assert!(guard.pause_until.is_some());
+        assert!(guard.pause_reason.is_some());
+        assert!(guard.pause_type.is_some());
+
+        match guard.can_open_buy(&store, now + chrono::Duration::minutes(2)) {
+            BuyRiskDecision::Allow => {}
+            other => panic!("expected allow after pause expiry, got {other:?}"),
+        }
+        assert!(
+            guard.pause_until.is_none()
+                && guard.pause_reason.is_none()
+                && guard.pause_type.is_none(),
+            "pause state must be fully cleared after expiry"
+        );
+        assert_eq!(
+            store.count_risk_events_by_type("shadow_risk_pause")?,
+            1,
+            "activation should persist a single pause event"
+        );
+        assert_eq!(
+            store.count_risk_events_by_type("shadow_risk_pause_cleared")?,
+            1,
+            "expiry path must persist a single pause cleared event"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn risk_guard_rug_loss_triggers_hard_stop() -> Result<()> {
         let (store, db_path) = make_test_store("rug-stop")?;
         let mut cfg = RiskConfig::default();
@@ -2615,6 +2733,19 @@ mod app_tests {
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
+    }
+
+    #[test]
+    fn background_risk_refresh_is_skipped_when_shadow_disabled() {
+        let guard = ShadowRiskGuard::new(RiskConfig::default());
+        assert!(
+            !should_run_background_risk_refresh(false, &guard),
+            "background risk refresh must be disabled when shadow is disabled"
+        );
+        assert!(
+            should_run_background_risk_refresh(true, &guard),
+            "background risk refresh should run when both shadow and killswitch are enabled"
+        );
     }
 
     #[test]

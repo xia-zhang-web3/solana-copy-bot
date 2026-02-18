@@ -380,11 +380,8 @@ impl ShadowService {
             "buy" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
                 let live_eligible = if self.config.live_sim_enabled {
-                    let snapshot = buy_quality_snapshot.as_ref().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "live classification invariant violated: missing BUY quality snapshot"
-                        )
-                    })?;
+                    let snapshot =
+                        Self::require_buy_quality_snapshot(buy_quality_snapshot.as_ref())?;
                     let (eligible, reason) =
                         Self::classify_live(snapshot, latency_ms, &self.config);
                     live_ineligible_reason = reason;
@@ -603,6 +600,14 @@ impl ShadowService {
             return (false, Some(LiveIneligibleReason::ThinMarket));
         }
         (true, None)
+    }
+
+    fn require_buy_quality_snapshot(
+        snapshot: Option<&TokenQualitySnapshot>,
+    ) -> Result<&TokenQualitySnapshot> {
+        snapshot.ok_or_else(|| {
+            anyhow::anyhow!("live classification invariant violated: missing BUY quality snapshot")
+        })
     }
 
     fn log_gate_drop(
@@ -1103,6 +1108,33 @@ mod tests {
             Some(LiveIneligibleReason::LowHolders)
         );
         Ok(())
+    }
+
+    #[test]
+    fn require_buy_quality_snapshot_returns_error_when_missing() {
+        let err = ShadowService::require_buy_quality_snapshot(None)
+            .expect_err("missing snapshot must trigger invariant error");
+        assert!(
+            err.to_string()
+                .contains("live classification invariant violated"),
+            "unexpected invariant error text: {err}"
+        );
+    }
+
+    #[test]
+    fn require_buy_quality_snapshot_returns_snapshot_when_present() {
+        let snapshot = TokenQualitySnapshot {
+            token_age_seconds: 120,
+            holders: 42,
+            liquidity_sol: 11.0,
+            volume_5m_sol: 9.0,
+            unique_traders_5m: 5,
+            source: QualitySnapshotSource::CacheOnly,
+        };
+        let selected = ShadowService::require_buy_quality_snapshot(Some(&snapshot))
+            .expect("snapshot should be returned");
+        assert_eq!(selected.holders, 42);
+        assert_eq!(selected.token_age_seconds, 120);
     }
 
     trait TestOutcomeExt {

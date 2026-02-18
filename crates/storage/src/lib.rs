@@ -217,6 +217,18 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn count_risk_events_by_type(&self, event_type: &str) -> Result<u64> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM risk_events WHERE type = ?1",
+                params![event_type],
+                |row| row.get(0),
+            )
+            .context("failed to count risk events by type")?;
+        Ok(count.max(0) as u64)
+    }
+
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
         let written = self
             .conn
