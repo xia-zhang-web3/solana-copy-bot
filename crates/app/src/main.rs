@@ -13,6 +13,7 @@ use copybot_storage::{
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::task::{JoinHandle, JoinSet};
@@ -34,12 +35,22 @@ const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
 const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
+const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli_config = parse_config_arg();
     let default_path = cli_config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
-    let (config, loaded_config_path) = load_from_env_or_default(&default_path)?;
+    let (mut config, loaded_config_path) = load_from_env_or_default(&default_path)?;
+    if env::var("SOLANA_COPY_BOT_INGESTION_SOURCE").is_err() {
+        if let Some(source_override) = load_ingestion_source_override() {
+            info!(
+                source = %source_override,
+                "applying ingestion source override from failover file"
+            );
+            config.ingestion.source = source_override;
+        }
+    }
 
     init_tracing(&config.system.log_level, config.system.log_json);
     info!(
@@ -114,6 +125,35 @@ fn parse_config_arg() -> Option<PathBuf> {
         }
         if let Some(inline) = arg.strip_prefix("--config=") {
             return Some(PathBuf::from(inline));
+        }
+    }
+    None
+}
+
+fn load_ingestion_source_override() -> Option<String> {
+    let override_path = env::var("SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE")
+        .unwrap_or_else(|_| DEFAULT_INGESTION_OVERRIDE_PATH.to_string());
+    let content = fs::read_to_string(&override_path).ok()?;
+    parse_ingestion_source_override(&content)
+}
+
+fn parse_ingestion_source_override(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (key, value) = trimmed.split_once('=')?;
+        if key.trim() != "SOLANA_COPY_BOT_INGESTION_SOURCE" {
+            continue;
+        }
+        let source = value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+        if !source.is_empty() {
+            return Some(source);
         }
     }
     None
@@ -3086,6 +3126,27 @@ mod app_tests {
 
         let result = enforce_quality_gate_http_url("shadow", "paper", false, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_ingestion_source_override_reads_valid_source_key() {
+        let content = r#"
+# comment
+SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws
+"#;
+        assert_eq!(
+            parse_ingestion_source_override(content).as_deref(),
+            Some("helius_ws")
+        );
+    }
+
+    #[test]
+    fn parse_ingestion_source_override_ignores_invalid_lines() {
+        let content = r#"
+FOO=bar
+SOLANA_COPY_BOT_INGESTION_SOURCE=
+"#;
+        assert!(parse_ingestion_source_override(content).is_none());
     }
 
     #[test]
