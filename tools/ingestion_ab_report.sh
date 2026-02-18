@@ -4,19 +4,19 @@ set -euo pipefail
 usage() {
   cat <<USAGE
 Usage:
-  tools/ingestion_ab_report.sh \
-    --control-config <path> \
-    --candidate-config <path> \
-    [--control-db <path>] \
-    [--candidate-db <path>] \
-    [--control-service <name>] \
-    [--candidate-service <name>] \
-    [--window-minutes <int>] \
-    [--mode replay|live] \
-    [--fixture-id <id>] \
-    [--fixture-sha256 <sha256>] \
-    [--output-json <path>] \
-    [--buy-target-pct <float>] \
+  tools/ingestion_ab_report.sh
+    --control-config <path>
+    --candidate-config <path>
+    [--control-db <path>]
+    [--candidate-db <path>]
+    [--control-service <name>]
+    [--candidate-service <name>]
+    [--window-minutes <int>]
+    [--mode replay|live]
+    [--fixture-id <id>]
+    [--fixture-sha256 <sha256>]
+    [--output-json <path>]
+    [--buy-target-pct <float>]
     [--sell-max-degrade-pct <float>]
 
 Defaults:
@@ -227,7 +227,6 @@ python3 - "${CONTROL_DB}" "${CANDIDATE_DB}" "${WINDOW_MINUTES}" "${MODE}" "${FIX
 import json
 import re
 import sqlite3
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
