@@ -119,6 +119,10 @@ CONFIG_PATH=configs/paper.toml \
 ./tools/ingestion_failover_watchdog.sh
 ```
 
+Systemd wiring example for watchdog and override profile:
+
+- `ops/ingestion_failover_watchdog.md`
+
 ## Layout
 
 - `crates/app`: runtime entrypoint.
