@@ -814,6 +814,11 @@ mod tests {
     use crate::intent::{ExecutionIntent, ExecutionSide};
     use chrono::Utc;
     use std::collections::BTreeMap;
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration as StdDuration;
 
     fn make_intent() -> ExecutionIntent {
         ExecutionIntent {
@@ -840,6 +845,104 @@ mod tests {
 
     fn make_route_cu_prices(route: &str, value: u64) -> BTreeMap<String, u64> {
         BTreeMap::from([(route.to_string(), value)])
+    }
+
+    #[derive(Debug)]
+    struct CapturedHttpRequest {
+        path: String,
+        headers: HashMap<String, String>,
+        body: String,
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+
+    fn spawn_one_shot_adapter(
+        status: u16,
+        response_body: Value,
+    ) -> (String, thread::JoinHandle<CapturedHttpRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test adapter listener");
+        listener
+            .set_nonblocking(false)
+            .expect("set blocking listener");
+        let addr = listener.local_addr().expect("read listener addr");
+        let response_body = response_body.to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept adapter client");
+            stream
+                .set_read_timeout(Some(StdDuration::from_secs(5)))
+                .expect("set read timeout");
+            let mut buffer = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            let mut header_end = None;
+            while header_end.is_none() {
+                let read = stream.read(&mut chunk).expect("read request headers");
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                header_end = find_header_end(&buffer).map(|offset| offset + 4);
+            }
+
+            let header_end = header_end.expect("request headers must be present");
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+            let mut lines = header_text.split("\r\n");
+            let request_line = lines.next().unwrap_or_default().to_string();
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let mut headers = HashMap::new();
+            let mut content_length = 0usize;
+            for line in lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    let key = name.trim().to_ascii_lowercase();
+                    let value = value.trim().to_string();
+                    if key == "content-length" {
+                        content_length = value.parse::<usize>().unwrap_or(0);
+                    }
+                    headers.insert(key, value);
+                }
+            }
+
+            while buffer.len() < header_end.saturating_add(content_length) {
+                let read = stream.read(&mut chunk).expect("read request body");
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            let body_end = header_end
+                .saturating_add(content_length)
+                .min(buffer.len())
+                .max(header_end);
+            let body = String::from_utf8_lossy(&buffer[header_end..body_end]).to_string();
+
+            let reason = if status == 200 { "OK" } else { "ERR" };
+            let response = format!(
+                "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                status,
+                reason,
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write adapter response");
+            stream.flush().expect("flush adapter response");
+
+            CapturedHttpRequest {
+                path,
+                headers,
+                body,
+            }
+        });
+        (format!("http://{}/submit", addr), handle)
     }
 
     fn parse_response(
@@ -1217,5 +1320,127 @@ mod tests {
             50.0,
         );
         assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_posts_route_tip_and_budget_policy() {
+        let response = json!({
+            "status": "ok",
+            "tx_signature": "sig-123",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let (endpoint, handle) = spawn_one_shot_adapter(200, response);
+        let submitter = AdapterOrderSubmitter::new(
+            &endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-integration-1", "rpc")
+            .expect("submit call should succeed");
+        assert_eq!(result.route, "rpc");
+        assert_eq!(result.tx_signature, "sig-123");
+
+        let captured = handle.join().expect("join adapter server thread");
+        assert_eq!(captured.path, "/submit");
+        assert_eq!(
+            captured
+                .headers
+                .get("content-type")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            "application/json"
+        );
+        let payload: Value = serde_json::from_str(&captured.body).expect("parse captured payload");
+        assert_eq!(
+            payload
+                .get("route")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "rpc"
+        );
+        assert_eq!(
+            payload
+                .get("tip_lamports")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            777
+        );
+        assert_eq!(
+            payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_limit"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            300_000
+        );
+        assert_eq!(
+            payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            1_500
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_rejects_missing_tip_echo_in_strict_mode() {
+        let response = json!({
+            "status": "ok",
+            "tx_signature": "sig-123",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let (endpoint, handle) = spawn_one_shot_adapter(200, response);
+        let submitter = AdapterOrderSubmitter::new(
+            &endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let error = submitter
+            .submit(&make_intent(), "cid-integration-2", "rpc")
+            .expect_err("missing tip echo should fail in strict mode");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+        let _ = handle.join().expect("join adapter server thread");
     }
 }
