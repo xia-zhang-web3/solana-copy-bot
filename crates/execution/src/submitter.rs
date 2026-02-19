@@ -770,6 +770,20 @@ fn parse_adapter_submit_response(
                 .to_string(),
         ));
     }
+    if require_policy_echo {
+        if base_fee_lamports_hint.is_none() {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_echo_missing",
+                "adapter response missing required field base_fee_lamports".to_string(),
+            ));
+        }
+        if priority_fee_lamports_hint.is_none() {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_echo_missing",
+                "adapter response missing required field priority_fee_lamports".to_string(),
+            ));
+        }
+    }
 
     let submitted_at = body
         .get("submitted_at")
@@ -1212,6 +1226,58 @@ mod tests {
     }
 
     #[test]
+    fn parse_adapter_submit_response_rejects_missing_fee_breakdown_in_strict_mode() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("strict mode must require fee breakdown echo");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+        assert!(
+            error.detail.contains("base_fee_lamports"),
+            "unexpected detail: {}",
+            error.detail
+        );
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_accepts_fee_breakdown_in_strict_mode() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            },
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000
+        });
+        let result = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect("strict mode should accept valid fee breakdown echo");
+        assert_eq!(result.network_fee_lamports_hint, Some(17_000));
+        assert_eq!(result.base_fee_lamports_hint, Some(5_000));
+        assert_eq!(result.priority_fee_lamports_hint, Some(12_000));
+    }
+
+    #[test]
     fn parse_adapter_submit_response_rejects_network_fee_mismatch_with_base_priority() {
         let body = json!({
             "status": "ok",
@@ -1578,6 +1644,8 @@ mod tests {
             "contract_version": "v1",
             "slippage_bps": 45.0,
             "tip_lamports": 777,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
             "compute_budget": {
                 "cu_limit": 300000,
                 "cu_price_micro_lamports": 1500
@@ -1704,6 +1772,8 @@ mod tests {
             "contract_version": "v1",
             "slippage_bps": 45.0,
             "tip_lamports": 777,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
             "compute_budget": {
                 "cu_limit": 300000,
                 "cu_price_micro_lamports": 1500
