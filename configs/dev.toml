@@ -77,6 +77,9 @@ rpc_devnet_http_url = ""
 submit_adapter_http_url = ""
 submit_adapter_fallback_http_url = ""
 submit_adapter_auth_token = ""
+submit_adapter_hmac_key_id = ""
+submit_adapter_hmac_secret = ""
+submit_adapter_hmac_ttl_sec = 30
 submit_allowed_routes = ["paper"]
 submit_route_max_slippage_bps = { paper = 50.0 }
 submit_route_compute_unit_limit = { paper = 300000 }

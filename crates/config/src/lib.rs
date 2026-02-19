@@ -55,6 +55,9 @@ pub struct ExecutionConfig {
     pub submit_adapter_http_url: String,
     pub submit_adapter_fallback_http_url: String,
     pub submit_adapter_auth_token: String,
+    pub submit_adapter_hmac_key_id: String,
+    pub submit_adapter_hmac_secret: String,
+    pub submit_adapter_hmac_ttl_sec: u64,
     pub submit_allowed_routes: Vec<String>,
     pub submit_route_max_slippage_bps: BTreeMap<String, f64>,
     pub submit_route_compute_unit_limit: BTreeMap<String, u32>,
@@ -84,6 +87,9 @@ impl Default for ExecutionConfig {
             submit_adapter_http_url: String::new(),
             submit_adapter_fallback_http_url: String::new(),
             submit_adapter_auth_token: String::new(),
+            submit_adapter_hmac_key_id: String::new(),
+            submit_adapter_hmac_secret: String::new(),
+            submit_adapter_hmac_ttl_sec: 30,
             submit_allowed_routes: vec!["paper".to_string()],
             submit_route_max_slippage_bps: BTreeMap::from([(String::from("paper"), 50.0)]),
             submit_route_compute_unit_limit: BTreeMap::from([(String::from("paper"), 300_000)]),
@@ -613,6 +619,23 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_AUTH_TOKEN")
     {
         config.execution.submit_adapter_auth_token = submit_adapter_auth_token;
+    }
+    if let Ok(submit_adapter_hmac_key_id) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_KEY_ID")
+    {
+        config.execution.submit_adapter_hmac_key_id = submit_adapter_hmac_key_id;
+    }
+    if let Ok(submit_adapter_hmac_secret) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET")
+    {
+        config.execution.submit_adapter_hmac_secret = submit_adapter_hmac_secret;
+    }
+    if let Some(submit_adapter_hmac_ttl_sec) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_TTL_SEC")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.submit_adapter_hmac_ttl_sec = submit_adapter_hmac_ttl_sec;
     }
     if let Ok(submit_allowed_routes_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES")

@@ -1,12 +1,16 @@
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
+use sha2::Sha256;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::fmt::Write as _;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
 use crate::intent::ExecutionIntent;
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone)]
 pub struct SubmitResult {
@@ -121,9 +125,17 @@ impl OrderSubmitter for FailClosedOrderSubmitter {
 }
 
 #[derive(Debug, Clone)]
+struct AdapterHmacAuth {
+    key_id: String,
+    secret: String,
+    ttl_sec: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct AdapterOrderSubmitter {
     endpoints: Vec<String>,
     auth_token: Option<String>,
+    hmac_auth: Option<AdapterHmacAuth>,
     allowed_routes: HashSet<String>,
     route_max_slippage_bps: HashMap<String, f64>,
     route_compute_unit_limit: HashMap<String, u32>,
@@ -137,6 +149,9 @@ impl AdapterOrderSubmitter {
         primary_url: &str,
         fallback_url: &str,
         auth_token: &str,
+        hmac_key_id: &str,
+        hmac_secret: &str,
+        hmac_ttl_sec: u64,
         allowed_routes: &[String],
         route_max_slippage_bps: &BTreeMap<String, f64>,
         route_compute_unit_limit: &BTreeMap<String, u32>,
@@ -207,10 +222,27 @@ impl AdapterOrderSubmitter {
         } else {
             Some(token.to_string())
         };
+        let hmac_key_id = hmac_key_id.trim();
+        let hmac_secret = hmac_secret.trim();
+        let hmac_auth = if hmac_key_id.is_empty() && hmac_secret.is_empty() {
+            None
+        } else if hmac_key_id.is_empty()
+            || hmac_secret.is_empty()
+            || !(5..=300).contains(&hmac_ttl_sec)
+        {
+            return None;
+        } else {
+            Some(AdapterHmacAuth {
+                key_id: hmac_key_id.to_string(),
+                secret: hmac_secret.to_string(),
+                ttl_sec: hmac_ttl_sec,
+            })
+        };
 
         Some(Self {
             endpoints,
             auth_token,
+            hmac_auth,
             allowed_routes,
             route_max_slippage_bps,
             route_compute_unit_limit,
@@ -230,6 +262,40 @@ impl AdapterOrderSubmitter {
         let mut request = self.client.post(endpoint).json(payload);
         if let Some(token) = self.auth_token.as_deref() {
             request = request.bearer_auth(token);
+        }
+        if let Some(hmac_auth) = self.hmac_auth.as_ref() {
+            let payload_json = serde_json::to_string(payload).map_err(|error| {
+                SubmitError::terminal(
+                    "submit_adapter_payload_serialize_failed",
+                    format!(
+                        "failed serializing submit payload for hmac signing: {}",
+                        error
+                    ),
+                )
+            })?;
+            let timestamp_sec = Utc::now().timestamp();
+            let nonce = Uuid::new_v4().simple().to_string();
+            let signature_payload = format!(
+                "{}\n{}\n{}\n{}",
+                timestamp_sec, hmac_auth.ttl_sec, nonce, payload_json
+            );
+            let signature = compute_hmac_signature_hex(
+                hmac_auth.secret.as_bytes(),
+                signature_payload.as_bytes(),
+            )
+            .map_err(|error| {
+                SubmitError::terminal(
+                    "submit_adapter_hmac_signing_failed",
+                    format!("failed creating submit request signature: {}", error),
+                )
+            })?;
+            request = request
+                .header("x-copybot-key-id", hmac_auth.key_id.as_str())
+                .header("x-copybot-timestamp", timestamp_sec.to_string())
+                .header("x-copybot-auth-ttl-sec", hmac_auth.ttl_sec.to_string())
+                .header("x-copybot-nonce", nonce)
+                .header("x-copybot-signature", signature)
+                .header("x-copybot-signature-alg", "hmac-sha256-v1");
         }
         let response = request.send().map_err(|error| {
             SubmitError::retryable(
@@ -484,6 +550,20 @@ fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
         .map(|value| value.with_timezone(&Utc))
 }
 
+fn compute_hmac_signature_hex(
+    secret: &[u8],
+    payload: &[u8],
+) -> Result<String, hmac::digest::InvalidLength> {
+    let mut mac = HmacSha256::new_from_slice(secret)?;
+    mac.update(payload);
+    let signature_bytes = mac.finalize().into_bytes();
+    let mut hex = String::with_capacity(signature_bytes.len() * 2);
+    for byte in signature_bytes {
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    Ok(hex)
+}
+
 fn normalize_route(route: &str) -> Option<String> {
     let route = route.trim().to_ascii_lowercase();
     if route.is_empty() {
@@ -644,11 +724,25 @@ mod tests {
     }
 
     #[test]
+    fn compute_hmac_signature_hex_matches_known_vector() {
+        let signature =
+            compute_hmac_signature_hex(b"key", b"The quick brown fox jumps over the lazy dog")
+                .expect("signature should be generated");
+        assert_eq!(
+            signature,
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+    }
+
+    #[test]
     fn adapter_submitter_blocks_disallowed_route_before_network_call() {
         let submitter = AdapterOrderSubmitter::new(
             "https://adapter.example/submit",
             "",
             "",
+            "",
+            "",
+            30,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
             &make_route_cu_limits("rpc", 300_000),
@@ -665,11 +759,65 @@ mod tests {
     }
 
     #[test]
+    fn adapter_submitter_requires_complete_hmac_auth_config() {
+        let missing_secret = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "key-1",
+            "",
+            30,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(missing_secret.is_none());
+
+        let missing_key = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "secret",
+            30,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(missing_key.is_none());
+
+        let invalid_ttl = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "key-1",
+            "secret",
+            4,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(invalid_ttl.is_none());
+    }
+
+    #[test]
     fn adapter_submitter_requires_route_slippage_cap_for_allowed_route() {
         let submitter = AdapterOrderSubmitter::new(
             "https://adapter.example/submit",
             "",
             "",
+            "",
+            "",
+            30,
             &["rpc".to_string()],
             &make_route_caps("paper", 50.0),
             &make_route_cu_limits("rpc", 300_000),
@@ -686,6 +834,9 @@ mod tests {
             "https://adapter.example/submit",
             "",
             "",
+            "",
+            "",
+            30,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
             &make_route_cu_limits("paper", 300_000),

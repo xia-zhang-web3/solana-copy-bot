@@ -388,6 +388,18 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 "execution.mode=adapter_submit_confirm requires execution.submit_adapter_http_url or execution.submit_adapter_fallback_http_url"
             ));
         }
+        let hmac_key_id = config.submit_adapter_hmac_key_id.trim();
+        let hmac_secret = config.submit_adapter_hmac_secret.trim();
+        if hmac_key_id.is_empty() ^ hmac_secret.is_empty() {
+            return Err(anyhow!(
+                "execution.mode=adapter_submit_confirm requires execution.submit_adapter_hmac_key_id and execution.submit_adapter_hmac_secret to be both set or both empty"
+            ));
+        }
+        if !hmac_key_id.is_empty() && !(5..=300).contains(&config.submit_adapter_hmac_ttl_sec) {
+            return Err(anyhow!(
+                "execution.submit_adapter_hmac_ttl_sec must be in 5..=300 when adapter HMAC auth is enabled"
+            ));
+        }
     }
 
     if config.batch_size == 0 {

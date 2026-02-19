@@ -20,7 +20,8 @@ Owner: copybot runtime team
 4. SELL и confirm-path не блокируются pause-гейтами, что сохраняет возможность закрытия риска.
 5. Execution risk gates в рантайме enforce: `max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness и `sell_requires_open_position`.
 6. Submit route policy в runtime уже enforce: route allowlist, per-route slippage/CU caps, adapter-response correlation guards и attempt-based route fallback order.
-7. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend + auth/ops rollout по уже готовому runtime контракту).
+7. Adapter auth hardening baseline готов: optional Bearer + optional HMAC request signing (`key_id/secret/ttl`) с fail-closed валидацией на старте.
+8. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend + ops rollout по уже готовому runtime контракту).
 
 Текущий статус этапов:
 
@@ -462,8 +463,9 @@ Done now:
 4. insert-outcome disambiguation for idempotency path: `Inserted` vs `Duplicate` (+ anomaly error on ignored-without-duplicate),
 5. RPC confirmer path added (`paper_rpc_confirm` / `paper_rpc_pretrade_confirm`) with fallback endpoint support and explicit `confirm_failed` branch,
 6. adapter submit mode added (`adapter_submit_confirm`): HTTP adapter submitter contract + route allowlist policy (`submit_allowed_routes`) + route slippage caps (`submit_route_max_slippage_bps`) + route-level compute budget policy (`submit_route_compute_unit_limit`, `submit_route_compute_unit_price_micro_lamports`) + fail-closed wiring for submitter/confirmer initialization.
+7. adapter auth policy hardened: optional HMAC signing headers (`submit_adapter_hmac_key_id`, `submit_adapter_hmac_secret`, `submit_adapter_hmac_ttl_sec`) with startup fail-fast on partial/invalid config.
 Remaining:
-1. production adapter backend (real signed tx build/send + auth hardening + operational rollout),
+1. production adapter backend (real signed tx build/send + operational rollout),
 2. route-level policy evolution для Jito-primary/RPC-fallback in real-money path.
 
 `R2P-12` — Devnet dress rehearsal  
@@ -537,10 +539,11 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 19. adapter response correlation tightened: optional `client_order_id`/`request_id` echoes must match requested `client_order_id` or submit is terminal-failed (`submit_adapter_client_order_id_mismatch` / `submit_adapter_request_id_mismatch`).
 20. adapter confirm-failure semantics hardened: deadline-passed confirm errors/timeouts are marked with `*_manual_reconcile_required` err-codes + risk events to enforce explicit on-chain reconcile workflow.
 21. submit route fallback hardened: per-attempt route selection now follows ordered policy (`default_route` -> allowed fallbacks), and both pre-trade + submit use the same selected route for deterministic retries.
+22. adapter auth hardening baseline: runtime now supports optional HMAC request signing for submit adapter calls (`x-copybot-key-id`, `x-copybot-timestamp`, `x-copybot-auth-ttl-sec`, `x-copybot-nonce`, `x-copybot-signature`) with strict startup validation.
 
 Остается в next-code-queue:
 
-1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) with production-grade auth/key management.
+1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete secret-management rollout for auth headers.
 2. complete operational calibration for route profiles (Jito-primary/RPC-fallback) using existing slippage/CU policy knobs and attempt-based route order.
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
