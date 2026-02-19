@@ -448,7 +448,7 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
     }
     if config.submit_route_max_slippage_bps.is_empty() {
         return Err(anyhow!(
-            "execution.submit_route_max_slippage_bps must not be empty when execution is enabled"
+            "execution.submit_route_max_slippage_bps must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS=route:cap,route2:cap2)"
         ));
     }
     for (route, cap) in &config.submit_route_max_slippage_bps {
@@ -480,7 +480,7 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             }
             if find_route_cap(route).is_none() {
                 return Err(anyhow!(
-                    "execution.submit_route_max_slippage_bps is missing cap for allowed route={}",
+                    "execution.submit_route_max_slippage_bps is missing cap for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS format route:cap)",
                     route
                 ));
             }

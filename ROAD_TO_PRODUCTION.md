@@ -531,6 +531,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 14. ingestion telemetry now tracks parse rejects by reason (in addition to `parse_rejected_total`).
 15. RPC pre-trade balance gate is side-aware: BUY requires `notional + reserve`, SELL requires reserve only (exit path no longer blocked by BUY notional budget).
 16. submit path hardening advanced: added `adapter_submit_confirm` mode with HTTP adapter submitter contract, route allowlist policy, route-level slippage caps, and fail-closed init behavior for non-paper submit mode.
+17. adapter response policy tightened: response `route` must match requested route; mismatch is terminal fail-closed (`submit_adapter_route_mismatch`) before order status write.
 
 Остается в next-code-queue:
 

@@ -315,7 +315,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
 
 fn parse_adapter_submit_response(
     body: &Value,
-    default_route: &str,
+    expected_route: &str,
 ) -> std::result::Result<SubmitResult, SubmitError> {
     let status = body
         .get("status")
@@ -364,7 +364,16 @@ fn parse_adapter_submit_response(
         .get("route")
         .and_then(Value::as_str)
         .and_then(normalize_route)
-        .unwrap_or_else(|| default_route.to_string());
+        .unwrap_or_else(|| expected_route.to_string());
+    if route != expected_route {
+        return Err(SubmitError::terminal(
+            "submit_adapter_route_mismatch",
+            format!(
+                "adapter response route={} does not match requested route={}",
+                route, expected_route
+            ),
+        ));
+    }
     let submitted_at = body
         .get("submitted_at")
         .and_then(Value::as_str)
@@ -443,7 +452,7 @@ mod tests {
             "route": "rpc",
             "submitted_at": "2026-02-19T12:34:56Z"
         });
-        let result = parse_adapter_submit_response(&body, "paper").expect("success payload");
+        let result = parse_adapter_submit_response(&body, "rpc").expect("success payload");
         assert_eq!(result.tx_signature, "5ig1ature");
         assert_eq!(result.route, "rpc");
         assert_eq!(
@@ -461,7 +470,7 @@ mod tests {
             "detail": "backpressure"
         });
         let error =
-            parse_adapter_submit_response(&body, "paper").expect_err("reject payload expected");
+            parse_adapter_submit_response(&body, "rpc").expect_err("reject payload expected");
         assert_eq!(error.kind, SubmitErrorKind::Retryable);
         assert_eq!(error.code, "adapter_busy");
     }
@@ -475,9 +484,22 @@ mod tests {
             "detail": "route unsupported"
         });
         let error =
-            parse_adapter_submit_response(&body, "paper").expect_err("reject payload expected");
+            parse_adapter_submit_response(&body, "rpc").expect_err("reject payload expected");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "invalid_route");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_route_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc"
+        });
+        let error =
+            parse_adapter_submit_response(&body, "jito").expect_err("route mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_route_mismatch");
     }
 
     #[test]
