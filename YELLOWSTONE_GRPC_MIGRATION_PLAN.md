@@ -34,7 +34,7 @@ Repository/runtime alignment:
    8. adapter endpoint placeholder guard added: runtime rejects adapter URLs containing `REPLACE_ME` in case-insensitive form to prevent accidental deployment with template placeholder values.
    9. adapter contract-version token guard added: runtime rejects malformed `submit_adapter_contract_version` values and enforces `[A-Za-z0-9._-]` character set for adapter contract handshake.
    10. adapter primary/fallback distinctness guard added: runtime normalizes endpoint identity and rejects configuration where `submit_adapter_http_url` and `submit_adapter_fallback_http_url` point to the same endpoint.
-   11. route normalization ambiguity guard added: config ENV parsing now fail-closes on case-insensitive duplicate route-policy map keys (`rpc` vs `RPC`) before config load completes, and runtime validation keeps a second-layer guard for allowed/order lists and route-policy maps to keep adapter route resolution deterministic.
+   11. route normalization ambiguity guard added: config ENV parsing now fail-closes on case-insensitive duplicate route entries/keys (`rpc` vs `RPC`) for both allowed/order lists and route-policy maps before config load completes, and runtime validation keeps the same checks as a second-layer guard to keep adapter route resolution deterministic.
 
 ## Phase Completion Status
 

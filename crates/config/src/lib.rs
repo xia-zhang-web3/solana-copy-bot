@@ -679,23 +679,19 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(submit_allowed_routes_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES")
     {
-        let routes: Vec<String> = submit_allowed_routes_csv
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .collect();
+        let routes = parse_execution_route_list_env(
+            &submit_allowed_routes_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES",
+        )?;
         if !routes.is_empty() {
             config.execution.submit_allowed_routes = routes;
         }
     }
     if let Ok(submit_route_order_csv) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER") {
-        let routes: Vec<String> = submit_route_order_csv
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .collect();
+        let routes = parse_execution_route_list_env(
+            &submit_route_order_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER",
+        )?;
         if !routes.is_empty() {
             config.execution.submit_route_order = routes;
         }
@@ -876,6 +872,26 @@ where
     Ok(values)
 }
 
+fn parse_execution_route_list_env(csv: &str, env_name: &str) -> Result<Vec<String>> {
+    let mut values = Vec::new();
+    let mut seen_normalized = HashSet::new();
+    for token in csv.split(',') {
+        let route = token.trim();
+        if route.is_empty() {
+            continue;
+        }
+        let normalized = route.to_ascii_lowercase();
+        if !seen_normalized.insert(normalized.clone()) {
+            return Err(anyhow!(
+                "{env_name} contains duplicate route after normalization: {}",
+                normalized
+            ));
+        }
+        values.push(route.to_string());
+    }
+    Ok(values)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,6 +945,22 @@ mod tests {
         assert_duplicate_normalized_route_env_rejected(
             "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
             "rpc:1000,RPC:2000",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_submit_allowed_routes() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES",
+            "rpc,RPC",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_submit_route_order() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER",
+            "jito,JITO",
         );
     }
 
