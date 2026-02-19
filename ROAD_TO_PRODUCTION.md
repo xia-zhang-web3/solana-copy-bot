@@ -540,7 +540,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 20. adapter confirm-failure semantics hardened: deadline-passed confirm errors/timeouts are marked with `*_manual_reconcile_required` err-codes + risk events to enforce explicit on-chain reconcile workflow.
 21. submit route fallback hardened: per-attempt route selection now follows ordered policy (`default_route` -> allowed fallbacks), and both pre-trade + submit use the same selected route for deterministic retries.
 22. adapter auth hardening baseline: runtime now supports optional HMAC request signing for submit adapter calls (`x-copybot-key-id`, `x-copybot-timestamp`, `x-copybot-auth-ttl-sec`, `x-copybot-nonce`, `x-copybot-signature`) with strict startup validation; signature verifier must use raw request body bytes.
-23. adapter secret-sourcing hardened: runtime supports file-based sources for adapter token/HMAC secret (`submit_adapter_auth_token_file`, `submit_adapter_hmac_secret_file`) with fail-closed checks (non-empty file, no inline+file duplication).
+23. adapter secret-sourcing hardened: runtime supports file-based sources for adapter token/HMAC secret (`submit_adapter_auth_token_file`, `submit_adapter_hmac_secret_file`) with fail-closed checks (non-empty file, no inline+file duplication), and relative paths resolve against loaded config directory (not process cwd).
 24. route policy now has explicit operator-controlled order knob: `submit_route_order` (validated against `submit_allowed_routes` + must include `default_route`) and consumed by attempt-based fallback selection.
 
 Остается в next-code-queue:

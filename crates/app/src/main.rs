@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
             applied_source_override = Some(source_override);
         }
     }
-    resolve_execution_adapter_secrets(&mut config.execution)?;
+    resolve_execution_adapter_secrets(&mut config.execution, loaded_config_path.as_path())?;
 
     init_tracing(&config.system.log_level, config.system.log_json);
     info!(
@@ -152,7 +152,10 @@ fn load_ingestion_source_override() -> Option<String> {
     parse_ingestion_source_override(&content)
 }
 
-fn resolve_execution_adapter_secrets(config: &mut ExecutionConfig) -> Result<()> {
+fn resolve_execution_adapter_secrets(
+    config: &mut ExecutionConfig,
+    loaded_config_path: &Path,
+) -> Result<()> {
     if !config.enabled || config.mode.trim().to_ascii_lowercase() != "adapter_submit_confirm" {
         return Ok(());
     }
@@ -164,11 +167,13 @@ fn resolve_execution_adapter_secrets(config: &mut ExecutionConfig) -> Result<()>
                 "execution.submit_adapter_auth_token and execution.submit_adapter_auth_token_file cannot be set at the same time"
             ));
         }
+        let resolved = resolve_secret_file_path(auth_token_file, loaded_config_path);
         config.submit_adapter_auth_token =
-            read_trimmed_secret_file(auth_token_file).with_context(|| {
+            read_trimmed_secret_file(resolved.as_path()).with_context(|| {
                 format!(
-                    "failed loading execution.submit_adapter_auth_token_file from {}",
-                    auth_token_file
+                    "failed loading execution.submit_adapter_auth_token_file from {} (resolved path: {})",
+                    auth_token_file,
+                    resolved.display()
                 )
             })?;
     }
@@ -180,11 +185,13 @@ fn resolve_execution_adapter_secrets(config: &mut ExecutionConfig) -> Result<()>
                 "execution.submit_adapter_hmac_secret and execution.submit_adapter_hmac_secret_file cannot be set at the same time"
             ));
         }
-        config.submit_adapter_hmac_secret = read_trimmed_secret_file(hmac_secret_file)
+        let resolved = resolve_secret_file_path(hmac_secret_file, loaded_config_path);
+        config.submit_adapter_hmac_secret = read_trimmed_secret_file(resolved.as_path())
             .with_context(|| {
                 format!(
-                    "failed loading execution.submit_adapter_hmac_secret_file from {}",
-                    hmac_secret_file
+                    "failed loading execution.submit_adapter_hmac_secret_file from {} (resolved path: {})",
+                    hmac_secret_file,
+                    resolved.display()
                 )
             })?;
     }
@@ -192,12 +199,23 @@ fn resolve_execution_adapter_secrets(config: &mut ExecutionConfig) -> Result<()>
     Ok(())
 }
 
-fn read_trimmed_secret_file(path: &str) -> Result<String> {
-    let value =
-        fs::read_to_string(path).with_context(|| format!("failed reading secret file {}", path))?;
+fn resolve_secret_file_path(path: &str, loaded_config_path: &Path) -> PathBuf {
+    let value = Path::new(path.trim());
+    if value.is_absolute() {
+        return value.to_path_buf();
+    }
+    match loaded_config_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(value),
+        _ => value.to_path_buf(),
+    }
+}
+
+fn read_trimmed_secret_file(path: &Path) -> Result<String> {
+    let value = fs::read_to_string(path)
+        .with_context(|| format!("failed reading secret file {}", path.display()))?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(anyhow!("secret file {} is empty", path));
+        return Err(anyhow!("secret file {} is empty", path.display()));
     }
     Ok(trimmed.to_string())
 }
@@ -3031,10 +3049,30 @@ mod app_tests {
         Ok(path)
     }
 
+    fn write_temp_secret_dir(name: &str) -> Result<PathBuf> {
+        let dir = std::env::temp_dir().join(format!(
+            "copybot-secret-dir-{}-{}-{}",
+            name,
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        ));
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    fn error_chain_contains(error: &anyhow::Error, needle: &str) -> bool {
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains(needle))
+    }
+
     #[test]
     fn resolve_execution_adapter_secrets_reads_file_sources() -> Result<()> {
         let auth_path = write_temp_secret_file("auth-token", "token-from-file\n")?;
         let hmac_path = write_temp_secret_file("hmac-secret", "hmac-from-file \n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
 
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
@@ -3042,7 +3080,7 @@ mod app_tests {
         execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
         execution.submit_adapter_hmac_secret_file = hmac_path.to_string_lossy().to_string();
 
-        resolve_execution_adapter_secrets(&mut execution)?;
+        resolve_execution_adapter_secrets(&mut execution, config_path.as_path())?;
         assert_eq!(execution.submit_adapter_auth_token, "token-from-file");
         assert_eq!(execution.submit_adapter_hmac_secret, "hmac-from-file");
 
@@ -3054,6 +3092,7 @@ mod app_tests {
     #[test]
     fn resolve_execution_adapter_secrets_rejects_inline_and_file_conflict() -> Result<()> {
         let auth_path = write_temp_secret_file("auth-conflict", "token-from-file\n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
 
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
@@ -3061,7 +3100,7 @@ mod app_tests {
         execution.submit_adapter_auth_token = "inline-token".to_string();
         execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
 
-        let error = resolve_execution_adapter_secrets(&mut execution)
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
             .expect_err("inline+file secret conflict must fail");
         assert!(
             error.to_string().contains("cannot be set at the same time"),
@@ -3070,6 +3109,105 @@ mod app_tests {
         );
 
         let _ = std::fs::remove_file(auth_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_hmac_inline_and_file_conflict() -> Result<()> {
+        let hmac_path = write_temp_secret_file("hmac-conflict", "hmac-file-secret\n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_hmac_secret = "inline-hmac".to_string();
+        execution.submit_adapter_hmac_secret_file = hmac_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("inline+file hmac secret conflict must fail");
+        assert!(
+            error.to_string().contains("cannot be set at the same time"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(hmac_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_empty_secret_file() -> Result<()> {
+        let empty_path = write_temp_secret_file("auth-empty", " \n\t")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = empty_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("empty secret file must fail");
+        assert!(
+            error_chain_contains(&error, "is empty"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(empty_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_missing_secret_file() -> Result<()> {
+        let missing_path = std::env::temp_dir().join(format!(
+            "copybot-secret-missing-{}-{}.txt",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        ));
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = missing_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("missing secret file must fail");
+        assert!(
+            error_chain_contains(&error, "failed reading secret file"),
+            "unexpected error: {}",
+            error
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_resolves_relative_paths_from_config_dir() -> Result<()> {
+        let root = write_temp_secret_dir("relative-resolve")?;
+        let config_dir = root.join("configs");
+        let secrets_dir = root.join("secrets");
+        std::fs::create_dir_all(&config_dir)?;
+        std::fs::create_dir_all(&secrets_dir)?;
+
+        let auth_path = secrets_dir.join("auth.txt");
+        let hmac_path = secrets_dir.join("hmac.txt");
+        std::fs::write(&auth_path, "auth-rel\n")?;
+        std::fs::write(&hmac_path, "hmac-rel\n")?;
+
+        let loaded_config_path = config_dir.join("dev.toml");
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = "../secrets/auth.txt".to_string();
+        execution.submit_adapter_hmac_secret_file = "../secrets/hmac.txt".to_string();
+
+        resolve_execution_adapter_secrets(&mut execution, loaded_config_path.as_path())?;
+        assert_eq!(execution.submit_adapter_auth_token, "auth-rel");
+        assert_eq!(execution.submit_adapter_hmac_secret, "hmac-rel");
+
+        let _ = std::fs::remove_dir_all(root);
         Ok(())
     }
 
