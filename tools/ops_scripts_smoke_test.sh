@@ -17,6 +17,26 @@ require_bin sqlite3
 require_bin python3
 require_bin bash
 
+FAKE_BIN_DIR="$TMP_DIR/fake-bin"
+mkdir -p "$FAKE_BIN_DIR"
+
+write_fake_journalctl() {
+  local script_path="$FAKE_BIN_DIR/journalctl"
+  cat >"$script_path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+if [[ "$args" == *"-n 250"* ]]; then
+  cat <<'LOGS'
+2026-02-19T12:00:00Z INFO ingestion pipeline metrics {"ingestion_lag_ms_p95":1400,"ingestion_lag_ms_p99":2100,"ws_to_fetch_queue_depth":1,"fetch_to_output_queue_depth":0,"fetch_concurrency_inflight":2,"ws_notifications_enqueued":111,"ws_notifications_replaced_oldest":0,"reconnect_count":0,"stream_gap_detected":0,"parse_rejected_total":3,"parse_rejected_by_reason":{"other":1,"missing_slot":2},"parse_fallback_by_reason":{"missing_program_ids_fallback":4},"grpc_message_total":12345,"grpc_decode_errors":0,"rpc_429":0,"rpc_5xx":0}
+2026-02-19T12:00:01Z INFO sqlite contention counters {"sqlite_write_retry_total":0,"sqlite_busy_error_total":0}
+LOGS
+fi
+exit 0
+EOF
+  chmod +x "$script_path"
+}
+
 write_config() {
   local config_path="$1"
   local db_path="$2"
@@ -171,17 +191,21 @@ run_ops_scripts_for_db() {
 
   local snapshot_output
   snapshot_output="$(
-    DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-missing-service" \
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
       bash "$ROOT_DIR/tools/runtime_snapshot.sh" 24 60
   )"
   assert_contains "$snapshot_output" "=== CopyBot Runtime Snapshot ==="
   assert_contains "$snapshot_output" "=== Execution Fee Breakdown by Route (24h) ==="
   assert_contains "$snapshot_output" "=== Recent Risk Events (60m) ==="
+  assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_slot\": 2, \"other\": 1}"
+  assert_contains "$snapshot_output" "parse_fallback_by_reason: {\"missing_program_ids_fallback\": 4}"
 
   echo "[ok] ${label}"
 }
 
 main() {
+  write_fake_journalctl
+
   local legacy_db="$TMP_DIR/legacy.db"
   local legacy_cfg="$TMP_DIR/legacy.toml"
   create_legacy_db "$legacy_db"
