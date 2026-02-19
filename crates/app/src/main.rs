@@ -1774,12 +1774,25 @@ async fn run_app_loop(
                 match execution_join {
                     Some(Ok(Ok(report))) => {
                         if report.attempted > 0 || report.failed > 0 {
+                            let has_route_metrics = !report.submit_attempted_by_route.is_empty()
+                                || !report.submit_retry_scheduled_by_route.is_empty()
+                                || !report.submit_failed_by_route.is_empty()
+                                || !report.pretrade_retry_scheduled_by_route.is_empty()
+                                || !report.pretrade_terminal_rejected_by_route.is_empty()
+                                || !report.pretrade_failed_by_route.is_empty();
                             info!(
                                 attempted = report.attempted,
                                 confirmed = report.confirmed,
                                 dropped = report.dropped,
                                 failed = report.failed,
                                 skipped = report.skipped,
+                                submit_attempted_by_route = ?report.submit_attempted_by_route,
+                                submit_retry_scheduled_by_route = ?report.submit_retry_scheduled_by_route,
+                                submit_failed_by_route = ?report.submit_failed_by_route,
+                                pretrade_retry_scheduled_by_route = ?report.pretrade_retry_scheduled_by_route,
+                                pretrade_terminal_rejected_by_route = ?report.pretrade_terminal_rejected_by_route,
+                                pretrade_failed_by_route = ?report.pretrade_failed_by_route,
+                                has_route_metrics,
                                 "execution batch processed"
                             );
                         }

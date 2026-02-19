@@ -28,18 +28,25 @@ use pretrade::{
 };
 use reconcile::build_fill;
 use simulator::{IntentSimulator, PaperIntentSimulator};
+use std::collections::BTreeMap;
 use submitter::{
     AdapterOrderSubmitter, FailClosedOrderSubmitter, OrderSubmitter, PaperOrderSubmitter,
     SubmitErrorKind,
 };
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ExecutionBatchReport {
     pub attempted: u64,
     pub confirmed: u64,
     pub dropped: u64,
     pub failed: u64,
     pub skipped: u64,
+    pub submit_attempted_by_route: BTreeMap<String, u64>,
+    pub submit_retry_scheduled_by_route: BTreeMap<String, u64>,
+    pub submit_failed_by_route: BTreeMap<String, u64>,
+    pub pretrade_retry_scheduled_by_route: BTreeMap<String, u64>,
+    pub pretrade_terminal_rejected_by_route: BTreeMap<String, u64>,
+    pub pretrade_failed_by_route: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,7 +287,8 @@ impl ExecutionRuntime {
         let mut report = ExecutionBatchReport::default();
         for signal in candidates {
             report.attempted = report.attempted.saturating_add(1);
-            match self.process_one_signal(store, signal, now, buy_submit_pause_reason) {
+            match self.process_one_signal(store, signal, now, buy_submit_pause_reason, &mut report)
+            {
                 Ok(SignalResult::Confirmed) => {
                     report.confirmed = report.confirmed.saturating_add(1)
                 }
@@ -303,6 +311,7 @@ impl ExecutionRuntime {
         signal: CopySignalRow,
         now: DateTime<Utc>,
         buy_submit_pause_reason: Option<&str>,
+        report: &mut ExecutionBatchReport,
     ) -> Result<SignalResult> {
         let intent = match ExecutionIntent::try_from(signal.clone()) {
             Ok(value) => value,
@@ -421,10 +430,10 @@ impl ExecutionRuntime {
                 Ok(SignalResult::Failed)
             }
             "execution_pending" => {
-                self.process_pending_order(store, &intent, &client_order_id, &order, now)
+                self.process_pending_order(store, &intent, &client_order_id, &order, now, report)
             }
             "execution_simulated" => {
-                self.process_simulated_order(store, &intent, &client_order_id, &order, now)
+                self.process_simulated_order(store, &intent, &client_order_id, &order, now, report)
             }
             "execution_submitted" => self.process_submitted_order(store, &intent, &order, now),
             other => {
@@ -455,6 +464,7 @@ impl ExecutionRuntime {
         client_order_id: &str,
         order: &copybot_storage::ExecutionOrderRow,
         now: DateTime<Utc>,
+        report: &mut ExecutionBatchReport,
     ) -> Result<SignalResult> {
         let attempt = order.attempt.max(1);
         let selected_route = self.submit_route_for_attempt(attempt);
@@ -472,6 +482,10 @@ impl ExecutionRuntime {
                     let next_attempt = attempt.saturating_add(1);
                     store.set_order_attempt(&order.order_id, next_attempt, Some(&detail))?;
                     store.update_copy_signal_status(&intent.signal_id, "execution_pending")?;
+                    bump_route_counter(
+                        &mut report.pretrade_retry_scheduled_by_route,
+                        selected_route,
+                    );
                     let details = json!({
                         "signal_id": intent.signal_id,
                         "order_id": order.order_id,
@@ -497,6 +511,7 @@ impl ExecutionRuntime {
                     Some(&detail),
                 )?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                bump_route_counter(&mut report.pretrade_failed_by_route, selected_route);
                 let details = json!({
                     "signal_id": intent.signal_id,
                     "order_id": order.order_id,
@@ -521,6 +536,10 @@ impl ExecutionRuntime {
                 let detail = format!("{}: {}", reason_code, detail_text);
                 store.mark_order_dropped(&order.order_id, "pretrade_rejected", Some(&detail))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_dropped")?;
+                bump_route_counter(
+                    &mut report.pretrade_terminal_rejected_by_route,
+                    selected_route,
+                );
                 let details = json!({
                     "signal_id": intent.signal_id,
                     "order_id": order.order_id,
@@ -556,7 +575,7 @@ impl ExecutionRuntime {
             store.update_copy_signal_status(&intent.signal_id, "execution_simulated")?;
         }
 
-        self.process_simulated_order(store, intent, client_order_id, order, now)
+        self.process_simulated_order(store, intent, client_order_id, order, now, report)
     }
 
     fn process_simulated_order(
@@ -566,6 +585,7 @@ impl ExecutionRuntime {
         client_order_id: &str,
         order: &copybot_storage::ExecutionOrderRow,
         now: DateTime<Utc>,
+        report: &mut ExecutionBatchReport,
     ) -> Result<SignalResult> {
         let attempt = order.attempt.max(1);
         if attempt > self.max_submit_attempts {
@@ -579,6 +599,7 @@ impl ExecutionRuntime {
         }
 
         let selected_route = self.submit_route_for_attempt(attempt);
+        bump_route_counter(&mut report.submit_attempted_by_route, selected_route);
         let submit = match self
             .submitter
             .submit(intent, client_order_id, selected_route)
@@ -594,6 +615,7 @@ impl ExecutionRuntime {
                     let next_attempt = attempt.saturating_add(1);
                     store.set_order_attempt(&order.order_id, next_attempt, Some(&detail))?;
                     store.update_copy_signal_status(&intent.signal_id, "execution_simulated")?;
+                    bump_route_counter(&mut report.submit_retry_scheduled_by_route, selected_route);
                     let details = json!({
                         "signal_id": intent.signal_id,
                         "order_id": order.order_id,
@@ -620,6 +642,7 @@ impl ExecutionRuntime {
                 } else {
                     "submit_terminal_rejected"
                 };
+                bump_route_counter(&mut report.submit_failed_by_route, selected_route);
                 store.mark_order_failed(&order.order_id, err_code, Some(&detail))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
                 let details = json!({
@@ -981,6 +1004,14 @@ fn build_submit_route_order(
     } else {
         routes
     }
+}
+
+fn bump_route_counter(counters: &mut BTreeMap<String, u64>, route: &str) {
+    if route.trim().is_empty() {
+        return;
+    }
+    let entry = counters.entry(route.to_string()).or_insert(0);
+    *entry = entry.saturating_add(1);
 }
 
 #[cfg(test)]
@@ -1433,9 +1464,24 @@ mod tests {
         let first = runtime.process_batch(&store, now, None)?;
         assert_eq!(first.failed, 0);
         assert_eq!(first.skipped, 1);
+        assert_eq!(
+            first.submit_attempted_by_route.get("jito"),
+            Some(&1),
+            "first attempt should use default route"
+        );
+        assert_eq!(
+            first.submit_retry_scheduled_by_route.get("jito"),
+            Some(&1),
+            "retry should be scheduled on first route failure"
+        );
 
         let second = runtime.process_batch(&store, Utc::now(), None)?;
         assert_eq!(second.confirmed, 1);
+        assert_eq!(
+            second.submit_attempted_by_route.get("rpc"),
+            Some(&1),
+            "second attempt should use fallback route"
+        );
         let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
         assert_eq!(observed_routes, vec!["jito".to_string(), "rpc".to_string()]);
 
@@ -1620,9 +1666,19 @@ mod tests {
         let first = runtime.process_batch(&store, now, None)?;
         assert_eq!(first.skipped, 1);
         assert_eq!(first.failed, 0);
+        assert_eq!(
+            first.pretrade_retry_scheduled_by_route.get("jito"),
+            Some(&1),
+            "first pretrade retry should be attributed to default route"
+        );
 
         let second = runtime.process_batch(&store, Utc::now(), None)?;
         assert_eq!(second.confirmed, 1);
+        assert_eq!(
+            second.submit_attempted_by_route.get("rpc"),
+            Some(&1),
+            "second attempt should submit on fallback route after pretrade retry"
+        );
         let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
         assert_eq!(observed_routes, vec!["jito".to_string(), "rpc".to_string()]);
 
