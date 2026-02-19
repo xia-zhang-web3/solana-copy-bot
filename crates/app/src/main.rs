@@ -486,6 +486,21 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 is_production_env_profile(env),
             )?;
         }
+        if !submit_primary.is_empty() && !submit_fallback.is_empty() {
+            let primary_identity =
+                adapter_endpoint_identity(submit_primary).with_context(|| {
+                    "failed normalizing execution.submit_adapter_http_url endpoint identity"
+                })?;
+            let fallback_identity =
+                adapter_endpoint_identity(submit_fallback).with_context(|| {
+                    "failed normalizing execution.submit_adapter_fallback_http_url endpoint identity"
+                })?;
+            if primary_identity == fallback_identity {
+                return Err(anyhow!(
+                    "execution.submit_adapter_http_url and execution.submit_adapter_fallback_http_url must resolve to distinct endpoints when both are set"
+                ));
+            }
+        }
         let hmac_key_id = config.submit_adapter_hmac_key_id.trim();
         let hmac_secret = config.submit_adapter_hmac_secret.trim();
         if hmac_key_id.is_empty() ^ hmac_secret.is_empty() {
@@ -900,6 +915,25 @@ fn validate_adapter_endpoint_url(
     }
 
     Ok(())
+}
+
+fn adapter_endpoint_identity(endpoint: &str) -> Result<String> {
+    let parsed = Url::parse(endpoint.trim())
+        .map_err(|error| anyhow!("invalid adapter endpoint: {error}"))?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("adapter endpoint missing host"))?
+        .to_ascii_lowercase();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("adapter endpoint missing known default port for scheme"))?;
+    let path = if parsed.path().is_empty() {
+        "/".to_string()
+    } else {
+        parsed.path().to_string()
+    };
+    Ok(format!("{scheme}://{host}:{port}{path}"))
 }
 
 fn is_loopback_host(host: &Host<&str>) -> bool {
@@ -3617,6 +3651,28 @@ mod app_tests {
                 error
             );
         }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_primary_and_fallback_adapter_endpoint()
+    {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local/submit".to_string();
+        execution.submit_adapter_fallback_http_url = "https://ADAPTER.local:443/submit".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate primary/fallback adapter endpoints must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must resolve to distinct endpoints"),
+            "unexpected error: {}",
+            error
+        );
     }
 
     #[test]

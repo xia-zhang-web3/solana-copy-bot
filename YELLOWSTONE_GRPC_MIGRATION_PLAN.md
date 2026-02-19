@@ -33,6 +33,7 @@ Repository/runtime alignment:
    7. adapter endpoint URL security guard added: runtime fail-closes on URL-embedded credentials, query parameters, and fragments for adapter endpoints (header-based auth only, no secret-in-URL patterns).
    8. adapter endpoint placeholder guard added: runtime rejects adapter URLs containing `REPLACE_ME` in case-insensitive form to prevent accidental deployment with template placeholder values.
    9. adapter contract-version token guard added: runtime rejects malformed `submit_adapter_contract_version` values and enforces `[A-Za-z0-9._-]` character set for adapter contract handshake.
+   10. adapter primary/fallback distinctness guard added: runtime normalizes endpoint identity and rejects configuration where `submit_adapter_http_url` and `submit_adapter_fallback_http_url` point to the same endpoint.
 
 ## Phase Completion Status
 
