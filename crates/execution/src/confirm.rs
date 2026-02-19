@@ -15,6 +15,7 @@ pub enum ConfirmationStatus {
 pub struct ConfirmationResult {
     pub status: ConfirmationStatus,
     pub confirmed_at: Option<DateTime<Utc>>,
+    pub network_fee_lamports: Option<u64>,
     pub detail: String,
 }
 
@@ -51,12 +52,14 @@ impl OrderConfirmer for PaperOrderConfirmer {
             return Ok(ConfirmationResult {
                 status: ConfirmationStatus::Timeout,
                 confirmed_at: None,
+                network_fee_lamports: None,
                 detail: "paper_confirm_timeout".to_string(),
             });
         }
         Ok(ConfirmationResult {
             status: ConfirmationStatus::Confirmed,
             confirmed_at: Some(now),
+            network_fee_lamports: None,
             detail: "paper_confirm_ok".to_string(),
         })
     }
@@ -112,7 +115,42 @@ impl RpcOrderConfirmer {
         let body: Value = response
             .json()
             .with_context(|| format!("invalid rpc json endpoint={endpoint}"))?;
-        parse_confirmation_from_rpc_body(&body, now)
+        let mut confirmation = parse_confirmation_from_rpc_body(&body, now)?;
+        if matches!(confirmation.status, ConfirmationStatus::Confirmed) {
+            confirmation.network_fee_lamports =
+                self.query_transaction_fee_lamports(endpoint, tx_signature)?;
+        }
+        Ok(confirmation)
+    }
+
+    fn query_transaction_fee_lamports(
+        &self,
+        endpoint: &str,
+        tx_signature: &str,
+    ) -> Result<Option<u64>> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTransaction",
+            "params": [
+                tx_signature,
+                {
+                    "encoding": "json",
+                    "commitment": "confirmed",
+                    "maxSupportedTransactionVersion": 0
+                }
+            ]
+        });
+        let response = self
+            .client
+            .post(endpoint)
+            .json(&payload)
+            .send()
+            .with_context(|| format!("rpc transaction lookup failed endpoint={endpoint}"))?;
+        let body: Value = response
+            .json()
+            .with_context(|| format!("invalid rpc transaction json endpoint={endpoint}"))?;
+        parse_transaction_fee_lamports_from_rpc_body(&body)
     }
 }
 
@@ -126,6 +164,7 @@ impl OrderConfirmer for RpcOrderConfirmer {
             return Ok(ConfirmationResult {
                 status: ConfirmationStatus::Timeout,
                 confirmed_at: None,
+                network_fee_lamports: None,
                 detail: "deadline_exceeded_before_rpc_query".to_string(),
             });
         }
@@ -158,6 +197,7 @@ fn parse_confirmation_from_rpc_body(
         return Ok(ConfirmationResult {
             status: ConfirmationStatus::Timeout,
             confirmed_at: None,
+            network_fee_lamports: None,
             detail: "signature_not_found_yet".to_string(),
         });
     };
@@ -166,6 +206,7 @@ fn parse_confirmation_from_rpc_body(
         return Ok(ConfirmationResult {
             status: ConfirmationStatus::Timeout,
             confirmed_at: None,
+            network_fee_lamports: None,
             detail: "signature_pending".to_string(),
         });
     }
@@ -175,6 +216,7 @@ fn parse_confirmation_from_rpc_body(
             return Ok(ConfirmationResult {
                 status: ConfirmationStatus::Failed,
                 confirmed_at: None,
+                network_fee_lamports: None,
                 detail: format!("signature_failed err={}", err_payload),
             });
         }
@@ -188,6 +230,7 @@ fn parse_confirmation_from_rpc_body(
         return Ok(ConfirmationResult {
             status: ConfirmationStatus::Confirmed,
             confirmed_at: Some(now),
+            network_fee_lamports: None,
             detail: format!("signature_{}", confirmation_status),
         });
     }
@@ -195,6 +238,7 @@ fn parse_confirmation_from_rpc_body(
     Ok(ConfirmationResult {
         status: ConfirmationStatus::Timeout,
         confirmed_at: None,
+        network_fee_lamports: None,
         detail: format!(
             "signature_not_confirmed_yet confirmation_status={}",
             if confirmation_status.is_empty() {
@@ -204,6 +248,22 @@ fn parse_confirmation_from_rpc_body(
             }
         ),
     })
+}
+
+fn parse_transaction_fee_lamports_from_rpc_body(body: &Value) -> Result<Option<u64>> {
+    if let Some(error_payload) = body.get("error") {
+        return Err(anyhow!("rpc returned error payload: {}", error_payload));
+    }
+    let Some(result) = body.get("result") else {
+        return Ok(None);
+    };
+    if result.is_null() {
+        return Ok(None);
+    }
+    Ok(result
+        .get("meta")
+        .and_then(|meta| meta.get("fee"))
+        .and_then(Value::as_u64))
 }
 
 #[cfg(test)]
@@ -224,6 +284,7 @@ mod tests {
         });
         let result = parse_confirmation_from_rpc_body(&body, Utc::now())?;
         assert_eq!(result.status, ConfirmationStatus::Confirmed);
+        assert_eq!(result.network_fee_lamports, None);
         Ok(())
     }
 
@@ -241,6 +302,7 @@ mod tests {
         });
         let result = parse_confirmation_from_rpc_body(&body, Utc::now())?;
         assert_eq!(result.status, ConfirmationStatus::Failed);
+        assert_eq!(result.network_fee_lamports, None);
         Ok(())
     }
 
@@ -255,6 +317,35 @@ mod tests {
         });
         let result = parse_confirmation_from_rpc_body(&body, Utc::now())?;
         assert_eq!(result.status, ConfirmationStatus::Timeout);
+        assert_eq!(result.network_fee_lamports, None);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_transaction_fee_lamports_from_rpc_body_returns_fee() -> Result<()> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "meta": {
+                    "fee": 5000
+                }
+            },
+            "id": 1
+        });
+        let fee = parse_transaction_fee_lamports_from_rpc_body(&body)?;
+        assert_eq!(fee, Some(5000));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_transaction_fee_lamports_from_rpc_body_handles_not_found() -> Result<()> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": null,
+            "id": 1
+        });
+        let fee = parse_transaction_fee_lamports_from_rpc_body(&body)?;
+        assert_eq!(fee, None);
         Ok(())
     }
 }

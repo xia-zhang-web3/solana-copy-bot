@@ -546,12 +546,13 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 25. execution telemetry now emits per-route metrics per batch (`submit_attempted/retry/failed` + `pretrade_retry/rejected/failed` + `confirm_confirmed/retry/failed` + runtime-observed `submit->confirm` latency sum/samples) to support route-profile calibration.
 26. adapter response contract pinning added: runtime enforces `contract_version` match and optional strict policy-echo checks via `submit_adapter_require_policy_echo`.
 27. route-level tip policy added to submit path (`submit_route_tip_lamports`) with strict runtime validation for allowed/default routes, guardrail `0..=100_000_000 lamports` per route, and optional strict adapter policy-echo verification (`tip_lamports`).
+28. reconcile fee accounting wired into confirmed-path finalize: `fee_sol` now uses on-chain network fee (`getTransaction.meta.fee` from RPC confirmer) + route tip policy, and positions/PnL now account for fees instead of fixed `0.0`.
 
 Остается в next-code-queue:
 
 1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete production secret distribution/rotation rollout for auth headers.
 2. complete operational calibration for route profiles (Jito-primary/RPC-fallback) using existing slippage/tip/CU policy knobs and explicit `submit_route_order` policy.
-3. wire real fee accounting in reconcile path (`fee_sol` is still `0.0` placeholder in paper flow and must come from adapter/on-chain execution data before real-money trading).
+3. tighten fee accounting from current `network_fee + configured route_tip` to exact executed fee breakdown from adapter/on-chain telemetry (including ATA-create rent path where applicable) before unrestricted real-money rollout.
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 

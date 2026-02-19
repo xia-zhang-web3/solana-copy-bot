@@ -1234,6 +1234,7 @@ impl SqliteStore {
                     side,
                     qty,
                     notional_sol,
+                    fee,
                     confirmed_ts,
                 )?;
 
@@ -1452,6 +1453,7 @@ impl SqliteStore {
                 side,
                 qty,
                 notional_sol,
+                0.0,
                 ts,
             );
 
@@ -1503,9 +1505,19 @@ impl SqliteStore {
         side: &str,
         qty: f64,
         notional_sol: f64,
+        fee_sol: f64,
         ts: DateTime<Utc>,
     ) -> Result<()> {
         const EPS: f64 = 1e-12;
+
+        if !fee_sol.is_finite() || fee_sol < 0.0 {
+            return Err(anyhow!(
+                "invalid execution fill fee token={} side={} fee_sol={}",
+                token,
+                side,
+                fee_sol
+            ));
+        }
 
         let side_norm = side.trim().to_ascii_lowercase();
         let existing: Option<(String, f64, f64, Option<f64>)> = conn
@@ -1524,6 +1536,7 @@ impl SqliteStore {
 
         match side_norm.as_str() {
             "buy" => {
+                let effective_cost = notional_sol + fee_sol;
                 if let Some((position_id, current_qty, current_cost, current_pnl)) = existing {
                     conn.execute(
                         "UPDATE positions
@@ -1535,7 +1548,7 @@ impl SqliteStore {
                          WHERE position_id = ?4",
                         params![
                             current_qty + qty,
-                            current_cost + notional_sol,
+                            current_cost + effective_cost,
                             current_pnl.unwrap_or(0.0),
                             position_id,
                         ],
@@ -1553,7 +1566,7 @@ impl SqliteStore {
                             state,
                             pnl_sol
                         ) VALUES (?1, ?2, ?3, ?4, ?5, 'open', 0.0)",
-                        params![position_id, token, qty, notional_sol, ts.to_rfc3339()],
+                        params![position_id, token, qty, effective_cost, ts.to_rfc3339()],
                     )
                     .context("failed inserting new live position for buy fill")?;
                 }
@@ -1584,7 +1597,12 @@ impl SqliteStore {
                 } else {
                     notional_sol
                 };
-                let realized_pnl = effective_notional - realized_cost;
+                let effective_fee = if qty_closed < qty {
+                    fee_sol * (qty_closed / qty)
+                } else {
+                    fee_sol
+                };
+                let realized_pnl = effective_notional - realized_cost - effective_fee;
                 let next_qty = (current_qty - qty_closed).max(0.0);
                 let next_cost = (current_cost - realized_cost).max(0.0);
                 let next_pnl = current_pnl.unwrap_or(0.0) + realized_pnl;
@@ -2577,6 +2595,125 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(fills_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_execution_confirmed_order_accounts_for_fee_in_cost_and_pnl() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-confirm-fee-accounting.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let buy_signal = CopySignalRow {
+            signal_id: "shadow:sig-fee:wallet:buy:token-fee".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-fee".to_string(),
+            notional_sol: 0.20,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&buy_signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-fee-buy-1",
+                &buy_signal.signal_id,
+                "cb_fee_buy_a1",
+                "rpc",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted("ord-fee-buy-1", "rpc", "sig-fee-buy", now)?;
+        assert_eq!(
+            store.finalize_execution_confirmed_order(
+                "ord-fee-buy-1",
+                &buy_signal.signal_id,
+                "token-fee",
+                "buy",
+                1.0,
+                0.20,
+                0.20,
+                0.01,
+                50.0,
+                now + Duration::seconds(1),
+            )?,
+            FinalizeExecutionConfirmOutcome::Applied
+        );
+
+        let exposure_after_buy = store.live_open_exposure_sol()?;
+        assert!(
+            (exposure_after_buy - 0.21).abs() < 1e-9,
+            "buy exposure should include fee in cost basis: {exposure_after_buy}"
+        );
+
+        let sell_signal = CopySignalRow {
+            signal_id: "shadow:sig-fee:wallet:sell:token-fee".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "sell".to_string(),
+            token: "token-fee".to_string(),
+            notional_sol: 0.25,
+            ts: now + Duration::seconds(2),
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&sell_signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-fee-sell-1",
+                &sell_signal.signal_id,
+                "cb_fee_sell_a1",
+                "rpc",
+                now + Duration::seconds(2),
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-fee-sell-1",
+            "rpc",
+            "sig-fee-sell",
+            now + Duration::seconds(2),
+        )?;
+        assert_eq!(
+            store.finalize_execution_confirmed_order(
+                "ord-fee-sell-1",
+                &sell_signal.signal_id,
+                "token-fee",
+                "sell",
+                1.0,
+                0.25,
+                0.25,
+                0.02,
+                50.0,
+                now + Duration::seconds(3),
+            )?,
+            FinalizeExecutionConfirmOutcome::Applied
+        );
+
+        let exposure_after_sell = store.live_open_exposure_sol()?;
+        assert!(exposure_after_sell <= 1e-9);
+
+        let pnl_sol: f64 = store.conn.query_row(
+            "SELECT pnl_sol
+             FROM positions
+             WHERE token = ?1
+               AND state = 'closed'
+             LIMIT 1",
+            params!["token-fee"],
+            |row| row.get(0),
+        )?;
+        assert!(
+            (pnl_sol - 0.02).abs() < 1e-9,
+            "realized pnl should account for both buy/sell fees: {pnl_sol}"
+        );
 
         Ok(())
     }

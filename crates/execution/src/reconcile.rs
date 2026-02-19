@@ -17,9 +17,13 @@ pub fn build_fill(
     order_id: &str,
     avg_price_sol: f64,
     slippage_bps: f64,
+    fee_sol: f64,
 ) -> Result<ExecutionFill> {
     if !avg_price_sol.is_finite() || avg_price_sol <= 0.0 {
         return Err(anyhow!("invalid avg_price_sol={avg_price_sol}"));
+    }
+    if !fee_sol.is_finite() || fee_sol < 0.0 {
+        return Err(anyhow!("invalid fee_sol={fee_sol}"));
     }
     let qty = intent.notional_sol / avg_price_sol;
     if !qty.is_finite() || qty <= 0.0 {
@@ -31,7 +35,7 @@ pub fn build_fill(
         token: intent.token.clone(),
         qty,
         avg_price_sol,
-        fee_sol: 0.0,
+        fee_sol,
         slippage_bps,
     })
 }

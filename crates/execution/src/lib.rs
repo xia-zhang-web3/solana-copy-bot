@@ -72,6 +72,7 @@ pub struct ExecutionRuntime {
     max_copy_delay_sec: u64,
     default_route: String,
     submit_route_order: Vec<String>,
+    route_tip_lamports: BTreeMap<String, u64>,
     slippage_bps: f64,
     simulate_before_submit: bool,
     manual_reconcile_required_on_confirm_failure: bool,
@@ -94,6 +95,7 @@ impl ExecutionRuntime {
             &config.submit_allowed_routes,
             &config.submit_route_order,
         );
+        let route_tip_lamports = normalize_route_tip_lamports(&config.submit_route_tip_lamports);
 
         let mode = config.mode.trim().to_ascii_lowercase();
         let (
@@ -254,6 +256,7 @@ impl ExecutionRuntime {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: route,
             submit_route_order,
+            route_tip_lamports,
             slippage_bps: config.slippage_bps,
             simulate_before_submit: config.simulate_before_submit,
             manual_reconcile_required_on_confirm_failure,
@@ -811,6 +814,11 @@ impl ExecutionRuntime {
         match confirm.status {
             ConfirmationStatus::Confirmed => {
                 let confirmed_at = confirm.confirmed_at.unwrap_or_else(Utc::now);
+                let route_tip_lamports = self.route_tip_lamports(route);
+                let execution_fee_sol = fee_sol_from_lamports(
+                    confirm.network_fee_lamports.unwrap_or(0),
+                    route_tip_lamports,
+                );
                 let (avg_price_sol, used_price_fallback, fallback_source) = match store
                     .latest_token_sol_price(&intent.token, confirmed_at)?
                 {
@@ -839,7 +847,13 @@ impl ExecutionRuntime {
                         (fallback, true, Some(source))
                     }
                 };
-                let fill = build_fill(intent, order_id, avg_price_sol, self.slippage_bps)?;
+                let fill = build_fill(
+                    intent,
+                    order_id,
+                    avg_price_sol,
+                    self.slippage_bps,
+                    execution_fee_sol,
+                )?;
                 match store.finalize_execution_confirmed_order(
                     &fill.order_id,
                     &intent.signal_id,
@@ -857,6 +871,25 @@ impl ExecutionRuntime {
                         store
                             .update_copy_signal_status(&intent.signal_id, "execution_confirmed")?;
                     }
+                }
+                if confirm.network_fee_lamports.is_none() && self.mode == "adapter_submit_confirm" {
+                    let details = json!({
+                        "signal_id": intent.signal_id,
+                        "order_id": order_id,
+                        "route": route,
+                        "network_fee_lamports": null,
+                        "tip_lamports": route_tip_lamports,
+                        "fee_sol_applied": execution_fee_sol,
+                        "reason": "missing_network_fee_from_confirmation",
+                        "manual_reconcile_recommended": true
+                    })
+                    .to_string();
+                    let _ = store.insert_risk_event(
+                        "execution_network_fee_unavailable_fallback_used",
+                        "error",
+                        now,
+                        Some(&details),
+                    );
                 }
                 if used_price_fallback {
                     let details = json!({
@@ -943,6 +976,12 @@ impl ExecutionRuntime {
         let index = attempt.saturating_sub(1) as usize;
         let index = index.min(self.submit_route_order.len().saturating_sub(1));
         self.submit_route_order[index].as_str()
+    }
+
+    fn route_tip_lamports(&self, route: &str) -> u64 {
+        normalize_route(route)
+            .and_then(|value| self.route_tip_lamports.get(value.as_str()).copied())
+            .unwrap_or(0)
     }
 
     fn should_pause_buy_submission(
@@ -1073,6 +1112,28 @@ fn build_submit_route_order(
     } else {
         routes
     }
+}
+
+fn normalize_route(value: &str) -> Option<String> {
+    let route = value.trim().to_ascii_lowercase();
+    if route.is_empty() {
+        None
+    } else {
+        Some(route)
+    }
+}
+
+fn normalize_route_tip_lamports(
+    route_tip_lamports: &BTreeMap<String, u64>,
+) -> BTreeMap<String, u64> {
+    route_tip_lamports
+        .iter()
+        .filter_map(|(route, tip)| normalize_route(route).map(|key| (key, *tip)))
+        .collect()
+}
+
+fn fee_sol_from_lamports(network_fee_lamports: u64, tip_lamports: u64) -> f64 {
+    (network_fee_lamports.saturating_add(tip_lamports) as f64) / 1_000_000_000.0
 }
 
 fn fallback_price_and_source(open_position_avg_cost: Option<f64>) -> (f64, String) {
@@ -1229,6 +1290,7 @@ mod tests {
             Ok(confirm::ConfirmationResult {
                 status: ConfirmationStatus::Failed,
                 confirmed_at: None,
+                network_fee_lamports: None,
                 detail: "forced_failed_confirmation".to_string(),
             })
         }
@@ -1243,6 +1305,25 @@ mod tests {
             _deadline: DateTime<Utc>,
         ) -> Result<confirm::ConfirmationResult> {
             Err(anyhow::anyhow!("forced confirmer rpc error"))
+        }
+    }
+
+    struct NetworkFeeConfirmer {
+        network_fee_lamports: u64,
+    }
+
+    impl OrderConfirmer for NetworkFeeConfirmer {
+        fn confirm(
+            &self,
+            _tx_signature: &str,
+            _deadline: DateTime<Utc>,
+        ) -> Result<confirm::ConfirmationResult> {
+            Ok(confirm::ConfirmationResult {
+                status: ConfirmationStatus::Confirmed,
+                confirmed_at: Some(Utc::now()),
+                network_fee_lamports: Some(self.network_fee_lamports),
+                detail: "forced_confirmed_with_fee".to_string(),
+            })
         }
     }
 
@@ -1623,6 +1704,7 @@ mod tests {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
             submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -1696,6 +1778,7 @@ mod tests {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "jito".to_string(),
             submit_route_order: vec!["jito".to_string(), "rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: true,
@@ -1783,6 +1866,7 @@ mod tests {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
             submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -1854,6 +1938,7 @@ mod tests {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
             submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -1922,6 +2007,7 @@ mod tests {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "jito".to_string(),
             submit_route_order: vec!["jito".to_string(), "rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: true,
@@ -1990,6 +2076,7 @@ mod tests {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
             submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -2087,6 +2174,66 @@ mod tests {
             .context("order should remain present after missing-price fallback confirm")?;
         assert_eq!(order.status, "execution_confirmed");
         assert_eq!(order.err_code.as_deref(), None);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_accounts_network_fee_and_route_tip_in_exposure() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-fee-accounting")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-fee", now, "sig-price-fee")?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:s8f:w:buy:t-fee".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-fee".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let mut route_tip_lamports = BTreeMap::new();
+        route_tip_lamports.insert("rpc".to_string(), 7000);
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports,
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(NetworkFeeConfirmer {
+                network_fee_lamports: 5000,
+            }),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 1);
+        let exposure = store.live_open_exposure_sol()?;
+        let expected = 0.1 + 12_000.0 / 1_000_000_000.0;
+        assert!(
+            (exposure - expected).abs() < 1e-12,
+            "expected exposure to include network fee + route tip; got {} expected {}",
+            exposure,
+            expected
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -2203,6 +2350,7 @@ mod tests {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
             submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -2280,6 +2428,7 @@ mod tests {
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "rpc".to_string(),
             submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: true,
