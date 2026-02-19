@@ -186,6 +186,9 @@ PRIORITY_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null priority_fee_lamports_hi
 SUBMIT_ALLOWED_ROUTES_CSV="$(cfg_list_csv execution submit_allowed_routes)"
 ALLOWED_ROUTES_VALUES="$(build_allowed_routes_values "$SUBMIT_ALLOWED_ROUTES_CSV")"
 DEFAULT_ROUTE="$(normalize_route_token "$(cfg_value execution default_route)")"
+if [[ -z "$DEFAULT_ROUTE" ]]; then
+  DEFAULT_ROUTE="paper"
+fi
 
 echo "=== execution fee calibration (${WINDOW_HOURS}h) ==="
 echo "config: $CONFIG_PATH"

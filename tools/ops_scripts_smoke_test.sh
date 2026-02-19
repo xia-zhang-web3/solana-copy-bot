@@ -137,6 +137,26 @@ submit_allowed_routes = ["paper", "rpc"]
 EOF
 }
 
+write_config_missing_default_route_with_rpc_allowlist() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+submit_allowed_routes = ["paper", "rpc"]
+EOF
+}
+
 init_common_tables() {
   local db_path="$1"
   sqlite3 "$db_path" <<'SQL'
@@ -364,6 +384,19 @@ run_calibration_default_route_injection_case() {
   echo "[ok] calibration default-route injection"
 }
 
+run_calibration_default_route_runtime_fallback_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    DB_PATH="$db_path" CONFIG_PATH="$config_path" \
+      bash "$ROOT_DIR/tools/execution_fee_calibration_report.sh" 24
+  )"
+  assert_contains "$output" "recommended_route_order_csv: paper,rpc"
+  assert_contains "$output" "default_route 'paper' added to recommendation"
+  echo "[ok] calibration runtime default-route fallback"
+}
+
 run_runtime_snapshot_no_ingestion_case() {
   local db_path="$1"
   local config_path="$2"
@@ -407,6 +440,10 @@ main() {
   create_rpc_only_db "$rpc_only_db"
   write_config_default_route_with_rpc_allowlist "$default_injection_cfg" "$rpc_only_db"
   run_calibration_default_route_injection_case "$rpc_only_db" "$default_injection_cfg"
+
+  local runtime_default_fallback_cfg="$TMP_DIR/default-fallback.toml"
+  write_config_missing_default_route_with_rpc_allowlist "$runtime_default_fallback_cfg" "$rpc_only_db"
+  run_calibration_default_route_runtime_fallback_case "$rpc_only_db" "$runtime_default_fallback_cfg"
 
   echo "ops scripts smoke: PASS"
 }
