@@ -783,6 +783,12 @@ fn parse_adapter_submit_response(
                 "adapter response missing required field priority_fee_lamports".to_string(),
             ));
         }
+        if network_fee_lamports_hint.is_none() {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_echo_missing",
+                "adapter response missing required field network_fee_lamports".to_string(),
+            ));
+        }
     }
 
     let submitted_at = body
@@ -1265,6 +1271,7 @@ mod tests {
                 "cu_limit": 300000,
                 "cu_price_micro_lamports": 1000
             },
+            "network_fee_lamports": 17000,
             "base_fee_lamports": 5000,
             "priority_fee_lamports": 12000
         });
@@ -1275,6 +1282,35 @@ mod tests {
         assert_eq!(result.network_fee_lamports_hint, Some(17_000));
         assert_eq!(result.base_fee_lamports_hint, Some(5_000));
         assert_eq!(result.priority_fee_lamports_hint, Some(12_000));
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_missing_network_fee_hint_in_strict_mode() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            },
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("strict mode must require network_fee_lamports echo");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+        assert!(
+            error.detail.contains("network_fee_lamports"),
+            "unexpected detail: {}",
+            error.detail
+        );
     }
 
     #[test]
@@ -1644,6 +1680,7 @@ mod tests {
             "contract_version": "v1",
             "slippage_bps": 45.0,
             "tip_lamports": 777,
+            "network_fee_lamports": 17000,
             "base_fee_lamports": 5000,
             "priority_fee_lamports": 12000,
             "compute_budget": {
@@ -1772,6 +1809,7 @@ mod tests {
             "contract_version": "v1",
             "slippage_bps": 45.0,
             "tip_lamports": 777,
+            "network_fee_lamports": 17000,
             "base_fee_lamports": 5000,
             "priority_fee_lamports": 12000,
             "compute_budget": {
