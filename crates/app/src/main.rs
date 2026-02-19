@@ -860,6 +860,19 @@ fn validate_adapter_endpoint_url(
     let Some(host) = parsed.host() else {
         return Err(anyhow!("{field_name} must include a host"));
     };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(anyhow!(
+            "{field_name} must not embed credentials in URL (use submit_adapter_auth_token / HMAC fields)"
+        ));
+    }
+    if parsed.query().is_some() {
+        return Err(anyhow!(
+            "{field_name} must not include query parameters (pass auth/policy via headers)"
+        ));
+    }
+    if parsed.fragment().is_some() {
+        return Err(anyhow!("{field_name} must not include URL fragment"));
+    }
     if strict_transport_policy && scheme == "http" && !is_loopback_host(&host) {
         return Err(anyhow!(
             "{field_name} must use https:// in production-like envs (http:// allowed only for loopback hosts)"
@@ -3655,6 +3668,57 @@ mod app_tests {
                 error
             );
         }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_adapter_endpoint_with_url_credentials() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://user:pass@adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint with URL credentials must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must not embed credentials in URL"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_adapter_endpoint_with_query_or_fragment() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        execution.submit_adapter_http_url = "https://adapter.local?api-key=secret".to_string();
+        let query_error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint with query must fail");
+        assert!(
+            query_error
+                .to_string()
+                .contains("must not include query parameters"),
+            "unexpected error: {}",
+            query_error
+        );
+
+        execution.submit_adapter_http_url = "https://adapter.local#frag".to_string();
+        let fragment_error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint with fragment must fail");
+        assert!(
+            fragment_error
+                .to_string()
+                .contains("must not include URL fragment"),
+            "unexpected error: {}",
+            fragment_error
+        );
     }
 
     #[test]
