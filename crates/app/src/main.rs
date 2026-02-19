@@ -576,6 +576,10 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             "execution.submit_allowed_routes must not be empty when execution is enabled"
         ));
     }
+    validate_unique_normalized_route_list(
+        &config.submit_allowed_routes,
+        "execution.submit_allowed_routes",
+    )?;
     let default_route = config.default_route.trim().to_ascii_lowercase();
     let default_route = if default_route.is_empty() {
         "paper".to_string()
@@ -593,6 +597,10 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
         ));
     }
     if !config.submit_route_order.is_empty() {
+        validate_unique_normalized_route_list(
+            &config.submit_route_order,
+            "execution.submit_route_order",
+        )?;
         for route in &config.submit_route_order {
             let normalized = route.trim().to_ascii_lowercase();
             if normalized.is_empty() {
@@ -629,6 +637,10 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             "execution.submit_route_max_slippage_bps must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS=route:cap,route2:cap2)"
         ));
     }
+    validate_unique_normalized_route_map_keys(
+        &config.submit_route_max_slippage_bps,
+        "execution.submit_route_max_slippage_bps",
+    )?;
     for (route, cap) in &config.submit_route_max_slippage_bps {
         if route.trim().is_empty() {
             return Err(anyhow!(
@@ -648,6 +660,10 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             "execution.submit_route_tip_lamports must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS=route:tip,route2:tip2)"
         ));
     }
+    validate_unique_normalized_route_map_keys(
+        &config.submit_route_tip_lamports,
+        "execution.submit_route_tip_lamports",
+    )?;
     for (route, tip_lamports) in &config.submit_route_tip_lamports {
         if route.trim().is_empty() {
             return Err(anyhow!(
@@ -668,6 +684,10 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             "execution.submit_route_compute_unit_limit must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT=route:limit,route2:limit2)"
         ));
     }
+    validate_unique_normalized_route_map_keys(
+        &config.submit_route_compute_unit_limit,
+        "execution.submit_route_compute_unit_limit",
+    )?;
     for (route, limit) in &config.submit_route_compute_unit_limit {
         if route.trim().is_empty() {
             return Err(anyhow!(
@@ -690,6 +710,10 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             "execution.submit_route_compute_unit_price_micro_lamports must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS=route:price,route2:price2)"
         ));
     }
+    validate_unique_normalized_route_map_keys(
+        &config.submit_route_compute_unit_price_micro_lamports,
+        "execution.submit_route_compute_unit_price_micro_lamports",
+    )?;
     for (route, price) in &config.submit_route_compute_unit_price_micro_lamports {
         if route.trim().is_empty() {
             return Err(anyhow!(
@@ -858,6 +882,43 @@ fn is_valid_contract_version_token(value: &str) -> bool {
     value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn validate_unique_normalized_route_list(values: &[String], field_name: &str) -> Result<()> {
+    let mut seen = HashSet::new();
+    for value in values {
+        let normalized = value.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !seen.insert(normalized.clone()) {
+            return Err(anyhow!(
+                "{field_name} contains duplicate route after normalization: {}",
+                normalized
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_normalized_route_map_keys<T>(
+    values: &BTreeMap<String, T>,
+    field_name: &str,
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    for key in values.keys() {
+        let normalized = key.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !seen.insert(normalized.clone()) {
+            return Err(anyhow!(
+                "{field_name} contains duplicate route key after normalization: {}",
+                normalized
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_adapter_endpoint_url(
@@ -3651,6 +3712,65 @@ mod app_tests {
                 error
             );
         }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_allowed_routes_after_normalization() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.submit_allowed_routes = vec!["paper".to_string(), "PAPER".to_string()];
+        execution.default_route = "paper".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate allowed routes must fail after normalization");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.submit_allowed_routes contains duplicate route"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_submit_route_order_after_normalization(
+    ) {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.submit_allowed_routes = vec!["paper".to_string()];
+        execution.submit_route_order = vec!["paper".to_string(), "PAPER".to_string()];
+        execution.default_route = "paper".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate route order entries must fail after normalization");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.submit_route_order contains duplicate route"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_route_policy_map_keys_after_normalization(
+    ) {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.submit_allowed_routes = vec!["paper".to_string()];
+        execution.default_route = "paper".to_string();
+        execution.submit_route_tip_lamports =
+            BTreeMap::from([("paper".to_string(), 0), ("PAPER".to_string(), 0)]);
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate route policy map keys must fail after normalization");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.submit_route_tip_lamports contains duplicate route key"),
+            "unexpected error: {}",
+            error
+        );
     }
 
     #[test]

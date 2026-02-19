@@ -561,6 +561,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 40. adapter endpoint placeholder hardening: runtime now fail-closes when adapter URL contains `REPLACE_ME` in case-insensitive form (`REPLACE_ME` / `replace_me`), preventing accidental startup with template placeholder endpoints.
 41. adapter `submit_adapter_contract_version` token hardening: runtime/submitter now reject non-token contract versions and allow only `[A-Za-z0-9._-]` characters (no spaces/slashes), preventing malformed contract-version values from entering adapter handshake.
 42. adapter endpoint redundancy guard: when both `submit_adapter_http_url` and `submit_adapter_fallback_http_url` are set, runtime now normalizes endpoint identity (`scheme+host+port+path`) and fail-closes if they resolve to the same endpoint.
+43. route policy normalization guard: runtime now fail-closes on case-insensitive duplicate route entries/keys across `submit_allowed_routes`, `submit_route_order`, and route policy maps (`submit_route_max_slippage_bps`, `submit_route_tip_lamports`, `submit_route_compute_unit_limit`, `submit_route_compute_unit_price_micro_lamports`) to prevent ambiguous route resolution (`rpc` vs `RPC`).
 
 Остается в next-code-queue:
 
