@@ -986,6 +986,18 @@ mod tests {
         }
     }
 
+    struct ErrorConfirmer;
+
+    impl OrderConfirmer for ErrorConfirmer {
+        fn confirm(
+            &self,
+            _tx_signature: &str,
+            _deadline: DateTime<Utc>,
+        ) -> Result<confirm::ConfirmationResult> {
+            Err(anyhow::anyhow!("forced confirmer rpc error"))
+        }
+    }
+
     fn make_test_store(name: &str) -> Result<(SqliteStore, std::path::PathBuf)> {
         let db_path = std::env::temp_dir().join(format!(
             "copybot-exec-{}-{}-{}.db",
@@ -1438,6 +1450,82 @@ mod tests {
             .context("order should remain present after missing-price failure")?;
         assert_eq!(order.status, "execution_failed");
         assert_eq!(order.err_code.as_deref(), Some("price_unavailable"));
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_marks_manual_reconcile_required_on_adapter_confirm_error() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-error-manual-reconcile")?;
+        let now = Utc::now();
+        let submit_ts = now - Duration::seconds(30);
+        let signal = CopySignalRow {
+            signal_id: "shadow:s9:w:buy:t-adapter".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: submit_ts,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-confirm-error-manual-1",
+                &signal.signal_id,
+                &client_order_id,
+                "rpc",
+                submit_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-confirm-error-manual-1",
+            "rpc",
+            "sig-manual-reconcile",
+            submit_ts,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 5,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(ErrorConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.failed, 1);
+        let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
+        assert_eq!(failed.len(), 1);
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("manual reconcile confirm error should leave order row")?;
+        assert_eq!(order.status, "execution_failed");
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_error_manual_reconcile_required")
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
