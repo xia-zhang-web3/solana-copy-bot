@@ -1977,6 +1977,9 @@ async fn run_app_loop(
                                 || !report.confirm_confirmed_by_route.is_empty()
                                 || !report.confirm_retry_scheduled_by_route.is_empty()
                                 || !report.confirm_failed_by_route.is_empty()
+                                || !report.confirm_network_fee_rpc_by_route.is_empty()
+                                || !report.confirm_network_fee_submit_hint_by_route.is_empty()
+                                || !report.confirm_network_fee_missing_by_route.is_empty()
                                 || !report.confirm_latency_samples_by_route.is_empty()
                                 || !report.confirm_latency_ms_sum_by_route.is_empty();
                             info!(
@@ -1994,6 +1997,9 @@ async fn run_app_loop(
                                 confirm_confirmed_by_route = ?report.confirm_confirmed_by_route,
                                 confirm_retry_scheduled_by_route = ?report.confirm_retry_scheduled_by_route,
                                 confirm_failed_by_route = ?report.confirm_failed_by_route,
+                                confirm_network_fee_rpc_by_route = ?report.confirm_network_fee_rpc_by_route,
+                                confirm_network_fee_submit_hint_by_route = ?report.confirm_network_fee_submit_hint_by_route,
+                                confirm_network_fee_missing_by_route = ?report.confirm_network_fee_missing_by_route,
                                 confirm_latency_samples_by_route = ?report.confirm_latency_samples_by_route,
                                 confirm_latency_ms_sum_by_route = ?report.confirm_latency_ms_sum_by_route,
                                 confirm_latency_semantics = "submit_to_runtime_observed_confirm_ms",

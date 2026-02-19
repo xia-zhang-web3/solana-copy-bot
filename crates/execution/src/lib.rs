@@ -50,6 +50,9 @@ pub struct ExecutionBatchReport {
     pub confirm_confirmed_by_route: BTreeMap<String, u64>,
     pub confirm_retry_scheduled_by_route: BTreeMap<String, u64>,
     pub confirm_failed_by_route: BTreeMap<String, u64>,
+    pub confirm_network_fee_rpc_by_route: BTreeMap<String, u64>,
+    pub confirm_network_fee_submit_hint_by_route: BTreeMap<String, u64>,
+    pub confirm_network_fee_missing_by_route: BTreeMap<String, u64>,
     pub confirm_latency_samples_by_route: BTreeMap<String, u64>,
     pub confirm_latency_ms_sum_by_route: BTreeMap<String, u64>,
 }
@@ -842,6 +845,16 @@ impl ExecutionRuntime {
                     .or(network_fee_lamports_hint)
                     .unwrap_or(0);
                 if self.mode == "adapter_submit_confirm" {
+                    if confirm.network_fee_lamports.is_some() {
+                        bump_route_counter(&mut report.confirm_network_fee_rpc_by_route, route);
+                    } else if network_fee_lamports_hint.is_some() {
+                        bump_route_counter(
+                            &mut report.confirm_network_fee_submit_hint_by_route,
+                            route,
+                        );
+                    } else {
+                        bump_route_counter(&mut report.confirm_network_fee_missing_by_route, route);
+                    }
                     if let (
                         Some(rpc_network_fee_lamports),
                         Some(submit_network_fee_lamports_hint),
@@ -2390,6 +2403,12 @@ mod tests {
 
         let report = runtime.process_batch(&store, now, None)?;
         assert_eq!(report.confirmed, 1);
+        assert_eq!(report.confirm_network_fee_rpc_by_route.get("rpc"), Some(&1));
+        assert_eq!(
+            report.confirm_network_fee_submit_hint_by_route.get("rpc"),
+            None
+        );
+        assert_eq!(report.confirm_network_fee_missing_by_route.get("rpc"), None);
         let exposure = store.live_open_exposure_sol()?;
         let expected = 0.1 + 12_000.0 / 1_000_000_000.0;
         assert!(
@@ -2451,6 +2470,12 @@ mod tests {
 
         let report = runtime.process_batch(&store, now, None)?;
         assert_eq!(report.confirmed, 1);
+        assert_eq!(
+            report.confirm_network_fee_submit_hint_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.confirm_network_fee_rpc_by_route.get("rpc"), None);
+        assert_eq!(report.confirm_network_fee_missing_by_route.get("rpc"), None);
         let exposure = store.live_open_exposure_sol()?;
         let expected = 1.1;
         assert!(
@@ -2519,6 +2544,12 @@ mod tests {
 
         let report = runtime.process_batch(&store, now, None)?;
         assert_eq!(report.confirmed, 1);
+        assert_eq!(report.confirm_network_fee_rpc_by_route.get("rpc"), Some(&1));
+        assert_eq!(
+            report.confirm_network_fee_submit_hint_by_route.get("rpc"),
+            None
+        );
+        assert_eq!(report.confirm_network_fee_missing_by_route.get("rpc"), None);
         let exposure = store.live_open_exposure_sol()?;
         let expected = 0.1 + 5_000.0 / 1_000_000_000.0;
         assert!(
