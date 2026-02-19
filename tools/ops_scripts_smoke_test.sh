@@ -27,6 +27,15 @@ write_fake_journalctl() {
 set -euo pipefail
 args="$*"
 if [[ "$args" == *"-n 250"* ]]; then
+  mode="${COPYBOT_SMOKE_JOURNAL_MODE:-normal}"
+  if [[ "$mode" == "no_ingestion" ]]; then
+    cat <<'LOGS'
+2026-02-19T12:00:00Z INFO unrelated runtime line without json payload
+2026-02-19T12:00:00Z INFO ingestion pipeline metrics {not-valid-json
+2026-02-19T12:00:01Z INFO sqlite contention counters {"sqlite_write_retry_total":0,"sqlite_busy_error_total":0}
+LOGS
+    exit 0
+  fi
   cat <<'LOGS'
 2026-02-19T12:00:00Z INFO unrelated runtime line without json payload
 2026-02-19T12:00:00Z INFO ingestion pipeline metrics {not-valid-json
@@ -209,6 +218,20 @@ run_ops_scripts_for_db() {
   echo "[ok] ${label}"
 }
 
+run_runtime_snapshot_no_ingestion_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local snapshot_output
+  snapshot_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" COPYBOT_SMOKE_JOURNAL_MODE="no_ingestion" \
+      DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/runtime_snapshot.sh" 24 60
+  )"
+  assert_contains "$snapshot_output" "=== Ingestion Runtime (latest samples) ==="
+  assert_contains "$snapshot_output" "no ingestion metric samples found"
+  echo "[ok] runtime snapshot no-ingestion branch"
+}
+
 main() {
   write_fake_journalctl
 
@@ -217,6 +240,7 @@ main() {
   create_legacy_db "$legacy_db"
   write_config "$legacy_cfg" "$legacy_db"
   run_ops_scripts_for_db "legacy schema" "$legacy_db" "$legacy_cfg"
+  run_runtime_snapshot_no_ingestion_case "$legacy_db" "$legacy_cfg"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"
