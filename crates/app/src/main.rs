@@ -835,6 +835,11 @@ fn validate_adapter_endpoint_url(
     field_name: &str,
     strict_transport_policy: bool,
 ) -> Result<()> {
+    if endpoint.trim().contains("REPLACE_ME") {
+        return Err(anyhow!(
+            "{field_name} must not contain placeholder value REPLACE_ME"
+        ));
+    }
     if endpoint.chars().any(char::is_whitespace) {
         return Err(anyhow!("{field_name} must not contain whitespace"));
     }
@@ -3638,6 +3643,24 @@ mod app_tests {
             error
                 .to_string()
                 .contains("must start with http:// or https://"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_adapter_endpoint_placeholder() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://REPLACE_ME.example".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint placeholder must fail contract validation");
+        assert!(
+            error.to_string().contains("must not contain placeholder"),
             "unexpected error: {}",
             error
         );

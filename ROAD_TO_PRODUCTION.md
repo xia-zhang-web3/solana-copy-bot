@@ -558,6 +558,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 37. `tools/execution_fee_calibration_report.sh` strict policy reject section now merges structured `risk_events` with legacy `orders.simulation_error` pattern; deduplication is by `order_id` when present (fallback to source-row identity when `order_id` is absent) so historical windows remain comparable across telemetry format migration.
 38. adapter endpoint runtime validation hardened: `execution.submit_adapter_http_url` / `execution.submit_adapter_fallback_http_url` are now parsed via strict URL parser (`url::Url`) and must be explicit valid `http(s)` URLs (no bare host / malformed authority), and production-like env profiles fail-closed for non-loopback `http://` endpoints (`https://` required except loopback hosts).
 39. adapter endpoint URL security hardening: runtime now rejects URL-embedded credentials (`user:pass@`), query parameters, and fragments for adapter endpoints to prevent secret-in-URL patterns and enforce header-based auth contract.
+40. adapter endpoint placeholder hardening: runtime now fail-closes when adapter URL contains `REPLACE_ME`, preventing accidental startup with template placeholder endpoints.
 
 Остается в next-code-queue:
 
