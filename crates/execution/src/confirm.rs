@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmationStatus {
@@ -16,6 +17,7 @@ pub struct ConfirmationResult {
     pub status: ConfirmationStatus,
     pub confirmed_at: Option<DateTime<Utc>>,
     pub network_fee_lamports: Option<u64>,
+    pub network_fee_lookup_error: Option<String>,
     pub detail: String,
 }
 
@@ -53,6 +55,7 @@ impl OrderConfirmer for PaperOrderConfirmer {
                 status: ConfirmationStatus::Timeout,
                 confirmed_at: None,
                 network_fee_lamports: None,
+                network_fee_lookup_error: None,
                 detail: "paper_confirm_timeout".to_string(),
             });
         }
@@ -60,6 +63,7 @@ impl OrderConfirmer for PaperOrderConfirmer {
             status: ConfirmationStatus::Confirmed,
             confirmed_at: Some(now),
             network_fee_lamports: None,
+            network_fee_lookup_error: None,
             detail: "paper_confirm_ok".to_string(),
         })
     }
@@ -117,9 +121,22 @@ impl RpcOrderConfirmer {
             .with_context(|| format!("invalid rpc json endpoint={endpoint}"))?;
         let mut confirmation = parse_confirmation_from_rpc_body(&body, now)?;
         if matches!(confirmation.status, ConfirmationStatus::Confirmed) {
-            confirmation.network_fee_lamports = self
-                .query_transaction_fee_lamports(endpoint, tx_signature)
-                .unwrap_or(None);
+            match self.query_transaction_fee_lamports(endpoint, tx_signature) {
+                Ok(value) => {
+                    confirmation.network_fee_lamports = value;
+                    confirmation.network_fee_lookup_error = None;
+                }
+                Err(error) => {
+                    warn!(
+                        endpoint,
+                        tx_signature,
+                        error = %error,
+                        "fee lookup failed for confirmed signature; proceeding without network fee"
+                    );
+                    confirmation.network_fee_lamports = None;
+                    confirmation.network_fee_lookup_error = Some(error.to_string());
+                }
+            }
         }
         Ok(confirmation)
     }
@@ -166,6 +183,7 @@ impl OrderConfirmer for RpcOrderConfirmer {
                 status: ConfirmationStatus::Timeout,
                 confirmed_at: None,
                 network_fee_lamports: None,
+                network_fee_lookup_error: None,
                 detail: "deadline_exceeded_before_rpc_query".to_string(),
             });
         }
@@ -199,6 +217,7 @@ fn parse_confirmation_from_rpc_body(
             status: ConfirmationStatus::Timeout,
             confirmed_at: None,
             network_fee_lamports: None,
+            network_fee_lookup_error: None,
             detail: "signature_not_found_yet".to_string(),
         });
     };
@@ -208,6 +227,7 @@ fn parse_confirmation_from_rpc_body(
             status: ConfirmationStatus::Timeout,
             confirmed_at: None,
             network_fee_lamports: None,
+            network_fee_lookup_error: None,
             detail: "signature_pending".to_string(),
         });
     }
@@ -218,6 +238,7 @@ fn parse_confirmation_from_rpc_body(
                 status: ConfirmationStatus::Failed,
                 confirmed_at: None,
                 network_fee_lamports: None,
+                network_fee_lookup_error: None,
                 detail: format!("signature_failed err={}", err_payload),
             });
         }
@@ -232,6 +253,7 @@ fn parse_confirmation_from_rpc_body(
             status: ConfirmationStatus::Confirmed,
             confirmed_at: Some(now),
             network_fee_lamports: None,
+            network_fee_lookup_error: None,
             detail: format!("signature_{}", confirmation_status),
         });
     }
@@ -240,6 +262,7 @@ fn parse_confirmation_from_rpc_body(
         status: ConfirmationStatus::Timeout,
         confirmed_at: None,
         network_fee_lamports: None,
+        network_fee_lookup_error: None,
         detail: format!(
             "signature_not_confirmed_yet confirmation_status={}",
             if confirmation_status.is_empty() {
@@ -286,6 +309,7 @@ mod tests {
         let result = parse_confirmation_from_rpc_body(&body, Utc::now())?;
         assert_eq!(result.status, ConfirmationStatus::Confirmed);
         assert_eq!(result.network_fee_lamports, None);
+        assert_eq!(result.network_fee_lookup_error, None);
         Ok(())
     }
 
@@ -304,6 +328,7 @@ mod tests {
         let result = parse_confirmation_from_rpc_body(&body, Utc::now())?;
         assert_eq!(result.status, ConfirmationStatus::Failed);
         assert_eq!(result.network_fee_lamports, None);
+        assert_eq!(result.network_fee_lookup_error, None);
         Ok(())
     }
 
@@ -319,6 +344,7 @@ mod tests {
         let result = parse_confirmation_from_rpc_body(&body, Utc::now())?;
         assert_eq!(result.status, ConfirmationStatus::Timeout);
         assert_eq!(result.network_fee_lamports, None);
+        assert_eq!(result.network_fee_lookup_error, None);
         Ok(())
     }
 

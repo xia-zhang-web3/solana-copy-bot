@@ -873,11 +873,17 @@ impl ExecutionRuntime {
                     }
                 }
                 if confirm.network_fee_lamports.is_none() && self.mode == "adapter_submit_confirm" {
+                    let network_fee_lookup_error = confirm
+                        .network_fee_lookup_error
+                        .as_deref()
+                        .unwrap_or_default();
                     let details = json!({
                         "signal_id": intent.signal_id,
                         "order_id": order_id,
                         "route": route,
                         "network_fee_lamports": null,
+                        "network_fee_lookup_error": if network_fee_lookup_error.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(network_fee_lookup_error.to_string()) },
+                        "network_fee_missing_reason": if network_fee_lookup_error.is_empty() { "meta_fee_unavailable" } else { "rpc_lookup_error" },
                         "tip_lamports": route_tip_lamports,
                         "fee_sol_applied": execution_fee_sol,
                         "reason": "missing_network_fee_from_confirmation",
@@ -1291,6 +1297,7 @@ mod tests {
                 status: ConfirmationStatus::Failed,
                 confirmed_at: None,
                 network_fee_lamports: None,
+                network_fee_lookup_error: None,
                 detail: "forced_failed_confirmation".to_string(),
             })
         }
@@ -1322,6 +1329,7 @@ mod tests {
                 status: ConfirmationStatus::Confirmed,
                 confirmed_at: Some(Utc::now()),
                 network_fee_lamports: Some(self.network_fee_lamports),
+                network_fee_lookup_error: None,
                 detail: "forced_confirmed_with_fee".to_string(),
             })
         }
