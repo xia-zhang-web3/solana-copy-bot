@@ -465,6 +465,47 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             ));
         }
     }
+    if config.submit_route_compute_unit_limit.is_empty() {
+        return Err(anyhow!(
+            "execution.submit_route_compute_unit_limit must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT=route:limit,route2:limit2)"
+        ));
+    }
+    for (route, limit) in &config.submit_route_compute_unit_limit {
+        if route.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_limit contains empty route key"
+            ));
+        }
+        if *limit == 0 || *limit > 1_400_000 {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_limit route={} must be in 1..=1400000, got {}",
+                route,
+                limit
+            ));
+        }
+    }
+    if config
+        .submit_route_compute_unit_price_micro_lamports
+        .is_empty()
+    {
+        return Err(anyhow!(
+            "execution.submit_route_compute_unit_price_micro_lamports must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS=route:price,route2:price2)"
+        ));
+    }
+    for (route, price) in &config.submit_route_compute_unit_price_micro_lamports {
+        if route.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_price_micro_lamports contains empty route key"
+            ));
+        }
+        if *price == 0 || *price > 10_000_000 {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_price_micro_lamports route={} must be in 1..=10000000, got {}",
+                route,
+                price
+            ));
+        }
+    }
     if mode == "adapter_submit_confirm" {
         let find_route_cap = |route: &str| -> Option<f64> {
             config
@@ -472,6 +513,20 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 .iter()
                 .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
                 .map(|(_, cap)| *cap)
+        };
+        let find_route_cu_limit = |route: &str| -> Option<u32> {
+            config
+                .submit_route_compute_unit_limit
+                .iter()
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
+                .map(|(_, limit)| *limit)
+        };
+        let find_route_cu_price = |route: &str| -> Option<u64> {
+            config
+                .submit_route_compute_unit_price_micro_lamports
+                .iter()
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
+                .map(|(_, price)| *price)
         };
         for allowed_route in &config.submit_allowed_routes {
             let route = allowed_route.trim();
@@ -484,10 +539,34 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                     route
                 ));
             }
+            if find_route_cu_limit(route).is_none() {
+                return Err(anyhow!(
+                    "execution.submit_route_compute_unit_limit is missing limit for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT format route:limit)",
+                    route
+                ));
+            }
+            if find_route_cu_price(route).is_none() {
+                return Err(anyhow!(
+                    "execution.submit_route_compute_unit_price_micro_lamports is missing price for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS format route:price)",
+                    route
+                ));
+            }
         }
         let default_route_cap = find_route_cap(default_route.as_str()).ok_or_else(|| {
             anyhow!(
                 "execution.submit_route_max_slippage_bps is missing cap for default route={}",
+                default_route
+            )
+        })?;
+        let default_route_limit = find_route_cu_limit(default_route.as_str()).ok_or_else(|| {
+            anyhow!(
+                "execution.submit_route_compute_unit_limit is missing limit for default route={}",
+                default_route
+            )
+        })?;
+        let default_route_price = find_route_cu_price(default_route.as_str()).ok_or_else(|| {
+            anyhow!(
+                "execution.submit_route_compute_unit_price_micro_lamports is missing price for default route={}",
                 default_route
             )
         })?;
@@ -497,6 +576,23 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 config.slippage_bps,
                 default_route_cap,
                 default_route
+            ));
+        }
+        if config.pretrade_max_priority_fee_lamports > 0
+            && default_route_price > config.pretrade_max_priority_fee_lamports
+        {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_price_micro_lamports default route {} price ({}) cannot exceed execution.pretrade_max_priority_fee_lamports ({})",
+                default_route,
+                default_route_price,
+                config.pretrade_max_priority_fee_lamports
+            ));
+        }
+        if default_route_limit < 100_000 {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_limit default route {} limit ({}) is too low for reliable swaps; expected >= 100000",
+                default_route,
+                default_route_limit
             ));
         }
     }
@@ -512,6 +608,8 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             submit_timeout_ms = config.submit_timeout_ms,
             submit_allowed_routes = ?config.submit_allowed_routes,
             submit_route_max_slippage_bps = ?config.submit_route_max_slippage_bps,
+            submit_route_compute_unit_limit = ?config.submit_route_compute_unit_limit,
+            submit_route_compute_unit_price_micro_lamports = ?config.submit_route_compute_unit_price_micro_lamports,
             pretrade_require_token_account = config.pretrade_require_token_account,
             pretrade_max_priority_fee_lamports = config.pretrade_max_priority_fee_lamports,
             "execution runtime contract validated"

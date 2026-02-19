@@ -126,6 +126,8 @@ pub struct AdapterOrderSubmitter {
     auth_token: Option<String>,
     allowed_routes: HashSet<String>,
     route_max_slippage_bps: HashMap<String, f64>,
+    route_compute_unit_limit: HashMap<String, u32>,
+    route_compute_unit_price_micro_lamports: HashMap<String, u64>,
     slippage_bps: f64,
     client: Client,
 }
@@ -137,6 +139,8 @@ impl AdapterOrderSubmitter {
         auth_token: &str,
         allowed_routes: &[String],
         route_max_slippage_bps: &BTreeMap<String, f64>,
+        route_compute_unit_limit: &BTreeMap<String, u32>,
+        route_compute_unit_price_micro_lamports: &BTreeMap<String, u64>,
         timeout_ms: u64,
         slippage_bps: f64,
     ) -> Option<Self> {
@@ -161,9 +165,30 @@ impl AdapterOrderSubmitter {
         if route_max_slippage_bps.is_empty() {
             return None;
         }
+        let route_compute_unit_limit = normalize_route_cu_limit(route_compute_unit_limit);
+        if route_compute_unit_limit.is_empty() {
+            return None;
+        }
+        let route_compute_unit_price_micro_lamports =
+            normalize_route_cu_price(route_compute_unit_price_micro_lamports);
+        if route_compute_unit_price_micro_lamports.is_empty() {
+            return None;
+        }
         if !allowed_routes
             .iter()
             .all(|route| route_max_slippage_bps.contains_key(route))
+        {
+            return None;
+        }
+        if !allowed_routes
+            .iter()
+            .all(|route| route_compute_unit_limit.contains_key(route))
+        {
+            return None;
+        }
+        if !allowed_routes
+            .iter()
+            .all(|route| route_compute_unit_price_micro_lamports.contains_key(route))
         {
             return None;
         }
@@ -188,6 +213,8 @@ impl AdapterOrderSubmitter {
             auth_token,
             allowed_routes,
             route_max_slippage_bps,
+            route_compute_unit_limit,
+            route_compute_unit_price_micro_lamports,
             slippage_bps,
             client,
         })
@@ -280,6 +307,29 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 )
             })?;
         let effective_slippage_bps = self.slippage_bps.min(route_cap);
+        let route_cu_limit = self
+            .route_compute_unit_limit
+            .get(route.as_str())
+            .copied()
+            .ok_or_else(|| {
+                SubmitError::terminal(
+                    "route_compute_budget_policy_missing",
+                    format!("missing compute unit limit for route={}", route),
+                )
+            })?;
+        let route_cu_price_micro_lamports = self
+            .route_compute_unit_price_micro_lamports
+            .get(route.as_str())
+            .copied()
+            .ok_or_else(|| {
+                SubmitError::terminal(
+                    "route_compute_budget_policy_missing",
+                    format!(
+                        "missing compute unit price (micro-lamports) for route={}",
+                        route
+                    ),
+                )
+            })?;
 
         let payload = json!({
             "signal_id": intent.signal_id,
@@ -291,6 +341,10 @@ impl OrderSubmitter for AdapterOrderSubmitter {
             "route": route,
             "slippage_bps": effective_slippage_bps,
             "route_slippage_cap_bps": route_cap,
+            "compute_budget": {
+                "cu_limit": route_cu_limit,
+                "cu_price_micro_lamports": route_cu_price_micro_lamports
+            },
         });
 
         let mut last_retryable_error: Option<SubmitError> = None;
@@ -422,6 +476,32 @@ fn normalize_route_slippage_caps(route_caps: &BTreeMap<String, f64>) -> HashMap<
         .collect()
 }
 
+fn normalize_route_cu_limit(route_caps: &BTreeMap<String, u32>) -> HashMap<String, u32> {
+    route_caps
+        .iter()
+        .filter_map(|(route, value)| {
+            let route = normalize_route(route)?;
+            if *value == 0 || *value > 1_400_000 {
+                return None;
+            }
+            Some((route, *value))
+        })
+        .collect()
+}
+
+fn normalize_route_cu_price(route_caps: &BTreeMap<String, u64>) -> HashMap<String, u64> {
+    route_caps
+        .iter()
+        .filter_map(|(route, value)| {
+            let route = normalize_route(route)?;
+            if *value == 0 || *value > 10_000_000 {
+                return None;
+            }
+            Some((route, *value))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +522,14 @@ mod tests {
 
     fn make_route_caps(route: &str, cap: f64) -> BTreeMap<String, f64> {
         BTreeMap::from([(route.to_string(), cap)])
+    }
+
+    fn make_route_cu_limits(route: &str, value: u32) -> BTreeMap<String, u32> {
+        BTreeMap::from([(route.to_string(), value)])
+    }
+
+    fn make_route_cu_prices(route: &str, value: u64) -> BTreeMap<String, u64> {
+        BTreeMap::from([(route.to_string(), value)])
     }
 
     #[test]
@@ -510,6 +598,8 @@ mod tests {
             "",
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
             1_000,
             50.0,
         )
@@ -529,6 +619,24 @@ mod tests {
             "",
             &["rpc".to_string()],
             &make_route_caps("paper", 50.0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_requires_compute_budget_policy_for_allowed_route() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_cu_limits("paper", 300_000),
+            &make_route_cu_prices("paper", 1_000),
             1_000,
             50.0,
         );

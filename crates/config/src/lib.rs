@@ -57,6 +57,8 @@ pub struct ExecutionConfig {
     pub submit_adapter_auth_token: String,
     pub submit_allowed_routes: Vec<String>,
     pub submit_route_max_slippage_bps: BTreeMap<String, f64>,
+    pub submit_route_compute_unit_limit: BTreeMap<String, u32>,
+    pub submit_route_compute_unit_price_micro_lamports: BTreeMap<String, u64>,
     pub submit_timeout_ms: u64,
     pub execution_signer_pubkey: String,
     pub pretrade_min_sol_reserve: f64,
@@ -84,6 +86,11 @@ impl Default for ExecutionConfig {
             submit_adapter_auth_token: String::new(),
             submit_allowed_routes: vec!["paper".to_string()],
             submit_route_max_slippage_bps: BTreeMap::from([(String::from("paper"), 50.0)]),
+            submit_route_compute_unit_limit: BTreeMap::from([(String::from("paper"), 300_000)]),
+            submit_route_compute_unit_price_micro_lamports: BTreeMap::from([(
+                String::from("paper"),
+                1_000,
+            )]),
             submit_timeout_ms: 3_000,
             execution_signer_pubkey: String::new(),
             pretrade_min_sol_reserve: 0.05,
@@ -643,6 +650,58 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         }
         if !route_caps.is_empty() {
             config.execution.submit_route_max_slippage_bps = route_caps;
+        }
+    }
+    if let Ok(submit_route_compute_unit_limit_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT")
+    {
+        let mut route_limits = BTreeMap::new();
+        for token in submit_route_compute_unit_limit_csv.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let Some((route, value)) = token.split_once(':') else {
+                continue;
+            };
+            let route = route.trim().to_ascii_lowercase();
+            if route.is_empty() {
+                continue;
+            }
+            let Ok(value) = value.trim().parse::<u32>() else {
+                continue;
+            };
+            route_limits.insert(route, value);
+        }
+        if !route_limits.is_empty() {
+            config.execution.submit_route_compute_unit_limit = route_limits;
+        }
+    }
+    if let Ok(submit_route_compute_unit_price_micro_lamports_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS")
+    {
+        let mut route_prices = BTreeMap::new();
+        for token in submit_route_compute_unit_price_micro_lamports_csv.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let Some((route, value)) = token.split_once(':') else {
+                continue;
+            };
+            let route = route.trim().to_ascii_lowercase();
+            if route.is_empty() {
+                continue;
+            }
+            let Ok(value) = value.trim().parse::<u64>() else {
+                continue;
+            };
+            route_prices.insert(route, value);
+        }
+        if !route_prices.is_empty() {
+            config
+                .execution
+                .submit_route_compute_unit_price_micro_lamports = route_prices;
         }
     }
     if let Some(submit_timeout_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_TIMEOUT_MS")
