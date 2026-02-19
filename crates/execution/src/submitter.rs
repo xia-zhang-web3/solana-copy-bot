@@ -670,10 +670,13 @@ fn parse_adapter_submit_response(
         ));
     }
     let applied_tip_lamports = response_tip_lamports.unwrap_or(expected_tip_lamports);
-    let ata_create_rent_lamports = body.get("ata_create_rent_lamports").and_then(Value::as_u64);
-    let network_fee_lamports_hint = body.get("network_fee_lamports").and_then(Value::as_u64);
-    let base_fee_lamports_hint = body.get("base_fee_lamports").and_then(Value::as_u64);
-    let priority_fee_lamports_hint = body.get("priority_fee_lamports").and_then(Value::as_u64);
+    let ata_create_rent_lamports =
+        parse_optional_non_negative_u64_field(body, "ata_create_rent_lamports")?;
+    let network_fee_lamports_hint =
+        parse_optional_non_negative_u64_field(body, "network_fee_lamports")?;
+    let base_fee_lamports_hint = parse_optional_non_negative_u64_field(body, "base_fee_lamports")?;
+    let priority_fee_lamports_hint =
+        parse_optional_non_negative_u64_field(body, "priority_fee_lamports")?;
     let derived_network_fee_lamports_hint = if let (Some(base), Some(priority)) =
         (base_fee_lamports_hint, priority_fee_lamports_hint)
     {
@@ -790,6 +793,28 @@ fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value.trim())
         .ok()
         .map(|value| value.with_timezone(&Utc))
+}
+
+fn parse_optional_non_negative_u64_field(
+    body: &Value,
+    field: &str,
+) -> std::result::Result<Option<u64>, SubmitError> {
+    let Some(value) = body.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    if let Some(parsed) = value.as_u64() {
+        return Ok(Some(parsed));
+    }
+    Err(SubmitError::terminal(
+        "submit_adapter_invalid_response",
+        format!(
+            "adapter response {} must be a non-negative integer when present",
+            field
+        ),
+    ))
 }
 
 fn approx_f64_eq(left: f64, right: f64) -> bool {
@@ -1150,6 +1175,38 @@ mod tests {
             &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
         )
         .expect_err("network fee hint above i64 max must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_negative_fee_hint() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "network_fee_lamports": -1
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("negative fee hint must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_non_numeric_fee_hint() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "base_fee_lamports": "5000"
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("non-numeric fee hint must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_invalid_response");
     }

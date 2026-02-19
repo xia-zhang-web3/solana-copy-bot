@@ -2870,6 +2870,9 @@ async fn fetch_swap_from_signature(
 
     let mut program_ids = HeliusWsSource::extract_program_ids(result, meta, logs_hint);
     if program_ids.is_empty() {
+        runtime_config
+            .telemetry
+            .note_parse_fallback("missing_program_ids_fallback");
         program_ids.extend(runtime_config.interested_program_ids.iter().cloned());
     } else if !program_ids
         .iter()
