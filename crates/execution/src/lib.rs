@@ -50,6 +50,8 @@ pub struct ExecutionBatchReport {
     pub confirm_confirmed_by_route: BTreeMap<String, u64>,
     pub confirm_retry_scheduled_by_route: BTreeMap<String, u64>,
     pub confirm_failed_by_route: BTreeMap<String, u64>,
+    pub confirm_latency_samples_by_route: BTreeMap<String, u64>,
+    pub confirm_latency_ms_sum_by_route: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -842,6 +844,16 @@ impl ExecutionRuntime {
                     }
                 }
                 bump_route_counter(&mut report.confirm_confirmed_by_route, route);
+                bump_route_counter(&mut report.confirm_latency_samples_by_route, route);
+                let confirm_latency_ms = confirmed_at
+                    .signed_duration_since(submit_ts)
+                    .num_milliseconds()
+                    .max(0) as u64;
+                accumulate_route_sum(
+                    &mut report.confirm_latency_ms_sum_by_route,
+                    route,
+                    confirm_latency_ms,
+                );
                 Ok(SignalResult::Confirmed)
             }
             ConfirmationStatus::Failed => {
@@ -1035,6 +1047,14 @@ fn bump_route_counter(counters: &mut BTreeMap<String, u64>, route: &str) {
     }
     let entry = counters.entry(route.to_string()).or_insert(0);
     *entry = entry.saturating_add(1);
+}
+
+fn accumulate_route_sum(counters: &mut BTreeMap<String, u64>, route: &str, value: u64) {
+    if route.trim().is_empty() {
+        return;
+    }
+    let entry = counters.entry(route.to_string()).or_insert(0);
+    *entry = entry.saturating_add(value);
 }
 
 #[cfg(test)]
@@ -1283,6 +1303,18 @@ mod tests {
             Some(&1),
             "confirmed order should be attributed to paper route"
         );
+        assert_eq!(
+            report.confirm_latency_samples_by_route.get("paper"),
+            Some(&1),
+            "confirmed order should record one latency sample for paper route"
+        );
+        assert!(
+            report
+                .confirm_latency_ms_sum_by_route
+                .get("paper")
+                .is_some(),
+            "confirmed order should record latency sum for paper route"
+        );
 
         let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
         assert_eq!(confirmed.len(), 1);
@@ -1338,6 +1370,18 @@ mod tests {
             report.confirm_confirmed_by_route.get("paper"),
             Some(&1),
             "confirmed submitted order should be attributed to stored route"
+        );
+        assert_eq!(
+            report.confirm_latency_samples_by_route.get("paper"),
+            Some(&1),
+            "confirmed submitted order should record one latency sample"
+        );
+        assert!(
+            report
+                .confirm_latency_ms_sum_by_route
+                .get("paper")
+                .is_some(),
+            "confirmed submitted order should record latency sum"
         );
 
         let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
@@ -1524,6 +1568,15 @@ mod tests {
             second.confirm_confirmed_by_route.get("rpc"),
             Some(&1),
             "confirmed fallback order should be attributed to rpc route"
+        );
+        assert_eq!(
+            second.confirm_latency_samples_by_route.get("rpc"),
+            Some(&1),
+            "confirmed fallback order should record one latency sample for rpc route"
+        );
+        assert!(
+            second.confirm_latency_ms_sum_by_route.get("rpc").is_some(),
+            "confirmed fallback order should record latency sum for rpc route"
         );
         let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
         assert_eq!(observed_routes, vec!["jito".to_string(), "rpc".to_string()]);

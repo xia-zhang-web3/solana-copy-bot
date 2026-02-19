@@ -1827,7 +1827,9 @@ async fn run_app_loop(
                                 || !report.pretrade_failed_by_route.is_empty()
                                 || !report.confirm_confirmed_by_route.is_empty()
                                 || !report.confirm_retry_scheduled_by_route.is_empty()
-                                || !report.confirm_failed_by_route.is_empty();
+                                || !report.confirm_failed_by_route.is_empty()
+                                || !report.confirm_latency_samples_by_route.is_empty()
+                                || !report.confirm_latency_ms_sum_by_route.is_empty();
                             info!(
                                 attempted = report.attempted,
                                 confirmed = report.confirmed,
@@ -1843,6 +1845,8 @@ async fn run_app_loop(
                                 confirm_confirmed_by_route = ?report.confirm_confirmed_by_route,
                                 confirm_retry_scheduled_by_route = ?report.confirm_retry_scheduled_by_route,
                                 confirm_failed_by_route = ?report.confirm_failed_by_route,
+                                confirm_latency_samples_by_route = ?report.confirm_latency_samples_by_route,
+                                confirm_latency_ms_sum_by_route = ?report.confirm_latency_ms_sum_by_route,
                                 has_route_metrics,
                                 "execution batch processed"
                             );
