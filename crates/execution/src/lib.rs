@@ -123,7 +123,13 @@ impl ExecutionRuntime {
                     config.poll_interval_ms.max(500),
                 ) {
                     Some(value) => Box::new(value),
-                    None => Box::new(PaperOrderConfirmer),
+                    None => {
+                        warn!(
+                            mode = "paper_rpc_confirm",
+                            "rpc confirmer init failed; falling back to PaperOrderConfirmer"
+                        );
+                        Box::new(PaperOrderConfirmer)
+                    }
                 };
                 (
                     Box::new(PaperPreTradeChecker),
@@ -155,7 +161,13 @@ impl ExecutionRuntime {
                     config.poll_interval_ms.max(500),
                 ) {
                     Some(value) => Box::new(value),
-                    None => Box::new(PaperOrderConfirmer),
+                    None => {
+                        warn!(
+                            mode = "paper_rpc_pretrade_confirm",
+                            "rpc confirmer init failed; falling back to PaperOrderConfirmer"
+                        );
+                        Box::new(PaperOrderConfirmer)
+                    }
                 };
                 (
                     pretrade,
@@ -273,13 +285,23 @@ impl ExecutionRuntime {
 
         let mut seen = HashSet::new();
         let mut candidates = Vec::new();
+        let prioritize_sell_pre_submit = buy_submit_pause_reason.is_some();
         for status in [
             "execution_submitted",
             "execution_simulated",
             "execution_pending",
             "shadow_recorded",
         ] {
-            for signal in store.list_copy_signals_by_status(status, self.batch_size)? {
+            let prioritize_sell_for_status =
+                prioritize_sell_pre_submit && self.is_pre_submit_status(status);
+            for signal in store.list_copy_signals_by_status_with_side_priority(
+                status,
+                self.batch_size,
+                prioritize_sell_for_status,
+            )? {
+                if prioritize_sell_for_status && signal.side.eq_ignore_ascii_case("buy") {
+                    continue;
+                }
                 if seen.insert(signal.signal_id.clone()) {
                     candidates.push(signal);
                 }
@@ -796,7 +818,7 @@ impl ExecutionRuntime {
                         (price.max(1e-9), false, None)
                     }
                     _ => {
-                        let fallback = store
+                        let open_position_avg_cost = store
                             .live_open_position_qty_cost(&intent.token)?
                             .and_then(|(qty, cost_sol)| {
                                 if qty > 1e-9 && cost_sol > 0.0 {
@@ -804,13 +826,8 @@ impl ExecutionRuntime {
                                 } else {
                                     None
                                 }
-                            })
-                            .unwrap_or(1.0);
-                        let source = if fallback == 1.0 {
-                            "fixed_1_sol".to_string()
-                        } else {
-                            "open_position_avg_cost".to_string()
-                        };
+                            });
+                        let (fallback, source) = fallback_price_and_source(open_position_avg_cost);
                         warn!(
                             signal_id = %intent.signal_id,
                             token = %intent.token,
@@ -1058,6 +1075,13 @@ fn build_submit_route_order(
     }
 }
 
+fn fallback_price_and_source(open_position_avg_cost: Option<f64>) -> (f64, String) {
+    match open_position_avg_cost {
+        Some(avg_cost) => (avg_cost.max(1e-9), "open_position_avg_cost".to_string()),
+        None => (1.0, "fixed_1_sol".to_string()),
+    }
+}
+
 fn bump_route_counter(counters: &mut BTreeMap<String, u64>, route: &str) {
     if route.trim().is_empty() {
         return;
@@ -1288,6 +1312,127 @@ mod tests {
     }
 
     #[test]
+    fn fallback_price_and_source_keeps_open_position_label_when_avg_cost_is_exactly_one() {
+        let (avg_price, source) = fallback_price_and_source(Some(1.0));
+        assert!((avg_price - 1.0).abs() < 1e-12);
+        assert_eq!(source, "open_position_avg_cost");
+
+        let (avg_price, source) = fallback_price_and_source(None);
+        assert!((avg_price - 1.0).abs() < 1e-12);
+        assert_eq!(source, "fixed_1_sol");
+    }
+
+    #[test]
+    fn process_batch_prioritizes_sell_when_buy_submit_is_paused() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-buy-pause-sell-priority")?;
+        let now = Utc::now();
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:pause:w:buy:old".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now - Duration::seconds(10),
+            status: "shadow_recorded".to_string(),
+        })?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:pause:w:sell:new".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "sell".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 1.0;
+        risk.max_total_exposure_sol = 2.0;
+        risk.max_exposure_per_token_sol = 1.0;
+        risk.max_concurrent_positions = 10;
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 1;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, Some("operator_stop"))?;
+        assert_eq!(report.attempted, 1);
+        assert_eq!(
+            report.skipped, 0,
+            "paused BUY must not consume the only batch slot when SELL is pending"
+        );
+        assert_eq!(
+            report.dropped, 1,
+            "SELL without open position should be processed and dropped by risk gate"
+        );
+
+        let dropped = store.list_copy_signals_by_status("execution_dropped", 10)?;
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].side, "sell");
+
+        let still_shadow = store.list_copy_signals_by_status("shadow_recorded", 10)?;
+        assert_eq!(still_shadow.len(), 1);
+        assert_eq!(still_shadow[0].side, "buy");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_skips_paused_pre_submit_buys_across_status_priority() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-buy-pause-status-priority")?;
+        let now = Utc::now();
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:pause2:w:buy:pending".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now - Duration::seconds(20),
+            status: "execution_pending".to_string(),
+        })?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:pause2:w:sell:shadow".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "sell".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now - Duration::seconds(5),
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 1.0;
+        risk.max_total_exposure_sol = 2.0;
+        risk.max_exposure_per_token_sol = 1.0;
+        risk.max_concurrent_positions = 10;
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 1;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, Some("hard_stop"))?;
+        assert_eq!(report.attempted, 1);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(
+            report.dropped, 1,
+            "SELL from lower-priority status must be processed instead of paused BUY from higher-priority pre-submit status"
+        );
+
+        let dropped = store.list_copy_signals_by_status("execution_dropped", 10)?;
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].side, "sell");
+        let still_pending = store.list_copy_signals_by_status("execution_pending", 10)?;
+        assert_eq!(still_pending.len(), 1);
+        assert_eq!(still_pending[0].side, "buy");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_confirms_shadow_recorded_signal() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm")?;
         let now = Utc::now();
@@ -1433,8 +1578,9 @@ mod tests {
         let runtime = ExecutionRuntime::from_config(execution, risk);
 
         let report = runtime.process_batch(&store, Utc::now(), Some("hard_stop"))?;
+        assert_eq!(report.attempted, 0);
         assert_eq!(report.confirmed, 0);
-        assert_eq!(report.skipped, 1);
+        assert_eq!(report.skipped, 0);
 
         let still_shadow = store.list_copy_signals_by_status("shadow_recorded", 10)?;
         assert_eq!(still_shadow.len(), 1);

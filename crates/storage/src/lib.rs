@@ -793,15 +793,31 @@ impl SqliteStore {
         status: &str,
         limit: u32,
     ) -> Result<Vec<CopySignalRow>> {
+        self.list_copy_signals_by_status_with_side_priority(status, limit, false)
+    }
+
+    pub fn list_copy_signals_by_status_with_side_priority(
+        &self,
+        status: &str,
+        limit: u32,
+        prioritize_sell: bool,
+    ) -> Result<Vec<CopySignalRow>> {
+        let query = if prioritize_sell {
+            "SELECT signal_id, wallet_id, side, token, notional_sol, ts, status
+             FROM copy_signals
+             WHERE status = ?1
+             ORDER BY CASE WHEN lower(side) = 'sell' THEN 0 ELSE 1 END, ts ASC
+             LIMIT ?2"
+        } else {
+            "SELECT signal_id, wallet_id, side, token, notional_sol, ts, status
+             FROM copy_signals
+             WHERE status = ?1
+             ORDER BY ts ASC
+             LIMIT ?2"
+        };
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT signal_id, wallet_id, side, token, notional_sol, ts, status
-                 FROM copy_signals
-                 WHERE status = ?1
-                 ORDER BY ts ASC
-                 LIMIT ?2",
-            )
+            .prepare(query)
             .context("failed to prepare copy_signals by status query")?;
         let mut rows = stmt
             .query(params![status, limit.max(1) as i64])

@@ -359,6 +359,7 @@ struct IngestionTelemetry {
     stream_gap_detected: AtomicU64,
     parse_rejected_total: AtomicU64,
     parse_rejected_by_reason: Mutex<BTreeMap<&'static str, u64>>,
+    parse_fallback_by_reason: Mutex<BTreeMap<&'static str, u64>>,
     grpc_message_total: AtomicU64,
     grpc_decode_errors: AtomicU64,
     fetch_inflight: AtomicU64,
@@ -391,6 +392,7 @@ impl Default for IngestionTelemetry {
             stream_gap_detected: AtomicU64::new(0),
             parse_rejected_total: AtomicU64::new(0),
             parse_rejected_by_reason: Mutex::new(BTreeMap::new()),
+            parse_fallback_by_reason: Mutex::new(BTreeMap::new()),
             grpc_message_total: AtomicU64::new(0),
             grpc_decode_errors: AtomicU64::new(0),
             fetch_inflight: AtomicU64::new(0),
@@ -451,6 +453,13 @@ impl IngestionTelemetry {
         }
     }
 
+    fn note_parse_fallback(&self, reason: &'static str) {
+        if let Ok(mut guard) = self.parse_fallback_by_reason.lock() {
+            let entry = guard.entry(reason).or_insert(0);
+            *entry = entry.saturating_add(1);
+        }
+    }
+
     fn maybe_report(
         &self,
         report_seconds: u64,
@@ -496,6 +505,12 @@ impl IngestionTelemetry {
             .ok()
             .map(|values| values.clone())
             .unwrap_or_default();
+        let parse_fallback_by_reason = self
+            .parse_fallback_by_reason
+            .lock()
+            .ok()
+            .map(|values| values.clone())
+            .unwrap_or_default();
         let ingestion_lag_ms_p95 = percentile(&lag_samples, 0.95);
         self.last_ingestion_lag_p95
             .store(ingestion_lag_ms_p95, Ordering::Relaxed);
@@ -513,6 +528,7 @@ impl IngestionTelemetry {
             stream_gap_detected = self.stream_gap_detected.load(Ordering::Relaxed),
             parse_rejected_total = self.parse_rejected_total.load(Ordering::Relaxed),
             parse_rejected_by_reason = ?parse_rejected_by_reason,
+            parse_fallback_by_reason = ?parse_fallback_by_reason,
             grpc_message_total = self.grpc_message_total.load(Ordering::Relaxed),
             grpc_decode_errors = self.grpc_decode_errors.load(Ordering::Relaxed),
             ws_to_fetch_queue_depth,
@@ -560,6 +576,18 @@ impl IngestionTelemetry {
 
 fn classify_parse_reject_reason(error: &anyhow::Error) -> &'static str {
     let lowered = error.to_string().to_ascii_lowercase();
+    if lowered.contains("missing slot") {
+        return "missing_slot";
+    }
+    if lowered.contains("missing status") {
+        return "missing_status";
+    }
+    if lowered.contains("missing signer") {
+        return "missing_signer";
+    }
+    if lowered.contains("missing program ids") {
+        return "missing_program_ids";
+    }
     if lowered.contains("missing transaction signature") {
         return "missing_signature";
     }
@@ -1723,23 +1751,32 @@ async fn yellowstone_stream_loop(
                 continue;
             }
         };
-        let tls_config = ClientTlsConfig::new().with_native_roots();
-        let builder = match builder.tls_config(tls_config) {
-            Ok(builder) => builder,
-            Err(error) => {
-                runtime_config
-                    .telemetry
-                    .reconnect_count
-                    .fetch_add(1, Ordering::Relaxed);
-                warn!(error = ?error, "invalid yellowstone TLS config");
-                sleep_with_backoff(
-                    &mut next_backoff_ms,
-                    runtime_config.reconnect_initial_ms,
-                    runtime_config.reconnect_max_ms,
-                )
-                .await;
-                continue;
+        let use_tls = runtime_config
+            .grpc_url
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("https://");
+        let builder = if use_tls {
+            let tls_config = ClientTlsConfig::new().with_native_roots();
+            match builder.tls_config(tls_config) {
+                Ok(builder) => builder,
+                Err(error) => {
+                    runtime_config
+                        .telemetry
+                        .reconnect_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    warn!(error = ?error, "invalid yellowstone TLS config");
+                    sleep_with_backoff(
+                        &mut next_backoff_ms,
+                        runtime_config.reconnect_initial_ms,
+                        runtime_config.reconnect_max_ms,
+                    )
+                    .await;
+                    continue;
+                }
             }
+        } else {
+            builder
         };
         let mut client = match builder
             .connect_timeout(Duration::from_millis(runtime_config.connect_timeout_ms))
@@ -2026,40 +2063,49 @@ fn parse_yellowstone_transaction_update(
     created_at: Option<yellowstone_grpc_proto::prost_types::Timestamp>,
     runtime_config: &YellowstoneRuntimeConfig,
 ) -> Result<Option<RawSwapObservation>> {
+    if tx_update.slot == 0 {
+        return Err(anyhow!("missing slot in yellowstone update"));
+    }
     let Some(tx_info) = tx_update.transaction else {
-        return Ok(None);
+        return Err(anyhow!("missing status in yellowstone update"));
     };
     if tx_info.is_vote {
         return Ok(None);
     }
 
     let Some(meta) = tx_info.meta.as_ref() else {
-        return Ok(None);
+        return Err(anyhow!("missing status in yellowstone update"));
     };
     if tx_meta_has_error(meta) {
         return Ok(None);
     }
 
     let Some(transaction) = tx_info.transaction.as_ref() else {
-        return Ok(None);
+        return Err(anyhow!("missing signer in yellowstone update"));
     };
     let Some(message) = transaction.message.as_ref() else {
-        return Ok(None);
+        return Err(anyhow!("missing signer in yellowstone update"));
     };
 
     let account_keys = proto_account_keys(message, meta);
     if account_keys.is_empty() {
-        return Ok(None);
+        return Err(anyhow!("missing signer in yellowstone update"));
     }
 
     let signer_index = 0;
     let signer = account_keys.get(signer_index).cloned().unwrap_or_default();
     if signer.is_empty() {
-        return Ok(None);
+        return Err(anyhow!("missing signer in yellowstone update"));
     }
 
     let mut program_ids = extract_program_ids_from_proto(message, meta, &account_keys);
     if program_ids.is_empty() {
+        if runtime_config.interested_program_ids.is_empty() {
+            return Err(anyhow!("missing program ids in yellowstone update"));
+        }
+        runtime_config
+            .telemetry
+            .note_parse_fallback("missing_program_ids");
         program_ids.extend(runtime_config.interested_program_ids.iter().cloned());
     } else if !program_ids
         .iter()
@@ -3080,6 +3126,22 @@ mod tests {
     #[test]
     fn classify_parse_reject_reason_maps_known_patterns() {
         assert_eq!(
+            classify_parse_reject_reason(&anyhow!("missing slot in yellowstone update")),
+            "missing_slot"
+        );
+        assert_eq!(
+            classify_parse_reject_reason(&anyhow!("missing status in yellowstone update")),
+            "missing_status"
+        );
+        assert_eq!(
+            classify_parse_reject_reason(&anyhow!("missing signer in yellowstone update")),
+            "missing_signer"
+        );
+        assert_eq!(
+            classify_parse_reject_reason(&anyhow!("missing program ids in yellowstone update")),
+            "missing_program_ids"
+        );
+        assert_eq!(
             classify_parse_reject_reason(&anyhow!("missing transaction signature in update")),
             "missing_signature"
         );
@@ -3104,16 +3166,31 @@ mod tests {
     #[test]
     fn note_parse_rejected_tracks_reason_breakdown() {
         let telemetry = IngestionTelemetry::default();
+        telemetry.note_parse_rejected(&anyhow!("missing signer in yellowstone update"));
         telemetry.note_parse_rejected(&anyhow!("missing transaction signature in update"));
         telemetry.note_parse_rejected(&anyhow!("unclassified parser issue"));
 
-        assert_eq!(telemetry.parse_rejected_total.load(Ordering::Relaxed), 2);
+        assert_eq!(telemetry.parse_rejected_total.load(Ordering::Relaxed), 3);
         let reasons = telemetry
             .parse_rejected_by_reason
             .lock()
             .expect("parse_rejected_by_reason mutex should be available");
+        assert_eq!(reasons.get("missing_signer"), Some(&1));
         assert_eq!(reasons.get("missing_signature"), Some(&1));
         assert_eq!(reasons.get("other"), Some(&1));
+    }
+
+    #[test]
+    fn note_parse_fallback_tracks_reason_breakdown() {
+        let telemetry = IngestionTelemetry::default();
+        telemetry.note_parse_fallback("missing_program_ids");
+        telemetry.note_parse_fallback("missing_program_ids");
+
+        let reasons = telemetry
+            .parse_fallback_by_reason
+            .lock()
+            .expect("parse_fallback_by_reason mutex should be available");
+        assert_eq!(reasons.get("missing_program_ids"), Some(&2));
     }
 
     #[test]

@@ -48,13 +48,10 @@ async fn main() -> Result<()> {
     let cli_config = parse_config_arg();
     let default_path = cli_config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
     let (mut config, loaded_config_path) = load_from_env_or_default(&default_path)?;
-    let mut applied_source_override: Option<String> = None;
-    if env::var("SOLANA_COPY_BOT_INGESTION_SOURCE").is_err() {
-        if let Some(source_override) = load_ingestion_source_override() {
-            config.ingestion.source = source_override.clone();
-            applied_source_override = Some(source_override);
-        }
-    }
+    let applied_source_override = apply_ingestion_source_override(
+        &mut config.ingestion.source,
+        load_ingestion_source_override(),
+    );
     resolve_execution_adapter_secrets(&mut config.execution, loaded_config_path.as_path())?;
 
     init_tracing(&config.system.log_level, config.system.log_json);
@@ -66,7 +63,7 @@ async fn main() -> Result<()> {
     if let Some(source_override) = applied_source_override.as_deref() {
         info!(
             source = %source_override,
-            "applying ingestion source override from failover file"
+            "applying ingestion source override from failover file (override has highest priority)"
         );
     }
     validate_execution_runtime_contract(&config.execution, &config.system.env)?;
@@ -152,6 +149,17 @@ fn load_ingestion_source_override() -> Option<String> {
         .unwrap_or_else(|_| DEFAULT_INGESTION_OVERRIDE_PATH.to_string());
     let content = fs::read_to_string(&override_path).ok()?;
     parse_ingestion_source_override(&content)
+}
+
+fn apply_ingestion_source_override(
+    ingestion_source: &mut String,
+    source_override: Option<String>,
+) -> Option<String> {
+    if let Some(source_override) = source_override {
+        *ingestion_source = source_override.clone();
+        return Some(source_override);
+    }
+    None
 }
 
 fn resolve_execution_adapter_secrets(
@@ -829,6 +837,131 @@ fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
         return Err(anyhow!(
             "risk.max_copy_delay_sec must be >= 1, got {}",
             config.max_copy_delay_sec
+        ));
+    }
+
+    if !config.shadow_soft_exposure_cap_sol.is_finite()
+        || config.shadow_soft_exposure_cap_sol <= 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_soft_exposure_cap_sol must be finite and > 0, got {}",
+            config.shadow_soft_exposure_cap_sol
+        ));
+    }
+    if !config.shadow_hard_exposure_cap_sol.is_finite()
+        || config.shadow_hard_exposure_cap_sol <= 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_hard_exposure_cap_sol must be finite and > 0, got {}",
+            config.shadow_hard_exposure_cap_sol
+        ));
+    }
+    if config.shadow_hard_exposure_cap_sol < config.shadow_soft_exposure_cap_sol {
+        return Err(anyhow!(
+            "risk.shadow_hard_exposure_cap_sol ({}) must be >= risk.shadow_soft_exposure_cap_sol ({})",
+            config.shadow_hard_exposure_cap_sol,
+            config.shadow_soft_exposure_cap_sol
+        ));
+    }
+    if config.shadow_killswitch_enabled && config.shadow_soft_pause_minutes == 0 {
+        return Err(anyhow!(
+            "risk.shadow_soft_pause_minutes must be >= 1 when risk.shadow_killswitch_enabled=true"
+        ));
+    }
+
+    if !config.shadow_drawdown_1h_stop_sol.is_finite()
+        || !config.shadow_drawdown_6h_stop_sol.is_finite()
+        || !config.shadow_drawdown_24h_stop_sol.is_finite()
+    {
+        return Err(anyhow!(
+            "risk.shadow_drawdown_*_stop_sol values must be finite (1h={}, 6h={}, 24h={})",
+            config.shadow_drawdown_1h_stop_sol,
+            config.shadow_drawdown_6h_stop_sol,
+            config.shadow_drawdown_24h_stop_sol
+        ));
+    }
+    if config.shadow_drawdown_1h_stop_sol > 0.0
+        || config.shadow_drawdown_6h_stop_sol > 0.0
+        || config.shadow_drawdown_24h_stop_sol > 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_drawdown_*_stop_sol values must be <= 0 (1h={}, 6h={}, 24h={})",
+            config.shadow_drawdown_1h_stop_sol,
+            config.shadow_drawdown_6h_stop_sol,
+            config.shadow_drawdown_24h_stop_sol
+        ));
+    }
+    if !(config.shadow_drawdown_1h_stop_sol >= config.shadow_drawdown_6h_stop_sol
+        && config.shadow_drawdown_6h_stop_sol >= config.shadow_drawdown_24h_stop_sol)
+    {
+        return Err(anyhow!(
+            "risk shadow drawdown ordering is invalid: expected 1h >= 6h >= 24h, got 1h={}, 6h={}, 24h={}",
+            config.shadow_drawdown_1h_stop_sol,
+            config.shadow_drawdown_6h_stop_sol,
+            config.shadow_drawdown_24h_stop_sol
+        ));
+    }
+    if config.shadow_killswitch_enabled
+        && (config.shadow_drawdown_1h_pause_minutes == 0
+            || config.shadow_drawdown_6h_pause_minutes == 0)
+    {
+        return Err(anyhow!(
+            "risk.shadow_drawdown_1h_pause_minutes and risk.shadow_drawdown_6h_pause_minutes must be >= 1 when risk.shadow_killswitch_enabled=true"
+        ));
+    }
+
+    if !config.shadow_rug_loss_return_threshold.is_finite()
+        || config.shadow_rug_loss_return_threshold >= 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_rug_loss_return_threshold must be finite and < 0, got {}",
+            config.shadow_rug_loss_return_threshold
+        ));
+    }
+    if config.shadow_rug_loss_window_minutes == 0
+        || config.shadow_rug_loss_count_threshold == 0
+        || config.shadow_rug_loss_rate_sample_size == 0
+    {
+        return Err(anyhow!(
+            "risk.shadow_rug_loss_window_minutes/count_threshold/rate_sample_size must be >= 1"
+        ));
+    }
+    if !config.shadow_rug_loss_rate_threshold.is_finite()
+        || config.shadow_rug_loss_rate_threshold <= 0.0
+        || config.shadow_rug_loss_rate_threshold > 1.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_rug_loss_rate_threshold must be finite and in (0, 1], got {}",
+            config.shadow_rug_loss_rate_threshold
+        ));
+    }
+
+    if config.shadow_infra_window_minutes == 0 || config.shadow_infra_lag_breach_minutes == 0 {
+        return Err(anyhow!(
+            "risk.shadow_infra_window_minutes and risk.shadow_infra_lag_breach_minutes must be >= 1"
+        ));
+    }
+    if config.shadow_infra_lag_p95_threshold_ms == 0 {
+        return Err(anyhow!(
+            "risk.shadow_infra_lag_p95_threshold_ms must be >= 1"
+        ));
+    }
+    if !config.shadow_infra_replaced_ratio_threshold.is_finite()
+        || config.shadow_infra_replaced_ratio_threshold <= 0.0
+        || config.shadow_infra_replaced_ratio_threshold > 1.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_infra_replaced_ratio_threshold must be finite and in (0, 1], got {}",
+            config.shadow_infra_replaced_ratio_threshold
+        ));
+    }
+
+    if config.shadow_universe_min_active_follow_wallets == 0
+        || config.shadow_universe_min_eligible_wallets == 0
+        || config.shadow_universe_breach_cycles == 0
+    {
+        return Err(anyhow!(
+            "risk.shadow_universe_min_active_follow_wallets/min_eligible_wallets/breach_cycles must be >= 1"
         ));
     }
     Ok(())
@@ -3330,6 +3463,36 @@ mod app_tests {
     }
 
     #[test]
+    fn validate_execution_risk_contract_rejects_invalid_shadow_caps() {
+        let mut risk = RiskConfig::default();
+        risk.shadow_soft_exposure_cap_sol = f64::NAN;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("non-finite shadow soft cap must fail risk contract");
+        assert!(
+            error
+                .to_string()
+                .contains("risk.shadow_soft_exposure_cap_sol"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_risk_contract_rejects_invalid_shadow_drawdown_order() {
+        let mut risk = RiskConfig::default();
+        risk.shadow_drawdown_1h_stop_sol = -4.0;
+        risk.shadow_drawdown_6h_stop_sol = -1.0;
+        risk.shadow_drawdown_24h_stop_sol = -5.0;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("invalid drawdown threshold order must fail");
+        assert!(
+            error.to_string().contains("drawdown ordering is invalid"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
     fn risk_guard_infra_ratio_uses_window_delta_not_cumulative() -> Result<()> {
         let (store, db_path) = make_test_store("infra-ratio")?;
         let mut cfg = RiskConfig::default();
@@ -4206,6 +4369,14 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=
 this-is-not-a-valid-line
 "#;
         assert!(parse_ingestion_source_override(content).is_none());
+    }
+
+    #[test]
+    fn apply_ingestion_source_override_has_priority_over_existing_source() {
+        let mut source = "yellowstone_grpc".to_string();
+        let applied = apply_ingestion_source_override(&mut source, Some("helius_ws".to_string()));
+        assert_eq!(applied.as_deref(), Some("helius_ws"));
+        assert_eq!(source, "helius_ws");
     }
 
     #[test]

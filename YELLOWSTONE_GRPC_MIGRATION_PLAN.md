@@ -21,7 +21,7 @@ Repository/runtime alignment:
 
 1. `configs/paper.toml` is currently set to `source = "yellowstone_grpc"` to mirror current primary runtime profile.
 2. `configs/prod.toml` still keeps `helius_ws` and serves as conservative rollback profile template.
-3. Runtime source selection can still be overridden by env/failover override file.
+3. Runtime source selection can still be overridden by env/failover override file; failover override file has highest priority on startup and overrides config/env source selection when present.
 4. Migration remains in observation mode until section 16 DoD is fully satisfied.
 5. Cross-plan update (2026-02-19):
    1. safety backlog items `R2P-06` and `R2P-16` are implemented in runtime (`crates/app/src/main.rs`) — operator file-flag emergency stop and active wiring of `pause_new_trades_on_outage`;
@@ -502,7 +502,7 @@ Mapping template (must be filled during Phase A):
 | pre_sol_balances | `SubscribeUpdateTransaction.transaction.meta.pre_balances[signer_index]` | no | none | `missing_pre_sol_balances` | signer lamports / 1e9 |
 | post_sol_balances | `SubscribeUpdateTransaction.transaction.meta.post_balances[signer_index]` | no | none | `missing_post_sol_balances` | signer lamports / 1e9 |
 | block_time | `SubscribeUpdate.created_at` | no | `Utc::now()` for lag baseline | `missing_block_time` | protobuf `Timestamp` on envelope update |
-| program_ids | `message.instructions[].program_id_index` + `meta.inner_instructions[].instructions[].program_id_index` (+ `meta.log_messages[]` extraction) | yes | if extracted set is empty, seed with runtime `interested_program_ids` | `missing_program_ids` | subscribe filter also enforces `transactions["copybot-swaps"].account_include = interested_program_ids`, `commitment = confirmed`, `vote=false`, `failed=false` |
+| program_ids | `message.instructions[].program_id_index` + `meta.inner_instructions[].instructions[].program_id_index` (+ `meta.log_messages[]` extraction) | yes | if extracted set is empty, seed with runtime `interested_program_ids` and increment fallback reason counter | `missing_program_ids_fallback` | subscribe filter also enforces `transactions["copybot-swaps"].account_include = interested_program_ids`, `commitment = confirmed`, `vote=false`, `failed=false` |
 
 Required invariants:
 

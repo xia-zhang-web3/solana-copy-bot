@@ -87,6 +87,12 @@ Environment=SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE=/var/www/solana-copy-bot/sta
 EnvironmentFile=-/var/www/solana-copy-bot/state/ingestion_source_override.env
 ```
 
+Important:
+
+1. Do not pin `SOLANA_COPY_BOT_INGESTION_SOURCE=...` as a static service `Environment=` value when using watchdog failover.
+2. Source routing should come from config + optional override file so watchdog can switch source via file write + restart.
+3. Runtime startup applies override-file value after config/env resolution, so override file value wins when present.
+
 Quick verification:
 
 ```bash
