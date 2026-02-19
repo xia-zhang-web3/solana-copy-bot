@@ -47,6 +47,9 @@ pub struct ExecutionBatchReport {
     pub pretrade_retry_scheduled_by_route: BTreeMap<String, u64>,
     pub pretrade_terminal_rejected_by_route: BTreeMap<String, u64>,
     pub pretrade_failed_by_route: BTreeMap<String, u64>,
+    pub confirm_confirmed_by_route: BTreeMap<String, u64>,
+    pub confirm_retry_scheduled_by_route: BTreeMap<String, u64>,
+    pub confirm_failed_by_route: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,7 +441,9 @@ impl ExecutionRuntime {
             "execution_simulated" => {
                 self.process_simulated_order(store, &intent, &client_order_id, &order, now, report)
             }
-            "execution_submitted" => self.process_submitted_order(store, &intent, &order, now),
+            "execution_submitted" => {
+                self.process_submitted_order(store, &intent, &order, now, report)
+            }
             other => {
                 let details = json!({
                     "signal_id": intent.signal_id,
@@ -679,9 +684,11 @@ impl ExecutionRuntime {
             store,
             intent,
             &order.order_id,
+            submit.route.as_str(),
             submit.tx_signature.as_str(),
             submit.submitted_at,
             now,
+            report,
         )
     }
 
@@ -691,6 +698,7 @@ impl ExecutionRuntime {
         intent: &ExecutionIntent,
         order: &copybot_storage::ExecutionOrderRow,
         now: DateTime<Utc>,
+        report: &mut ExecutionBatchReport,
     ) -> Result<SignalResult> {
         let tx_signature = order.tx_signature.as_deref().unwrap_or_default().trim();
         if tx_signature.is_empty() {
@@ -700,15 +708,18 @@ impl ExecutionRuntime {
                 Some("execution_submitted order missing tx_signature"),
             )?;
             store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+            bump_route_counter(&mut report.confirm_failed_by_route, order.route.as_str());
             return Ok(SignalResult::Failed);
         }
         self.process_submitted_order_by_signature(
             store,
             intent,
             &order.order_id,
+            order.route.as_str(),
             tx_signature,
             order.submit_ts,
             now,
+            report,
         )
     }
 
@@ -717,15 +728,18 @@ impl ExecutionRuntime {
         store: &SqliteStore,
         intent: &ExecutionIntent,
         order_id: &str,
+        route: &str,
         tx_signature: &str,
         submit_ts: DateTime<Utc>,
         now: DateTime<Utc>,
+        report: &mut ExecutionBatchReport,
     ) -> Result<SignalResult> {
         let deadline = submit_ts + Duration::seconds(self.max_confirm_seconds as i64);
         let confirm = match self.confirmer.confirm(tx_signature, deadline) {
             Ok(value) => value,
             Err(error) => {
                 if now < deadline {
+                    bump_route_counter(&mut report.confirm_retry_scheduled_by_route, route);
                     warn!(
                         signal_id = %intent.signal_id,
                         order_id,
@@ -746,6 +760,7 @@ impl ExecutionRuntime {
                 );
                 store.mark_order_failed(order_id, err_code, Some(&detail))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                bump_route_counter(&mut report.confirm_failed_by_route, route);
                 let details = json!({
                     "signal_id": intent.signal_id,
                     "order_id": order_id,
@@ -803,6 +818,7 @@ impl ExecutionRuntime {
                             now,
                             Some(&details),
                         );
+                        bump_route_counter(&mut report.confirm_failed_by_route, route);
                         return Ok(SignalResult::Failed);
                     }
                 };
@@ -825,6 +841,7 @@ impl ExecutionRuntime {
                             .update_copy_signal_status(&intent.signal_id, "execution_confirmed")?;
                     }
                 }
+                bump_route_counter(&mut report.confirm_confirmed_by_route, route);
                 Ok(SignalResult::Confirmed)
             }
             ConfirmationStatus::Failed => {
@@ -834,10 +851,12 @@ impl ExecutionRuntime {
                     Some(confirm.detail.as_str()),
                 )?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                bump_route_counter(&mut report.confirm_failed_by_route, route);
                 Ok(SignalResult::Failed)
             }
             ConfirmationStatus::Timeout => {
                 if now < deadline {
+                    bump_route_counter(&mut report.confirm_retry_scheduled_by_route, route);
                     return Ok(SignalResult::Skipped);
                 }
                 let manual_reconcile_required = self.manual_reconcile_required_on_confirm_failure;
@@ -848,6 +867,7 @@ impl ExecutionRuntime {
                 };
                 store.mark_order_failed(order_id, err_code, Some(confirm.detail.as_str()))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                bump_route_counter(&mut report.confirm_failed_by_route, route);
                 if manual_reconcile_required {
                     let details = json!({
                         "signal_id": intent.signal_id,
@@ -1258,6 +1278,11 @@ mod tests {
         let report = runtime.process_batch(&store, Utc::now(), None)?;
         assert_eq!(report.confirmed, 1);
         assert_eq!(report.failed, 0);
+        assert_eq!(
+            report.confirm_confirmed_by_route.get("paper"),
+            Some(&1),
+            "confirmed order should be attributed to paper route"
+        );
 
         let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
         assert_eq!(confirmed.len(), 1);
@@ -1309,6 +1334,11 @@ mod tests {
         let report = runtime.process_batch(&store, Utc::now(), None)?;
         assert_eq!(report.confirmed, 1);
         assert_eq!(report.failed, 0);
+        assert_eq!(
+            report.confirm_confirmed_by_route.get("paper"),
+            Some(&1),
+            "confirmed submitted order should be attributed to stored route"
+        );
 
         let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
         assert_eq!(confirmed.len(), 1);
@@ -1489,6 +1519,11 @@ mod tests {
             second.submit_attempted_by_route.get("rpc"),
             Some(&1),
             "second attempt should use fallback route"
+        );
+        assert_eq!(
+            second.confirm_confirmed_by_route.get("rpc"),
+            Some(&1),
+            "confirmed fallback order should be attributed to rpc route"
         );
         let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
         assert_eq!(observed_routes, vec!["jito".to_string(), "rpc".to_string()]);
@@ -1751,6 +1786,11 @@ mod tests {
 
         let report = runtime.process_batch(&store, Utc::now(), None)?;
         assert_eq!(report.failed, 1);
+        assert_eq!(
+            report.confirm_failed_by_route.get("paper"),
+            Some(&1),
+            "confirm rejected should be attributed to paper route"
+        );
 
         let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
         assert_eq!(failed.len(), 1);
@@ -1812,6 +1852,11 @@ mod tests {
         let report = runtime.process_batch(&store, now, None)?;
         assert_eq!(report.failed, 1);
         assert_eq!(report.confirmed, 0);
+        assert_eq!(
+            report.confirm_failed_by_route.get("paper"),
+            Some(&1),
+            "missing price confirm failure should be attributed to paper route"
+        );
 
         let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
         assert_eq!(failed.len(), 1);
@@ -1820,6 +1865,77 @@ mod tests {
             .context("order should remain present after missing-price failure")?;
         assert_eq!(order.status, "execution_failed");
         assert_eq!(order.err_code.as_deref(), Some("price_unavailable"));
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_tracks_confirm_retry_by_route_before_deadline() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-retry-route")?;
+        let now = Utc::now();
+        let signal = CopySignalRow {
+            signal_id: "shadow:s8b:w:buy:t-retry".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-confirm-retry-1",
+                &signal.signal_id,
+                &client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted("ord-confirm-retry-1", "paper", "sig-retry", now)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "paper".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 60,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: false,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(ErrorConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.confirm_retry_scheduled_by_route.get("paper"),
+            Some(&1),
+            "confirm retry should be attributed to paper route"
+        );
+        assert_eq!(report.confirm_failed_by_route.get("paper"), None);
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should remain in submitted state after retryable confirm error")?;
+        assert_eq!(order.status, "execution_submitted");
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -1887,6 +2003,11 @@ mod tests {
 
         let report = runtime.process_batch(&store, now, None)?;
         assert_eq!(report.failed, 1);
+        assert_eq!(
+            report.confirm_failed_by_route.get("rpc"),
+            Some(&1),
+            "deadline-passed confirm error should be attributed to rpc route"
+        );
         let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
         assert_eq!(failed.len(), 1);
         let order = store

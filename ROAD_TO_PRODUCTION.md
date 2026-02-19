@@ -543,7 +543,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 22. adapter auth hardening baseline: runtime now supports optional HMAC request signing for submit adapter calls (`x-copybot-key-id`, `x-copybot-timestamp`, `x-copybot-auth-ttl-sec`, `x-copybot-nonce`, `x-copybot-signature`) with strict startup validation; signature verifier must use raw request body bytes.
 23. adapter secret-sourcing hardened: runtime supports file-based sources for adapter token/HMAC secret (`submit_adapter_auth_token_file`, `submit_adapter_hmac_secret_file`) with fail-closed checks (non-empty file, no inline+file duplication), and relative paths resolve against loaded config directory (not process cwd).
 24. route policy now has explicit operator-controlled order knob: `submit_route_order` (validated against `submit_allowed_routes` + must include `default_route`) and consumed by attempt-based fallback selection.
-25. execution telemetry now emits per-route counters per batch (`submit_attempted/retry/failed` + `pretrade_retry/rejected/failed`) to support route-profile calibration.
+25. execution telemetry now emits per-route counters per batch (`submit_attempted/retry/failed` + `pretrade_retry/rejected/failed` + `confirm_confirmed/retry/failed`) to support route-profile calibration.
 26. adapter response contract pinning added: runtime enforces `contract_version` match and optional strict policy-echo checks via `submit_adapter_require_policy_echo`.
 27. route-level tip policy added to submit path (`submit_route_tip_lamports`) with strict runtime validation for allowed/default routes and optional strict adapter policy-echo verification (`tip_lamports`).
 

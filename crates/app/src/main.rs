@@ -1824,7 +1824,10 @@ async fn run_app_loop(
                                 || !report.submit_failed_by_route.is_empty()
                                 || !report.pretrade_retry_scheduled_by_route.is_empty()
                                 || !report.pretrade_terminal_rejected_by_route.is_empty()
-                                || !report.pretrade_failed_by_route.is_empty();
+                                || !report.pretrade_failed_by_route.is_empty()
+                                || !report.confirm_confirmed_by_route.is_empty()
+                                || !report.confirm_retry_scheduled_by_route.is_empty()
+                                || !report.confirm_failed_by_route.is_empty();
                             info!(
                                 attempted = report.attempted,
                                 confirmed = report.confirmed,
@@ -1837,6 +1840,9 @@ async fn run_app_loop(
                                 pretrade_retry_scheduled_by_route = ?report.pretrade_retry_scheduled_by_route,
                                 pretrade_terminal_rejected_by_route = ?report.pretrade_terminal_rejected_by_route,
                                 pretrade_failed_by_route = ?report.pretrade_failed_by_route,
+                                confirm_confirmed_by_route = ?report.confirm_confirmed_by_route,
+                                confirm_retry_scheduled_by_route = ?report.confirm_retry_scheduled_by_route,
+                                confirm_failed_by_route = ?report.confirm_failed_by_route,
                                 has_route_metrics,
                                 "execution batch processed"
                             );
