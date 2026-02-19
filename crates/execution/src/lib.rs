@@ -77,8 +77,11 @@ impl ExecutionRuntime {
         } else {
             config.default_route.trim().to_string()
         };
-        let submit_route_order =
-            build_submit_route_order(route.as_str(), &config.submit_allowed_routes);
+        let submit_route_order = build_submit_route_order(
+            route.as_str(),
+            &config.submit_allowed_routes,
+            &config.submit_route_order,
+        );
 
         let mode = config.mode.trim().to_ascii_lowercase();
         let (
@@ -941,18 +944,37 @@ impl ExecutionRuntime {
     }
 }
 
-fn build_submit_route_order(default_route: &str, allowed_routes: &[String]) -> Vec<String> {
+fn build_submit_route_order(
+    default_route: &str,
+    allowed_routes: &[String],
+    configured_order: &[String],
+) -> Vec<String> {
     let mut routes = Vec::new();
     let normalized_default = default_route.trim().to_ascii_lowercase();
     if !normalized_default.is_empty() {
         routes.push(normalized_default);
     }
+    let mut allowed = Vec::new();
     for route in allowed_routes {
+        let normalized = route.trim().to_ascii_lowercase();
+        if normalized.is_empty() || allowed.iter().any(|value| value == &normalized) {
+            continue;
+        }
+        allowed.push(normalized);
+    }
+    for route in configured_order {
         let normalized = route.trim().to_ascii_lowercase();
         if normalized.is_empty() || routes.iter().any(|value| value == &normalized) {
             continue;
         }
-        routes.push(normalized);
+        if allowed.iter().any(|value| value == &normalized) {
+            routes.push(normalized);
+        }
+    }
+    for route in allowed {
+        if !routes.iter().any(|value| value == &route) {
+            routes.push(route);
+        }
     }
     if routes.is_empty() {
         vec!["paper".to_string()]
@@ -1141,6 +1163,37 @@ mod tests {
             ts_utc: ts,
         })?;
         Ok(())
+    }
+
+    #[test]
+    fn build_submit_route_order_prefers_configured_fallback_sequence() {
+        let order = build_submit_route_order(
+            "jito",
+            &[
+                "jito".to_string(),
+                "rpc".to_string(),
+                "fastlane".to_string(),
+            ],
+            &["jito".to_string(), "fastlane".to_string()],
+        );
+        assert_eq!(
+            order,
+            vec![
+                "jito".to_string(),
+                "fastlane".to_string(),
+                "rpc".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn build_submit_route_order_ignores_unknown_routes_and_duplicates() {
+        let order = build_submit_route_order(
+            "jito",
+            &["jito".to_string(), "rpc".to_string()],
+            &["rpc".to_string(), "unknown".to_string(), "rpc".to_string()],
+        );
+        assert_eq!(order, vec!["jito".to_string(), "rpc".to_string()]);
     }
 
     #[test]

@@ -458,6 +458,38 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             default_route
         ));
     }
+    if !config.submit_route_order.is_empty() {
+        for route in &config.submit_route_order {
+            let normalized = route.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                return Err(anyhow!(
+                    "execution.submit_route_order contains an empty route value"
+                ));
+            }
+            let allowed = config.submit_allowed_routes.iter().any(|candidate| {
+                candidate
+                    .trim()
+                    .to_ascii_lowercase()
+                    .eq(normalized.as_str())
+            });
+            if !allowed {
+                return Err(anyhow!(
+                    "execution.submit_route_order route={} must be present in execution.submit_allowed_routes",
+                    normalized
+                ));
+            }
+        }
+        let has_default = config
+            .submit_route_order
+            .iter()
+            .any(|route| route.trim().to_ascii_lowercase().eq(default_route.as_str()));
+        if !has_default {
+            return Err(anyhow!(
+                "execution.submit_route_order must include execution.default_route={}",
+                default_route
+            ));
+        }
+    }
     if config.submit_route_max_slippage_bps.is_empty() {
         return Err(anyhow!(
             "execution.submit_route_max_slippage_bps must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS=route:cap,route2:cap2)"

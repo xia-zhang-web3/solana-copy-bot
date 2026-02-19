@@ -81,6 +81,7 @@ submit_adapter_hmac_key_id = ""
 submit_adapter_hmac_secret = ""
 submit_adapter_hmac_ttl_sec = 30
 submit_allowed_routes = ["paper"]
+submit_route_order = []
 submit_route_max_slippage_bps = { paper = 50.0 }
 submit_route_compute_unit_limit = { paper = 300000 }
 submit_route_compute_unit_price_micro_lamports = { paper = 1000 }
