@@ -933,7 +933,7 @@ mod tests {
     fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
         let _guard = ENV_LOCK.lock().expect("lock env test mutex");
         with_temp_config_file("", |config_path| {
-            with_env_removed("SOLANA_COPY_BOT_CONFIG", || {
+            with_clean_copybot_env(|| {
                 with_env_var(env_name, env_value, || {
                     let err = load_from_env_or_default(config_path)
                         .expect_err("duplicate normalized route keys should fail")
@@ -969,11 +969,17 @@ mod tests {
         }
     }
 
-    fn with_env_removed<T>(key: &'static str, run: impl FnOnce() -> T) -> T {
-        let previous = std::env::var_os(key);
-        std::env::remove_var(key);
+    fn with_clean_copybot_env<T>(run: impl FnOnce() -> T) -> T {
+        let saved: Vec<(OsString, OsString)> = std::env::vars_os()
+            .filter(|(key, _)| key.to_string_lossy().starts_with("SOLANA_COPY_BOT_"))
+            .collect();
+        for (key, _) in &saved {
+            std::env::remove_var(key);
+        }
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
-        restore_env_var(key, previous);
+        for (key, value) in saved {
+            std::env::set_var(key, value);
+        }
         match outcome {
             Ok(value) => value,
             Err(payload) => std::panic::resume_unwind(payload),
