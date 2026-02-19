@@ -224,7 +224,8 @@ impl AdapterOrderSubmitter {
         &self,
         endpoint: &str,
         payload: &Value,
-        default_route: &str,
+        expected_route: &str,
+        expected_client_order_id: &str,
     ) -> std::result::Result<SubmitResult, SubmitError> {
         let mut request = self.client.post(endpoint).json(payload);
         if let Some(token) = self.auth_token.as_deref() {
@@ -261,19 +262,21 @@ impl AdapterOrderSubmitter {
                 format!("endpoint={} parse_error={}", endpoint, error),
             )
         })?;
-        parse_adapter_submit_response(&body, default_route).map_err(|error| {
-            if matches!(error.kind, SubmitErrorKind::Retryable) {
-                SubmitError::retryable(
-                    error.code,
-                    format!("endpoint={} {}", endpoint, error.detail),
-                )
-            } else {
-                SubmitError::terminal(
-                    error.code,
-                    format!("endpoint={} {}", endpoint, error.detail),
-                )
-            }
-        })
+        parse_adapter_submit_response(&body, expected_route, expected_client_order_id).map_err(
+            |error| {
+                if matches!(error.kind, SubmitErrorKind::Retryable) {
+                    SubmitError::retryable(
+                        error.code,
+                        format!("endpoint={} {}", endpoint, error.detail),
+                    )
+                } else {
+                    SubmitError::terminal(
+                        error.code,
+                        format!("endpoint={} {}", endpoint, error.detail),
+                    )
+                }
+            },
+        )
     }
 }
 
@@ -334,6 +337,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
         let payload = json!({
             "signal_id": intent.signal_id,
             "client_order_id": client_order_id,
+            "request_id": client_order_id,
             "side": intent.side.as_str(),
             "token": intent.token,
             "notional_sol": intent.notional_sol,
@@ -349,7 +353,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
 
         let mut last_retryable_error: Option<SubmitError> = None;
         for endpoint in &self.endpoints {
-            match self.submit_via_endpoint(endpoint, &payload, route.as_str()) {
+            match self.submit_via_endpoint(endpoint, &payload, route.as_str(), client_order_id) {
                 Ok(result) => return Ok(result),
                 Err(error) if matches!(error.kind, SubmitErrorKind::Terminal) => {
                     return Err(error);
@@ -370,6 +374,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
 fn parse_adapter_submit_response(
     body: &Value,
     expected_route: &str,
+    expected_client_order_id: &str,
 ) -> std::result::Result<SubmitResult, SubmitError> {
     let status = body
         .get("status")
@@ -427,6 +432,38 @@ fn parse_adapter_submit_response(
                 route, expected_route
             ),
         ));
+    }
+    if let Some(client_order_id) = body
+        .get("client_order_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if client_order_id != expected_client_order_id {
+            return Err(SubmitError::terminal(
+                "submit_adapter_client_order_id_mismatch",
+                format!(
+                    "adapter response client_order_id={} does not match requested client_order_id={}",
+                    client_order_id, expected_client_order_id
+                ),
+            ));
+        }
+    }
+    if let Some(request_id) = body
+        .get("request_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if request_id != expected_client_order_id {
+            return Err(SubmitError::terminal(
+                "submit_adapter_request_id_mismatch",
+                format!(
+                    "adapter response request_id={} does not match requested client_order_id={}",
+                    request_id, expected_client_order_id
+                ),
+            ));
+        }
     }
     let submitted_at = body
         .get("submitted_at")
@@ -538,9 +575,11 @@ mod tests {
             "status": "ok",
             "tx_signature": "5ig1ature",
             "route": "rpc",
-            "submitted_at": "2026-02-19T12:34:56Z"
+            "submitted_at": "2026-02-19T12:34:56Z",
+            "client_order_id": "cid-1",
+            "request_id": "cid-1"
         });
-        let result = parse_adapter_submit_response(&body, "rpc").expect("success payload");
+        let result = parse_adapter_submit_response(&body, "rpc", "cid-1").expect("success payload");
         assert_eq!(result.tx_signature, "5ig1ature");
         assert_eq!(result.route, "rpc");
         assert_eq!(
@@ -557,8 +596,8 @@ mod tests {
             "code": "adapter_busy",
             "detail": "backpressure"
         });
-        let error =
-            parse_adapter_submit_response(&body, "rpc").expect_err("reject payload expected");
+        let error = parse_adapter_submit_response(&body, "rpc", "cid-1")
+            .expect_err("reject payload expected");
         assert_eq!(error.kind, SubmitErrorKind::Retryable);
         assert_eq!(error.code, "adapter_busy");
     }
@@ -571,8 +610,8 @@ mod tests {
             "code": "invalid_route",
             "detail": "route unsupported"
         });
-        let error =
-            parse_adapter_submit_response(&body, "rpc").expect_err("reject payload expected");
+        let error = parse_adapter_submit_response(&body, "rpc", "cid-1")
+            .expect_err("reject payload expected");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "invalid_route");
     }
@@ -584,10 +623,24 @@ mod tests {
             "tx_signature": "5ig1ature",
             "route": "rpc"
         });
-        let error =
-            parse_adapter_submit_response(&body, "jito").expect_err("route mismatch must fail");
+        let error = parse_adapter_submit_response(&body, "jito", "cid-1")
+            .expect_err("route mismatch must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_route_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_client_order_id_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "client_order_id": "cid-2"
+        });
+        let error = parse_adapter_submit_response(&body, "rpc", "cid-1")
+            .expect_err("client_order_id mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_client_order_id_mismatch");
     }
 
     #[test]
