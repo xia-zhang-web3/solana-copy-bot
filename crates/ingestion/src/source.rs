@@ -2098,21 +2098,15 @@ fn parse_yellowstone_transaction_update(
         return Err(anyhow!("missing signer in yellowstone update"));
     }
 
-    let mut program_ids = extract_program_ids_from_proto(message, meta, &account_keys);
-    if program_ids.is_empty() {
-        if runtime_config.interested_program_ids.is_empty() {
-            return Err(anyhow!("missing program ids in yellowstone update"));
-        }
-        runtime_config
-            .telemetry
-            .note_parse_fallback("missing_program_ids_fallback");
-        program_ids.extend(runtime_config.interested_program_ids.iter().cloned());
-    } else if !program_ids
-        .iter()
-        .any(|program| runtime_config.interested_program_ids.contains(program))
-    {
-        return Ok(None);
-    }
+    let program_ids = match normalize_program_ids_or_fallback(
+        extract_program_ids_from_proto(message, meta, &account_keys),
+        &runtime_config.interested_program_ids,
+        runtime_config.telemetry.as_ref(),
+        "missing program ids in yellowstone update",
+    )? {
+        Some(value) => value,
+        None => return Ok(None),
+    };
 
     let (token_in, amount_in, token_out, amount_out) =
         match infer_swap_from_proto_balances(meta, signer_index, &signer) {
@@ -2868,18 +2862,17 @@ async fn fetch_swap_from_signature(
             FetchAttemptError::terminal(anyhow!("missing signer in parsed account keys"))
         })?;
 
-    let mut program_ids = HeliusWsSource::extract_program_ids(result, meta, logs_hint);
-    if program_ids.is_empty() {
-        runtime_config
-            .telemetry
-            .note_parse_fallback("missing_program_ids_fallback");
-        program_ids.extend(runtime_config.interested_program_ids.iter().cloned());
-    } else if !program_ids
-        .iter()
-        .any(|program| runtime_config.interested_program_ids.contains(program))
+    let program_ids = match normalize_program_ids_or_fallback(
+        HeliusWsSource::extract_program_ids(result, meta, logs_hint),
+        &runtime_config.interested_program_ids,
+        runtime_config.telemetry.as_ref(),
+        "missing program ids in helius transaction update",
+    )
+    .map_err(FetchAttemptError::terminal)?
     {
-        return Ok(None);
-    }
+        Some(value) => value,
+        None => return Ok(None),
+    };
 
     let (token_in, amount_in, token_out, amount_out) =
         match HeliusWsSource::infer_swap_from_json_balances(meta, signer_index, &signer) {
@@ -2928,6 +2921,29 @@ fn is_seen_signature(
         .get(signature)
         .map(|seen_at| now.duration_since(*seen_at) < ttl)
         .unwrap_or(false)
+}
+
+fn normalize_program_ids_or_fallback(
+    mut program_ids: HashSet<String>,
+    interested_program_ids: &HashSet<String>,
+    telemetry: &IngestionTelemetry,
+    missing_program_ids_error: &str,
+) -> Result<Option<HashSet<String>>> {
+    if program_ids.is_empty() {
+        if interested_program_ids.is_empty() {
+            return Err(anyhow!("{}", missing_program_ids_error));
+        }
+        telemetry.note_parse_fallback("missing_program_ids_fallback");
+        program_ids.extend(interested_program_ids.iter().cloned());
+        return Ok(Some(program_ids));
+    }
+    if !program_ids
+        .iter()
+        .any(|program| interested_program_ids.contains(program))
+    {
+        return Ok(None);
+    }
+    Ok(Some(program_ids))
 }
 
 fn mark_seen_signature(
@@ -3194,6 +3210,53 @@ mod tests {
             .lock()
             .expect("parse_fallback_by_reason mutex should be available");
         assert_eq!(reasons.get("missing_program_ids_fallback"), Some(&2));
+    }
+
+    #[test]
+    fn normalize_program_ids_or_fallback_tracks_missing_program_ids_fallback() -> Result<()> {
+        let telemetry = IngestionTelemetry::default();
+        let interested = HashSet::from([String::from("prog-1")]);
+        let normalized = normalize_program_ids_or_fallback(
+            HashSet::new(),
+            &interested,
+            &telemetry,
+            "missing program ids in test",
+        )?;
+        let normalized = normalized.expect("missing program ids should fallback to interested set");
+        assert!(normalized.contains("prog-1"));
+        let reasons = telemetry
+            .parse_fallback_by_reason
+            .lock()
+            .expect("parse_fallback_by_reason mutex should be available");
+        assert_eq!(reasons.get("missing_program_ids_fallback"), Some(&1));
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_program_ids_or_fallback_drops_non_interested_programs() -> Result<()> {
+        let telemetry = IngestionTelemetry::default();
+        let interested = HashSet::from([String::from("prog-1")]);
+        let extracted = HashSet::from([String::from("prog-2")]);
+        let normalized = normalize_program_ids_or_fallback(
+            extracted,
+            &interested,
+            &telemetry,
+            "missing program ids in test",
+        )?;
+        assert!(
+            normalized.is_none(),
+            "non-interested program ids should be dropped"
+        );
+        let reasons = telemetry
+            .parse_fallback_by_reason
+            .lock()
+            .expect("parse_fallback_by_reason mutex should be available");
+        assert_eq!(
+            reasons.get("missing_program_ids_fallback"),
+            None,
+            "drop path should not increment fallback counters"
+        );
+        Ok(())
     }
 
     #[test]
