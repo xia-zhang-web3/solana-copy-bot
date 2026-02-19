@@ -20,7 +20,7 @@ Owner: copybot runtime team
 4. SELL и confirm-path не блокируются pause-гейтами, что сохраняет возможность закрытия риска.
 5. Execution risk gates в рантайме enforce: `max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness и `sell_requires_open_position`.
 6. Submit route policy в runtime уже enforce: route allowlist, explicit ordered fallback list (`submit_route_order`), per-route slippage/CU caps, adapter-response correlation guards и attempt-based route fallback.
-7. Adapter auth hardening baseline готов: optional Bearer + optional HMAC request signing (`key_id/secret/ttl`) с fail-closed валидацией на старте.
+7. Adapter auth hardening baseline готов: optional Bearer + optional HMAC request signing (`key_id/secret/ttl`) с fail-closed валидацией на старте; HMAC считается по точным bytes исходящего JSON-body.
 8. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend + ops rollout по уже готовому runtime контракту).
 
 Текущий статус этапов:
@@ -168,7 +168,7 @@ Exit criteria Stage B:
    1. bounded submit retry policy (`max_submit_attempts`) в execution runtime,
    2. typed submit error taxonomy (`Retryable`/`Terminal`) вместо message-based heuristic,
    3. pre-trade checker contract в execution pipeline (retryable/terminal outcomes + lifecycle wiring),
-   4. RPC pre-trade второго уровня: ATA account-existence policy (`getTokenAccountsByOwner`) + priority fee cap check (`getRecentPrioritizationFees`) через `pretrade_require_token_account` и `pretrade_max_priority_fee_lamports`.
+   4. RPC pre-trade второго уровня: ATA account-existence policy (`getTokenAccountsByOwner`) + priority fee cap check (`getRecentPrioritizationFees`) через `pretrade_require_token_account` и `pretrade_max_priority_fee_lamports` (unit: micro-lamports/CU).
 
 Prerequisites Stage C:
 
@@ -448,7 +448,7 @@ Done now:
 4. bounded retry policy (`max_submit_attempts`) for submit/pre-trade retryable failures,
 5. pre-trade checker contract wired in lifecycle (`Allow` / `RetryableReject` / `TerminalReject`),
 6. RPC pre-trade checker added (`paper_rpc_pretrade_confirm`): `getLatestBlockhash` + signer balance check with `pretrade_min_sol_reserve` gate,
-7. pre-trade account/fee gates: optional ATA existence policy (`pretrade_require_token_account`) + optional priority fee cap (`pretrade_max_priority_fee_lamports`).
+7. pre-trade account/fee gates: optional ATA existence policy (`pretrade_require_token_account`) + optional priority fee cap (`pretrade_max_priority_fee_lamports`, unit: micro-lamports/CU).
 Remaining:
 1. CU-budget/slippage-route policy for real submit.
 
@@ -527,7 +527,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 7. order insert telemetry contract tightened: `insert_execution_order_pending` now distinguishes `Inserted` vs `Duplicate` and fails on unknown ignore.
 8. pre-trade pipeline wired before simulation/submit with bounded retries for retryable pre-trade failures.
 9. submit classification hardened: runtime now uses typed submit errors (`SubmitErrorKind`) for deterministic retry/terminal branching.
-10. RPC pre-trade/confirm hardening: new mode `paper_rpc_pretrade_confirm`, signer-balance reserve gate, optional ATA existence policy (`pretrade_require_token_account`), optional priority fee cap (`pretrade_max_priority_fee_lamports`), and RPC confirmer support for confirmed/failed/pending states.
+10. RPC pre-trade/confirm hardening: new mode `paper_rpc_pretrade_confirm`, signer-balance reserve gate, optional ATA existence policy (`pretrade_require_token_account`), optional priority fee cap (`pretrade_max_priority_fee_lamports`, unit: micro-lamports/CU), and RPC confirmer support for confirmed/failed/pending states.
 11. execution scheduling decoupled from main async loop: execution batch runs in dedicated blocking task to avoid ingestion stalls under RPC latency.
 12. confirm->reconcile path hardened to atomic finalize transaction (`fills + positions + order/signal status`) with idempotent `AlreadyConfirmed` outcome.
 13. execution price policy switched to fail-closed (`price_unavailable`) instead of unsafe fallback `avg_price_sol=1.0`.
@@ -539,7 +539,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 19. adapter response correlation tightened: optional `client_order_id`/`request_id` echoes must match requested `client_order_id` or submit is terminal-failed (`submit_adapter_client_order_id_mismatch` / `submit_adapter_request_id_mismatch`).
 20. adapter confirm-failure semantics hardened: deadline-passed confirm errors/timeouts are marked with `*_manual_reconcile_required` err-codes + risk events to enforce explicit on-chain reconcile workflow.
 21. submit route fallback hardened: per-attempt route selection now follows ordered policy (`default_route` -> allowed fallbacks), and both pre-trade + submit use the same selected route for deterministic retries.
-22. adapter auth hardening baseline: runtime now supports optional HMAC request signing for submit adapter calls (`x-copybot-key-id`, `x-copybot-timestamp`, `x-copybot-auth-ttl-sec`, `x-copybot-nonce`, `x-copybot-signature`) with strict startup validation.
+22. adapter auth hardening baseline: runtime now supports optional HMAC request signing for submit adapter calls (`x-copybot-key-id`, `x-copybot-timestamp`, `x-copybot-auth-ttl-sec`, `x-copybot-nonce`, `x-copybot-signature`) with strict startup validation; signature verifier must use raw request body bytes.
 23. route policy now has explicit operator-controlled order knob: `submit_route_order` (validated against `submit_allowed_routes` + must include `default_route`) and consumed by attempt-based fallback selection.
 
 Остается в next-code-queue:

@@ -259,22 +259,25 @@ impl AdapterOrderSubmitter {
         expected_route: &str,
         expected_client_order_id: &str,
     ) -> std::result::Result<SubmitResult, SubmitError> {
-        let mut request = self.client.post(endpoint).json(payload);
+        let payload_json = serde_json::to_string(payload).map_err(|error| {
+            SubmitError::terminal(
+                "submit_adapter_payload_serialize_failed",
+                format!("failed serializing submit payload: {}", error),
+            )
+        })?;
+        let mut request = self
+            .client
+            .post(endpoint)
+            .header("content-type", "application/json")
+            .body(payload_json.clone());
         if let Some(token) = self.auth_token.as_deref() {
             request = request.bearer_auth(token);
         }
         if let Some(hmac_auth) = self.hmac_auth.as_ref() {
-            let payload_json = serde_json::to_string(payload).map_err(|error| {
-                SubmitError::terminal(
-                    "submit_adapter_payload_serialize_failed",
-                    format!(
-                        "failed serializing submit payload for hmac signing: {}",
-                        error
-                    ),
-                )
-            })?;
             let timestamp_sec = Utc::now().timestamp();
             let nonce = Uuid::new_v4().simple().to_string();
+            // Signature must cover the exact UTF-8 JSON bytes sent in this HTTP request body.
+            // Verifier should use raw body bytes instead of re-serialized JSON.
             let signature_payload = format!(
                 "{}\n{}\n{}\n{}",
                 timestamp_sec, hmac_auth.ttl_sec, nonce, payload_json

@@ -626,7 +626,7 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             && default_route_price > config.pretrade_max_priority_fee_lamports
         {
             return Err(anyhow!(
-                "execution.submit_route_compute_unit_price_micro_lamports default route {} price ({}) cannot exceed execution.pretrade_max_priority_fee_lamports ({})",
+                "execution.submit_route_compute_unit_price_micro_lamports default route {} price ({}) cannot exceed execution.pretrade_max_priority_fee_lamports ({}) (unit: micro-lamports per CU for both fields)",
                 default_route,
                 default_route_price,
                 config.pretrade_max_priority_fee_lamports
@@ -655,7 +655,7 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             submit_route_compute_unit_limit = ?config.submit_route_compute_unit_limit,
             submit_route_compute_unit_price_micro_lamports = ?config.submit_route_compute_unit_price_micro_lamports,
             pretrade_require_token_account = config.pretrade_require_token_account,
-            pretrade_max_priority_fee_lamports = config.pretrade_max_priority_fee_lamports,
+            pretrade_max_priority_fee_micro_lamports_per_cu = config.pretrade_max_priority_fee_lamports,
             "execution runtime contract validated"
         );
     }

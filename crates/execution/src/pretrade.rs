@@ -116,7 +116,7 @@ pub struct RpcPreTradeChecker {
     execution_signer_pubkey: String,
     min_sol_reserve: f64,
     require_token_account: bool,
-    max_priority_fee_lamports: Option<u64>,
+    max_priority_fee_micro_lamports: Option<u64>,
     client: Client,
 }
 
@@ -158,7 +158,7 @@ impl RpcPreTradeChecker {
             execution_signer_pubkey: signer.to_string(),
             min_sol_reserve,
             require_token_account,
-            max_priority_fee_lamports: if pretrade_max_priority_fee_lamports == 0 {
+            max_priority_fee_micro_lamports: if pretrade_max_priority_fee_lamports == 0 {
                 None
             } else {
                 Some(pretrade_max_priority_fee_lamports)
@@ -223,7 +223,7 @@ impl RpcPreTradeChecker {
         parse_token_account_exists_from_rpc_body(&body)
     }
 
-    fn query_recent_priority_fee_lamports(&self, endpoint: &str) -> Result<u64> {
+    fn query_recent_priority_fee_micro_lamports(&self, endpoint: &str) -> Result<u64> {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -231,7 +231,7 @@ impl RpcPreTradeChecker {
             "params": [[]]
         });
         let body = self.post_rpc(endpoint, &payload)?;
-        parse_recent_priority_fee_lamports_from_rpc_body(&body)
+        parse_recent_priority_fee_micro_lamports_from_rpc_body(&body)
     }
 
     fn evaluate_balance(
@@ -331,27 +331,27 @@ impl PreTradeChecker for RpcPreTradeChecker {
                 allow_detail.push_str(" token_account=present");
             }
 
-            if let Some(max_priority_fee_lamports) = self.max_priority_fee_lamports {
-                let recent_priority_fee_lamports =
-                    match self.query_recent_priority_fee_lamports(endpoint) {
+            if let Some(max_priority_fee_micro_lamports) = self.max_priority_fee_micro_lamports {
+                let recent_priority_fee_micro_lamports =
+                    match self.query_recent_priority_fee_micro_lamports(endpoint) {
                         Ok(value) => value,
                         Err(error) => {
                             last_error = Some(error);
                             continue;
                         }
                     };
-                if recent_priority_fee_lamports > max_priority_fee_lamports {
+                if recent_priority_fee_micro_lamports > max_priority_fee_micro_lamports {
                     return Ok(PreTradeDecision::retryable(
                         "pretrade_priority_fee_too_high",
                         format!(
-                            "endpoint={} recent_priority_fee_lamports={} max_priority_fee_lamports={}",
-                            endpoint, recent_priority_fee_lamports, max_priority_fee_lamports
+                            "endpoint={} recent_priority_fee_micro_lamports_per_cu={} max_priority_fee_micro_lamports_per_cu={}",
+                            endpoint, recent_priority_fee_micro_lamports, max_priority_fee_micro_lamports
                         ),
                     ));
                 }
                 allow_detail.push_str(&format!(
-                    " priority_fee_lamports={}",
-                    recent_priority_fee_lamports
+                    " priority_fee_micro_lamports_per_cu={}",
+                    recent_priority_fee_micro_lamports
                 ));
             }
 
@@ -404,7 +404,7 @@ fn parse_token_account_exists_from_rpc_body(body: &Value) -> Result<bool> {
     Ok(!value.is_empty())
 }
 
-fn parse_recent_priority_fee_lamports_from_rpc_body(body: &Value) -> Result<u64> {
+fn parse_recent_priority_fee_micro_lamports_from_rpc_body(body: &Value) -> Result<u64> {
     if let Some(error_payload) = body.get("error") {
         return Err(anyhow!("rpc returned error payload: {}", error_payload));
     }
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_recent_priority_fee_lamports_from_rpc_body_returns_max_value() -> Result<()> {
+    fn parse_recent_priority_fee_micro_lamports_from_rpc_body_returns_max_value() -> Result<()> {
         let body = json!({
             "jsonrpc": "2.0",
             "result": [
@@ -630,7 +630,7 @@ mod tests {
             ],
             "id": 1
         });
-        let fee = parse_recent_priority_fee_lamports_from_rpc_body(&body)?;
+        let fee = parse_recent_priority_fee_micro_lamports_from_rpc_body(&body)?;
         assert_eq!(fee, 5_000);
         Ok(())
     }
