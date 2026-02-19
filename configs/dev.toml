@@ -82,6 +82,8 @@ submit_adapter_hmac_key_id = ""
 submit_adapter_hmac_secret = ""
 submit_adapter_hmac_secret_file = ""
 submit_adapter_hmac_ttl_sec = 30
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = false
 submit_allowed_routes = ["paper"]
 submit_route_order = []
 submit_route_max_slippage_bps = { paper = 50.0 }

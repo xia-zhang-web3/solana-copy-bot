@@ -136,6 +136,8 @@ pub struct AdapterOrderSubmitter {
     endpoints: Vec<String>,
     auth_token: Option<String>,
     hmac_auth: Option<AdapterHmacAuth>,
+    contract_version: String,
+    require_policy_echo: bool,
     allowed_routes: HashSet<String>,
     route_max_slippage_bps: HashMap<String, f64>,
     route_compute_unit_limit: HashMap<String, u32>,
@@ -152,6 +154,8 @@ impl AdapterOrderSubmitter {
         hmac_key_id: &str,
         hmac_secret: &str,
         hmac_ttl_sec: u64,
+        contract_version: &str,
+        require_policy_echo: bool,
         allowed_routes: &[String],
         route_max_slippage_bps: &BTreeMap<String, f64>,
         route_compute_unit_limit: &BTreeMap<String, u32>,
@@ -238,11 +242,17 @@ impl AdapterOrderSubmitter {
                 ttl_sec: hmac_ttl_sec,
             })
         };
+        let contract_version = contract_version.trim();
+        if contract_version.is_empty() || contract_version.len() > 64 {
+            return None;
+        }
 
         Some(Self {
             endpoints,
             auth_token,
             hmac_auth,
+            contract_version: contract_version.to_string(),
+            require_policy_echo,
             allowed_routes,
             route_max_slippage_bps,
             route_compute_unit_limit,
@@ -258,6 +268,11 @@ impl AdapterOrderSubmitter {
         payload: &Value,
         expected_route: &str,
         expected_client_order_id: &str,
+        expected_contract_version: &str,
+        require_policy_echo: bool,
+        expected_slippage_bps: f64,
+        expected_cu_limit: u32,
+        expected_cu_price_micro_lamports: u64,
     ) -> std::result::Result<SubmitResult, SubmitError> {
         let payload_json = serde_json::to_string(payload).map_err(|error| {
             SubmitError::terminal(
@@ -331,21 +346,29 @@ impl AdapterOrderSubmitter {
                 format!("endpoint={} parse_error={}", endpoint, error),
             )
         })?;
-        parse_adapter_submit_response(&body, expected_route, expected_client_order_id).map_err(
-            |error| {
-                if matches!(error.kind, SubmitErrorKind::Retryable) {
-                    SubmitError::retryable(
-                        error.code,
-                        format!("endpoint={} {}", endpoint, error.detail),
-                    )
-                } else {
-                    SubmitError::terminal(
-                        error.code,
-                        format!("endpoint={} {}", endpoint, error.detail),
-                    )
-                }
-            },
+        parse_adapter_submit_response(
+            &body,
+            expected_route,
+            expected_client_order_id,
+            expected_contract_version,
+            require_policy_echo,
+            expected_slippage_bps,
+            expected_cu_limit,
+            expected_cu_price_micro_lamports,
         )
+        .map_err(|error| {
+            if matches!(error.kind, SubmitErrorKind::Retryable) {
+                SubmitError::retryable(
+                    error.code,
+                    format!("endpoint={} {}", endpoint, error.detail),
+                )
+            } else {
+                SubmitError::terminal(
+                    error.code,
+                    format!("endpoint={} {}", endpoint, error.detail),
+                )
+            }
+        })
     }
 }
 
@@ -404,6 +427,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
             })?;
 
         let payload = json!({
+            "contract_version": self.contract_version,
             "signal_id": intent.signal_id,
             "client_order_id": client_order_id,
             "request_id": client_order_id,
@@ -422,7 +446,17 @@ impl OrderSubmitter for AdapterOrderSubmitter {
 
         let mut last_retryable_error: Option<SubmitError> = None;
         for endpoint in &self.endpoints {
-            match self.submit_via_endpoint(endpoint, &payload, route.as_str(), client_order_id) {
+            match self.submit_via_endpoint(
+                endpoint,
+                &payload,
+                route.as_str(),
+                client_order_id,
+                self.contract_version.as_str(),
+                self.require_policy_echo,
+                effective_slippage_bps,
+                route_cu_limit,
+                route_cu_price_micro_lamports,
+            ) {
                 Ok(result) => return Ok(result),
                 Err(error) if matches!(error.kind, SubmitErrorKind::Terminal) => {
                     return Err(error);
@@ -444,6 +478,11 @@ fn parse_adapter_submit_response(
     body: &Value,
     expected_route: &str,
     expected_client_order_id: &str,
+    expected_contract_version: &str,
+    require_policy_echo: bool,
+    expected_slippage_bps: f64,
+    expected_cu_limit: u32,
+    expected_cu_price_micro_lamports: u64,
 ) -> std::result::Result<SubmitResult, SubmitError> {
     let status = body
         .get("status")
@@ -534,6 +573,89 @@ fn parse_adapter_submit_response(
             ));
         }
     }
+    let response_contract_version = body
+        .get("contract_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(version) = response_contract_version {
+        if version != expected_contract_version {
+            return Err(SubmitError::terminal(
+                "submit_adapter_contract_version_mismatch",
+                format!(
+                    "adapter response contract_version={} does not match expected contract_version={}",
+                    version, expected_contract_version
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field contract_version".to_string(),
+        ));
+    }
+
+    let response_slippage_bps = body.get("slippage_bps").and_then(Value::as_f64);
+    if let Some(value) = response_slippage_bps {
+        if !approx_f64_eq(value, expected_slippage_bps) {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_mismatch",
+                format!(
+                    "adapter response slippage_bps={} does not match expected slippage_bps={}",
+                    value, expected_slippage_bps
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field slippage_bps".to_string(),
+        ));
+    }
+
+    let response_cu_limit = body
+        .get("compute_budget")
+        .and_then(|value| value.get("cu_limit"))
+        .and_then(Value::as_u64);
+    if let Some(value) = response_cu_limit {
+        if value != expected_cu_limit as u64 {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_mismatch",
+                format!(
+                    "adapter response compute_budget.cu_limit={} does not match expected cu_limit={}",
+                    value, expected_cu_limit
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field compute_budget.cu_limit".to_string(),
+        ));
+    }
+
+    let response_cu_price = body
+        .get("compute_budget")
+        .and_then(|value| value.get("cu_price_micro_lamports"))
+        .and_then(Value::as_u64);
+    if let Some(value) = response_cu_price {
+        if value != expected_cu_price_micro_lamports {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_mismatch",
+                format!(
+                    "adapter response compute_budget.cu_price_micro_lamports={} does not match expected cu_price_micro_lamports={}",
+                    value, expected_cu_price_micro_lamports
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field compute_budget.cu_price_micro_lamports"
+                .to_string(),
+        ));
+    }
+
     let submitted_at = body
         .get("submitted_at")
         .and_then(Value::as_str)
@@ -551,6 +673,10 @@ fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value.trim())
         .ok()
         .map(|value| value.with_timezone(&Utc))
+}
+
+fn approx_f64_eq(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 1e-9
 }
 
 fn compute_hmac_signature_hex(
@@ -652,6 +778,23 @@ mod tests {
         BTreeMap::from([(route.to_string(), value)])
     }
 
+    fn parse_response(
+        body: &Value,
+        expected_route: &str,
+        expected_client_order_id: &str,
+    ) -> std::result::Result<SubmitResult, SubmitError> {
+        parse_adapter_submit_response(
+            body,
+            expected_route,
+            expected_client_order_id,
+            "v1",
+            false,
+            50.0,
+            300_000,
+            1_000,
+        )
+    }
+
     #[test]
     fn parse_adapter_submit_response_parses_success_payload() {
         let body = json!({
@@ -662,7 +805,7 @@ mod tests {
             "client_order_id": "cid-1",
             "request_id": "cid-1"
         });
-        let result = parse_adapter_submit_response(&body, "rpc", "cid-1").expect("success payload");
+        let result = parse_response(&body, "rpc", "cid-1").expect("success payload");
         assert_eq!(result.tx_signature, "5ig1ature");
         assert_eq!(result.route, "rpc");
         assert_eq!(
@@ -679,8 +822,7 @@ mod tests {
             "code": "adapter_busy",
             "detail": "backpressure"
         });
-        let error = parse_adapter_submit_response(&body, "rpc", "cid-1")
-            .expect_err("reject payload expected");
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("reject payload expected");
         assert_eq!(error.kind, SubmitErrorKind::Retryable);
         assert_eq!(error.code, "adapter_busy");
     }
@@ -693,8 +835,7 @@ mod tests {
             "code": "invalid_route",
             "detail": "route unsupported"
         });
-        let error = parse_adapter_submit_response(&body, "rpc", "cid-1")
-            .expect_err("reject payload expected");
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("reject payload expected");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "invalid_route");
     }
@@ -706,8 +847,7 @@ mod tests {
             "tx_signature": "5ig1ature",
             "route": "rpc"
         });
-        let error = parse_adapter_submit_response(&body, "jito", "cid-1")
-            .expect_err("route mismatch must fail");
+        let error = parse_response(&body, "jito", "cid-1").expect_err("route mismatch must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_route_mismatch");
     }
@@ -720,10 +860,64 @@ mod tests {
             "route": "rpc",
             "client_order_id": "cid-2"
         });
-        let error = parse_adapter_submit_response(&body, "rpc", "cid-1")
-            .expect_err("client_order_id mismatch must fail");
+        let error =
+            parse_response(&body, "rpc", "cid-1").expect_err("client_order_id mismatch must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_client_order_id_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_missing_required_policy_echo() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc"
+        });
+        let error =
+            parse_adapter_submit_response(&body, "rpc", "cid-1", "v1", true, 50.0, 300_000, 1_000)
+                .expect_err("missing policy echo must fail in strict mode");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_contract_version_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v2",
+            "slippage_bps": 50.0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let error =
+            parse_adapter_submit_response(&body, "rpc", "cid-1", "v1", true, 50.0, 300_000, 1_000)
+                .expect_err("contract version mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_contract_version_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_compute_budget_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "compute_budget": {
+                "cu_limit": 310000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let error =
+            parse_adapter_submit_response(&body, "rpc", "cid-1", "v1", true, 50.0, 300_000, 1_000)
+                .expect_err("compute budget mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_mismatch");
     }
 
     #[test]
@@ -746,6 +940,8 @@ mod tests {
             "",
             "",
             30,
+            "v1",
+            false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
             &make_route_cu_limits("rpc", 300_000),
@@ -770,6 +966,8 @@ mod tests {
             "key-1",
             "",
             30,
+            "v1",
+            false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
             &make_route_cu_limits("rpc", 300_000),
@@ -786,6 +984,8 @@ mod tests {
             "",
             "secret",
             30,
+            "v1",
+            false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
             &make_route_cu_limits("rpc", 300_000),
@@ -802,6 +1002,8 @@ mod tests {
             "key-1",
             "secret",
             4,
+            "v1",
+            false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
             &make_route_cu_limits("rpc", 300_000),
@@ -821,6 +1023,8 @@ mod tests {
             "",
             "",
             30,
+            "v1",
+            false,
             &["rpc".to_string()],
             &make_route_caps("paper", 50.0),
             &make_route_cu_limits("rpc", 300_000),
@@ -840,10 +1044,33 @@ mod tests {
             "",
             "",
             30,
+            "v1",
+            false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
             &make_route_cu_limits("paper", 300_000),
             &make_route_cu_prices("paper", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_requires_non_empty_contract_version() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
             1_000,
             50.0,
         );

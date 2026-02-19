@@ -19,7 +19,7 @@ Owner: copybot runtime team
 3. BUY-only pause gates активны: operator emergency stop, risk hard-stop и outage-блокировка применяются только к pre-submit BUY.
 4. SELL и confirm-path не блокируются pause-гейтами, что сохраняет возможность закрытия риска.
 5. Execution risk gates в рантайме enforce: `max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness и `sell_requires_open_position`.
-6. Submit route policy в runtime уже enforce: route allowlist, explicit ordered fallback list (`submit_route_order`), per-route slippage/CU caps, adapter-response correlation guards и attempt-based route fallback.
+6. Submit route policy в runtime уже enforce: route allowlist, explicit ordered fallback list (`submit_route_order`), per-route slippage/CU caps, adapter-response correlation guards, contract-version pin (`submit_adapter_contract_version`) and optional strict response policy echo, плюс attempt-based route fallback.
 7. Adapter auth hardening baseline готов: optional Bearer + optional HMAC request signing (`key_id/secret/ttl`) с fail-closed валидацией на старте; HMAC считается по точным bytes исходящего JSON-body; token/secret могут подниматься из file-based secret paths.
 8. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend + ops rollout по уже готовому runtime контракту).
 
@@ -464,6 +464,7 @@ Done now:
 5. RPC confirmer path added (`paper_rpc_confirm` / `paper_rpc_pretrade_confirm`) with fallback endpoint support and explicit `confirm_failed` branch,
 6. adapter submit mode added (`adapter_submit_confirm`): HTTP adapter submitter contract + route allowlist policy (`submit_allowed_routes`) + explicit route fallback order policy (`submit_route_order`) + route slippage caps (`submit_route_max_slippage_bps`) + route-level compute budget policy (`submit_route_compute_unit_limit`, `submit_route_compute_unit_price_micro_lamports`) + fail-closed wiring for submitter/confirmer initialization.
 7. adapter auth policy hardened: optional HMAC signing headers (`submit_adapter_hmac_key_id`, `submit_adapter_hmac_secret`, `submit_adapter_hmac_ttl_sec`) with startup fail-fast on partial/invalid config; adapter auth token/HMAC secret support file-based sources (`submit_adapter_auth_token_file`, `submit_adapter_hmac_secret_file`) for secret-management rollout.
+8. adapter contract hardening: request includes `contract_version`; runtime validates adapter response against expected contract version and (optionally, when `submit_adapter_require_policy_echo=true`) strict echo of route-policy fields (`slippage_bps`, `compute_budget.cu_limit`, `compute_budget.cu_price_micro_lamports`).
 Remaining:
 1. production adapter backend (real signed tx build/send + operational rollout),
 2. route-level policy evolution для Jito-primary/RPC-fallback in real-money path.
@@ -543,6 +544,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 23. adapter secret-sourcing hardened: runtime supports file-based sources for adapter token/HMAC secret (`submit_adapter_auth_token_file`, `submit_adapter_hmac_secret_file`) with fail-closed checks (non-empty file, no inline+file duplication), and relative paths resolve against loaded config directory (not process cwd).
 24. route policy now has explicit operator-controlled order knob: `submit_route_order` (validated against `submit_allowed_routes` + must include `default_route`) and consumed by attempt-based fallback selection.
 25. execution telemetry now emits per-route counters per batch (`submit_attempted/retry/failed` + `pretrade_retry/rejected/failed`) to support route-profile calibration.
+26. adapter response contract pinning added: runtime enforces `contract_version` match and optional strict policy-echo checks via `submit_adapter_require_policy_echo`.
 
 Остается в next-code-queue:
 

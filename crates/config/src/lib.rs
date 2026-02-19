@@ -60,6 +60,8 @@ pub struct ExecutionConfig {
     pub submit_adapter_hmac_secret: String,
     pub submit_adapter_hmac_secret_file: String,
     pub submit_adapter_hmac_ttl_sec: u64,
+    pub submit_adapter_contract_version: String,
+    pub submit_adapter_require_policy_echo: bool,
     pub submit_allowed_routes: Vec<String>,
     pub submit_route_order: Vec<String>,
     pub submit_route_max_slippage_bps: BTreeMap<String, f64>,
@@ -95,6 +97,8 @@ impl Default for ExecutionConfig {
             submit_adapter_hmac_secret: String::new(),
             submit_adapter_hmac_secret_file: String::new(),
             submit_adapter_hmac_ttl_sec: 30,
+            submit_adapter_contract_version: "v1".to_string(),
+            submit_adapter_require_policy_echo: false,
             submit_allowed_routes: vec!["paper".to_string()],
             submit_route_order: Vec::new(),
             submit_route_max_slippage_bps: BTreeMap::from([(String::from("paper"), 50.0)]),
@@ -652,6 +656,21 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
             .and_then(|value| value.parse::<u64>().ok())
     {
         config.execution.submit_adapter_hmac_ttl_sec = submit_adapter_hmac_ttl_sec;
+    }
+    if let Ok(submit_adapter_contract_version) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_CONTRACT_VERSION")
+    {
+        let trimmed = submit_adapter_contract_version.trim();
+        if !trimmed.is_empty() {
+            config.execution.submit_adapter_contract_version = trimmed.to_string();
+        }
+    }
+    if let Some(submit_adapter_require_policy_echo) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.submit_adapter_require_policy_echo = submit_adapter_require_policy_echo;
     }
     if let Ok(submit_allowed_routes_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES")

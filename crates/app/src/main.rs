@@ -469,6 +469,17 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 "execution.submit_adapter_hmac_ttl_sec must be in 5..=300 when adapter HMAC auth is enabled"
             ));
         }
+        let contract_version = config.submit_adapter_contract_version.trim();
+        if contract_version.is_empty() {
+            return Err(anyhow!(
+                "execution.mode=adapter_submit_confirm requires non-empty execution.submit_adapter_contract_version"
+            ));
+        }
+        if contract_version.len() > 64 {
+            return Err(anyhow!(
+                "execution.submit_adapter_contract_version must be <= 64 chars"
+            ));
+        }
     }
 
     if config.batch_size == 0 {
@@ -723,6 +734,8 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             submit_route_max_slippage_bps = ?config.submit_route_max_slippage_bps,
             submit_route_compute_unit_limit = ?config.submit_route_compute_unit_limit,
             submit_route_compute_unit_price_micro_lamports = ?config.submit_route_compute_unit_price_micro_lamports,
+            submit_adapter_contract_version = %config.submit_adapter_contract_version,
+            submit_adapter_require_policy_echo = config.submit_adapter_require_policy_echo,
             pretrade_require_token_account = config.pretrade_require_token_account,
             pretrade_max_priority_fee_micro_lamports_per_cu = config.pretrade_max_priority_fee_lamports,
             "execution runtime contract validated"

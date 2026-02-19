@@ -184,6 +184,8 @@ impl ExecutionRuntime {
                         &config.submit_adapter_hmac_key_id,
                         &config.submit_adapter_hmac_secret,
                         config.submit_adapter_hmac_ttl_sec,
+                        &config.submit_adapter_contract_version,
+                        config.submit_adapter_require_policy_echo,
                         &config.submit_allowed_routes,
                         &config.submit_route_max_slippage_bps,
                         &config.submit_route_compute_unit_limit,
