@@ -3722,6 +3722,42 @@ mod app_tests {
     }
 
     #[test]
+    fn validate_execution_runtime_contract_rejects_fallback_adapter_endpoint_with_secret_bearing_url_forms(
+    ) {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        for (endpoint, expected_error) in [
+            (
+                "https://user:pass@adapter-fallback.local",
+                "must not embed credentials in URL",
+            ),
+            (
+                "https://adapter-fallback.local?api-key=secret",
+                "must not include query parameters",
+            ),
+            (
+                "https://adapter-fallback.local#frag",
+                "must not include URL fragment",
+            ),
+        ] {
+            execution.submit_adapter_fallback_http_url = endpoint.to_string();
+            let error = validate_execution_runtime_contract(&execution, "paper")
+                .expect_err("fallback adapter endpoint with secret-bearing URL form must fail");
+            assert!(
+                error.to_string().contains(expected_error),
+                "unexpected error for fallback endpoint {}: {}",
+                endpoint,
+                error
+            );
+        }
+    }
+
+    #[test]
     fn validate_execution_runtime_contract_rejects_non_loopback_http_adapter_endpoint_in_prod() {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
