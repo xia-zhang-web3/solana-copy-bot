@@ -440,3 +440,87 @@ SELECT
 FROM scorecard
 ORDER BY recommended_rank ASC;
 SQL
+
+echo
+echo "=== recommended submit_route_order (${WINDOW_HOURS}h submit window) ==="
+RECOMMENDED_ROUTE_ORDER_CSV="$(
+  sqlite3 -noheader "$DB_PATH" <<SQL
+WITH window_orders AS (
+  SELECT
+    COALESCE(route, '') AS route,
+    COALESCE(status, '') AS status,
+    COALESCE(err_code, '') AS err_code,
+    submit_ts,
+    confirm_ts
+  FROM orders
+  WHERE datetime(submit_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+),
+route_kpi AS (
+  SELECT
+    route,
+    COUNT(*) AS attempted_orders,
+    ROUND(
+      100.0 * SUM(CASE WHEN status = 'execution_confirmed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      2
+    ) AS success_rate_pct,
+    ROUND(
+      100.0 * SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      2
+    ) AS timeout_rate_pct
+  FROM window_orders
+  GROUP BY route
+),
+confirmed_latencies AS (
+  SELECT
+    COALESCE(route, '') AS route,
+    CASE
+      WHEN submit_ts IS NULL OR confirm_ts IS NULL THEN NULL
+      WHEN julianday(confirm_ts) < julianday(submit_ts) THEN 0
+      ELSE CAST((julianday(confirm_ts) - julianday(submit_ts)) * 86400000 AS INTEGER)
+    END AS latency_ms
+  FROM window_orders
+  WHERE status = 'execution_confirmed'
+    AND confirm_ts IS NOT NULL
+),
+ranked_latencies AS (
+  SELECT
+    route,
+    latency_ms,
+    ROW_NUMBER() OVER (PARTITION BY route ORDER BY latency_ms) AS row_num,
+    COUNT(*) OVER (PARTITION BY route) AS row_count
+  FROM confirmed_latencies
+  WHERE latency_ms IS NOT NULL
+),
+p95 AS (
+  SELECT
+    route,
+    MIN(latency_ms) AS p95_confirm_latency_ms
+  FROM ranked_latencies
+  WHERE row_num >= ((row_count * 95 + 99) / 100)
+  GROUP BY route
+),
+ranked_routes AS (
+  SELECT
+    k.route
+  FROM route_kpi k
+  LEFT JOIN p95 p ON p.route = k.route
+  WHERE TRIM(k.route) <> ''
+  ORDER BY
+    k.success_rate_pct DESC,
+    k.timeout_rate_pct ASC,
+    p.p95_confirm_latency_ms ASC,
+    k.attempted_orders DESC,
+    k.route ASC
+)
+SELECT COALESCE(group_concat(route, ','), '')
+FROM ranked_routes;
+SQL
+)"
+
+if [[ -n "$RECOMMENDED_ROUTE_ORDER_CSV" ]]; then
+  echo "recommended_route_order_csv: $RECOMMENDED_ROUTE_ORDER_CSV"
+  echo "env_override: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER=$RECOMMENDED_ROUTE_ORDER_CSV"
+else
+  echo "recommended_route_order_csv: <empty>"
+  echo "note: no route data in submit window; keep current route order"
+fi
