@@ -946,14 +946,23 @@ impl SqliteStore {
                             })
                     })
                     .transpose()?;
+                let applied_tip_lamports = parse_non_negative_i64(
+                    "orders.applied_tip_lamports",
+                    &order_id,
+                    applied_tip_lamports_raw,
+                )?;
+                let ata_create_rent_lamports = parse_non_negative_i64(
+                    "orders.ata_create_rent_lamports",
+                    &order_id,
+                    ata_create_rent_lamports_raw,
+                )?;
                 Ok(ExecutionOrderRow {
                     order_id,
                     signal_id,
                     client_order_id: client_id,
                     route,
-                    applied_tip_lamports: applied_tip_lamports_raw.map(|value| value.max(0) as u64),
-                    ata_create_rent_lamports: ata_create_rent_lamports_raw
-                        .map(|value| value.max(0) as u64),
+                    applied_tip_lamports,
+                    ata_create_rent_lamports,
                     submit_ts,
                     confirm_ts,
                     status,
@@ -1063,6 +1072,12 @@ impl SqliteStore {
         applied_tip_lamports: Option<u64>,
         ata_create_rent_lamports: Option<u64>,
     ) -> Result<()> {
+        let applied_tip_lamports_sql = applied_tip_lamports
+            .map(|value| u64_to_sql_i64("orders.applied_tip_lamports", value))
+            .transpose()?;
+        let ata_create_rent_lamports_sql = ata_create_rent_lamports
+            .map(|value| u64_to_sql_i64("orders.ata_create_rent_lamports", value))
+            .transpose()?;
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE orders
@@ -1077,8 +1092,8 @@ impl SqliteStore {
                     route,
                     tx_signature,
                     submit_ts.to_rfc3339(),
-                    applied_tip_lamports.map(|value| value as i64),
-                    ata_create_rent_lamports.map(|value| value as i64),
+                    applied_tip_lamports_sql,
+                    ata_create_rent_lamports_sql,
                     order_id
                 ],
             )
@@ -2741,10 +2756,90 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn mark_order_submitted_rejects_fee_breakdown_over_i64_max() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-fee-overflow.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-overflow:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-overflow-1",
+                &signal.signal_id,
+                "cb_overflow_a1",
+                "rpc",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let error = store
+            .mark_order_submitted(
+                "ord-overflow-1",
+                "rpc",
+                "sig-overflow",
+                now,
+                None,
+                Some((i64::MAX as u64).saturating_add(1)),
+            )
+            .expect_err("lamports above i64::MAX must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("orders.ata_create_rent_lamports"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_non_negative_i64_rejects_negative_values() {
+        let error = parse_non_negative_i64("orders.ata_create_rent_lamports", "ord-1", Some(-7))
+            .expect_err("negative sqlite value must be rejected");
+        assert!(
+            error.to_string().contains("must be >= 0"),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 fn rpc_result<'a>(payload: &'a Value) -> &'a Value {
     payload.get("result").unwrap_or(payload)
+}
+
+fn u64_to_sql_i64(field: &str, value: u64) -> Result<i64> {
+    i64::try_from(value)
+        .with_context(|| format!("{}={} exceeds sqlite INTEGER max (i64::MAX)", field, value))
+}
+
+fn parse_non_negative_i64(field: &str, order_id: &str, value: Option<i64>) -> Result<Option<u64>> {
+    match value {
+        Some(value) if value < 0 => Err(anyhow!(
+            "invalid {}={} for order_id={} (must be >= 0)",
+            field,
+            value,
+            order_id
+        )),
+        Some(value) => Ok(Some(value as u64)),
+        None => Ok(None),
+    }
 }
 
 fn is_retryable_sqlite_message(message: &str) -> bool {

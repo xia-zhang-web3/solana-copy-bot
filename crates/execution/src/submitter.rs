@@ -665,6 +665,17 @@ fn parse_adapter_submit_response(
     }
     let applied_tip_lamports = response_tip_lamports.unwrap_or(expected_tip_lamports);
     let ata_create_rent_lamports = body.get("ata_create_rent_lamports").and_then(Value::as_u64);
+    if let Some(value) = ata_create_rent_lamports {
+        if value > i64::MAX as u64 {
+            return Err(SubmitError::terminal(
+                "submit_adapter_invalid_response",
+                format!(
+                    "adapter response ata_create_rent_lamports={} exceeds i64::MAX",
+                    value
+                ),
+            ));
+        }
+    }
 
     let response_cu_limit = body
         .get("compute_budget")
@@ -1029,6 +1040,23 @@ mod tests {
         .expect("success payload");
         assert_eq!(result.applied_tip_lamports, 777);
         assert_eq!(result.ata_create_rent_lamports, Some(2_039_280));
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_ata_rent_above_i64_max() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "tip_lamports": 777,
+            "ata_create_rent_lamports": (i64::MAX as u64).saturating_add(1)
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 777, 300_000, 1_000,
+        )
+        .expect_err("ata rent above i64 max must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
     }
 
     #[test]

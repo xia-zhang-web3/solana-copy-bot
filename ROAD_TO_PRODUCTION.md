@@ -548,6 +548,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 27. route-level tip policy added to submit path (`submit_route_tip_lamports`) with strict runtime validation for allowed/default routes, guardrail `0..=100_000_000 lamports` per route, and optional strict adapter policy-echo verification (`tip_lamports`).
 28. reconcile fee accounting wired into confirmed-path finalize: `fee_sol` now uses on-chain network fee (`getTransaction.meta.fee` from RPC confirmer) + applied tip from submit lifecycle (persisted per-order) + optional ATA-create rent from adapter response, and positions/PnL now account for fees instead of fixed `0.0`.
 29. fee diagnostics improved: if confirmed order is processed without resolved network fee in `adapter_submit_confirm`, runtime now emits reasoned telemetry (`rpc_lookup_error` vs `meta_fee_unavailable`) plus sanitized typed lookup error class (`timeout`/`connect`/`invalid_json`/`rpc_error_payload`/`other`) for incident triage.
+30. fee-breakdown persistence safety hardened: adapter response rejects `ata_create_rent_lamports > i64::MAX`, storage write uses checked u64→i64 conversion (no wrap), read path fails on negative lamport fields, and DB triggers enforce non-negative lamports for fee-breakdown columns.
 
 Остается в next-code-queue:
 
