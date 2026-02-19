@@ -1406,6 +1406,11 @@ mod tests {
 
         let second = runtime.process_batch(&store, Utc::now(), None)?;
         assert_eq!(second.failed, 1);
+        assert_eq!(
+            second.submit_failed_by_route.get("paper"),
+            Some(&1),
+            "final submit failure should be attributed to active route"
+        );
 
         let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
         assert_eq!(failed.len(), 1);
@@ -1547,6 +1552,11 @@ mod tests {
 
         let second = runtime.process_batch(&store, Utc::now(), None)?;
         assert_eq!(second.failed, 1);
+        assert_eq!(
+            second.pretrade_failed_by_route.get("paper"),
+            Some(&1),
+            "pretrade exhaustion should be attributed to active route"
+        );
         let after_second = store
             .execution_order_by_client_order_id(&client_order_id)?
             .context("order should remain present after pretrade exhaustion")?;
@@ -1602,6 +1612,11 @@ mod tests {
 
         let report = runtime.process_batch(&store, Utc::now(), None)?;
         assert_eq!(report.dropped, 1);
+        assert_eq!(
+            report.pretrade_terminal_rejected_by_route.get("paper"),
+            Some(&1),
+            "terminal pretrade reject should be attributed to active route"
+        );
 
         let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
         let order = store
