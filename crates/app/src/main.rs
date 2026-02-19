@@ -415,6 +415,8 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             mode,
             batch_size = config.batch_size,
             poll_interval_ms = config.poll_interval_ms,
+            pretrade_require_token_account = config.pretrade_require_token_account,
+            pretrade_max_priority_fee_lamports = config.pretrade_max_priority_fee_lamports,
             "execution runtime contract validated"
         );
     }

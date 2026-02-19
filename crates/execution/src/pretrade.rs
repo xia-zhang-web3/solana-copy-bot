@@ -56,6 +56,12 @@ fn pretrade_contract_sanity(intent: &ExecutionIntent, route: &str) -> Option<Pre
             "execution route is empty",
         ));
     }
+    if intent.token.trim().is_empty() {
+        return Some(PreTradeDecision::reject(
+            "token_missing",
+            "execution intent token is empty",
+        ));
+    }
     if !intent.notional_sol.is_finite() || intent.notional_sol <= 0.0 {
         return Some(PreTradeDecision::reject(
             "invalid_notional",
@@ -109,6 +115,8 @@ pub struct RpcPreTradeChecker {
     endpoints: Vec<String>,
     execution_signer_pubkey: String,
     min_sol_reserve: f64,
+    require_token_account: bool,
+    max_priority_fee_lamports: Option<u64>,
     client: Client,
 }
 
@@ -119,6 +127,8 @@ impl RpcPreTradeChecker {
         timeout_ms: u64,
         execution_signer_pubkey: &str,
         min_sol_reserve: f64,
+        require_token_account: bool,
+        pretrade_max_priority_fee_lamports: u64,
     ) -> Option<Self> {
         let mut endpoints = Vec::new();
         let primary = primary_url.trim();
@@ -147,6 +157,12 @@ impl RpcPreTradeChecker {
             endpoints,
             execution_signer_pubkey: signer.to_string(),
             min_sol_reserve,
+            require_token_account,
+            max_priority_fee_lamports: if pretrade_max_priority_fee_lamports == 0 {
+                None
+            } else {
+                Some(pretrade_max_priority_fee_lamports)
+            },
             client,
         })
     }
@@ -190,6 +206,32 @@ impl RpcPreTradeChecker {
         });
         let body = self.post_rpc(endpoint, &payload)?;
         parse_balance_lamports_from_rpc_body(&body)
+    }
+
+    fn query_token_account_exists(&self, endpoint: &str, mint: &str) -> Result<bool> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                self.execution_signer_pubkey,
+                { "mint": mint },
+                { "encoding": "base64", "commitment": "processed" }
+            ]
+        });
+        let body = self.post_rpc(endpoint, &payload)?;
+        parse_token_account_exists_from_rpc_body(&body)
+    }
+
+    fn query_recent_priority_fee_lamports(&self, endpoint: &str) -> Result<u64> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getRecentPrioritizationFees",
+            "params": [[]]
+        });
+        let body = self.post_rpc(endpoint, &payload)?;
+        parse_recent_priority_fee_lamports_from_rpc_body(&body)
     }
 
     fn evaluate_balance(
@@ -245,7 +287,66 @@ impl PreTradeChecker for RpcPreTradeChecker {
                     continue;
                 }
             };
-            return self.evaluate_balance(intent, endpoint, &blockhash, balance_lamports);
+            let balance_decision =
+                match self.evaluate_balance(intent, endpoint, &blockhash, balance_lamports) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        last_error = Some(error);
+                        continue;
+                    }
+                };
+            if balance_decision.kind != PreTradeDecisionKind::Allow {
+                return Ok(balance_decision);
+            }
+
+            let mut allow_detail = balance_decision.detail;
+
+            if self.require_token_account {
+                let token_account_exists =
+                    match self.query_token_account_exists(endpoint, intent.token.trim()) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            last_error = Some(error);
+                            continue;
+                        }
+                    };
+                if !token_account_exists {
+                    return Ok(PreTradeDecision::reject(
+                        "pretrade_token_account_missing",
+                        format!(
+                            "signer_pubkey={} endpoint={} token_mint={}",
+                            self.execution_signer_pubkey, endpoint, intent.token
+                        ),
+                    ));
+                }
+                allow_detail.push_str(" token_account=present");
+            }
+
+            if let Some(max_priority_fee_lamports) = self.max_priority_fee_lamports {
+                let recent_priority_fee_lamports =
+                    match self.query_recent_priority_fee_lamports(endpoint) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            last_error = Some(error);
+                            continue;
+                        }
+                    };
+                if recent_priority_fee_lamports > max_priority_fee_lamports {
+                    return Ok(PreTradeDecision::retryable(
+                        "pretrade_priority_fee_too_high",
+                        format!(
+                            "endpoint={} recent_priority_fee_lamports={} max_priority_fee_lamports={}",
+                            endpoint, recent_priority_fee_lamports, max_priority_fee_lamports
+                        ),
+                    ));
+                }
+                allow_detail.push_str(&format!(
+                    " priority_fee_lamports={}",
+                    recent_priority_fee_lamports
+                ));
+            }
+
+            return Ok(PreTradeDecision::allow(allow_detail));
         }
 
         Ok(PreTradeDecision::retryable(
@@ -280,6 +381,35 @@ fn parse_balance_lamports_from_rpc_body(body: &Value) -> Result<u64> {
         .and_then(|result| result.get("value"))
         .and_then(Value::as_u64)
         .ok_or_else(|| anyhow!("missing result.value lamports"))
+}
+
+fn parse_token_account_exists_from_rpc_body(body: &Value) -> Result<bool> {
+    if let Some(error_payload) = body.get("error") {
+        return Err(anyhow!("rpc returned error payload: {}", error_payload));
+    }
+    let value = body
+        .get("result")
+        .and_then(|result| result.get("value"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing result.value token accounts array"))?;
+    Ok(!value.is_empty())
+}
+
+fn parse_recent_priority_fee_lamports_from_rpc_body(body: &Value) -> Result<u64> {
+    if let Some(error_payload) = body.get("error") {
+        return Err(anyhow!("rpc returned error payload: {}", error_payload));
+    }
+    let values = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing result prioritization fee array"))?;
+    let max_fee = values
+        .iter()
+        .filter_map(|entry| entry.get("prioritizationFee"))
+        .filter_map(Value::as_u64)
+        .max()
+        .ok_or_else(|| anyhow!("missing prioritizationFee values"))?;
+    Ok(max_fee)
 }
 
 fn sol_to_lamports(sol: f64) -> Result<u64> {
@@ -385,6 +515,8 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            false,
+            0,
         )
         .expect("checker should initialize");
 
@@ -396,6 +528,54 @@ mod tests {
         )?;
         assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
         assert_eq!(decision.reason_code, "pretrade_balance_insufficient");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_token_account_exists_from_rpc_body_true_when_value_present() -> Result<()> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "context": { "slot": 1 },
+                "value": [
+                    { "pubkey": "token-account-1", "account": { "data": ["", "base64"] } }
+                ]
+            },
+            "id": 1
+        });
+        let exists = parse_token_account_exists_from_rpc_body(&body)?;
+        assert!(exists);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_token_account_exists_from_rpc_body_false_when_value_empty() -> Result<()> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "context": { "slot": 1 },
+                "value": []
+            },
+            "id": 1
+        });
+        let exists = parse_token_account_exists_from_rpc_body(&body)?;
+        assert!(!exists);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_recent_priority_fee_lamports_from_rpc_body_returns_max_value() -> Result<()> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "slot": 1, "prioritizationFee": 3000 },
+                { "slot": 2, "prioritizationFee": 1200 },
+                { "slot": 3, "prioritizationFee": 5000 }
+            ],
+            "id": 1
+        });
+        let fee = parse_recent_priority_fee_lamports_from_rpc_body(&body)?;
+        assert_eq!(fee, 5_000);
         Ok(())
     }
 }

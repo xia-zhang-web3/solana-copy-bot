@@ -19,7 +19,7 @@ Owner: copybot runtime team
 3. BUY-only pause gates активны: operator emergency stop, risk hard-stop и outage-блокировка применяются только к pre-submit BUY.
 4. SELL и confirm-path не блокируются pause-гейтами, что сохраняет возможность закрытия риска.
 5. Execution risk gates в рантайме enforce: `max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness и `sell_requires_open_position`.
-6. Оставшиеся code-gaps до real-money submit: live submit route и pre-trade checks второго уровня (ATA/CU-budget/slippage policy).
+6. Оставшиеся code-gaps до real-money submit: live submit route и перенос CU/slippage policy в real signed-tx submit path.
 
 Текущий статус этапов:
 
@@ -42,7 +42,7 @@ Owner: copybot runtime team
 | --- | --- | --- | --- |
 | A | Закрыть Yellowstone migration observation | In progress | systemd watchdog deploy + 1h/6h/24h evidence + 7-day window |
 | B | Закрыть security/ops baseline до первого submit | In progress | key policy + alert delivery + rollback drill |
-| C | Поднять execution core MVP | In progress | закрыть live submit-path + pre-trade checks (ATA/CU-budget) |
+| C | Поднять execution core MVP | In progress | закрыть live submit-path + real tx policy (CU-limit/CU-price + route slippage bounds) |
 | C.5 | Пройти devnet dress rehearsal | Pending | end-to-end smoke без критичных дефектов |
 | D | Подключить Jito как primary route | Pending | route policy + tip strategy + fallback policy |
 | E | Заэнфорсить live risk limits в execution | In progress | добрать fee reserve/cooldown policy + live-runtime проверку |
@@ -54,7 +54,7 @@ Owner: copybot runtime team
 
 1. Закрыты safety-gates `R2P-06` и `R2P-16` (runtime BUY-gate).
 2. Execution baseline поднят: `R2P-08` и `R2P-09` закрыты; `R2P-10`/`R2P-11` в прогрессе (paper lifecycle + recovery + risk gates готовы).
-3. До real-money submit остаются code-only блокеры: live submit route и расширенные pre-trade checks (ATA/CU-budget).
+3. До real-money submit остаются code-only блокеры: live submit route и enforcement CU/slippage policy в signed-tx path.
 
 ## 3) Критичная правда по сроку "завтра торговать"
 
@@ -161,11 +161,12 @@ Exit criteria Stage B:
    4. risk gates в execution path (`max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness, sell-open-position validation).
 2. 🟡 В работе:
    1. live submit/confirm implementations (сейчас active path paper-only),
-   2. pre-trade checks: balance/ATA/blockhash/CU-budget.
+   2. перенос CU-limit/CU-price/slippage policy из pre-trade validation в real signed-tx submit flow.
 3. ✅ Уже добавлено после audit hardening:
    1. bounded submit retry policy (`max_submit_attempts`) в execution runtime,
    2. typed submit error taxonomy (`Retryable`/`Terminal`) вместо message-based heuristic,
-   3. pre-trade checker contract в execution pipeline (retryable/terminal outcomes + lifecycle wiring).
+   3. pre-trade checker contract в execution pipeline (retryable/terminal outcomes + lifecycle wiring),
+   4. RPC pre-trade второго уровня: ATA account-existence policy (`getTokenAccountsByOwner`) + priority fee cap check (`getRecentPrioritizationFees`) через `pretrade_require_token_account` и `pretrade_max_priority_fee_lamports`.
 
 Prerequisites Stage C:
 
@@ -444,10 +445,10 @@ Done now:
 3. BUY-only pause integration (operator/hard-stop/outage),
 4. bounded retry policy (`max_submit_attempts`) for submit/pre-trade retryable failures,
 5. pre-trade checker contract wired in lifecycle (`Allow` / `RetryableReject` / `TerminalReject`),
-6. RPC pre-trade checker added (`paper_rpc_pretrade_confirm`): `getLatestBlockhash` + signer balance check with `pretrade_min_sol_reserve` gate.
+6. RPC pre-trade checker added (`paper_rpc_pretrade_confirm`): `getLatestBlockhash` + signer balance check with `pretrade_min_sol_reserve` gate,
+7. pre-trade account/fee gates: optional ATA existence policy (`pretrade_require_token_account`) + optional priority fee cap (`pretrade_max_priority_fee_lamports`).
 Remaining:
-1. pre-trade ATA policy / account-existence checks,
-2. CU-budget/slippage-route policy for real submit.
+1. CU-budget/slippage-route policy for real submit.
 
 `R2P-11` — Submit + confirmation polling + reconciliation  
 Status: 🟡 In progress (paper path done)  
@@ -522,7 +523,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 7. order insert telemetry contract tightened: `insert_execution_order_pending` now distinguishes `Inserted` vs `Duplicate` and fails on unknown ignore.
 8. pre-trade pipeline wired before simulation/submit with bounded retries for retryable pre-trade failures.
 9. submit classification hardened: runtime now uses typed submit errors (`SubmitErrorKind`) for deterministic retry/terminal branching.
-10. RPC pre-trade/confirm hardening: new mode `paper_rpc_pretrade_confirm`, signer-balance reserve gate, and RPC confirmer support for confirmed/failed/pending states.
+10. RPC pre-trade/confirm hardening: new mode `paper_rpc_pretrade_confirm`, signer-balance reserve gate, optional ATA existence policy (`pretrade_require_token_account`), optional priority fee cap (`pretrade_max_priority_fee_lamports`), and RPC confirmer support for confirmed/failed/pending states.
 11. execution scheduling decoupled from main async loop: execution batch runs in dedicated blocking task to avoid ingestion stalls under RPC latency.
 12. confirm->reconcile path hardened to atomic finalize transaction (`fills + positions + order/signal status`) with idempotent `AlreadyConfirmed` outcome.
 13. execution price policy switched to fail-closed (`price_unavailable`) instead of unsafe fallback `avg_price_sol=1.0`.
@@ -531,7 +532,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 Остается в next-code-queue:
 
 1. real submit implementation (signed tx send path + route policy).
-2. расширить pre-trade до ATA/CU-budget checks (поверх уже добавленных blockhash/balance checks).
+2. перевести CU-limit/CU-price/slippage-route policy в real signed-tx path (поверх уже добавленных blockhash/balance/ATA/priority-fee pre-trade checks).
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 

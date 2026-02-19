@@ -53,6 +53,8 @@ pub struct ExecutionConfig {
     pub rpc_devnet_http_url: String,
     pub execution_signer_pubkey: String,
     pub pretrade_min_sol_reserve: f64,
+    pub pretrade_require_token_account: bool,
+    pub pretrade_max_priority_fee_lamports: u64,
     pub slippage_bps: f64,
     pub max_confirm_seconds: u64,
     pub max_submit_attempts: u32,
@@ -72,6 +74,8 @@ impl Default for ExecutionConfig {
             rpc_devnet_http_url: String::new(),
             execution_signer_pubkey: String::new(),
             pretrade_min_sol_reserve: 0.05,
+            pretrade_require_token_account: false,
+            pretrade_max_priority_fee_lamports: 0,
             slippage_bps: 50.0,
             max_confirm_seconds: 15,
             max_submit_attempts: 3,
@@ -584,6 +588,20 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
             .and_then(|value| value.parse::<f64>().ok())
     {
         config.execution.pretrade_min_sol_reserve = pretrade_min_sol_reserve;
+    }
+    if let Some(pretrade_require_token_account) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_REQUIRE_TOKEN_ACCOUNT")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.pretrade_require_token_account = pretrade_require_token_account;
+    }
+    if let Some(pretrade_max_priority_fee_lamports) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.pretrade_max_priority_fee_lamports = pretrade_max_priority_fee_lamports;
     }
     if let Some(slippage_bps) = env::var("SOLANA_COPY_BOT_EXECUTION_SLIPPAGE_BPS")
         .ok()

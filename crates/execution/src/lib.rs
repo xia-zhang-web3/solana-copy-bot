@@ -105,6 +105,8 @@ impl ExecutionRuntime {
                     config.poll_interval_ms.max(500),
                     &config.execution_signer_pubkey,
                     config.pretrade_min_sol_reserve,
+                    config.pretrade_require_token_account,
+                    config.pretrade_max_priority_fee_lamports,
                 ) {
                     Some(value) => Box::new(value),
                     None => Box::new(FailClosedPreTradeChecker::new(
