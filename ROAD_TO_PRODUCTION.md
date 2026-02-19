@@ -550,6 +550,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 29. fee diagnostics improved: if confirmed order is processed without resolved network fee in `adapter_submit_confirm`, runtime now emits reasoned telemetry (`rpc_lookup_error` vs `meta_fee_unavailable`) plus sanitized typed lookup error class (`timeout`/`connect`/`invalid_json`/`rpc_error_payload`/`other`) for incident triage.
 30. fee-breakdown persistence safety hardened: adapter response rejects `ata_create_rent_lamports > i64::MAX`, storage write uses checked u64→i64 conversion (no wrap), read path fails on negative lamport fields, and DB triggers enforce non-negative lamports for fee-breakdown columns.
 31. fee-breakdown hints extended and persisted end-to-end: submit adapter response now supports optional `network_fee_lamports` / `base_fee_lamports` / `priority_fee_lamports` hints, persists them on `orders` (`0015`), enforces non-negative safety via trigger refresh (`0016`), and confirmed-path finalize uses persisted `network_fee_lamports_hint` fallback (with explicit risk-event source tagging) when RPC `meta.fee` is unavailable.
+32. fee-breakdown hint consistency hardened: adapter response is now fail-closed if `network_fee_lamports` disagrees with `base_fee_lamports + priority_fee_lamports`, and runtime emits `execution_network_fee_hint_mismatch` telemetry when RPC `meta.fee` disagrees with persisted submit hint while still preferring RPC fee for accounting.
 
 Остается в next-code-queue:
 

@@ -841,6 +841,34 @@ impl ExecutionRuntime {
                     .network_fee_lamports
                     .or(network_fee_lamports_hint)
                     .unwrap_or(0);
+                if self.mode == "adapter_submit_confirm" {
+                    if let (
+                        Some(rpc_network_fee_lamports),
+                        Some(submit_network_fee_lamports_hint),
+                    ) = (confirm.network_fee_lamports, network_fee_lamports_hint)
+                    {
+                        if rpc_network_fee_lamports != submit_network_fee_lamports_hint {
+                            let details = json!({
+                                "signal_id": intent.signal_id,
+                                "order_id": order_id,
+                                "route": route,
+                                "rpc_network_fee_lamports": rpc_network_fee_lamports,
+                                "submit_network_fee_lamports_hint": submit_network_fee_lamports_hint,
+                                "base_fee_lamports_hint": base_fee_lamports_hint,
+                                "priority_fee_lamports_hint": priority_fee_lamports_hint,
+                                "absolute_diff_lamports": rpc_network_fee_lamports.abs_diff(submit_network_fee_lamports_hint),
+                                "reason": "rpc_network_fee_differs_from_submit_hint",
+                            })
+                            .to_string();
+                            let _ = store.insert_risk_event(
+                                "execution_network_fee_hint_mismatch",
+                                "warn",
+                                now,
+                                Some(&details),
+                            );
+                        }
+                    }
+                }
                 let execution_fee_sol = fee_sol_from_lamports(
                     resolved_network_fee_lamports,
                     route_tip_lamports,
@@ -2428,6 +2456,74 @@ mod tests {
         assert!(
             (exposure - expected).abs() < 1e-12,
             "expected exposure to include submit network fee hint fallback; got {} expected {}",
+            exposure,
+            expected
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_prefers_rpc_network_fee_over_submit_hint() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-fee-rpc-priority")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-fee-rpc-priority",
+            now,
+            "sig-price-fee-rpc-priority",
+        )?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:s8h:w:buy:t-fee-rpc-priority".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-fee-rpc-priority".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let mut route_tip_lamports = BTreeMap::new();
+        route_tip_lamports.insert("rpc".to_string(), 0);
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports,
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(FixedFeeHintSubmitter {
+                tip_lamports: 0,
+                network_fee_lamports_hint: 1_000_000_000,
+            }),
+            confirmer: Box::new(NetworkFeeConfirmer {
+                network_fee_lamports: 5_000,
+            }),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 1);
+        let exposure = store.live_open_exposure_sol()?;
+        let expected = 0.1 + 5_000.0 / 1_000_000_000.0;
+        assert!(
+            (exposure - expected).abs() < 1e-12,
+            "expected exposure to prefer rpc network fee over submit hint; got {} expected {}",
             exposure,
             expected
         );

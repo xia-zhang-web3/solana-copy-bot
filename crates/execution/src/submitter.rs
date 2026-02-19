@@ -681,6 +681,19 @@ fn parse_adapter_submit_response(
     } else {
         None
     };
+    if let (Some(network_fee), Some(derived_network_fee)) =
+        (network_fee_lamports_hint, derived_network_fee_lamports_hint)
+    {
+        if network_fee != derived_network_fee {
+            return Err(SubmitError::terminal(
+                "submit_adapter_invalid_response",
+                format!(
+                    "adapter response network_fee_lamports={} does not match base+priority={}",
+                    network_fee, derived_network_fee
+                ),
+            ));
+        }
+    }
 
     if let Some(value) = ata_create_rent_lamports {
         if value > i64::MAX as u64 {
@@ -1137,6 +1150,24 @@ mod tests {
             &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
         )
         .expect_err("network fee hint above i64 max must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_network_fee_mismatch_with_base_priority() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "network_fee_lamports": 1000,
+            "base_fee_lamports": 600,
+            "priority_fee_lamports": 500
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("mismatched network/base+priority must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_invalid_response");
     }
