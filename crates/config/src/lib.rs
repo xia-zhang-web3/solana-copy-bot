@@ -5,6 +5,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const EXECUTION_ROUTE_TIP_LAMPORTS_MAX: u64 = 100_000_000;
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct AppConfig {

@@ -10,6 +10,7 @@ use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
 use crate::intent::ExecutionIntent;
+use copybot_config::EXECUTION_ROUTE_TIP_LAMPORTS_MAX;
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone)]
@@ -773,6 +774,9 @@ fn normalize_route_tip_lamports(route_tips: &BTreeMap<String, u64>) -> HashMap<S
         .iter()
         .filter_map(|(route, value)| {
             let route = normalize_route(route)?;
+            if *value > EXECUTION_ROUTE_TIP_LAMPORTS_MAX {
+                return None;
+            }
             Some((route, *value))
         })
         .collect()
@@ -1163,6 +1167,28 @@ mod tests {
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
             &make_route_tips("paper", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_rejects_tip_above_guardrail() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", EXECUTION_ROUTE_TIP_LAMPORTS_MAX.saturating_add(1)),
             &make_route_cu_limits("rpc", 300_000),
             &make_route_cu_prices("rpc", 1_000),
             1_000,

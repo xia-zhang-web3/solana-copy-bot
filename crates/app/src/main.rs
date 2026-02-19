@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, ExecutionConfig, RiskConfig};
+use copybot_config::{
+    load_from_env_or_default, ExecutionConfig, RiskConfig, EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+};
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
@@ -594,10 +596,18 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             "execution.submit_route_tip_lamports must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS=route:tip,route2:tip2)"
         ));
     }
-    for route in config.submit_route_tip_lamports.keys() {
+    for (route, tip_lamports) in &config.submit_route_tip_lamports {
         if route.trim().is_empty() {
             return Err(anyhow!(
                 "execution.submit_route_tip_lamports contains empty route key"
+            ));
+        }
+        if *tip_lamports > EXECUTION_ROUTE_TIP_LAMPORTS_MAX {
+            return Err(anyhow!(
+                "execution.submit_route_tip_lamports route={} must be in 0..={}, got {}",
+                route,
+                EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+                tip_lamports
             ));
         }
     }
@@ -1847,6 +1857,7 @@ async fn run_app_loop(
                                 confirm_failed_by_route = ?report.confirm_failed_by_route,
                                 confirm_latency_samples_by_route = ?report.confirm_latency_samples_by_route,
                                 confirm_latency_ms_sum_by_route = ?report.confirm_latency_ms_sum_by_route,
+                                confirm_latency_semantics = "submit_to_runtime_observed_confirm_ms",
                                 has_route_metrics,
                                 "execution batch processed"
                             );
