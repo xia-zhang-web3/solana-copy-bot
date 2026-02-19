@@ -238,3 +238,83 @@ FROM strict_rejects
 GROUP BY route
 ORDER BY cnt DESC, route ASC;
 SQL
+
+echo
+echo "=== route outcome KPI (${WINDOW_HOURS}h submit window) ==="
+sqlite3 "$DB_PATH" <<SQL
+.headers on
+.mode column
+WITH window_orders AS (
+  SELECT
+    COALESCE(route, '') AS route,
+    COALESCE(status, '') AS status,
+    COALESCE(err_code, '') AS err_code
+  FROM orders
+  WHERE datetime(submit_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+)
+SELECT
+  route,
+  COUNT(*) AS attempted_orders,
+  SUM(CASE WHEN status = 'execution_confirmed' THEN 1 ELSE 0 END) AS confirmed_orders,
+  SUM(CASE WHEN status = 'execution_failed' THEN 1 ELSE 0 END) AS failed_orders,
+  SUM(CASE WHEN status = 'execution_dropped' THEN 1 ELSE 0 END) AS dropped_orders,
+  SUM(CASE WHEN status IN ('execution_pending', 'execution_simulated', 'execution_submitted') THEN 1 ELSE 0 END) AS inflight_orders,
+  SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_timeout_orders,
+  SUM(CASE WHEN err_code IN ('confirm_error', 'confirm_error_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_error_orders,
+  ROUND(
+    100.0 * SUM(CASE WHEN status = 'execution_confirmed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS success_rate_pct
+FROM window_orders
+GROUP BY route
+ORDER BY attempted_orders DESC, route ASC;
+SQL
+
+echo
+echo "=== confirm latency by route (${WINDOW_HOURS}h submit window, ms) ==="
+sqlite3 "$DB_PATH" <<SQL
+.headers on
+.mode column
+WITH confirmed_orders AS (
+  SELECT
+    COALESCE(route, '') AS route,
+    CASE
+      WHEN submit_ts IS NULL OR confirm_ts IS NULL THEN NULL
+      WHEN julianday(confirm_ts) < julianday(submit_ts) THEN 0
+      ELSE CAST((julianday(confirm_ts) - julianday(submit_ts)) * 86400000 AS INTEGER)
+    END AS latency_ms
+  FROM orders
+  WHERE status = 'execution_confirmed'
+    AND confirm_ts IS NOT NULL
+    AND datetime(submit_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+),
+ranked AS (
+  SELECT
+    route,
+    latency_ms,
+    ROW_NUMBER() OVER (PARTITION BY route ORDER BY latency_ms) AS row_num,
+    COUNT(*) OVER (PARTITION BY route) AS row_count
+  FROM confirmed_orders
+  WHERE latency_ms IS NOT NULL
+),
+p95 AS (
+  SELECT
+    route,
+    MIN(latency_ms) AS p95_ms
+  FROM ranked
+  WHERE row_num >= ((row_count * 95 + 99) / 100)
+  GROUP BY route
+)
+SELECT
+  c.route,
+  COUNT(*) AS confirmed_orders,
+  MIN(c.latency_ms) AS min_ms,
+  ROUND(AVG(c.latency_ms), 2) AS avg_ms,
+  MAX(c.latency_ms) AS max_ms,
+  p95.p95_ms
+FROM confirmed_orders c
+LEFT JOIN p95 ON p95.route = c.route
+WHERE c.latency_ms IS NOT NULL
+GROUP BY c.route
+ORDER BY confirmed_orders DESC, c.route ASC;
+SQL
