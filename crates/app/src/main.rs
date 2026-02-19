@@ -1980,6 +1980,18 @@ async fn run_app_loop(
                                 || !report.confirm_network_fee_rpc_by_route.is_empty()
                                 || !report.confirm_network_fee_submit_hint_by_route.is_empty()
                                 || !report.confirm_network_fee_missing_by_route.is_empty()
+                                || !report
+                                    .confirm_network_fee_lamports_sum_by_route
+                                    .is_empty()
+                                || !report.confirm_tip_lamports_sum_by_route.is_empty()
+                                || !report.confirm_ata_rent_lamports_sum_by_route.is_empty()
+                                || !report.confirm_fee_total_lamports_sum_by_route.is_empty()
+                                || !report
+                                    .confirm_base_fee_hint_lamports_sum_by_route
+                                    .is_empty()
+                                || !report
+                                    .confirm_priority_fee_hint_lamports_sum_by_route
+                                    .is_empty()
                                 || !report.confirm_latency_samples_by_route.is_empty()
                                 || !report.confirm_latency_ms_sum_by_route.is_empty();
                             info!(
@@ -2000,6 +2012,12 @@ async fn run_app_loop(
                                 confirm_network_fee_rpc_by_route = ?report.confirm_network_fee_rpc_by_route,
                                 confirm_network_fee_submit_hint_by_route = ?report.confirm_network_fee_submit_hint_by_route,
                                 confirm_network_fee_missing_by_route = ?report.confirm_network_fee_missing_by_route,
+                                confirm_network_fee_lamports_sum_by_route = ?report.confirm_network_fee_lamports_sum_by_route,
+                                confirm_tip_lamports_sum_by_route = ?report.confirm_tip_lamports_sum_by_route,
+                                confirm_ata_rent_lamports_sum_by_route = ?report.confirm_ata_rent_lamports_sum_by_route,
+                                confirm_fee_total_lamports_sum_by_route = ?report.confirm_fee_total_lamports_sum_by_route,
+                                confirm_base_fee_hint_lamports_sum_by_route = ?report.confirm_base_fee_hint_lamports_sum_by_route,
+                                confirm_priority_fee_hint_lamports_sum_by_route = ?report.confirm_priority_fee_hint_lamports_sum_by_route,
                                 confirm_latency_samples_by_route = ?report.confirm_latency_samples_by_route,
                                 confirm_latency_ms_sum_by_route = ?report.confirm_latency_ms_sum_by_route,
                                 confirm_latency_semantics = "submit_to_runtime_observed_confirm_ms",

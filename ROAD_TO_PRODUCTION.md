@@ -552,6 +552,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 31. fee-breakdown hints extended and persisted end-to-end: submit adapter response now supports optional `network_fee_lamports` / `base_fee_lamports` / `priority_fee_lamports` hints, persists them on `orders` (`0015`), enforces non-negative safety via trigger refresh (`0016`), and confirmed-path finalize uses persisted `network_fee_lamports_hint` fallback (with explicit risk-event source tagging) when RPC `meta.fee` is unavailable.
 32. fee-breakdown hint consistency hardened: adapter response is now fail-closed if `network_fee_lamports` disagrees with `base_fee_lamports + priority_fee_lamports`, and runtime emits `execution_network_fee_hint_mismatch` telemetry when RPC `meta.fee` disagrees with persisted submit hint while still preferring RPC fee for accounting.
 33. per-route fee-source telemetry added to execution batch report/logs for adapter mode: confirmed orders now emit route counters for `network_fee` source (`rpc_meta` / `submit_hint` / `missing`) to support route-profile fee calibration and incident triage.
+34. per-route fee lamports aggregation added for confirmed path: execution batch telemetry now includes route-level sums for `network_fee`, `tip`, `ata_rent`, total fee, and optional `base/priority` hint sums for direct calibration of adapter fee policy.
 
 Остается в next-code-queue:
 

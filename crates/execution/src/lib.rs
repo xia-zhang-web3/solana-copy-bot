@@ -53,6 +53,12 @@ pub struct ExecutionBatchReport {
     pub confirm_network_fee_rpc_by_route: BTreeMap<String, u64>,
     pub confirm_network_fee_submit_hint_by_route: BTreeMap<String, u64>,
     pub confirm_network_fee_missing_by_route: BTreeMap<String, u64>,
+    pub confirm_network_fee_lamports_sum_by_route: BTreeMap<String, u64>,
+    pub confirm_tip_lamports_sum_by_route: BTreeMap<String, u64>,
+    pub confirm_ata_rent_lamports_sum_by_route: BTreeMap<String, u64>,
+    pub confirm_fee_total_lamports_sum_by_route: BTreeMap<String, u64>,
+    pub confirm_base_fee_hint_lamports_sum_by_route: BTreeMap<String, u64>,
+    pub confirm_priority_fee_hint_lamports_sum_by_route: BTreeMap<String, u64>,
     pub confirm_latency_samples_by_route: BTreeMap<String, u64>,
     pub confirm_latency_ms_sum_by_route: BTreeMap<String, u64>,
 }
@@ -844,6 +850,9 @@ impl ExecutionRuntime {
                     .network_fee_lamports
                     .or(network_fee_lamports_hint)
                     .unwrap_or(0);
+                let resolved_total_fee_lamports = resolved_network_fee_lamports
+                    .saturating_add(route_tip_lamports)
+                    .saturating_add(ata_create_rent_lamports);
                 if self.mode == "adapter_submit_confirm" {
                     if confirm.network_fee_lamports.is_some() {
                         bump_route_counter(&mut report.confirm_network_fee_rpc_by_route, route);
@@ -881,6 +890,40 @@ impl ExecutionRuntime {
                             );
                         }
                     }
+                }
+                accumulate_route_sum(
+                    &mut report.confirm_network_fee_lamports_sum_by_route,
+                    route,
+                    resolved_network_fee_lamports,
+                );
+                accumulate_route_sum(
+                    &mut report.confirm_tip_lamports_sum_by_route,
+                    route,
+                    route_tip_lamports,
+                );
+                accumulate_route_sum(
+                    &mut report.confirm_ata_rent_lamports_sum_by_route,
+                    route,
+                    ata_create_rent_lamports,
+                );
+                accumulate_route_sum(
+                    &mut report.confirm_fee_total_lamports_sum_by_route,
+                    route,
+                    resolved_total_fee_lamports,
+                );
+                if let Some(base_fee_lamports_hint) = base_fee_lamports_hint {
+                    accumulate_route_sum(
+                        &mut report.confirm_base_fee_hint_lamports_sum_by_route,
+                        route,
+                        base_fee_lamports_hint,
+                    );
+                }
+                if let Some(priority_fee_lamports_hint) = priority_fee_lamports_hint {
+                    accumulate_route_sum(
+                        &mut report.confirm_priority_fee_hint_lamports_sum_by_route,
+                        route,
+                        priority_fee_lamports_hint,
+                    );
                 }
                 let execution_fee_sol = fee_sol_from_lamports(
                     resolved_network_fee_lamports,
@@ -2409,6 +2452,22 @@ mod tests {
             None
         );
         assert_eq!(report.confirm_network_fee_missing_by_route.get("rpc"), None);
+        assert_eq!(
+            report.confirm_network_fee_lamports_sum_by_route.get("rpc"),
+            Some(&5_000)
+        );
+        assert_eq!(
+            report.confirm_tip_lamports_sum_by_route.get("rpc"),
+            Some(&7_000)
+        );
+        assert_eq!(
+            report.confirm_ata_rent_lamports_sum_by_route.get("rpc"),
+            Some(&0)
+        );
+        assert_eq!(
+            report.confirm_fee_total_lamports_sum_by_route.get("rpc"),
+            Some(&12_000)
+        );
         let exposure = store.live_open_exposure_sol()?;
         let expected = 0.1 + 12_000.0 / 1_000_000_000.0;
         assert!(
@@ -2476,6 +2535,22 @@ mod tests {
         );
         assert_eq!(report.confirm_network_fee_rpc_by_route.get("rpc"), None);
         assert_eq!(report.confirm_network_fee_missing_by_route.get("rpc"), None);
+        assert_eq!(
+            report.confirm_network_fee_lamports_sum_by_route.get("rpc"),
+            Some(&1_000_000_000)
+        );
+        assert_eq!(
+            report.confirm_tip_lamports_sum_by_route.get("rpc"),
+            Some(&0)
+        );
+        assert_eq!(
+            report.confirm_ata_rent_lamports_sum_by_route.get("rpc"),
+            Some(&0)
+        );
+        assert_eq!(
+            report.confirm_fee_total_lamports_sum_by_route.get("rpc"),
+            Some(&1_000_000_000)
+        );
         let exposure = store.live_open_exposure_sol()?;
         let expected = 1.1;
         assert!(
@@ -2550,6 +2625,22 @@ mod tests {
             None
         );
         assert_eq!(report.confirm_network_fee_missing_by_route.get("rpc"), None);
+        assert_eq!(
+            report.confirm_network_fee_lamports_sum_by_route.get("rpc"),
+            Some(&5_000)
+        );
+        assert_eq!(
+            report.confirm_tip_lamports_sum_by_route.get("rpc"),
+            Some(&0)
+        );
+        assert_eq!(
+            report.confirm_ata_rent_lamports_sum_by_route.get("rpc"),
+            Some(&0)
+        );
+        assert_eq!(
+            report.confirm_fee_total_lamports_sum_by_route.get("rpc"),
+            Some(&5_000)
+        );
         let exposure = store.live_open_exposure_sol()?;
         let expected = 0.1 + 5_000.0 / 1_000_000_000.0;
         assert!(
