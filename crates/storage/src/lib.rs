@@ -12,6 +12,7 @@ use std::time::Duration as StdDuration;
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
 const SQLITE_WRITE_RETRY_BACKOFF_MS: [u64; SQLITE_WRITE_MAX_RETRIES] = [100, 300, 700];
+const DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS: i64 = 3;
 static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
@@ -543,6 +544,19 @@ impl SqliteStore {
                 .context("failed to insert wallet metric in discovery transaction")?;
             }
         }
+
+        tx.execute(
+            "DELETE FROM wallet_metrics
+             WHERE window_start NOT IN (
+                SELECT window_start
+                FROM wallet_metrics
+                GROUP BY window_start
+                ORDER BY window_start DESC
+                LIMIT ?1
+             )",
+            params![DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS],
+        )
+        .context("failed to apply wallet_metrics retention in discovery transaction")?;
 
         let desired: HashSet<&str> = desired_wallets.iter().map(String::as_str).collect();
         let active_wallets: Vec<String> = {
@@ -1539,6 +1553,69 @@ mod tests {
             !verify_store.has_shadow_lots("wallet", "token")?,
             "all lots should be closed exactly once"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn persist_discovery_cycle_keeps_only_latest_wallet_metric_windows() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("discovery-wallet-metrics-retention.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let wallet_id = "wallet-retention".to_string();
+        let base = DateTime::parse_from_rfc3339("2026-02-20T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        for offset_minutes in 0..4 {
+            let window_start = base + Duration::minutes(offset_minutes);
+            let wallets = vec![WalletUpsertRow {
+                wallet_id: wallet_id.clone(),
+                first_seen: base,
+                last_seen: window_start,
+                status: "active".to_string(),
+            }];
+            let metrics = vec![WalletMetricRow {
+                wallet_id: wallet_id.clone(),
+                window_start,
+                pnl: 0.0,
+                win_rate: 0.0,
+                trades: 1,
+                closed_trades: 1,
+                hold_median_seconds: 0,
+                score: 1.0,
+                buy_total: 1,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }];
+            let desired = vec![wallet_id.clone()];
+            store.persist_discovery_cycle(
+                &wallets,
+                &metrics,
+                &desired,
+                window_start,
+                "retention-test",
+            )?;
+        }
+
+        let mut stmt = store.conn.prepare(
+            "SELECT DISTINCT window_start FROM wallet_metrics ORDER BY window_start ASC",
+        )?;
+        let windows: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+
+        assert_eq!(
+            windows.len(),
+            3,
+            "expected retention to keep 3 latest windows"
+        );
+        assert_eq!(windows[0], (base + Duration::minutes(1)).to_rfc3339());
+        assert_eq!(windows[1], (base + Duration::minutes(2)).to_rfc3339());
+        assert_eq!(windows[2], (base + Duration::minutes(3)).to_rfc3339());
 
         Ok(())
     }
