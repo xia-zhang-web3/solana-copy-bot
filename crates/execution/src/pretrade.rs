@@ -241,15 +241,16 @@ impl RpcPreTradeChecker {
         blockhash: &str,
         balance_lamports: u64,
     ) -> Result<PreTradeDecision> {
-        let required_sol = intent.notional_sol + self.min_sol_reserve;
+        let required_sol = self.required_sol_for_side(intent);
         let required_lamports = sol_to_lamports(required_sol)?;
         if balance_lamports < required_lamports {
             return Ok(PreTradeDecision::reject(
                 "pretrade_balance_insufficient",
                 format!(
-                    "signer_pubkey={} endpoint={} balance_sol={:.6} required_sol={:.6} reserve_sol={:.6}",
+                    "signer_pubkey={} endpoint={} side={} balance_sol={:.6} required_sol={:.6} reserve_sol={:.6}",
                     self.execution_signer_pubkey,
                     endpoint,
+                    intent.side.as_str(),
                     lamports_to_sol(balance_lamports),
                     lamports_to_sol(required_lamports),
                     self.min_sol_reserve
@@ -257,11 +258,19 @@ impl RpcPreTradeChecker {
             ));
         }
         Ok(PreTradeDecision::allow(format!(
-            "rpc_pretrade_ok endpoint={} blockhash={} balance_sol={:.6}",
+            "rpc_pretrade_ok endpoint={} blockhash={} side={} balance_sol={:.6}",
             endpoint,
             short_hash(blockhash),
+            intent.side.as_str(),
             lamports_to_sol(balance_lamports)
         )))
+    }
+
+    fn required_sol_for_side(&self, intent: &ExecutionIntent) -> f64 {
+        match intent.side {
+            crate::intent::ExecutionSide::Buy => intent.notional_sol + self.min_sol_reserve,
+            crate::intent::ExecutionSide::Sell => self.min_sol_reserve,
+        }
     }
 }
 
@@ -441,11 +450,11 @@ mod tests {
     use crate::intent::ExecutionSide;
     use chrono::Utc;
 
-    fn make_intent(notional_sol: f64) -> ExecutionIntent {
+    fn make_intent(side: ExecutionSide, notional_sol: f64) -> ExecutionIntent {
         ExecutionIntent {
             signal_id: "shadow:test:wallet:buy:token".to_string(),
             leader_wallet: "leader-wallet".to_string(),
-            side: ExecutionSide::Buy,
+            side,
             token: "token-a".to_string(),
             notional_sol,
             signal_ts: Utc::now(),
@@ -455,7 +464,7 @@ mod tests {
     #[test]
     fn paper_pretrade_rejects_empty_route() -> Result<()> {
         let checker = PaperPreTradeChecker;
-        let decision = checker.check(&make_intent(0.1), "")?;
+        let decision = checker.check(&make_intent(ExecutionSide::Buy, 0.1), "")?;
         assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
         assert_eq!(decision.reason_code, "route_missing");
         Ok(())
@@ -508,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn rpc_pretrade_evaluate_balance_rejects_when_insufficient() -> Result<()> {
+    fn rpc_pretrade_evaluate_balance_rejects_buy_when_insufficient() -> Result<()> {
         let checker = RpcPreTradeChecker::new(
             "https://rpc.primary.example",
             "",
@@ -521,10 +530,57 @@ mod tests {
         .expect("checker should initialize");
 
         let decision = checker.evaluate_balance(
-            &make_intent(0.1),
+            &make_intent(ExecutionSide::Buy, 0.1),
             "https://rpc.primary.example",
             "3Q3swfYxFxYt5m4T9f2xZ2JKeQX2DAX7T5q6YQnM7n8p",
             100_000_000,
+        )?;
+        assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
+        assert_eq!(decision.reason_code, "pretrade_balance_insufficient");
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_evaluate_balance_allows_sell_when_reserve_present() -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            false,
+            0,
+        )
+        .expect("checker should initialize");
+
+        let decision = checker.evaluate_balance(
+            &make_intent(ExecutionSide::Sell, 0.9),
+            "https://rpc.primary.example",
+            "3Q3swfYxFxYt5m4T9f2xZ2JKeQX2DAX7T5q6YQnM7n8p",
+            60_000_000,
+        )?;
+        assert_eq!(decision.kind, PreTradeDecisionKind::Allow);
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_evaluate_balance_rejects_sell_without_reserve() -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            false,
+            0,
+        )
+        .expect("checker should initialize");
+
+        let decision = checker.evaluate_balance(
+            &make_intent(ExecutionSide::Sell, 0.9),
+            "https://rpc.primary.example",
+            "3Q3swfYxFxYt5m4T9f2xZ2JKeQX2DAX7T5q6YQnM7n8p",
+            1_000_000,
         )?;
         assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
         assert_eq!(decision.reason_code, "pretrade_balance_insufficient");

@@ -528,6 +528,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 12. confirm->reconcile path hardened to atomic finalize transaction (`fills + positions + order/signal status`) with idempotent `AlreadyConfirmed` outcome.
 13. execution price policy switched to fail-closed (`price_unavailable`) instead of unsafe fallback `avg_price_sol=1.0`.
 14. ingestion telemetry now tracks parse rejects by reason (in addition to `parse_rejected_total`).
+15. RPC pre-trade balance gate is side-aware: BUY requires `notional + reserve`, SELL requires reserve only (exit path no longer blocked by BUY notional budget).
 
 Остается в next-code-queue:
 
