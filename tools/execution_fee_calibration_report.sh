@@ -128,13 +128,34 @@ echo "=== strict policy rejects (submit_adapter_policy_echo_missing) ==="
 sqlite3 "$DB_PATH" <<SQL
 .headers on
 .mode column
+WITH strict_reject_events AS (
+  SELECT
+    COALESCE(json_extract(details_json, '$.order_id'), '') AS order_id,
+    COALESCE(json_extract(details_json, '$.route'), '') AS route
+  FROM risk_events
+  WHERE type = 'execution_submit_failed'
+    AND json_extract(details_json, '$.error_code') = 'submit_adapter_policy_echo_missing'
+    AND datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+),
+legacy_strict_reject_orders AS (
+  SELECT
+    COALESCE(order_id, '') AS order_id,
+    COALESCE(route, '') AS route
+  FROM orders
+  WHERE status = 'execution_failed'
+    AND err_code = 'submit_terminal_rejected'
+    AND simulation_error LIKE '%submit_adapter_policy_echo_missing%'
+    AND datetime(submit_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+),
+strict_rejects AS (
+  SELECT order_id, route FROM strict_reject_events
+  UNION
+  SELECT order_id, route FROM legacy_strict_reject_orders
+)
 SELECT
-  COALESCE(json_extract(details_json, '$.route'), '') AS route,
+  route,
   COUNT(*) AS cnt
-FROM risk_events
-WHERE type = 'execution_submit_failed'
-  AND json_extract(details_json, '$.error_code') = 'submit_adapter_policy_echo_missing'
-  AND datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+FROM strict_rejects
 GROUP BY route
 ORDER BY cnt DESC, route ASC;
 SQL
