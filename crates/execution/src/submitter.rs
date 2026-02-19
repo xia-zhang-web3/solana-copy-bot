@@ -1443,4 +1443,83 @@ mod tests {
         assert_eq!(error.code, "submit_adapter_policy_echo_missing");
         let _ = handle.join().expect("join adapter server thread");
     }
+
+    #[test]
+    fn adapter_submitter_hmac_signature_matches_raw_http_body() {
+        let response = json!({
+            "status": "ok",
+            "tx_signature": "sig-123",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let (endpoint, handle) = spawn_one_shot_adapter(200, response);
+        let hmac_secret = "super-secret";
+        let submitter = AdapterOrderSubmitter::new(
+            &endpoint,
+            "",
+            "",
+            "key-123",
+            hmac_secret,
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        submitter
+            .submit(&make_intent(), "cid-integration-3", "rpc")
+            .expect("submit call should succeed");
+
+        let captured = handle.join().expect("join adapter server thread");
+        let headers = &captured.headers;
+        let key_id = headers
+            .get("x-copybot-key-id")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let timestamp = headers
+            .get("x-copybot-timestamp")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let ttl = headers
+            .get("x-copybot-auth-ttl-sec")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let nonce = headers
+            .get("x-copybot-nonce")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let signature = headers
+            .get("x-copybot-signature")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let alg = headers
+            .get("x-copybot-signature-alg")
+            .map(String::as_str)
+            .unwrap_or_default();
+
+        assert_eq!(key_id, "key-123");
+        assert_eq!(ttl, "30");
+        assert_eq!(alg, "hmac-sha256-v1");
+        assert!(!timestamp.is_empty(), "timestamp header must be present");
+        assert!(!nonce.is_empty(), "nonce header must be present");
+        assert!(!signature.is_empty(), "signature header must be present");
+
+        let signed_payload = format!("{}\n{}\n{}\n{}", timestamp, ttl, nonce, captured.body);
+        let expected_signature =
+            compute_hmac_signature_hex(hmac_secret.as_bytes(), signed_payload.as_bytes())
+                .expect("compute expected signature");
+        assert_eq!(signature, expected_signature);
+    }
 }
