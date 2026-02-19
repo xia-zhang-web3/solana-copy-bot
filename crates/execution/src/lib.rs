@@ -789,39 +789,37 @@ impl ExecutionRuntime {
         match confirm.status {
             ConfirmationStatus::Confirmed => {
                 let confirmed_at = confirm.confirmed_at.unwrap_or_else(Utc::now);
-                let avg_price_sol = match store
+                let (avg_price_sol, used_price_fallback, fallback_source) = match store
                     .latest_token_sol_price(&intent.token, confirmed_at)?
                 {
-                    Some(price) if price.is_finite() && price > 0.0 => price.max(1e-9),
+                    Some(price) if price.is_finite() && price > 0.0 => {
+                        (price.max(1e-9), false, None)
+                    }
                     _ => {
-                        let detail = format!(
-                            "missing latest token/sol price for token={} at {}",
-                            intent.token,
-                            confirmed_at.to_rfc3339()
-                        );
+                        let fallback = store
+                            .live_open_position_qty_cost(&intent.token)?
+                            .and_then(|(qty, cost_sol)| {
+                                if qty > 1e-9 && cost_sol > 0.0 {
+                                    Some((cost_sol / qty).max(1e-9))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(1.0);
+                        let source = if fallback == 1.0 {
+                            "fixed_1_sol".to_string()
+                        } else {
+                            "open_position_avg_cost".to_string()
+                        };
                         warn!(
                             signal_id = %intent.signal_id,
                             token = %intent.token,
-                            detail = %detail,
-                            "latest token price unavailable; confirmation flow failed closed"
+                            route,
+                            fallback_avg_price_sol = fallback,
+                            fallback_source = %source,
+                            "latest token price unavailable; using fallback price to keep confirmed reconcile/exposure consistent"
                         );
-                        store.mark_order_failed(order_id, "price_unavailable", Some(&detail))?;
-                        store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
-                        let details = json!({
-                            "signal_id": intent.signal_id,
-                            "order_id": order_id,
-                            "token": intent.token,
-                            "reason": "missing_latest_price"
-                        })
-                        .to_string();
-                        let _ = store.insert_risk_event(
-                            "execution_price_unavailable",
-                            "error",
-                            now,
-                            Some(&details),
-                        );
-                        bump_route_counter(&mut report.confirm_failed_by_route, route);
-                        return Ok(SignalResult::Failed);
+                        (fallback, true, Some(source))
                     }
                 };
                 let fill = build_fill(intent, order_id, avg_price_sol, self.slippage_bps)?;
@@ -842,6 +840,25 @@ impl ExecutionRuntime {
                         store
                             .update_copy_signal_status(&intent.signal_id, "execution_confirmed")?;
                     }
+                }
+                if used_price_fallback {
+                    let details = json!({
+                        "signal_id": intent.signal_id,
+                        "order_id": order_id,
+                        "token": intent.token,
+                        "route": route,
+                        "fallback_avg_price_sol": avg_price_sol,
+                        "fallback_source": fallback_source.unwrap_or_else(|| "unknown".to_string()),
+                        "reason": "missing_latest_price_runtime_fallback",
+                        "manual_reconcile_recommended": true
+                    })
+                    .to_string();
+                    let _ = store.insert_risk_event(
+                        "execution_price_unavailable_fallback_used",
+                        "error",
+                        now,
+                        Some(&details),
+                    );
                 }
                 bump_route_counter(&mut report.confirm_confirmed_by_route, route);
                 bump_route_counter(&mut report.confirm_latency_samples_by_route, route);
@@ -1858,7 +1875,7 @@ mod tests {
     }
 
     #[test]
-    fn process_batch_fails_when_price_unavailable_on_confirmation() -> Result<()> {
+    fn process_batch_confirms_with_fallback_when_price_unavailable_on_confirmation() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-price-missing")?;
         let now = Utc::now();
         let signal = CopySignalRow {
@@ -1903,21 +1920,94 @@ mod tests {
         let runtime = ExecutionRuntime::from_config(execution, risk);
 
         let report = runtime.process_batch(&store, now, None)?;
-        assert_eq!(report.failed, 1);
-        assert_eq!(report.confirmed, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.confirmed, 1);
         assert_eq!(
-            report.confirm_failed_by_route.get("paper"),
+            report.confirm_confirmed_by_route.get("paper"),
             Some(&1),
-            "missing price confirm failure should be attributed to paper route"
+            "missing price fallback path should still confirm and update exposure"
+        );
+        let exposure = store.live_open_exposure_sol()?;
+        assert!(
+            (exposure - 0.1).abs() < 1e-9,
+            "fallback confirm should keep exposure consistent with notional, got {}",
+            exposure
         );
 
-        let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
-        assert_eq!(failed.len(), 1);
+        let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
+        assert_eq!(confirmed.len(), 1);
         let order = store
             .execution_order_by_client_order_id(&client_order_id)?
-            .context("order should remain present after missing-price failure")?;
-        assert_eq!(order.status, "execution_failed");
-        assert_eq!(order.err_code.as_deref(), Some("price_unavailable"));
+            .context("order should remain present after missing-price fallback confirm")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(order.err_code.as_deref(), None);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_sell_uses_open_position_avg_cost_when_price_unavailable() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-price-missing-sell")?;
+        let now = Utc::now();
+        store.apply_execution_fill_to_positions("token-a", "buy", 1.0, 0.25, now)?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s8s:w:sell:t-a".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "sell".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.125,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-price-missing-sell-1",
+                &signal.signal_id,
+                &client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-price-missing-sell-1",
+            "paper",
+            "paper:tx-price-missing-sell",
+            now,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 10;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.confirmed, 1);
+        let token_exposure = store.live_open_exposure_sol_for_token("token-a")?;
+        assert!(
+            (token_exposure - 0.125).abs() < 1e-9,
+            "sell fallback should reduce exposure proportionally using open-position avg cost, got {}",
+            token_exposure
+        );
+
+        let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
+        assert_eq!(confirmed.len(), 1);
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("sell order should remain present after fallback confirm")?;
+        assert_eq!(order.status, "execution_confirmed");
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

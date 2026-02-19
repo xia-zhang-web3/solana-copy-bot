@@ -729,12 +729,6 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 default_route
             )
         })?;
-        let default_route_price = find_route_cu_price(default_route.as_str()).ok_or_else(|| {
-            anyhow!(
-                "execution.submit_route_compute_unit_price_micro_lamports is missing price for default route={}",
-                default_route
-            )
-        })?;
         if config.slippage_bps > default_route_cap {
             return Err(anyhow!(
                 "execution.slippage_bps ({}) cannot exceed cap ({}) for default route {}",
@@ -743,15 +737,27 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 default_route
             ));
         }
-        if config.pretrade_max_priority_fee_lamports > 0
-            && default_route_price > config.pretrade_max_priority_fee_lamports
-        {
-            return Err(anyhow!(
-                "execution.submit_route_compute_unit_price_micro_lamports default route {} price ({}) cannot exceed execution.pretrade_max_priority_fee_lamports ({}) (unit: micro-lamports per CU for both fields)",
-                default_route,
-                default_route_price,
-                config.pretrade_max_priority_fee_lamports
-            ));
+        if config.pretrade_max_priority_fee_lamports > 0 {
+            for allowed_route in &config.submit_allowed_routes {
+                let route = allowed_route.trim();
+                if route.is_empty() {
+                    continue;
+                }
+                let route_price = find_route_cu_price(route).ok_or_else(|| {
+                    anyhow!(
+                        "execution.submit_route_compute_unit_price_micro_lamports is missing price for allowed route={}",
+                        route
+                    )
+                })?;
+                if route_price > config.pretrade_max_priority_fee_lamports {
+                    return Err(anyhow!(
+                        "execution.submit_route_compute_unit_price_micro_lamports route {} price ({}) cannot exceed execution.pretrade_max_priority_fee_lamports ({}) (unit: micro-lamports per CU for both fields)",
+                        route,
+                        route_price,
+                        config.pretrade_max_priority_fee_lamports
+                    ));
+                }
+            }
         }
         if default_route_limit < 100_000 {
             return Err(anyhow!(
@@ -3095,6 +3101,7 @@ fn shadow_task(
 #[cfg(test)]
 mod app_tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
@@ -3288,6 +3295,38 @@ mod app_tests {
 
         let _ = std::fs::remove_dir_all(root);
         Ok(())
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_route_price_above_pretrade_cap() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.default_route = "jito".to_string();
+        execution.submit_allowed_routes = vec!["jito".to_string(), "rpc".to_string()];
+        execution.submit_route_max_slippage_bps =
+            BTreeMap::from([("jito".to_string(), 50.0), ("rpc".to_string(), 50.0)]);
+        execution.submit_route_tip_lamports =
+            BTreeMap::from([("jito".to_string(), 0), ("rpc".to_string(), 0)]);
+        execution.submit_route_compute_unit_limit =
+            BTreeMap::from([("jito".to_string(), 300_000), ("rpc".to_string(), 300_000)]);
+        execution.submit_route_compute_unit_price_micro_lamports =
+            BTreeMap::from([("jito".to_string(), 500), ("rpc".to_string(), 1_500)]);
+        execution.pretrade_max_priority_fee_lamports = 1_000;
+        execution.slippage_bps = 50.0;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("allowed-route CU price above pretrade cap must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("route rpc price (1500) cannot exceed"),
+            "unexpected error: {}",
+            error
+        );
     }
 
     #[test]

@@ -1381,6 +1381,25 @@ impl SqliteStore {
         Ok(exists.is_some())
     }
 
+    pub fn live_open_position_qty_cost(&self, token: &str) -> Result<Option<(f64, f64)>> {
+        let row: Option<(f64, f64)> = self
+            .conn
+            .query_row(
+                "SELECT qty, cost_sol
+                 FROM positions
+                 WHERE token = ?1
+                   AND state = 'open'
+                 LIMIT 1",
+                params![token],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .context("failed querying live open position qty/cost by token")?;
+        Ok(row.filter(|(qty, cost)| {
+            qty.is_finite() && *qty > 0.0 && cost.is_finite() && *cost >= 0.0
+        }))
+    }
+
     pub fn apply_execution_fill_to_positions(
         &self,
         token: &str,
