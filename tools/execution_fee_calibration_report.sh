@@ -130,6 +130,8 @@ sqlite3 "$DB_PATH" <<SQL
 .mode column
 WITH strict_reject_events AS (
   SELECT
+    rowid AS source_row_id,
+    'event' AS source_kind,
     COALESCE(json_extract(details_json, '$.order_id'), '') AS order_id,
     COALESCE(json_extract(details_json, '$.route'), '') AS route
   FROM risk_events
@@ -139,6 +141,8 @@ WITH strict_reject_events AS (
 ),
 legacy_strict_reject_orders AS (
   SELECT
+    rowid AS source_row_id,
+    'legacy' AS source_kind,
     COALESCE(order_id, '') AS order_id,
     COALESCE(route, '') AS route
   FROM orders
@@ -147,10 +151,39 @@ legacy_strict_reject_orders AS (
     AND simulation_error LIKE '%submit_adapter_policy_echo_missing%'
     AND datetime(submit_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
 ),
+strict_rejects_raw AS (
+  SELECT
+    source_row_id,
+    source_kind,
+    order_id,
+    route,
+    CASE
+      WHEN order_id <> '' THEN order_id
+      ELSE source_kind || ':' || CAST(source_row_id AS TEXT)
+    END AS dedupe_key
+  FROM strict_reject_events
+  UNION ALL
+  SELECT
+    source_row_id,
+    source_kind,
+    order_id,
+    route,
+    CASE
+      WHEN order_id <> '' THEN order_id
+      ELSE source_kind || ':' || CAST(source_row_id AS TEXT)
+    END AS dedupe_key
+  FROM legacy_strict_reject_orders
+),
 strict_rejects AS (
-  SELECT order_id, route FROM strict_reject_events
-  UNION
-  SELECT order_id, route FROM legacy_strict_reject_orders
+  SELECT
+    dedupe_key,
+    COALESCE(
+      MAX(CASE WHEN source_kind = 'event' AND route <> '' THEN route END),
+      MAX(CASE WHEN source_kind = 'legacy' AND route <> '' THEN route END),
+      ''
+    ) AS route
+  FROM strict_rejects_raw
+  GROUP BY dedupe_key
 )
 SELECT
   route,
