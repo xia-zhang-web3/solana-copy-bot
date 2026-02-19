@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, RiskConfig};
+use copybot_config::{load_from_env_or_default, ExecutionConfig, RiskConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
+use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{
     FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
@@ -16,6 +17,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant as StdInstant;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
@@ -36,6 +38,8 @@ const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
 const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
+const DEFAULT_OPERATOR_EMERGENCY_STOP_PATH: &str = "state/operator_emergency_stop.flag";
+const DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS: u64 = 500;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -62,6 +66,8 @@ async fn main() -> Result<()> {
             "applying ingestion source override from failover file"
         );
     }
+    validate_execution_runtime_contract(&config.execution, &config.system.env)?;
+    validate_execution_risk_contract(&config.risk)?;
 
     let mut store = SqliteStore::open(Path::new(&config.sqlite.path))
         .context("failed to initialize sqlite store")?;
@@ -103,12 +109,15 @@ async fn main() -> Result<()> {
         discovery_http_url,
     );
     let shadow = ShadowService::new_with_helius(config.shadow.clone(), shadow_http_url);
+    let execution_runtime =
+        ExecutionRuntime::from_config(config.execution.clone(), config.risk.clone());
 
     run_app_loop(
         store,
         ingestion,
         discovery,
         shadow,
+        execution_runtime,
         config.risk.clone(),
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
@@ -117,6 +126,7 @@ async fn main() -> Result<()> {
         config.shadow.max_signal_lag_seconds,
         config.shadow.causal_holdback_enabled,
         config.shadow.causal_holdback_ms,
+        config.system.pause_new_trades_on_outage,
     )
     .await
 }
@@ -165,6 +175,140 @@ fn parse_ingestion_source_override(content: &str) -> Option<String> {
     None
 }
 
+fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
+#[derive(Debug)]
+struct OperatorEmergencyStop {
+    path: PathBuf,
+    poll_interval: Duration,
+    next_refresh_at: StdInstant,
+    active: bool,
+    detail: String,
+}
+
+impl OperatorEmergencyStop {
+    fn from_env() -> Self {
+        let path = env::var("SOLANA_COPY_BOT_EMERGENCY_STOP_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_OPERATOR_EMERGENCY_STOP_PATH));
+        let poll_ms = env::var("SOLANA_COPY_BOT_EMERGENCY_STOP_POLL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS)
+            .max(100);
+        Self {
+            path,
+            poll_interval: Duration::from_millis(poll_ms),
+            next_refresh_at: StdInstant::now(),
+            active: false,
+            detail: String::new(),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn is_active(&self) -> bool {
+        self.active
+    }
+
+    fn detail(&self) -> &str {
+        if self.detail.is_empty() {
+            "operator emergency stop file is present"
+        } else {
+            self.detail.as_str()
+        }
+    }
+
+    fn refresh(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+        let instant_now = StdInstant::now();
+        if instant_now < self.next_refresh_at {
+            return;
+        }
+        self.next_refresh_at = instant_now + self.poll_interval;
+
+        let (active, detail) = match fs::read_to_string(&self.path) {
+            Ok(content) => (
+                true,
+                parse_operator_emergency_stop_reason(&content)
+                    .unwrap_or_else(|| "operator emergency stop file is present".to_string()),
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, String::new()),
+            Err(error) => match fs::metadata(&self.path) {
+                Ok(_) => {
+                    let detail = format!("emergency stop file is unreadable: {error}");
+                    warn!(
+                        path = %self.path.display(),
+                        error = %error,
+                        "operator emergency stop file exists but cannot be read; failing closed"
+                    );
+                    (true, detail)
+                }
+                Err(_) => (false, String::new()),
+            },
+        };
+
+        if active == self.active && detail == self.detail {
+            return;
+        }
+
+        self.active = active;
+        self.detail = detail;
+        let path_display = self.path.display().to_string();
+
+        if self.active {
+            warn!(
+                path = %path_display,
+                detail = %self.detail(),
+                "operator emergency stop activated"
+            );
+            let details_json = format!(
+                "{{\"path\":\"{}\",\"detail\":\"{}\"}}",
+                sanitize_json_value(&path_display),
+                sanitize_json_value(self.detail())
+            );
+            if let Err(error) = store.insert_risk_event(
+                "operator_emergency_stop_activated",
+                "warn",
+                now,
+                Some(&details_json),
+            ) {
+                warn!(
+                    error = %error,
+                    "failed to persist operator emergency stop activation event"
+                );
+            }
+        } else {
+            info!(path = %path_display, "operator emergency stop cleared");
+            let details_json = format!(
+                "{{\"path\":\"{}\",\"state\":\"cleared\"}}",
+                sanitize_json_value(&path_display)
+            );
+            if let Err(error) = store.insert_risk_event(
+                "operator_emergency_stop_cleared",
+                "info",
+                now,
+                Some(&details_json),
+            ) {
+                warn!(
+                    error = %error,
+                    "failed to persist operator emergency stop clear event"
+                );
+            }
+        }
+    }
+}
+
 fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
     let role_specific = role_specific.trim();
     if !role_specific.is_empty() && !role_specific.contains("REPLACE_ME") {
@@ -196,6 +340,127 @@ fn enforce_quality_gate_http_url(
         ));
     }
     Ok(endpoint)
+}
+
+fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> Result<()> {
+    if !config.enabled {
+        return Ok(());
+    }
+
+    let mode = config.mode.trim().to_ascii_lowercase();
+    if !matches!(
+        mode.as_str(),
+        "paper" | "paper_rpc_confirm" | "paper_rpc_pretrade_confirm"
+    ) {
+        return Err(anyhow!(
+            "execution.enabled=true but execution.mode={} is unsupported in current runtime; supported modes: paper, paper_rpc_confirm, paper_rpc_pretrade_confirm",
+            if mode.is_empty() { "<empty>" } else { mode.as_str() }
+        ));
+    }
+    if matches!(
+        mode.as_str(),
+        "paper_rpc_confirm" | "paper_rpc_pretrade_confirm"
+    ) {
+        let primary = config.rpc_http_url.trim();
+        let fallback = config.rpc_fallback_http_url.trim();
+        if primary.is_empty() && fallback.is_empty() {
+            return Err(anyhow!(
+                "execution.mode={} requires execution.rpc_http_url or execution.rpc_fallback_http_url",
+                mode
+            ));
+        }
+    }
+    if mode == "paper_rpc_pretrade_confirm" && config.execution_signer_pubkey.trim().is_empty() {
+        return Err(anyhow!(
+            "execution.mode=paper_rpc_pretrade_confirm requires non-empty execution.execution_signer_pubkey"
+        ));
+    }
+
+    if config.batch_size == 0 {
+        return Err(anyhow!(
+            "execution.batch_size must be >= 1 when execution is enabled"
+        ));
+    }
+    if config.poll_interval_ms < 100 {
+        return Err(anyhow!(
+            "execution.poll_interval_ms must be >= 100ms when execution is enabled"
+        ));
+    }
+    if config.max_confirm_seconds == 0 {
+        return Err(anyhow!(
+            "execution.max_confirm_seconds must be >= 1 when execution is enabled"
+        ));
+    }
+    if config.max_submit_attempts == 0 {
+        return Err(anyhow!(
+            "execution.max_submit_attempts must be >= 1 when execution is enabled"
+        ));
+    }
+    if !config.pretrade_min_sol_reserve.is_finite() || config.pretrade_min_sol_reserve < 0.0 {
+        return Err(anyhow!(
+            "execution.pretrade_min_sol_reserve must be finite and >= 0 when execution is enabled"
+        ));
+    }
+    if config.slippage_bps < 0.0 {
+        return Err(anyhow!(
+            "execution.slippage_bps must be >= 0 when execution is enabled"
+        ));
+    }
+
+    if matches!(
+        env.trim().to_ascii_lowercase().as_str(),
+        "paper" | "prod" | "paper-canary" | "paper-canary-yellowstone"
+    ) {
+        info!(
+            mode,
+            batch_size = config.batch_size,
+            poll_interval_ms = config.poll_interval_ms,
+            "execution runtime contract validated"
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
+    if !config.max_position_sol.is_finite() || config.max_position_sol <= 0.0 {
+        return Err(anyhow!(
+            "risk.max_position_sol must be finite and > 0, got {}",
+            config.max_position_sol
+        ));
+    }
+    if !config.max_total_exposure_sol.is_finite() || config.max_total_exposure_sol <= 0.0 {
+        return Err(anyhow!(
+            "risk.max_total_exposure_sol must be finite and > 0, got {}",
+            config.max_total_exposure_sol
+        ));
+    }
+    if !config.max_exposure_per_token_sol.is_finite() || config.max_exposure_per_token_sol <= 0.0 {
+        return Err(anyhow!(
+            "risk.max_exposure_per_token_sol must be finite and > 0, got {}",
+            config.max_exposure_per_token_sol
+        ));
+    }
+    if config.max_exposure_per_token_sol > config.max_total_exposure_sol {
+        return Err(anyhow!(
+            "risk.max_exposure_per_token_sol ({}) cannot exceed risk.max_total_exposure_sol ({})",
+            config.max_exposure_per_token_sol,
+            config.max_total_exposure_sol
+        ));
+    }
+    if config.max_concurrent_positions == 0 {
+        return Err(anyhow!(
+            "risk.max_concurrent_positions must be >= 1, got {}",
+            config.max_concurrent_positions
+        ));
+    }
+    if config.max_copy_delay_sec == 0 {
+        return Err(anyhow!(
+            "risk.max_copy_delay_sec must be >= 1, got {}",
+            config.max_copy_delay_sec
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_migrations_dir(config_path: &Path, configured_migrations_dir: &str) -> PathBuf {
@@ -247,6 +512,7 @@ enum BuyRiskBlockReason {
     Infra,
     Universe,
     FailClosed,
+    OperatorEmergencyStop,
 }
 
 impl BuyRiskBlockReason {
@@ -258,6 +524,7 @@ impl BuyRiskBlockReason {
             Self::Infra => "risk_infra_stop",
             Self::Universe => "risk_universe_stop",
             Self::FailClosed => "risk_fail_closed",
+            Self::OperatorEmergencyStop => "operator_emergency_stop",
         }
     }
 }
@@ -441,7 +708,12 @@ impl ShadowRiskGuard {
         }
     }
 
-    fn can_open_buy(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> BuyRiskDecision {
+    fn can_open_buy(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        pause_new_trades_on_outage: bool,
+    ) -> BuyRiskDecision {
         if !self.config.shadow_killswitch_enabled {
             return BuyRiskDecision::Allow;
         }
@@ -506,11 +778,13 @@ impl ShadowRiskGuard {
             };
         }
 
-        if let Some(reason) = self.infra_block_reason.as_deref() {
-            return BuyRiskDecision::Blocked {
-                reason: BuyRiskBlockReason::Infra,
-                detail: reason.to_string(),
-            };
+        if pause_new_trades_on_outage {
+            if let Some(reason) = self.infra_block_reason.as_deref() {
+                return BuyRiskDecision::Blocked {
+                    reason: BuyRiskBlockReason::Infra,
+                    detail: reason.to_string(),
+                };
+            }
         }
 
         BuyRiskDecision::Allow
@@ -557,7 +831,9 @@ impl ShadowRiskGuard {
                 store.shadow_realized_pnl_since(now - chrono::Duration::hours(24))?;
 
             let rug_window_start = now
-                - chrono::Duration::minutes(self.config.shadow_rug_loss_window_minutes.max(1) as i64);
+                - chrono::Duration::minutes(
+                    self.config.shadow_rug_loss_window_minutes.max(1) as i64
+                );
             let rug_count_since = store.shadow_rug_loss_count_since(
                 rug_window_start,
                 self.config.shadow_rug_loss_return_threshold,
@@ -885,6 +1161,7 @@ async fn run_app_loop(
     mut ingestion: IngestionService,
     discovery: DiscoveryService,
     shadow: ShadowService,
+    execution_runtime: ExecutionRuntime,
     risk_config: RiskConfig,
     sqlite_path: String,
     heartbeat_seconds: u64,
@@ -893,14 +1170,21 @@ async fn run_app_loop(
     shadow_max_signal_lag_seconds: u64,
     shadow_causal_holdback_enabled: bool,
     shadow_causal_holdback_ms: u64,
+    pause_new_trades_on_outage: bool,
 ) -> Result<()> {
+    let execution_runtime = Arc::new(execution_runtime);
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
-    let mut risk_refresh_interval =
-        time::interval(Duration::from_secs(RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64));
+    let mut execution_interval = time::interval(Duration::from_millis(
+        execution_runtime.poll_interval_ms().max(100),
+    ));
+    let mut risk_refresh_interval = time::interval(Duration::from_secs(
+        RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64,
+    ));
     let mut discovery_interval =
         time::interval(Duration::from_secs(discovery_refresh_seconds.max(10)));
     let mut shadow_interval = time::interval(Duration::from_secs(shadow_refresh_seconds.max(10)));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    execution_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     risk_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     discovery_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     shadow_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -930,6 +1214,25 @@ async fn run_app_loop(
     let mut shadow_scheduler_needs_reset = false;
     let mut held_shadow_sells: HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>> = HashMap::new();
     let mut shadow_holdback_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
+    let mut operator_emergency_stop = OperatorEmergencyStop::from_env();
+    let mut execution_emergency_stop_active_logged = false;
+    let mut execution_hard_stop_pause_logged = false;
+    let mut execution_outage_pause_logged = false;
+    operator_emergency_stop.refresh(&store, Utc::now());
+    info!(
+        path = %operator_emergency_stop.path().display(),
+        pause_new_trades_on_outage,
+        "buy gate controls initialized"
+    );
+    if execution_runtime.is_enabled() {
+        info!(
+            poll_interval_ms = execution_runtime.poll_interval_ms(),
+            "execution runtime enabled"
+        );
+    } else {
+        info!("execution runtime disabled");
+    }
 
     if !follow_snapshot.active.is_empty() {
         info!(
@@ -939,6 +1242,8 @@ async fn run_app_loop(
     }
 
     loop {
+        operator_emergency_stop.refresh(&store, Utc::now());
+
         if shadow_scheduler_needs_reset {
             if shadow_workers.is_empty() {
                 inflight_shadow_keys.clear();
@@ -1149,6 +1454,104 @@ async fn run_app_loop(
                     }
                 }
             }
+            execution_join = async {
+                match execution_handle.as_mut() {
+                    Some(handle) => Some(handle.await),
+                    None => None,
+                }
+            }, if execution_handle.is_some() => {
+                execution_handle = None;
+                match execution_join {
+                    Some(Ok(Ok(report))) => {
+                        if report.attempted > 0 || report.failed > 0 {
+                            info!(
+                                attempted = report.attempted,
+                                confirmed = report.confirmed,
+                                dropped = report.dropped,
+                                failed = report.failed,
+                                skipped = report.skipped,
+                                "execution batch processed"
+                            );
+                        }
+                    }
+                    Some(Ok(Err(error))) => {
+                        warn!(error = %error, "execution batch failed");
+                    }
+                    Some(Err(error)) => {
+                        warn!(error = %error, "execution task join failed");
+                    }
+                    None => {}
+                }
+            }
+            _ = execution_interval.tick(), if execution_runtime.is_enabled() => {
+                let mut buy_submit_pause_reason: Option<String> = None;
+                if operator_emergency_stop.is_active() {
+                    if !execution_emergency_stop_active_logged {
+                        warn!(
+                            detail = %operator_emergency_stop.detail(),
+                            "execution BUY submission paused by operator emergency stop"
+                        );
+                        execution_emergency_stop_active_logged = true;
+                    }
+                    buy_submit_pause_reason = Some(format!(
+                        "operator_emergency_stop: {}",
+                        operator_emergency_stop.detail()
+                    ));
+                } else if execution_emergency_stop_active_logged {
+                    info!("execution BUY submission resumed after operator emergency stop clear");
+                    execution_emergency_stop_active_logged = false;
+                }
+
+                if let Some(reason) = shadow_risk_guard.hard_stop_reason.as_deref() {
+                    if !execution_hard_stop_pause_logged {
+                        warn!(
+                            reason = %reason,
+                            "execution BUY submission paused by risk hard stop"
+                        );
+                        execution_hard_stop_pause_logged = true;
+                    }
+                    if buy_submit_pause_reason.is_none() {
+                        buy_submit_pause_reason = Some(format!("risk_hard_stop: {}", reason));
+                    }
+                } else if execution_hard_stop_pause_logged {
+                    info!("execution BUY submission resumed after risk hard stop clear");
+                    execution_hard_stop_pause_logged = false;
+                }
+
+                if pause_new_trades_on_outage {
+                    if let Some(reason) = shadow_risk_guard.infra_block_reason.as_deref() {
+                        if !execution_outage_pause_logged {
+                            warn!(
+                                reason = %reason,
+                                "execution BUY submission paused due to infra outage gate"
+                            );
+                            execution_outage_pause_logged = true;
+                        }
+                        if buy_submit_pause_reason.is_none() {
+                            buy_submit_pause_reason = Some(format!("risk_infra_stop: {}", reason));
+                        }
+                    } else if execution_outage_pause_logged {
+                        info!("execution BUY submission resumed after infra outage gate cleared");
+                        execution_outage_pause_logged = false;
+                    }
+                } else if execution_outage_pause_logged {
+                    info!("execution BUY submission resumed after infra outage gate disabled");
+                    execution_outage_pause_logged = false;
+                }
+
+                if execution_handle.is_some() {
+                    warn!("execution batch still running, skipping scheduled trigger");
+                    continue;
+                }
+
+                let now = Utc::now();
+                execution_handle = Some(tokio::task::spawn_blocking(spawn_execution_task(
+                    sqlite_path.clone(),
+                    Arc::clone(&execution_runtime),
+                    now,
+                    buy_submit_pause_reason.clone(),
+                )));
+            }
             maybe_swap = ingestion.next_swap() => {
                 let swap = match maybe_swap {
                     Ok(Some(swap)) => swap,
@@ -1235,7 +1638,27 @@ async fn run_app_loop(
                         }
 
                         if matches!(side, ShadowSwapSide::Buy) {
-                            match shadow_risk_guard.can_open_buy(&store, now) {
+                            if operator_emergency_stop.is_active() {
+                                let reason_key = BuyRiskBlockReason::OperatorEmergencyStop.as_str();
+                                *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
+                                *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
+                                debug!(
+                                    stage = "risk",
+                                    reason = reason_key,
+                                    detail = %operator_emergency_stop.detail(),
+                                    side = "buy",
+                                    wallet = %swap.wallet,
+                                    signature = %swap.signature,
+                                    "shadow gate dropped"
+                                );
+                                continue;
+                            }
+
+                            match shadow_risk_guard.can_open_buy(
+                                &store,
+                                now,
+                                pause_new_trades_on_outage,
+                            ) {
                                 BuyRiskDecision::Allow => {}
                                 BuyRiskDecision::Blocked { reason, detail } => {
                                     let reason_key = reason.as_str();
@@ -1408,6 +1831,10 @@ async fn run_app_loop(
         }
     }
 
+    if let Some(handle) = execution_handle.take() {
+        handle.abort();
+    }
+
     store
         .record_heartbeat("copybot-app", "shutdown")
         .context("failed to write shutdown heartbeat")?;
@@ -1576,6 +2003,20 @@ fn spawn_shadow_snapshot_task(
             format!("failed to open sqlite db for shadow snapshot task: {sqlite_path}")
         })?;
         shadow.snapshot_24h(&store, now)
+    }
+}
+
+fn spawn_execution_task(
+    sqlite_path: String,
+    execution_runtime: Arc<ExecutionRuntime>,
+    now: chrono::DateTime<Utc>,
+    buy_submit_pause_reason: Option<String>,
+) -> impl FnOnce() -> Result<ExecutionBatchReport> {
+    move || {
+        let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
+            format!("failed to open sqlite db for execution task: {sqlite_path}")
+        })?;
+        execution_runtime.process_batch(&store, now, buy_submit_pause_reason.as_deref())
     }
 }
 
@@ -2380,7 +2821,7 @@ mod app_tests {
         let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts)?;
         let now = Utc::now();
 
-        let decision = guard.can_open_buy(&store, now);
+        let decision = guard.can_open_buy(&store, now, true);
         match decision {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::ExposureCap,
@@ -2393,6 +2834,7 @@ mod app_tests {
         let decision_after_clear = guard.can_open_buy(
             &store,
             now + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 1).max(6)),
+            true,
         );
         match decision_after_clear {
             BuyRiskDecision::Allow => {}
@@ -2460,7 +2902,7 @@ mod app_tests {
             now - chrono::Duration::minutes(5),
         )?;
 
-        let decision = guard.can_open_buy(&store, now);
+        let decision = guard.can_open_buy(&store, now, true);
         match decision {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::TimedPause,
@@ -2511,7 +2953,7 @@ mod app_tests {
             now - chrono::Duration::minutes(10),
         )?;
 
-        let decision = guard.can_open_buy(&store, now);
+        let decision = guard.can_open_buy(&store, now, true);
         match decision {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::HardStop,
@@ -2548,7 +2990,7 @@ mod app_tests {
             now - chrono::Duration::minutes(20),
         )?;
 
-        match guard.can_open_buy(&store, now) {
+        match guard.can_open_buy(&store, now, true) {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::HardStop,
                 ..
@@ -2575,7 +3017,7 @@ mod app_tests {
         let refresh_step_seconds = (RISK_DB_REFRESH_MIN_SECONDS + 1).max(6);
         for cycle in 1..HARD_STOP_CLEAR_HEALTHY_REFRESHES {
             let cycle_ts = now + chrono::Duration::seconds(refresh_step_seconds * cycle as i64);
-            match guard.can_open_buy(&store, cycle_ts) {
+            match guard.can_open_buy(&store, cycle_ts, true) {
                 BuyRiskDecision::Blocked {
                     reason: BuyRiskBlockReason::HardStop,
                     ..
@@ -2595,6 +3037,7 @@ mod app_tests {
             now + chrono::Duration::seconds(
                 refresh_step_seconds * HARD_STOP_CLEAR_HEALTHY_REFRESHES as i64,
             ),
+            true,
         );
         match decision_after_recovery {
             BuyRiskDecision::Allow => {}
@@ -2633,7 +3076,7 @@ mod app_tests {
         guard.last_db_refresh_at = Some(now);
         guard.last_db_refresh_error = Some("simulated refresh failure".to_string());
 
-        match guard.can_open_buy(&store, now + chrono::Duration::seconds(1)) {
+        match guard.can_open_buy(&store, now + chrono::Duration::seconds(1), true) {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::FailClosed,
                 detail,
@@ -2641,9 +3084,7 @@ mod app_tests {
                 detail.contains("cached error"),
                 "expected cached refresh error in fail-closed detail, got: {detail}"
             ),
-            other => panic!(
-                "expected fail-closed block from cached refresh error, got {other:?}"
-            ),
+            other => panic!("expected fail-closed block from cached refresh error, got {other:?}"),
         }
 
         let _ = std::fs::remove_file(db_path);
@@ -3160,6 +3601,44 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=
 this-is-not-a-valid-line
 "#;
         assert!(parse_ingestion_source_override(content).is_none());
+    }
+
+    #[test]
+    fn parse_operator_emergency_stop_reason_ignores_comments() {
+        let content = r#"
+# stop trading immediately
+
+manual override by operator
+"#;
+        assert_eq!(
+            parse_operator_emergency_stop_reason(content).as_deref(),
+            Some("manual override by operator")
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_block_respects_pause_new_trades_on_outage_flag() -> Result<()> {
+        let (store, db_path) = make_test_store("infra-outage-flag")?;
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        guard.infra_block_reason = Some("ingestion_degraded".to_string());
+        let now = Utc::now();
+
+        match guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Infra,
+                detail,
+            } => assert!(detail.contains("ingestion_degraded")),
+            other => panic!("expected infra block when outage pausing is enabled, got {other:?}"),
+        }
+        match guard.can_open_buy(&store, now, false) {
+            BuyRiskDecision::Allow => {}
+            other => panic!(
+                "expected outage infra block bypass when pause_new_trades_on_outage=false, got {other:?}"
+            ),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
     }
 
     #[test]

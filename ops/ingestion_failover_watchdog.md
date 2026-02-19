@@ -45,6 +45,7 @@ Type=oneshot
 WorkingDirectory=/var/www/solana-copy-bot
 Environment=POLICY_FILE=/var/www/solana-copy-bot/ops/ingestion_failover_policy.toml
 Environment=CONFIG_PATH=/var/www/solana-copy-bot/configs/paper.toml
+Environment=OVERRIDE_FILE=/var/www/solana-copy-bot/state/ingestion_source_override.env
 ExecStart=/var/www/solana-copy-bot/tools/ingestion_failover_watchdog.sh
 ```
 
@@ -69,6 +70,28 @@ Enable:
 sudo systemctl daemon-reload
 sudo systemctl enable --now solana-copy-bot-watchdog.timer
 sudo systemctl status solana-copy-bot-watchdog.timer
+```
+
+### 3.1 Override path invariant (required)
+
+Watchdog and bot must point to the exact same override file path.
+
+Required mapping:
+
+```ini
+# watchdog service
+Environment=OVERRIDE_FILE=/var/www/solana-copy-bot/state/ingestion_source_override.env
+
+# bot service
+Environment=SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE=/var/www/solana-copy-bot/state/ingestion_source_override.env
+EnvironmentFile=-/var/www/solana-copy-bot/state/ingestion_source_override.env
+```
+
+Quick verification:
+
+```bash
+sudo systemctl show solana-copy-bot-watchdog.service -p Environment | rg OVERRIDE_FILE
+sudo systemctl show solana-copy-bot.service -p Environment | rg SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE
 ```
 
 ## 4) Restart wiring for source override

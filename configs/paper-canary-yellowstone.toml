@@ -83,9 +83,26 @@ min_liquidity_sol = 1.0
 min_volume_5m_sol = 0.5
 min_unique_traders_5m = 1
 
+[execution]
+enabled = false
+mode = "paper"
+poll_interval_ms = 750
+batch_size = 32
+default_route = "paper"
+rpc_http_url = ""
+rpc_fallback_http_url = ""
+rpc_devnet_http_url = ""
+execution_signer_pubkey = ""
+pretrade_min_sol_reserve = 0.05
+slippage_bps = 50.0
+max_confirm_seconds = 15
+max_submit_attempts = 3
+simulate_before_submit = true
+
 [risk]
 max_position_sol = 0.5
 max_total_exposure_sol = 3.0
+max_exposure_per_token_sol = 0.5
 max_concurrent_positions = 5
 daily_loss_limit_pct = 1.5
 max_drawdown_pct = 6.0

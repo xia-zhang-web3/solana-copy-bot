@@ -11,6 +11,7 @@ copybot-core-types = { path = "../core-types" }
 copybot-discovery = { path = "../discovery" }
 copybot-ingestion = { path = "../ingestion" }
 copybot-shadow = { path = "../shadow" }
+copybot-execution = { path = "../execution" }
 copybot-storage = { path = "../storage" }
 tokio.workspace = true
 tracing.workspace = true

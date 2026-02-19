@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub ingestion: IngestionConfig,
     pub discovery: DiscoveryConfig,
     pub shadow: ShadowConfig,
+    pub execution: ExecutionConfig,
     pub risk: RiskConfig,
 }
 
@@ -35,6 +36,46 @@ impl Default for SystemConfig {
             heartbeat_seconds: 30,
             migrations_dir: "migrations".to_string(),
             pause_new_trades_on_outage: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExecutionConfig {
+    pub enabled: bool,
+    pub mode: String,
+    pub poll_interval_ms: u64,
+    pub batch_size: u32,
+    pub default_route: String,
+    pub rpc_http_url: String,
+    pub rpc_fallback_http_url: String,
+    pub rpc_devnet_http_url: String,
+    pub execution_signer_pubkey: String,
+    pub pretrade_min_sol_reserve: f64,
+    pub slippage_bps: f64,
+    pub max_confirm_seconds: u64,
+    pub max_submit_attempts: u32,
+    pub simulate_before_submit: bool,
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: "paper".to_string(),
+            poll_interval_ms: 750,
+            batch_size: 32,
+            default_route: "paper".to_string(),
+            rpc_http_url: String::new(),
+            rpc_fallback_http_url: String::new(),
+            rpc_devnet_http_url: String::new(),
+            execution_signer_pubkey: String::new(),
+            pretrade_min_sol_reserve: 0.05,
+            slippage_bps: 50.0,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 3,
+            simulate_before_submit: true,
         }
     }
 }
@@ -187,6 +228,7 @@ impl Default for DiscoveryConfig {
 pub struct RiskConfig {
     pub max_position_sol: f64,
     pub max_total_exposure_sol: f64,
+    pub max_exposure_per_token_sol: f64,
     pub max_concurrent_positions: u32,
     pub daily_loss_limit_pct: f64,
     pub max_drawdown_pct: f64,
@@ -262,6 +304,7 @@ impl Default for RiskConfig {
         Self {
             max_position_sol: 0.75,
             max_total_exposure_sol: 4.0,
+            max_exposure_per_token_sol: 1.0,
             max_concurrent_positions: 5,
             daily_loss_limit_pct: 2.0,
             max_drawdown_pct: 8.0,
@@ -492,6 +535,80 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     }
     if let Ok(shadow_http_url) = env::var("SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL") {
         config.shadow.helius_http_url = shadow_http_url;
+    }
+    if let Some(enabled) = env::var("SOLANA_COPY_BOT_EXECUTION_ENABLED")
+        .ok()
+        .and_then(parse_env_bool)
+    {
+        config.execution.enabled = enabled;
+    }
+    if let Ok(mode) = env::var("SOLANA_COPY_BOT_EXECUTION_MODE") {
+        let trimmed = mode.trim();
+        if !trimmed.is_empty() {
+            config.execution.mode = trimmed.to_string();
+        }
+    }
+    if let Some(poll_interval_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_POLL_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.poll_interval_ms = poll_interval_ms;
+    }
+    if let Some(batch_size) = env::var("SOLANA_COPY_BOT_EXECUTION_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.execution.batch_size = batch_size;
+    }
+    if let Ok(route) = env::var("SOLANA_COPY_BOT_EXECUTION_DEFAULT_ROUTE") {
+        let trimmed = route.trim();
+        if !trimmed.is_empty() {
+            config.execution.default_route = trimmed.to_string();
+        }
+    }
+    if let Ok(rpc_http_url) = env::var("SOLANA_COPY_BOT_EXECUTION_RPC_HTTP_URL") {
+        config.execution.rpc_http_url = rpc_http_url;
+    }
+    if let Ok(rpc_fallback_http_url) = env::var("SOLANA_COPY_BOT_EXECUTION_RPC_FALLBACK_HTTP_URL") {
+        config.execution.rpc_fallback_http_url = rpc_fallback_http_url;
+    }
+    if let Ok(rpc_devnet_http_url) = env::var("SOLANA_COPY_BOT_EXECUTION_RPC_DEVNET_HTTP_URL") {
+        config.execution.rpc_devnet_http_url = rpc_devnet_http_url;
+    }
+    if let Ok(execution_signer_pubkey) = env::var("SOLANA_COPY_BOT_EXECUTION_SIGNER_PUBKEY") {
+        config.execution.execution_signer_pubkey = execution_signer_pubkey;
+    }
+    if let Some(pretrade_min_sol_reserve) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.execution.pretrade_min_sol_reserve = pretrade_min_sol_reserve;
+    }
+    if let Some(slippage_bps) = env::var("SOLANA_COPY_BOT_EXECUTION_SLIPPAGE_BPS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.execution.slippage_bps = slippage_bps;
+    }
+    if let Some(max_confirm_seconds) = env::var("SOLANA_COPY_BOT_EXECUTION_MAX_CONFIRM_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.max_confirm_seconds = max_confirm_seconds;
+    }
+    if let Some(max_submit_attempts) = env::var("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.execution.max_submit_attempts = max_submit_attempts;
+    }
+    if let Some(simulate_before_submit) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SIMULATE_BEFORE_SUBMIT")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.simulate_before_submit = simulate_before_submit;
     }
     if let Some(holdback_enabled) = env::var("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED")
         .ok()

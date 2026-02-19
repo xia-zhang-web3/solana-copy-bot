@@ -81,6 +81,34 @@ pub struct CopySignalRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExecutionOrderRow {
+    pub order_id: String,
+    pub signal_id: String,
+    pub client_order_id: String,
+    pub route: String,
+    pub submit_ts: DateTime<Utc>,
+    pub confirm_ts: Option<DateTime<Utc>>,
+    pub status: String,
+    pub err_code: Option<String>,
+    pub tx_signature: Option<String>,
+    pub simulation_status: Option<String>,
+    pub simulation_error: Option<String>,
+    pub attempt: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertExecutionOrderPendingOutcome {
+    Inserted,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalizeExecutionConfirmOutcome {
+    Applied,
+    AlreadyConfirmed,
+}
+
+#[derive(Debug, Clone)]
 pub struct ShadowLotRow {
     pub id: i64,
     pub wallet_id: String,
@@ -222,8 +250,8 @@ impl SqliteStore {
         ts: DateTime<Utc>,
         details_json: Option<&str>,
     ) -> Result<()> {
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "INSERT INTO risk_events(event_id, type, severity, ts, details_json)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
@@ -234,7 +262,8 @@ impl SqliteStore {
                     details_json,
                 ],
             )
-            .context("failed to insert risk event")?;
+        })
+        .context("failed to insert risk event")?;
         Ok(())
     }
 
@@ -757,6 +786,803 @@ impl SqliteStore {
             })
             .context("failed to insert copy signal")?;
         Ok(written > 0)
+    }
+
+    pub fn list_copy_signals_by_status(
+        &self,
+        status: &str,
+        limit: u32,
+    ) -> Result<Vec<CopySignalRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT signal_id, wallet_id, side, token, notional_sol, ts, status
+                 FROM copy_signals
+                 WHERE status = ?1
+                 ORDER BY ts ASC
+                 LIMIT ?2",
+            )
+            .context("failed to prepare copy_signals by status query")?;
+        let mut rows = stmt
+            .query(params![status, limit.max(1) as i64])
+            .context("failed querying copy_signals by status")?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating copy_signals by status rows")?
+        {
+            let ts_raw: String = row.get(5).context("failed reading copy_signals.ts")?;
+            let ts = DateTime::parse_from_rfc3339(&ts_raw)
+                .map(|dt| dt.with_timezone(&Utc))
+                .with_context(|| format!("invalid copy_signals.ts rfc3339 value: {ts_raw}"))?;
+            out.push(CopySignalRow {
+                signal_id: row
+                    .get(0)
+                    .context("failed reading copy_signals.signal_id")?,
+                wallet_id: row
+                    .get(1)
+                    .context("failed reading copy_signals.wallet_id")?,
+                side: row.get(2).context("failed reading copy_signals.side")?,
+                token: row.get(3).context("failed reading copy_signals.token")?,
+                notional_sol: row
+                    .get(4)
+                    .context("failed reading copy_signals.notional_sol")?,
+                ts,
+                status: row.get(6).context("failed reading copy_signals.status")?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn update_copy_signal_status(&self, signal_id: &str, status: &str) -> Result<bool> {
+        let changed = self
+            .execute_with_retry(|conn| {
+                conn.execute(
+                    "UPDATE copy_signals SET status = ?1 WHERE signal_id = ?2",
+                    params![status, signal_id],
+                )
+            })
+            .with_context(|| format!("failed updating copy_signals status for {}", signal_id))?;
+        Ok(changed > 0)
+    }
+
+    pub fn execution_order_by_client_order_id(
+        &self,
+        client_order_id: &str,
+    ) -> Result<Option<ExecutionOrderRow>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT
+                    order_id,
+                    signal_id,
+                    client_order_id,
+                    route,
+                    submit_ts,
+                    confirm_ts,
+                    status,
+                    err_code,
+                    tx_signature,
+                    simulation_status,
+                    simulation_error,
+                    attempt
+                 FROM orders
+                 WHERE client_order_id = ?1
+                 ORDER BY submit_ts DESC
+                 LIMIT 1",
+                params![client_order_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, i64>(11)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed querying order by client_order_id")?;
+
+        row.map(
+            |(
+                order_id,
+                signal_id,
+                client_id,
+                route,
+                submit_ts_raw,
+                confirm_ts_raw,
+                status,
+                err_code,
+                tx_signature,
+                simulation_status,
+                simulation_error,
+                attempt_raw,
+            )| {
+                let submit_ts = DateTime::parse_from_rfc3339(&submit_ts_raw)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .with_context(|| {
+                        format!("invalid orders.submit_ts rfc3339 value: {submit_ts_raw}")
+                    })?;
+                let confirm_ts = confirm_ts_raw
+                    .as_deref()
+                    .map(|raw| {
+                        DateTime::parse_from_rfc3339(raw)
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .with_context(|| {
+                                format!("invalid orders.confirm_ts rfc3339 value: {raw}")
+                            })
+                    })
+                    .transpose()?;
+                Ok(ExecutionOrderRow {
+                    order_id,
+                    signal_id,
+                    client_order_id: client_id,
+                    route,
+                    submit_ts,
+                    confirm_ts,
+                    status,
+                    err_code,
+                    tx_signature,
+                    simulation_status,
+                    simulation_error,
+                    attempt: attempt_raw.max(0) as u32,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn insert_execution_order_pending(
+        &self,
+        order_id: &str,
+        signal_id: &str,
+        client_order_id: &str,
+        route: &str,
+        submit_ts: DateTime<Utc>,
+        attempt: u32,
+    ) -> Result<InsertExecutionOrderPendingOutcome> {
+        let written = self
+            .execute_with_retry(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO orders(
+                        order_id,
+                        signal_id,
+                        client_order_id,
+                        route,
+                        submit_ts,
+                        status,
+                        attempt
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        order_id,
+                        signal_id,
+                        client_order_id,
+                        route,
+                        submit_ts.to_rfc3339(),
+                        "execution_pending",
+                        attempt.max(1) as i64,
+                    ],
+                )
+            })
+            .context("failed inserting pending execution order")?;
+        if written > 0 {
+            return Ok(InsertExecutionOrderPendingOutcome::Inserted);
+        }
+
+        let duplicate = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM orders
+                 WHERE client_order_id = ?1
+                    OR order_id = ?2
+                 LIMIT 1",
+                params![client_order_id, order_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .context("failed verifying duplicate execution order insert")?;
+        if duplicate.is_some() {
+            return Ok(InsertExecutionOrderPendingOutcome::Duplicate);
+        }
+
+        Err(anyhow!(
+            "execution order insert ignored without duplicate detection order_id={} client_order_id={}",
+            order_id,
+            client_order_id
+        ))
+    }
+
+    pub fn mark_order_simulated(
+        &self,
+        order_id: &str,
+        simulation_status: &str,
+        simulation_detail: Option<&str>,
+    ) -> Result<()> {
+        let changed = self.execute_with_retry(|conn| {
+            conn.execute(
+                "UPDATE orders
+                 SET status = 'execution_simulated',
+                     simulation_status = ?1,
+                     simulation_error = ?2
+                 WHERE order_id = ?3",
+                params![simulation_status, simulation_detail, order_id],
+            )
+        })?;
+        if changed == 0 {
+            return Err(anyhow!(
+                "failed marking order simulated: order_id={} not found",
+                order_id
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn mark_order_submitted(
+        &self,
+        order_id: &str,
+        route: &str,
+        tx_signature: &str,
+        submit_ts: DateTime<Utc>,
+    ) -> Result<()> {
+        let changed = self.execute_with_retry(|conn| {
+            conn.execute(
+                "UPDATE orders
+                 SET status = 'execution_submitted',
+                     route = ?1,
+                     tx_signature = ?2,
+                     submit_ts = ?3
+                 WHERE order_id = ?4",
+                params![route, tx_signature, submit_ts.to_rfc3339(), order_id],
+            )
+        })?;
+        if changed == 0 {
+            return Err(anyhow!(
+                "failed marking order submitted: order_id={} not found",
+                order_id
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn set_order_attempt(
+        &self,
+        order_id: &str,
+        attempt: u32,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        let changed = self.execute_with_retry(|conn| {
+            conn.execute(
+                "UPDATE orders
+                 SET attempt = ?1,
+                     simulation_error = COALESCE(?2, simulation_error)
+                 WHERE order_id = ?3",
+                params![attempt.max(1) as i64, detail, order_id],
+            )
+        })?;
+        if changed == 0 {
+            return Err(anyhow!(
+                "failed setting order attempt: order_id={} not found",
+                order_id
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn mark_order_confirmed(&self, order_id: &str, confirm_ts: DateTime<Utc>) -> Result<()> {
+        let changed = self.execute_with_retry(|conn| {
+            conn.execute(
+                "UPDATE orders
+                 SET status = 'execution_confirmed',
+                     confirm_ts = ?1
+                 WHERE order_id = ?2",
+                params![confirm_ts.to_rfc3339(), order_id],
+            )
+        })?;
+        if changed == 0 {
+            return Err(anyhow!(
+                "failed marking order confirmed: order_id={} not found",
+                order_id
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn mark_order_dropped(
+        &self,
+        order_id: &str,
+        err_code: &str,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        let changed = self.execute_with_retry(|conn| {
+            conn.execute(
+                "UPDATE orders
+                 SET status = 'execution_dropped',
+                     err_code = ?1,
+                     simulation_error = COALESCE(?2, simulation_error)
+                 WHERE order_id = ?3",
+                params![err_code, detail, order_id],
+            )
+        })?;
+        if changed == 0 {
+            return Err(anyhow!(
+                "failed marking order dropped: order_id={} not found",
+                order_id
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn mark_order_failed(
+        &self,
+        order_id: &str,
+        err_code: &str,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        let changed = self.execute_with_retry(|conn| {
+            conn.execute(
+                "UPDATE orders
+                 SET status = 'execution_failed',
+                     err_code = ?1,
+                     simulation_error = COALESCE(?2, simulation_error)
+                 WHERE order_id = ?3",
+                params![err_code, detail, order_id],
+            )
+        })?;
+        if changed == 0 {
+            return Err(anyhow!(
+                "failed marking order failed: order_id={} not found",
+                order_id
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn finalize_execution_confirmed_order(
+        &self,
+        order_id: &str,
+        signal_id: &str,
+        token: &str,
+        side: &str,
+        qty: f64,
+        notional_sol: f64,
+        avg_price: f64,
+        fee: f64,
+        slippage_bps: f64,
+        confirmed_ts: DateTime<Utc>,
+    ) -> Result<FinalizeExecutionConfirmOutcome> {
+        for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
+            if let Err(error) = self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION") {
+                let error = anyhow!(error).context("failed to open execution confirm transaction");
+                let retryable = is_retryable_sqlite_anyhow_error(&error);
+                if retryable {
+                    note_sqlite_busy_error();
+                }
+                if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                    note_sqlite_write_retry();
+                    std::thread::sleep(StdDuration::from_millis(
+                        SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                    ));
+                    continue;
+                }
+                return Err(error).context("failed to finalize confirmed order");
+            }
+            let tx_result = (|| -> Result<FinalizeExecutionConfirmOutcome> {
+                let status: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT status FROM orders WHERE order_id = ?1 LIMIT 1",
+                        params![order_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .context("failed reading order status before finalize confirm")?;
+                let Some(status) = status else {
+                    return Err(anyhow!(
+                        "failed finalizing confirmed order: order_id={} not found",
+                        order_id
+                    ));
+                };
+                if status == "execution_confirmed" {
+                    return Ok(FinalizeExecutionConfirmOutcome::AlreadyConfirmed);
+                }
+                if status != "execution_submitted" {
+                    return Err(anyhow!(
+                        "failed finalizing confirmed order: order_id={} has unexpected status={}",
+                        order_id,
+                        status
+                    ));
+                }
+
+                self.conn
+                    .execute(
+                        "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![order_id, token, qty, avg_price, fee, slippage_bps],
+                    )
+                    .context("failed inserting execution fill in finalize confirm transaction")?;
+
+                Self::apply_execution_fill_to_positions_on_conn(
+                    &self.conn,
+                    token,
+                    side,
+                    qty,
+                    notional_sol,
+                    confirmed_ts,
+                )?;
+
+                let changed_order = self
+                    .conn
+                    .execute(
+                        "UPDATE orders
+                         SET status = 'execution_confirmed',
+                             confirm_ts = ?1
+                         WHERE order_id = ?2",
+                        params![confirmed_ts.to_rfc3339(), order_id],
+                    )
+                    .context("failed marking order confirmed in finalize confirm transaction")?;
+                if changed_order == 0 {
+                    return Err(anyhow!(
+                        "failed marking order confirmed in finalize confirm transaction: order_id={} not found",
+                        order_id
+                    ));
+                }
+
+                let changed_signal = self
+                    .conn
+                    .execute(
+                        "UPDATE copy_signals
+                         SET status = 'execution_confirmed'
+                         WHERE signal_id = ?1",
+                        params![signal_id],
+                    )
+                    .context(
+                        "failed updating copy signal status in finalize confirm transaction",
+                    )?;
+                if changed_signal == 0 {
+                    return Err(anyhow!(
+                        "failed updating copy signal status in finalize confirm transaction: signal_id={} not found",
+                        signal_id
+                    ));
+                }
+
+                Ok(FinalizeExecutionConfirmOutcome::Applied)
+            })();
+
+            match tx_result {
+                Ok(outcome) => {
+                    if let Err(error) = self.conn.execute_batch("COMMIT") {
+                        let error = anyhow!(error)
+                            .context("failed to commit execution confirm transaction");
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                        let retryable = is_retryable_sqlite_anyhow_error(&error);
+                        if retryable {
+                            note_sqlite_busy_error();
+                        }
+                        if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                            note_sqlite_write_retry();
+                            std::thread::sleep(StdDuration::from_millis(
+                                SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                            ));
+                            continue;
+                        }
+                        return Err(error).context("failed to finalize confirmed order");
+                    }
+                    return Ok(outcome);
+                }
+                Err(error) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    let retryable = is_retryable_sqlite_anyhow_error(&error);
+                    if retryable {
+                        note_sqlite_busy_error();
+                    }
+                    if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                        note_sqlite_write_retry();
+                        std::thread::sleep(StdDuration::from_millis(
+                            SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                        ));
+                        continue;
+                    }
+                    return Err(error).context("failed to finalize confirmed order");
+                }
+            }
+        }
+
+        unreachable!("retry loop must return on success or terminal error");
+    }
+
+    pub fn insert_execution_fill(
+        &self,
+        order_id: &str,
+        token: &str,
+        qty: f64,
+        avg_price: f64,
+        fee: f64,
+        slippage_bps: f64,
+    ) -> Result<()> {
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![order_id, token, qty, avg_price, fee, slippage_bps],
+            )
+        })
+        .context("failed inserting execution fill")?;
+        Ok(())
+    }
+
+    pub fn live_open_exposure_sol(&self) -> Result<f64> {
+        let value: f64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(cost_sol), 0.0)
+                 FROM positions
+                 WHERE state = 'open'",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed querying live open exposure")?;
+        Ok(value.max(0.0))
+    }
+
+    pub fn live_open_exposure_sol_for_token(&self, token: &str) -> Result<f64> {
+        let value: f64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(cost_sol), 0.0)
+                 FROM positions
+                 WHERE state = 'open'
+                   AND token = ?1",
+                params![token],
+                |row| row.get(0),
+            )
+            .context("failed querying live open exposure by token")?;
+        Ok(value.max(0.0))
+    }
+
+    pub fn live_open_positions_count(&self) -> Result<u64> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM positions
+                 WHERE state = 'open'",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed querying live open positions count")?;
+        Ok(count.max(0) as u64)
+    }
+
+    pub fn live_has_open_position(&self, token: &str) -> Result<bool> {
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM positions
+                 WHERE token = ?1
+                   AND state = 'open'
+                 LIMIT 1",
+                params![token],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed checking live open position by token")?;
+        Ok(exists.is_some())
+    }
+
+    pub fn apply_execution_fill_to_positions(
+        &self,
+        token: &str,
+        side: &str,
+        qty: f64,
+        notional_sol: f64,
+        ts: DateTime<Utc>,
+    ) -> Result<()> {
+        const EPS: f64 = 1e-12;
+
+        if qty <= EPS || notional_sol <= 0.0 || !qty.is_finite() || !notional_sol.is_finite() {
+            return Ok(());
+        }
+        for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
+            if let Err(error) = self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION") {
+                let error = anyhow!(error).context("failed to open execution position transaction");
+                let retryable = is_retryable_sqlite_anyhow_error(&error);
+                if retryable {
+                    note_sqlite_busy_error();
+                }
+                if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                    note_sqlite_write_retry();
+                    std::thread::sleep(StdDuration::from_millis(
+                        SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                    ));
+                    continue;
+                }
+                return Err(error).context("failed to apply execution fill to positions");
+            }
+
+            let update_result = Self::apply_execution_fill_to_positions_on_conn(
+                &self.conn,
+                token,
+                side,
+                qty,
+                notional_sol,
+                ts,
+            );
+
+            match update_result {
+                Ok(()) => {
+                    if let Err(error) = self.conn.execute_batch("COMMIT") {
+                        let error = anyhow!(error)
+                            .context("failed to commit execution position transaction");
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                        let retryable = is_retryable_sqlite_anyhow_error(&error);
+                        if retryable {
+                            note_sqlite_busy_error();
+                        }
+                        if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                            note_sqlite_write_retry();
+                            std::thread::sleep(StdDuration::from_millis(
+                                SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                            ));
+                            continue;
+                        }
+                        return Err(error).context("failed to apply execution fill to positions");
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    let retryable = is_retryable_sqlite_anyhow_error(&error);
+                    if retryable {
+                        note_sqlite_busy_error();
+                    }
+                    if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                        note_sqlite_write_retry();
+                        std::thread::sleep(StdDuration::from_millis(
+                            SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                        ));
+                        continue;
+                    }
+                    return Err(error).context("failed to apply execution fill to positions");
+                }
+            }
+        }
+
+        unreachable!("retry loop must return on success or terminal error");
+    }
+
+    fn apply_execution_fill_to_positions_on_conn(
+        conn: &Connection,
+        token: &str,
+        side: &str,
+        qty: f64,
+        notional_sol: f64,
+        ts: DateTime<Utc>,
+    ) -> Result<()> {
+        const EPS: f64 = 1e-12;
+
+        let side_norm = side.trim().to_ascii_lowercase();
+        let existing: Option<(String, f64, f64, Option<f64>)> = conn
+            .query_row(
+                "SELECT position_id, qty, cost_sol, pnl_sol
+                 FROM positions
+                 WHERE token = ?1
+                   AND state = 'open'
+                 ORDER BY opened_ts ASC
+                 LIMIT 1",
+                params![token],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .context("failed querying live open position row")?;
+
+        match side_norm.as_str() {
+            "buy" => {
+                if let Some((position_id, current_qty, current_cost, current_pnl)) = existing {
+                    conn.execute(
+                        "UPDATE positions
+                         SET qty = ?1,
+                             cost_sol = ?2,
+                             pnl_sol = ?3,
+                             state = 'open',
+                             closed_ts = NULL
+                         WHERE position_id = ?4",
+                        params![
+                            current_qty + qty,
+                            current_cost + notional_sol,
+                            current_pnl.unwrap_or(0.0),
+                            position_id,
+                        ],
+                    )
+                    .context("failed updating open live position for buy fill")?;
+                } else {
+                    let position_id = format!("live:{}:{}", token, uuid::Uuid::new_v4().simple());
+                    conn.execute(
+                        "INSERT INTO positions(
+                            position_id,
+                            token,
+                            qty,
+                            cost_sol,
+                            opened_ts,
+                            state,
+                            pnl_sol
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, 'open', 0.0)",
+                        params![position_id, token, qty, notional_sol, ts.to_rfc3339()],
+                    )
+                    .context("failed inserting new live position for buy fill")?;
+                }
+            }
+            "sell" => {
+                let Some((position_id, current_qty, current_cost, current_pnl)) = existing else {
+                    return Err(anyhow!(
+                        "sell fill without open position token={} qty={} notional_sol={}",
+                        token,
+                        qty,
+                        notional_sol
+                    ));
+                };
+                if current_qty <= EPS || current_cost <= EPS {
+                    return Err(anyhow!(
+                        "sell fill on non-positive open position token={} qty={} cost_sol={}",
+                        token,
+                        current_qty,
+                        current_cost
+                    ));
+                }
+
+                let qty_closed = qty.min(current_qty);
+                let avg_cost = current_cost / current_qty;
+                let realized_cost = avg_cost * qty_closed;
+                let effective_notional = if qty_closed < qty {
+                    notional_sol * (qty_closed / qty)
+                } else {
+                    notional_sol
+                };
+                let realized_pnl = effective_notional - realized_cost;
+                let next_qty = (current_qty - qty_closed).max(0.0);
+                let next_cost = (current_cost - realized_cost).max(0.0);
+                let next_pnl = current_pnl.unwrap_or(0.0) + realized_pnl;
+
+                if next_qty <= EPS {
+                    conn.execute(
+                        "UPDATE positions
+                         SET qty = 0.0,
+                             cost_sol = 0.0,
+                             pnl_sol = ?1,
+                             state = 'closed',
+                             closed_ts = ?2
+                         WHERE position_id = ?3",
+                        params![next_pnl, ts.to_rfc3339(), position_id],
+                    )
+                    .context("failed closing live position after sell fill")?;
+                } else {
+                    conn.execute(
+                        "UPDATE positions
+                         SET qty = ?1,
+                             cost_sol = ?2,
+                             pnl_sol = ?3
+                         WHERE position_id = ?4",
+                        params![next_qty, next_cost, next_pnl, position_id],
+                    )
+                    .context("failed partially updating live position after sell fill")?;
+                }
+            }
+            _ => {
+                return Err(anyhow!("unsupported execution fill side: {}", side));
+            }
+        }
+        Ok(())
     }
 
     pub fn insert_shadow_lot(
@@ -1539,6 +2365,183 @@ mod tests {
             !verify_store.has_shadow_lots("wallet", "token")?,
             "all lots should be closed exactly once"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn execution_lifecycle_updates_orders_signals_and_positions() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-lifecycle.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-1:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store
+                .list_copy_signals_by_status("shadow_recorded", 10)?
+                .len(),
+            1
+        );
+        assert!(store.update_copy_signal_status(&signal.signal_id, "execution_pending")?);
+
+        let order_id = "ord-test-1";
+        let client_order_id = "cb_test_signal_a1";
+        assert_eq!(
+            store.insert_execution_order_pending(
+                order_id,
+                &signal.signal_id,
+                client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-test-1-dup",
+                &signal.signal_id,
+                client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Duplicate
+        );
+        store.mark_order_simulated(order_id, "ok", Some("paper_simulation_ok"))?;
+        store.mark_order_submitted(order_id, "paper", "paper:tx-1", now)?;
+        store.mark_order_confirmed(order_id, now + Duration::seconds(1))?;
+        let order = store
+            .execution_order_by_client_order_id(client_order_id)?
+            .context("expected order row to exist")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(order.attempt, 1);
+        assert_eq!(order.signal_id, signal.signal_id);
+
+        store.insert_execution_fill(order_id, "token-a", 1.0, 0.25, 0.0, 50.0)?;
+        store.apply_execution_fill_to_positions("token-a", "buy", 1.0, 0.25, now)?;
+        assert!(store.live_has_open_position("token-a")?);
+        assert_eq!(store.live_open_positions_count()?, 1);
+        let exposure_after_buy = store.live_open_exposure_sol()?;
+        assert!(
+            (exposure_after_buy - 0.25).abs() < 1e-9,
+            "unexpected exposure after buy: {exposure_after_buy}"
+        );
+
+        store.apply_execution_fill_to_positions(
+            "token-a",
+            "sell",
+            1.0,
+            0.30,
+            now + Duration::seconds(2),
+        )?;
+        assert!(!store.live_has_open_position("token-a")?);
+        assert_eq!(store.live_open_positions_count()?, 0);
+        let exposure_after_sell = store.live_open_exposure_sol()?;
+        assert!(exposure_after_sell <= 1e-9);
+
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_execution_confirmed_order_is_atomic_and_idempotent() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-confirm-finalize.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-2:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+
+        let order_id = "ord-finalize-1";
+        let client_order_id = "cb_test_finalize_a1";
+        assert_eq!(
+            store.insert_execution_order_pending(
+                order_id,
+                &signal.signal_id,
+                client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(order_id, "paper", "paper:tx-finalize", now)?;
+
+        let first = store.finalize_execution_confirmed_order(
+            order_id,
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            1.0,
+            0.25,
+            0.25,
+            0.0,
+            50.0,
+            now + Duration::seconds(1),
+        )?;
+        assert_eq!(first, FinalizeExecutionConfirmOutcome::Applied);
+
+        let order = store
+            .execution_order_by_client_order_id(client_order_id)?
+            .context("expected order row after finalize")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(
+            store
+                .list_copy_signals_by_status("execution_confirmed", 10)?
+                .len(),
+            1
+        );
+        assert!(store.live_has_open_position("token-a")?);
+
+        let second = store.finalize_execution_confirmed_order(
+            order_id,
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            1.0,
+            0.25,
+            0.25,
+            0.0,
+            50.0,
+            now + Duration::seconds(2),
+        )?;
+        assert_eq!(second, FinalizeExecutionConfirmOutcome::AlreadyConfirmed);
+
+        let fills_count: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM fills WHERE order_id = ?1",
+            params![order_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(fills_count, 1);
 
         Ok(())
     }

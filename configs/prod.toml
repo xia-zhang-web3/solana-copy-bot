@@ -72,9 +72,26 @@ min_leader_notional_sol = 0.75
 max_signal_lag_seconds = 30
 quality_gates_enabled = true
 
+[execution]
+enabled = false
+mode = "paper"
+poll_interval_ms = 750
+batch_size = 32
+default_route = "paper"
+rpc_http_url = ""
+rpc_fallback_http_url = ""
+rpc_devnet_http_url = ""
+execution_signer_pubkey = ""
+pretrade_min_sol_reserve = 0.05
+slippage_bps = 50.0
+max_confirm_seconds = 15
+max_submit_attempts = 3
+simulate_before_submit = true
+
 [risk]
 max_position_sol = 0.4
 max_total_exposure_sol = 2.5
+max_exposure_per_token_sol = 0.4
 max_concurrent_positions = 4
 daily_loss_limit_pct = 1.0
 max_drawdown_pct = 5.0

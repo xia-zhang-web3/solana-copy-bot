@@ -2,14 +2,71 @@
 
 Date: 2026-02-18
 Owner: copybot runtime team
-Status: Implementation completed through Phase E.5; Phase F/G rollout in progress
+Status: **Observation mode.** Yellowstone gRPC is production primary since 2026-02-19; migration is not marked complete until observation + ops deliverables are closed.
 
 ## Readiness Status
 
-Current state: **Rollout-ready implementation (operational gating pending)**.
+Current state: **Yellowstone gRPC is production primary (server runtime).** Helius WS retained as emergency fallback.
 
-- Allowed now: Phase F canary/replay gates and Phase G cutover execution.
-- Blocked now: production promotion until replay + live canary acceptance targets pass and are documented.
+Cutover date: 2026-02-19 ~08:00 UTC
+Cutover method: runtime env on server (`SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone_grpc`) with Yellowstone URL/token env overrides.
+
+Operational mode (as of 2026-02-19):
+
+1. Single-primary runtime (`yellowstone_grpc`) in production path.
+2. No active dual-ingest canary in operational path.
+3. Helius WS retained only for rollback/failover.
+
+Repository/runtime alignment:
+
+1. `configs/paper.toml` is currently set to `source = "yellowstone_grpc"` to mirror current primary runtime profile.
+2. `configs/prod.toml` still keeps `helius_ws` and serves as conservative rollback profile template.
+3. Runtime source selection can still be overridden by env/failover override file.
+4. Migration remains in observation mode until section 16 DoD is fully satisfied.
+5. Cross-plan update (2026-02-19):
+   1. safety backlog items `R2P-06` and `R2P-16` are implemented in runtime (`crates/app/src/main.rs`) — operator file-flag emergency stop and active wiring of `pause_new_trades_on_outage`;
+   2. execution baseline tasks `R2P-08` and `R2P-09` are closed in codebase;
+   3. `R2P-10`/`R2P-11` are in progress: paper lifecycle + recovery + BUY-only pause gates are active, live send path remains next;
+   4. latest runtime hardening synced: bounded retry policy (`max_submit_attempts`), typed submit error taxonomy (`Retryable`/`Terminal`), pre-trade checker contract + RPC pre-trade mode (`paper_rpc_pretrade_confirm`, blockhash + signer balance reserve gate), RPC confirmer mode, idempotency insert-outcome disambiguation (`Inserted`/`Duplicate`), parse-reject telemetry by reason, and execution scheduling decoupled from ingestion loop via dedicated blocking execution task.
+
+## Phase Completion Status
+
+| Phase | Status | Notes |
+| --- | --- | --- |
+| A: Foundation and Contracts | ✅ Done | Protobuf mapping, deps, contracts frozen |
+| B: Config and Dependency Wiring | ✅ Done | 8 yellowstone_* fields, env overrides, pinned deps |
+| C: New Source Implementation | ✅ Done | YellowstoneGrpcSource with dedup, reorder, reconnect |
+| D: Parsing and Normalization | ✅ Done | Proto→RawSwapObservation, Raydium/PumpSwap parity |
+| E: Telemetry and Guards | ✅ Done | gRPC counters, SQLite contention metrics. Note: `rss_mb` not in bot telemetry (monitor via `ps`) |
+| E.5: Watchdog | 🟡 Partial | Script + policy + docs committed. systemd units not yet deployed on host |
+| F.1: Canary | ✅ Done | 8h canary run, 0 errors, 0 reconnects, 0 drops, lag p95 ~1.4s |
+| F.2: Replay gate | ⏭ Waived | Waiver approved due API-credit budget constraints; decision based on sustained live telemetry deltas and incident-free run |
+| F.3: Live gate (6h) | ✅ Done | Canary metrics over 8h: lag p95 1.4s, replaced_ratio 0.0, 11.4M gRPC messages |
+| G: Production cutover | 🟡 In progress | Primary switched. Post-cutover health reports pending (1h/6h/24h). 7-day observation started |
+| H: Migration completion + handoff to live roadmap | ⏳ Planned | Requires section 16 closure + handoff package to `ROAD_TO_PRODUCTION.md` |
+| I: Legacy deprecation decision window | ⏳ Planned | Decision only after stable live-trading window in ROAD plan |
+
+Interpretation note:
+
+1. Sections `6-12` are retained as implementation history/audit trail.
+2. Active operational checklist is defined by `Remaining items`, `Evidence ledger`, `section 13`, and `section 16`.
+
+## Remaining items (blocking migration completion)
+
+1. Deploy watchdog systemd units on host (timer + service).
+2. Collect post-cutover health reports at 1h, 6h, 24h marks.
+3. Complete 7-day primary observation window (target: 2026-02-26).
+4. Final DoD sign-off and mark migration complete.
+5. Publish handoff package to execution/live roadmap (`ROAD_TO_PRODUCTION.md`, Stage A exit dependency).
+
+## Evidence ledger (required before final sign-off)
+
+1. 1h post-cutover report artifact path: `PENDING` (owner: runtime-ops, due: 2026-02-20)
+2. 6h post-cutover report artifact path: `PENDING` (owner: runtime-ops, due: 2026-02-20)
+3. 24h post-cutover report artifact path: `PENDING` (owner: runtime-ops, due: 2026-02-20)
+4. 7-day summary artifact path: `PENDING` (owner: runtime-ops, due: 2026-02-26)
+5. Watchdog systemd status snapshot path: `PENDING` (owner: runtime-ops, due: 2026-02-20)
+6. Replay waiver approver + date: `tigranambarcumyan, 2026-02-19 (cost-budget waiver)`
 
 ## 0) Hard Gates Before Coding
 
@@ -31,6 +88,7 @@ No implementation work in `crates/ingestion` starts until all gates below are co
    - Additional p50/p99 and gRPC-specific metrics are emitted via structured logs/counters, not required in snapshot struct for v1.
 3. **Comparison methodology is frozen**:
    - KPI validation must include same-input replay comparison (not only separate live DB canary).
+   - Exception: replay may be waived only with explicit written waiver due cost/operational constraints and replacement evidence from live telemetry.
 4. **Dependency set and versions are frozen**:
    - `yellowstone-grpc-client = 12.0.0`
    - `yellowstone-grpc-proto = 12.0.0`
@@ -127,7 +185,7 @@ Use additive migration, not replacement-first:
 
 1. Implement `yellowstone_grpc` as a new source mode.
 2. Keep `helius_ws` fully functional as fallback.
-3. Validate on same-input replay harness before production cutover.
+3. Validate on same-input replay harness before production cutover, unless formally waived due operational/cost constraints.
 4. Canary with real traffic into separate DB.
 5. Compare ingestion KPIs and signal capture.
 6. Promote to primary after acceptance criteria pass.
@@ -135,7 +193,8 @@ Use additive migration, not replacement-first:
 
 ## 6) Phase Plan and Estimates
 
-Estimated total: 11-17 engineering days.
+Estimated total (historical implementation path A-G): 11-17 engineering days.  
+Additional closure/handoff work (H-I): 1-3 ops days after observation completion.
 
 ### Phase A: Foundation and Contracts (1 day)
 
@@ -235,7 +294,7 @@ Deliverables:
    - `sqlite_write_retry_total`
    - `sqlite_busy_error_total`
 4. Keep `IngestionRuntimeSnapshot` backward-compatible in v1 for risk infra guard.
-5. Add process memory monitoring (`rss_mb`) to telemetry stream.
+5. Track process memory (`rss_mb`) via external process monitoring (`ps`/system metrics), not bot runtime telemetry.
 
 Deliverables:
 
@@ -247,7 +306,7 @@ Deliverables:
    - `tools/ingestion_failover_watchdog.sh` (or equivalent service binary).
 2. Wire watchdog trigger evaluation against section 13.1 conditions.
 3. Implement atomic fallback writes:
-   - `state/ingestion_source_override.env`
+   - `state/ingestion_source_override.env` (default; may be overridden by `SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE`)
    - `state/ingestion_failover_cooldown.json`
 4. Wire supervisor restart flow (systemd unit/timer or wrapper) and cooldown behavior.
 5. Add smoke tests on staging/canary host:
@@ -264,7 +323,7 @@ Deliverables:
 1. Prerequisite: Phase E.5 completed; watchdog protection active on canary host.
 2. Run gRPC source in canary service instance and separate DB.
 3. Keep same `discovery` and `shadow` settings as control.
-4. Run same-input replay benchmark (recorded update stream) against both adapters before live canary decision.
+4. Run same-input replay benchmark (recorded update stream) against both adapters before live canary decision, unless waived by written budget/ops decision.
 5. Collect side-by-side KPIs:
    - lag p95/p99
    - replaced/drop ratio
@@ -287,6 +346,35 @@ Deliverables:
 
 - Production change record.
 - Post-cutover health report at 1h, 6h, 24h.
+
+### Phase H: Migration Completion and R2P Handoff (0.5-1 day)
+
+1. Close section 16 criteria with evidence links.
+2. Mark Phase E.5 and G as done with final dates.
+3. Produce handoff package for `ROAD_TO_PRODUCTION.md` Stage A/B:
+   - watchdog deploy evidence,
+   - observation KPI summary,
+   - failover drill evidence,
+   - residual ingestion risks + owners.
+4. Freeze migration-specific config contract (`ingestion.source`, override invariant, failover policy owner).
+
+Deliverables:
+
+- Signed migration completion note.
+- Handoff bundle for production roadmap owners.
+
+### Phase I: Legacy Path Deprecation Decision (1-2 days, post-live window)
+
+1. Re-evaluate need for `helius_ws` as warm fallback after standard-live stabilization in ROAD plan.
+2. If deprecation accepted:
+   - remove obsolete toggles/paths in phased rollout,
+   - keep incident rollback strategy explicit before final removal.
+3. If deprecation rejected:
+   - keep dual-path operational contract documented with ownership.
+
+Deliverables:
+
+- Explicit ADR: `helius_ws` retained vs deprecated, with rationale and rollback impact.
 
 ## 7) Detailed Implementation Tasks by File
 
@@ -319,9 +407,11 @@ Nuance:
 
 Tasks:
 
-1. Add commented `yellowstone_grpc` section with placeholders.
-2. Keep default source unchanged until rollout gate passes.
-3. For `dev`, optionally keep `mock` as default and add tested sample block for gRPC.
+1. Historical (completed): add `yellowstone_grpc` fields/placeholders across profiles.
+2. Current operational convention:
+   - `paper.toml` mirrors current primary source (`yellowstone_grpc`),
+   - rollback path is controlled by runtime override/env and `prod.toml` fallback template.
+3. `dev` may keep `mock` default; gRPC testing is opt-in via env/config override.
 
 Nuance:
 
@@ -503,14 +593,14 @@ Targets:
      - `replaced_ratio = delta(ws_notifications_replaced_oldest) / max(delta(ws_notifications_enqueued), 1)`
      - evaluated only when `queue_overflow_policy=drop_oldest` and `delta(ws_notifications_enqueued) >= 500` per window
 3. Stability:
-   - no reconnect storm (`> 6 reconnects in 5 minutes`)
+   - no reconnect storm (`>= 6 reconnects in 5 minutes`)
    - no DB lock amplification beyond +20% vs baseline (`sqlite_write_retry_total`, `sqlite_busy_error_total`)
 4. Memory:
    - RSS growth slope not positive beyond warmup window (after first 30 min)
 
 ### 10.4 Replay Reproducibility Contract
 
-Replay A/B must be deterministic and reproducible:
+Target contract (when replay gate is active and not waived):
 
 1. Fixture format:
    - canonical NDJSON stream of normalized inbound updates (one update per line).
@@ -521,6 +611,11 @@ Replay A/B must be deterministic and reproducible:
    - fixed random seeds (if any), UTC-only timestamps.
 4. Dedup/ordering normalization:
    - compare only post-parser, signature-deduped `SwapEvent` outputs.
+
+Current implementation note (2026-02-19):
+
+- Replay gate is formally waived (section 15.3).
+- `tools/ingestion_ab_report.sh --mode replay` currently compares DB-window metrics and includes fixture metadata (`fixture_id`, `fixture_sha256`) as report fields; deterministic fixture harness remains backlog work.
    - ordering comparisons use `(slot, signature)` stable keys.
 5. Reporting:
    - report includes fixture ID, commit SHA, config hash, output counts by side, drop reasons.
@@ -549,74 +644,82 @@ Replay A/B must be deterministic and reproducible:
 
 ### Soak Test (paper)
 
-Duration: at least 6-24h before production cutover.
+Historical requirement (pre-cutover): at least 6-24h before production cutover.
+
+Current requirement (post-cutover): continuous observation window in production primary mode (see section 16).
 
 Checks:
 
 1. No steady growth in queue depth.
 2. No reconnect storm.
 3. Stable signal throughput and lower lag.
-4. Memory stable after warmup (`rss_mb` plateau).
+4. Memory stable after warmup (`rss_mb` plateau via external process monitoring).
 
-## 12) Rollout Playbook
+## 12) Rollout Playbook (Historical Record + Current Observation Actions)
 
 ### Step 1: Prepare
 
-1. Deploy code with both ingestion sources.
-2. Keep default source unchanged.
-3. Validate startup with `yellowstone_grpc` in staging.
+1. Historical (completed): deploy code with both ingestion sources.
+2. Historical (completed): validate startup with `yellowstone_grpc` in staging.
+3. Current action: keep rollback profile and watchdog active while observation window is open.
 
 ### Step 2: Canary
 
-1. Start canary instance on separate SQLite file.
-2. Enable `yellowstone_grpc` only there.
-3. Run replay-based same-input A/B benchmark before evaluating live KPI outcomes.
-4. Compare canary vs control every 30 minutes.
-5. Keep dual-ingest observation window for at least 14 days after first production enablement.
+1. Historical (completed): canary instance ran on separate SQLite file.
+2. Historical decision: replay gate was waived by budget decision and documented in section 16.
+3. Current action: no active dual-ingest canary in operational path; production remains single-primary with watchdog failover.
 
 ### Step 3: Partial Production
 
-1. Shift primary runtime to `yellowstone_grpc`.
-2. Keep a warm standby config for `helius_ws`.
-3. Monitor first hour closely.
+1. Historical (completed): primary runtime shifted to `yellowstone_grpc`.
+2. Current action: keep warm standby/fallback config for `helius_ws`.
+3. Current action: monitor observation KPIs and collect ledger evidence.
 
 ### Step 4: Full Promotion
 
-1. Run 24h stable window.
-2. Sign off on KPI thresholds.
-3. Mark legacy path as fallback-only.
+1. Run 24h stable window and 7-day observation window.
+2. Sign off on KPI thresholds and evidence ledger completeness.
+3. Keep legacy path fallback-only until explicit deprecation decision.
 
 ## 13) Rollback Plan
 
 ### 13.1 Auto-Failover Policy (Graceful Degradation)
 
 Implement supervised fallback to `helius_ws` when any trigger is hit.
-This is **not** in-process source hot-swap; it is external-watchdog restart-based failover.
+This is **not** in-process source hot-swap; it is external-watchdog override-based failover with optional restart.
 
 Trigger conditions (evaluated by watchdog from telemetry/log stream):
 
 1. `ingestion_lag_ms_p95 > 10000ms` for 5 consecutive minutes, or
-2. reconnect storm (`>= 6 reconnects in 5 minutes`), or
-3. decode/parse reject rate > 20% over 5-minute window with denominator >= 500 inbound updates, or
-4. no processed swaps for 120 seconds while stream is connected **and** inbound subscribed transaction updates are non-trivial (>= 200 updates over the same 120-second window).
+2. `replaced_ratio > 0.93` for 5 consecutive checks, where `replaced_ratio = delta(ws_notifications_replaced_oldest) / max(delta(ws_notifications_enqueued), 1)`, or
+3. reconnect storm (`>= 6 reconnects in 5 minutes`), or
+4. decode/parse reject rate > 20% over 5-minute window with denominator >= 500 inbound updates, or
+5. no processed swaps for 120 seconds with non-trivial inbound flow (`delta(grpc_message_total) >= 200` over the same 120-second window).
 
 Failover behavior:
 
-1. Watchdog marks source degraded and emits `ingestion_source_degraded` event.
-2. Watchdog writes fallback profile (`ingestion.source=helius_ws`).
-3. Watchdog triggers service restart via supervisor (`systemd` Restart policy / watchdog wrapper).
-4. Restart picks up fallback profile.
-5. Enforce cooldown: do not retry gRPC promotion for 15 minutes.
+1. Watchdog writes fallback override file (`SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws`) with reason/timestamp.
+2. Watchdog records cooldown state and trigger context.
+3. Watchdog emits structured log line for degraded source/failover reason.
+4. If `allow_restart=true` and `systemctl` is available, watchdog restarts service; otherwise restart is skipped (operator/manual action path).
+5. On restart, app picks up fallback override file.
+6. Enforce cooldown: do not retry gRPC promotion for 15 minutes.
 
 Operational artifacts (required deliverables):
 
 1. Policy file:
    - `ops/ingestion_failover_policy.toml`
-   - stores trigger thresholds and cooldown duration.
+   - stores trigger thresholds, cooldown duration, and restart mode (`allow_restart`, default `false`).
 2. Watchdog executable:
    - `tools/ingestion_failover_watchdog.sh` (or equivalent service binary).
 3. Fallback profile file:
-   - `state/ingestion_source_override.env`
+   - default: `state/ingestion_source_override.env`
+   - effective path may be overridden by runtime env `SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE`
+   - hard invariant: watchdog `OVERRIDE_FILE` must match runtime effective override file path
+   - required systemd mapping:
+     - watchdog unit: `OVERRIDE_FILE=/var/www/solana-copy-bot/state/ingestion_source_override.env`
+     - bot unit: `SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE=/var/www/solana-copy-bot/state/ingestion_source_override.env`
+   - reference runbook: `ops/ingestion_failover_watchdog.md` (section `3.1 Override path invariant`)
    - written atomically: write temp file -> `fsync` -> atomic rename.
 4. Cooldown state file:
    - `state/ingestion_failover_cooldown.json`
@@ -656,7 +759,8 @@ Only after 1-2 weeks stable production:
 2. Historical replay mode:
    - deferred, out of scope for v1 migration implementation.
 3. Dual-ingest observation duration:
-   - fixed to minimum 14 days for first production enablement.
+   - original 14-day dual-ingest target was waived on 2026-02-19 due API-credit budget constraints.
+   - replacement policy: minimum 7-day single-primary observation with watchdog protection and evidence ledger sign-off.
 4. Yellowstone major line:
    - v1 migration uses `yellowstone-grpc-client/proto = 12.0.0` baseline.
 5. Failover ownership:
@@ -667,10 +771,67 @@ Only after 1-2 weeks stable production:
 Migration is complete when all are true:
 
 1. Production runs on `yellowstone_grpc` as primary for >= 7 days.
+   - **Status (2026-02-19):** Started. Target completion: 2026-02-26.
+   - Note: this criterion replaces the waived 14-day dual-ingest target (section 15.3).
 2. `ingestion_lag_ms_p95 <= 3000ms` for >= 95% buckets over that window.
+   - **Status:** 🟡 Provisionally passing (window ongoing). Observed p95 ~1.4s consistently.
 3. If `queue_overflow_policy=drop_oldest`, `replaced_ratio < 0.05` with `delta(enqueued) >= 500` in >=95% windows; if policy=`block`, replaced-ratio criterion is N/A and lag/reject-rate criteria must pass.
+   - **Status:** 🟡 Provisionally passing (window ongoing). Observed replaced_ratio = 0.0000.
 4. Replay A/B shows BUY capture improvement >= +15% with no strategy-rule loosening.
+   - **Status:** ⏭ Waived. Rationale: replay gate formally waived due API-credit budget; validation accepted via sustained live transport metrics and no integrity regressions.
 5. No increase in critical risk incidents or data integrity regressions.
+   - **Status:** 🟡 Provisionally passing (observation window ongoing). Zero reconnects, zero decode errors, zero stream gaps.
+
+---
+
+## 17) Handoff Contract to `ROAD_TO_PRODUCTION.md` (A→Live linkage)
+
+This migration plan is considered complete only when its outputs are formally handed over to the live-trading roadmap.
+
+Required handoff artifacts:
+
+1. `A1` — Watchdog deploy proof:
+   - `systemctl status` snapshot for watchdog service/timer,
+   - explicit override-path invariant proof (`OVERRIDE_FILE` == `SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE` effective path).
+2. `A2` — Observation KPI pack:
+   - 1h/6h/24h reports,
+   - 7-day summary with lag/replaced-ratio/reconnect/decode counters.
+3. `A3` — Failover drill proof:
+   - trigger -> override write -> restart behavior -> source switch outcome.
+4. `A4` — Residual risk register:
+   - outstanding ingestion risks, owner, mitigation, next review date.
+
+Consumption in ROAD phases:
+
+1. Stage A exit in `ROAD_TO_PRODUCTION.md` depends directly on `A1` + `A2` + `A3`.
+2. Stage B/C planning should consume `A4` so execution rollout inherits known ingestion constraints.
+3. `R2P-17` (go-live sign-off) cannot close while this section remains open.
+
+## 18) Migration Closure Procedure (exact status transitions)
+
+When all section 16 criteria are satisfied, perform all steps below in one closure change set:
+
+1. Update header status:
+   - from `Observation mode` to `Migration completed`,
+   - include exact closure date (e.g. `2026-02-26` when window finishes).
+2. Update phase table:
+   - Phase E.5 -> `✅ Done`,
+   - Phase G -> `✅ Done`,
+   - Phase H -> `✅ Done` (handoff completed).
+3. Replace `PENDING` in Evidence ledger with concrete artifact paths.
+4. Add closure note:
+   - approver name,
+   - approval timestamp (UTC),
+   - link to go/no-go decision record.
+5. Open/refresh Phase I decision ticket (legacy fallback retained/deprecated).
+
+## 19) Boundaries After Migration Completion
+
+To avoid scope drift:
+
+1. This document owns ingestion transport contract, failover contract, and migration evidence only.
+2. Execution implementation (`quote/simulate/submit/confirm/reconcile`) remains governed by `ROAD_TO_PRODUCTION.md`.
+3. Any post-closure ingestion change affecting risk or execution gates must be mirrored in both documents within the same PR.
 
 ---
 

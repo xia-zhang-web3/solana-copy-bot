@@ -358,6 +358,7 @@ struct IngestionTelemetry {
     reconnect_count: AtomicU64,
     stream_gap_detected: AtomicU64,
     parse_rejected_total: AtomicU64,
+    parse_rejected_by_reason: Mutex<BTreeMap<&'static str, u64>>,
     grpc_message_total: AtomicU64,
     grpc_decode_errors: AtomicU64,
     fetch_inflight: AtomicU64,
@@ -389,6 +390,7 @@ impl Default for IngestionTelemetry {
             reconnect_count: AtomicU64::new(0),
             stream_gap_detected: AtomicU64::new(0),
             parse_rejected_total: AtomicU64::new(0),
+            parse_rejected_by_reason: Mutex::new(BTreeMap::new()),
             grpc_message_total: AtomicU64::new(0),
             grpc_decode_errors: AtomicU64::new(0),
             fetch_inflight: AtomicU64::new(0),
@@ -440,6 +442,15 @@ impl IngestionTelemetry {
             .fetch_max(size, Ordering::Relaxed);
     }
 
+    fn note_parse_rejected(&self, error: &anyhow::Error) {
+        self.parse_rejected_total.fetch_add(1, Ordering::Relaxed);
+        let reason = classify_parse_reject_reason(error);
+        if let Ok(mut guard) = self.parse_rejected_by_reason.lock() {
+            let entry = guard.entry(reason).or_insert(0);
+            *entry = entry.saturating_add(1);
+        }
+    }
+
     fn maybe_report(
         &self,
         report_seconds: u64,
@@ -479,6 +490,12 @@ impl IngestionTelemetry {
             .ok()
             .map(|values| values.iter().copied().collect::<Vec<_>>())
             .unwrap_or_default();
+        let parse_rejected_by_reason = self
+            .parse_rejected_by_reason
+            .lock()
+            .ok()
+            .map(|values| values.clone())
+            .unwrap_or_default();
         let ingestion_lag_ms_p95 = percentile(&lag_samples, 0.95);
         self.last_ingestion_lag_p95
             .store(ingestion_lag_ms_p95, Ordering::Relaxed);
@@ -495,6 +512,7 @@ impl IngestionTelemetry {
             reconnect_count = self.reconnect_count.load(Ordering::Relaxed),
             stream_gap_detected = self.stream_gap_detected.load(Ordering::Relaxed),
             parse_rejected_total = self.parse_rejected_total.load(Ordering::Relaxed),
+            parse_rejected_by_reason = ?parse_rejected_by_reason,
             grpc_message_total = self.grpc_message_total.load(Ordering::Relaxed),
             grpc_decode_errors = self.grpc_decode_errors.load(Ordering::Relaxed),
             ws_to_fetch_queue_depth,
@@ -538,6 +556,23 @@ impl IngestionTelemetry {
             ingestion_lag_ms_p95,
         }
     }
+}
+
+fn classify_parse_reject_reason(error: &anyhow::Error) -> &'static str {
+    let lowered = error.to_string().to_ascii_lowercase();
+    if lowered.contains("missing transaction signature") {
+        return "missing_signature";
+    }
+    if lowered.contains("timestamp") {
+        return "invalid_timestamp";
+    }
+    if lowered.contains("balance") {
+        return "invalid_balance_inference";
+    }
+    if lowered.contains("account key") {
+        return "invalid_account_keys";
+    }
+    "other"
 }
 
 struct HeliusPipeline {
@@ -1881,10 +1916,7 @@ async fn yellowstone_stream_loop(
                         }
                         Ok(None) => {}
                         Err(error) => {
-                            runtime_config
-                                .telemetry
-                                .parse_rejected_total
-                                .fetch_add(1, Ordering::Relaxed);
+                            runtime_config.telemetry.note_parse_rejected(&error);
                             debug!(error = %error, "failed parsing yellowstone transaction update");
                         }
                     }
@@ -2987,6 +3019,7 @@ fn decrement_atomic_usize(counter: &AtomicUsize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
     use serde_json::{json, Value};
 
     fn token_balance(owner: &str, mint: &str, amount: &str) -> Value {
@@ -3042,6 +3075,45 @@ mod tests {
         assert!((inferred.1 - 1.0).abs() < 1e-9);
         assert_eq!(inferred.2, "TokenMintA");
         assert!((inferred.3 - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn classify_parse_reject_reason_maps_known_patterns() {
+        assert_eq!(
+            classify_parse_reject_reason(&anyhow!("missing transaction signature in update")),
+            "missing_signature"
+        );
+        assert_eq!(
+            classify_parse_reject_reason(&anyhow!("invalid timestamp nanos in payload")),
+            "invalid_timestamp"
+        );
+        assert_eq!(
+            classify_parse_reject_reason(&anyhow!("failed balance inference for signer")),
+            "invalid_balance_inference"
+        );
+        assert_eq!(
+            classify_parse_reject_reason(&anyhow!("account key index out of bounds")),
+            "invalid_account_keys"
+        );
+        assert_eq!(
+            classify_parse_reject_reason(&anyhow!("unexpected parser failure")),
+            "other"
+        );
+    }
+
+    #[test]
+    fn note_parse_rejected_tracks_reason_breakdown() {
+        let telemetry = IngestionTelemetry::default();
+        telemetry.note_parse_rejected(&anyhow!("missing transaction signature in update"));
+        telemetry.note_parse_rejected(&anyhow!("unclassified parser issue"));
+
+        assert_eq!(telemetry.parse_rejected_total.load(Ordering::Relaxed), 2);
+        let reasons = telemetry
+            .parse_rejected_by_reason
+            .lock()
+            .expect("parse_rejected_by_reason mutex should be available");
+        assert_eq!(reasons.get("missing_signature"), Some(&1));
+        assert_eq!(reasons.get("other"), Some(&1));
     }
 
     #[test]

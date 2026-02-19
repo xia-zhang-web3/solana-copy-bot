@@ -199,6 +199,7 @@ dependencies = [
  "copybot-config",
  "copybot-core-types",
  "copybot-discovery",
+ "copybot-execution",
  "copybot-ingestion",
  "copybot-shadow",
  "copybot-storage",
@@ -236,6 +237,21 @@ dependencies = [
  "copybot-storage",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "copybot-execution"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "copybot-config",
+ "copybot-core-types",
+ "copybot-storage",
+ "reqwest",
+ "serde_json",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

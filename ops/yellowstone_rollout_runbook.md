@@ -2,9 +2,11 @@
 
 This runbook executes Phase F/G of `YELLOWSTONE_GRPC_MIGRATION_PLAN.md` with explicit commands and gates.
 
+Status note (2026-02-19): production already runs Yellowstone as primary. Section 1 reflects pre-cutover canary flow and is kept as historical reference; for current operations use observation/failover procedures.
+
 ## 1) Prepare Control and Canary
 
-1. Keep control service on `helius_ws` (`configs/paper.toml`).
+1. Historical pre-cutover setup: keep control service on `helius_ws` profile (`configs/paper.toml` at that time).
 2. Create canary config (example `configs/paper-canary-yellowstone.toml`):
    - `ingestion.source = "yellowstone_grpc"`
    - separate `sqlite.path` (for example `state/paper_canary_copybot.db`)
