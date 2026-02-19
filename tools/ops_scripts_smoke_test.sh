@@ -203,6 +203,7 @@ run_ops_scripts_for_db() {
   assert_contains "$calibration_output" "=== strict policy rejects (submit_adapter_policy_echo_missing) ==="
   assert_contains "$calibration_output" "=== route outcome KPI (24h submit window) ==="
   assert_contains "$calibration_output" "=== confirm latency by route (24h submit window, ms) ==="
+  assert_contains "$calibration_output" "=== route calibration scorecard (24h submit window) ==="
 
   local snapshot_output
   snapshot_output="$(
