@@ -51,6 +51,26 @@ if [[ ! -f "$DB_PATH" ]]; then
   exit 1
 fi
 
+order_column_exists() {
+  local column="$1"
+  [[ "$(sqlite3 -noheader "$DB_PATH" "SELECT 1 FROM pragma_table_info('orders') WHERE name = '$column' LIMIT 1;")" == "1" ]]
+}
+
+order_column_expr_or_zero() {
+  local column="$1"
+  if order_column_exists "$column"; then
+    printf "COALESCE(o.%s, 0)" "$column"
+  else
+    printf "0"
+  fi
+}
+
+APPLIED_TIP_EXPR="$(order_column_expr_or_zero applied_tip_lamports)"
+ATA_RENT_EXPR="$(order_column_expr_or_zero ata_create_rent_lamports)"
+NETWORK_FEE_HINT_EXPR="$(order_column_expr_or_zero network_fee_lamports_hint)"
+BASE_FEE_HINT_EXPR="$(order_column_expr_or_zero base_fee_lamports_hint)"
+PRIORITY_FEE_HINT_EXPR="$(order_column_expr_or_zero priority_fee_lamports_hint)"
+
 MAX_POSITION_SOL="$(cfg_value risk max_position_sol)"
 MAX_TOTAL_EXPOSURE_SOL="$(cfg_value risk max_total_exposure_sol)"
 MAX_HOLD_HOURS="$(cfg_value risk max_hold_hours)"
@@ -197,11 +217,11 @@ WITH confirmed_orders AS (
   SELECT
     o.order_id,
     o.route,
-    COALESCE(o.applied_tip_lamports, 0) AS applied_tip_lamports,
-    COALESCE(o.ata_create_rent_lamports, 0) AS ata_create_rent_lamports,
-    COALESCE(o.network_fee_lamports_hint, 0) AS network_fee_lamports_hint,
-    COALESCE(o.base_fee_lamports_hint, 0) AS base_fee_lamports_hint,
-    COALESCE(o.priority_fee_lamports_hint, 0) AS priority_fee_lamports_hint
+    ${APPLIED_TIP_EXPR} AS applied_tip_lamports,
+    ${ATA_RENT_EXPR} AS ata_create_rent_lamports,
+    ${NETWORK_FEE_HINT_EXPR} AS network_fee_lamports_hint,
+    ${BASE_FEE_HINT_EXPR} AS base_fee_lamports_hint,
+    ${PRIORITY_FEE_HINT_EXPR} AS priority_fee_lamports_hint
   FROM orders o
   WHERE o.status = 'execution_confirmed'
     AND o.confirm_ts IS NOT NULL

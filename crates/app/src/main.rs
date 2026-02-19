@@ -490,9 +490,9 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 "execution.submit_adapter_contract_version must be <= 64 chars"
             ));
         }
-        if env.trim().eq_ignore_ascii_case("prod") && !config.submit_adapter_require_policy_echo {
+        if is_production_env_profile(env) && !config.submit_adapter_require_policy_echo {
             return Err(anyhow!(
-                "execution.submit_adapter_require_policy_echo must be true in prod when execution.mode=adapter_submit_confirm"
+                "execution.submit_adapter_require_policy_echo must be true in production-like environments when execution.mode=adapter_submit_confirm"
             ));
         }
     }
@@ -804,6 +804,15 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
     }
 
     Ok(())
+}
+
+fn is_production_env_profile(env: &str) -> bool {
+    let env_norm = env.trim().to_ascii_lowercase();
+    matches!(env_norm.as_str(), "prod" | "production")
+        || env_norm.starts_with("prod-")
+        || env_norm.starts_with("prod_")
+        || env_norm.starts_with("production-")
+        || env_norm.starts_with("production_")
 }
 
 fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
@@ -3506,7 +3515,7 @@ mod app_tests {
         assert!(
             error
                 .to_string()
-                .contains("submit_adapter_require_policy_echo must be true in prod"),
+                .contains("submit_adapter_require_policy_echo must be true in production-like"),
             "unexpected error: {}",
             error
         );
@@ -3514,6 +3523,29 @@ mod app_tests {
         execution.submit_adapter_require_policy_echo = true;
         validate_execution_runtime_contract(&execution, "prod")
             .expect("prod adapter mode with strict policy echo should pass");
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_requires_policy_echo_in_prod_variants() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        execution.submit_adapter_require_policy_echo = false;
+        for env in ["prod-eu", "PRODUCTION", "production_canary"] {
+            validate_execution_runtime_contract(&execution, env).expect_err(
+                "production-like adapter mode must require strict policy echo across env variants",
+            );
+        }
+
+        execution.submit_adapter_require_policy_echo = true;
+        for env in ["prod-eu", "PRODUCTION", "production_canary"] {
+            validate_execution_runtime_contract(&execution, env)
+                .expect("production-like adapter mode with strict policy echo should pass");
+        }
     }
 
     #[test]
