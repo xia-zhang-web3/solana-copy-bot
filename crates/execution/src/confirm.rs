@@ -117,8 +117,9 @@ impl RpcOrderConfirmer {
             .with_context(|| format!("invalid rpc json endpoint={endpoint}"))?;
         let mut confirmation = parse_confirmation_from_rpc_body(&body, now)?;
         if matches!(confirmation.status, ConfirmationStatus::Confirmed) {
-            confirmation.network_fee_lamports =
-                self.query_transaction_fee_lamports(endpoint, tx_signature)?;
+            confirmation.network_fee_lamports = self
+                .query_transaction_fee_lamports(endpoint, tx_signature)
+                .unwrap_or(None);
         }
         Ok(confirmation)
     }
