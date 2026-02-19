@@ -52,6 +52,7 @@ enum SignalResult {
 
 pub struct ExecutionRuntime {
     enabled: bool,
+    mode: String,
     poll_interval_ms: u64,
     batch_size: u32,
     max_confirm_seconds: u64,
@@ -60,6 +61,7 @@ pub struct ExecutionRuntime {
     default_route: String,
     slippage_bps: f64,
     simulate_before_submit: bool,
+    manual_reconcile_required_on_confirm_failure: bool,
     risk: RiskConfig,
     pretrade: Box<dyn PreTradeChecker + Send + Sync>,
     simulator: Box<dyn IntentSimulator + Send + Sync>,
@@ -76,17 +78,25 @@ impl ExecutionRuntime {
         };
 
         let mode = config.mode.trim().to_ascii_lowercase();
-        let (pretrade, simulator, submitter, confirmer): (
+        let (
+            pretrade,
+            simulator,
+            submitter,
+            confirmer,
+            manual_reconcile_required_on_confirm_failure,
+        ): (
             Box<dyn PreTradeChecker + Send + Sync>,
             Box<dyn IntentSimulator + Send + Sync>,
             Box<dyn OrderSubmitter + Send + Sync>,
             Box<dyn OrderConfirmer + Send + Sync>,
+            bool,
         ) = match mode.as_str() {
             "paper" => (
                 Box::new(PaperPreTradeChecker),
                 Box::new(PaperIntentSimulator),
                 Box::new(PaperOrderSubmitter),
                 Box::new(PaperOrderConfirmer),
+                false,
             ),
             "paper_rpc_confirm" => {
                 let confirmer: Box<dyn OrderConfirmer + Send + Sync> = match RpcOrderConfirmer::new(
@@ -102,6 +112,7 @@ impl ExecutionRuntime {
                     Box::new(PaperIntentSimulator),
                     Box::new(PaperOrderSubmitter),
                     confirmer,
+                    false,
                 )
             }
             "paper_rpc_pretrade_confirm" => {
@@ -133,6 +144,7 @@ impl ExecutionRuntime {
                     Box::new(PaperIntentSimulator),
                     Box::new(PaperOrderSubmitter),
                     confirmer,
+                    false,
                 )
             }
             "adapter_submit_confirm" => {
@@ -184,6 +196,7 @@ impl ExecutionRuntime {
                     Box::new(PaperIntentSimulator),
                     submitter,
                     confirmer,
+                    true,
                 )
             }
             _ => (
@@ -191,11 +204,13 @@ impl ExecutionRuntime {
                 Box::new(PaperIntentSimulator),
                 Box::new(PaperOrderSubmitter),
                 Box::new(PaperOrderConfirmer),
+                false,
             ),
         };
 
         Self {
             enabled: config.enabled,
+            mode,
             poll_interval_ms: config.poll_interval_ms.max(100),
             batch_size: config.batch_size.max(1),
             max_confirm_seconds: config.max_confirm_seconds.max(1),
@@ -204,6 +219,7 @@ impl ExecutionRuntime {
             default_route: route,
             slippage_bps: config.slippage_bps,
             simulate_before_submit: config.simulate_before_submit,
+            manual_reconcile_required_on_confirm_failure,
             risk,
             pretrade,
             simulator,
@@ -675,18 +691,33 @@ impl ExecutionRuntime {
                     );
                     return Ok(SignalResult::Skipped);
                 }
-                let detail = format!("confirm_error deadline_passed error={}", error);
-                store.mark_order_failed(order_id, "confirm_error", Some(&detail))?;
+                let manual_reconcile_required = self.manual_reconcile_required_on_confirm_failure;
+                let err_code = if manual_reconcile_required {
+                    "confirm_error_manual_reconcile_required"
+                } else {
+                    "confirm_error"
+                };
+                let detail = format!(
+                    "confirm_error deadline_passed mode={} manual_reconcile_required={} error={}",
+                    self.mode, manual_reconcile_required, error
+                );
+                store.mark_order_failed(order_id, err_code, Some(&detail))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
                 let details = json!({
                     "signal_id": intent.signal_id,
                     "order_id": order_id,
+                    "mode": self.mode,
+                    "manual_reconcile_required": manual_reconcile_required,
                     "deadline": deadline.to_rfc3339(),
                     "error": error.to_string()
                 })
                 .to_string();
                 let _ = store.insert_risk_event(
-                    "execution_confirm_failed",
+                    if manual_reconcile_required {
+                        "execution_confirm_failed_manual_reconcile_required"
+                    } else {
+                        "execution_confirm_failed"
+                    },
                     "error",
                     now,
                     Some(&details),
@@ -766,12 +797,31 @@ impl ExecutionRuntime {
                 if now < deadline {
                     return Ok(SignalResult::Skipped);
                 }
-                store.mark_order_failed(
-                    order_id,
-                    "confirm_timeout",
-                    Some(confirm.detail.as_str()),
-                )?;
+                let manual_reconcile_required = self.manual_reconcile_required_on_confirm_failure;
+                let err_code = if manual_reconcile_required {
+                    "confirm_timeout_manual_reconcile_required"
+                } else {
+                    "confirm_timeout"
+                };
+                store.mark_order_failed(order_id, err_code, Some(confirm.detail.as_str()))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                if manual_reconcile_required {
+                    let details = json!({
+                        "signal_id": intent.signal_id,
+                        "order_id": order_id,
+                        "mode": self.mode,
+                        "manual_reconcile_required": true,
+                        "deadline": deadline.to_rfc3339(),
+                        "detail": confirm.detail,
+                    })
+                    .to_string();
+                    let _ = store.insert_risk_event(
+                        "execution_confirm_timeout_manual_reconcile_required",
+                        "error",
+                        now,
+                        Some(&details),
+                    );
+                }
                 Ok(SignalResult::Failed)
             }
         }
@@ -1118,6 +1168,7 @@ mod tests {
         risk.max_concurrent_positions = 100;
         let runtime = ExecutionRuntime {
             enabled: true,
+            mode: "paper".to_string(),
             poll_interval_ms: 100,
             batch_size: 10,
             max_confirm_seconds: 15,
@@ -1126,6 +1177,7 @@ mod tests {
             default_route: "paper".to_string(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: false,
             risk,
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
@@ -1180,6 +1232,7 @@ mod tests {
         risk.max_concurrent_positions = 100;
         let runtime = ExecutionRuntime {
             enabled: true,
+            mode: "paper".to_string(),
             poll_interval_ms: 100,
             batch_size: 10,
             max_confirm_seconds: 15,
@@ -1188,6 +1241,7 @@ mod tests {
             default_route: "paper".to_string(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: false,
             risk,
             pretrade: Box::new(RetryableFailPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
@@ -1243,6 +1297,7 @@ mod tests {
         risk.max_concurrent_positions = 100;
         let runtime = ExecutionRuntime {
             enabled: true,
+            mode: "paper".to_string(),
             poll_interval_ms: 100,
             batch_size: 10,
             max_confirm_seconds: 15,
@@ -1251,6 +1306,7 @@ mod tests {
             default_route: "paper".to_string(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: false,
             risk,
             pretrade: Box::new(TerminalRejectPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
@@ -1294,6 +1350,7 @@ mod tests {
         risk.max_concurrent_positions = 100;
         let runtime = ExecutionRuntime {
             enabled: true,
+            mode: "paper".to_string(),
             poll_interval_ms: 100,
             batch_size: 10,
             max_confirm_seconds: 15,
@@ -1302,6 +1359,7 @@ mod tests {
             default_route: "paper".to_string(),
             slippage_bps: 50.0,
             simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: false,
             risk,
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),

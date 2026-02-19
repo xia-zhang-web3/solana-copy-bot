@@ -534,6 +534,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 17. adapter response policy tightened: response `route` must match requested route; mismatch is terminal fail-closed (`submit_adapter_route_mismatch`) before order status write.
 18. route-level compute budget policy added to submit path (`cu_limit`, `cu_price_micro_lamports`) with strict runtime validation for allowed/default routes.
 19. adapter response correlation tightened: optional `client_order_id`/`request_id` echoes must match requested `client_order_id` or submit is terminal-failed (`submit_adapter_client_order_id_mismatch` / `submit_adapter_request_id_mismatch`).
+20. adapter confirm-failure semantics hardened: deadline-passed confirm errors/timeouts are marked with `*_manual_reconcile_required` err-codes + risk events to enforce explicit on-chain reconcile workflow.
 
 Остается в next-code-queue:
 
