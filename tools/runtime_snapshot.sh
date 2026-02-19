@@ -313,6 +313,14 @@ keys = [
 for key in keys:
     print(f"{key}: {last.get(key)}")
 
+for map_key in ("parse_rejected_by_reason", "parse_fallback_by_reason"):
+    breakdown = last.get(map_key)
+    if isinstance(breakdown, dict) and breakdown:
+        ordered = {key: breakdown[key] for key in sorted(breakdown)}
+        print(f"{map_key}: {json.dumps(ordered, sort_keys=True)}")
+    else:
+        print(f"{map_key}: {{}}")
+
 if len(rows) >= 2:
     prev = rows[-2]
     delta_enqueued = (last.get("ws_notifications_enqueued") or 0) - (prev.get("ws_notifications_enqueued") or 0)
