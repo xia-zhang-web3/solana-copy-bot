@@ -24,6 +24,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
+use url::{Host, Url};
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
@@ -837,7 +838,8 @@ fn validate_adapter_endpoint_url(
     if endpoint.chars().any(char::is_whitespace) {
         return Err(anyhow!("{field_name} must not contain whitespace"));
     }
-    let endpoint_norm = endpoint.trim().to_ascii_lowercase();
+    let endpoint_trimmed = endpoint.trim();
+    let endpoint_norm = endpoint_trimmed.to_ascii_lowercase();
     let has_valid_scheme =
         endpoint_norm.starts_with("https://") || endpoint_norm.starts_with("http://");
     if !has_valid_scheme {
@@ -846,25 +848,19 @@ fn validate_adapter_endpoint_url(
             endpoint
         ));
     }
-
-    let authority_and_path = if endpoint_norm.starts_with("https://") {
-        &endpoint_norm["https://".len()..]
-    } else {
-        &endpoint_norm["http://".len()..]
-    };
-    let authority = authority_and_path
-        .split('/')
-        .next()
-        .unwrap_or_default()
-        .trim();
-    if authority.is_empty() {
-        return Err(anyhow!("{field_name} must include a host"));
+    let parsed = Url::parse(endpoint_trimmed)
+        .map_err(|error| anyhow!("{field_name} must be a valid http(s) URL: {error}"))?;
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "http" | "https") {
+        return Err(anyhow!(
+            "{field_name} must use http:// or https:// scheme (got: {})",
+            scheme
+        ));
     }
-
-    if strict_transport_policy
-        && endpoint_norm.starts_with("http://")
-        && !is_loopback_http_authority(authority)
-    {
+    let Some(host) = parsed.host() else {
+        return Err(anyhow!("{field_name} must include a host"));
+    };
+    if strict_transport_policy && scheme == "http" && !is_loopback_host(&host) {
         return Err(anyhow!(
             "{field_name} must use https:// in production-like envs (http:// allowed only for loopback hosts)"
         ));
@@ -873,15 +869,12 @@ fn validate_adapter_endpoint_url(
     Ok(())
 }
 
-fn is_loopback_http_authority(authority: &str) -> bool {
-    let authority = authority.rsplit('@').next().unwrap_or(authority);
-    let host = if authority.starts_with('[') {
-        authority.find(']').map(|end| &authority[..=end])
-    } else {
-        authority.split(':').next()
+fn is_loopback_host(host: &Host<&str>) -> bool {
+    match host {
+        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(ip) => ip.is_loopback(),
+        Host::Ipv6(ip) => ip.is_loopback(),
     }
-    .unwrap_or(authority);
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
 }
 
 fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
@@ -3638,6 +3631,33 @@ mod app_tests {
     }
 
     #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_adapter_endpoint_authority_forms() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        for endpoint in [
+            "https://:443",
+            "https://?x=1",
+            "https://#frag",
+            "https://[::1",
+        ] {
+            execution.submit_adapter_http_url = endpoint.to_string();
+            let error = validate_execution_runtime_contract(&execution, "paper").expect_err(
+                "adapter endpoint with malformed/empty host authority must fail contract validation",
+            );
+            assert!(
+                error.to_string().contains("must be a valid http(s) URL"),
+                "unexpected error for endpoint {}: {}",
+                endpoint,
+                error
+            );
+        }
+    }
+
+    #[test]
     fn validate_execution_runtime_contract_rejects_non_loopback_http_adapter_endpoint_in_prod() {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
@@ -3670,6 +3690,11 @@ mod app_tests {
 
         validate_execution_runtime_contract(&execution, "prod")
             .expect("loopback http adapter endpoint should be allowed in production-like env");
+
+        execution.submit_adapter_http_url = "http://[0:0:0:0:0:0:0:1]:8080".to_string();
+        validate_execution_runtime_contract(&execution, "prod").expect(
+            "expanded IPv6 loopback representation should be allowed in production-like env",
+        );
     }
 
     #[test]

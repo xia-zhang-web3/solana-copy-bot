@@ -16,3 +16,4 @@ copybot-storage = { path = "../storage" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
