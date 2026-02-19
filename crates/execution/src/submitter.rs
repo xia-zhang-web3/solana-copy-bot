@@ -18,6 +18,8 @@ pub struct SubmitResult {
     pub route: String,
     pub tx_signature: String,
     pub submitted_at: DateTime<Utc>,
+    pub applied_tip_lamports: u64,
+    pub ata_create_rent_lamports: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +94,8 @@ impl OrderSubmitter for PaperOrderSubmitter {
             route: route.to_string(),
             tx_signature: sig,
             submitted_at: Utc::now(),
+            applied_tip_lamports: 0,
+            ata_create_rent_lamports: None,
         })
     }
 }
@@ -659,6 +663,8 @@ fn parse_adapter_submit_response(
             "adapter response missing required field tip_lamports".to_string(),
         ));
     }
+    let applied_tip_lamports = response_tip_lamports.unwrap_or(expected_tip_lamports);
+    let ata_create_rent_lamports = body.get("ata_create_rent_lamports").and_then(Value::as_u64);
 
     let response_cu_limit = body
         .get("compute_budget")
@@ -713,6 +719,8 @@ fn parse_adapter_submit_response(
         route,
         tx_signature: tx_signature.to_string(),
         submitted_at,
+        applied_tip_lamports,
+        ata_create_rent_lamports,
     })
 }
 
@@ -1002,6 +1010,25 @@ mod tests {
             result.submitted_at.to_rfc3339(),
             "2026-02-19T12:34:56+00:00"
         );
+        assert_eq!(result.applied_tip_lamports, 0);
+        assert_eq!(result.ata_create_rent_lamports, None);
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_parses_ata_rent_lamports() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "tip_lamports": 777,
+            "ata_create_rent_lamports": 2_039_280
+        });
+        let result = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 777, 300_000, 1_000,
+        )
+        .expect("success payload");
+        assert_eq!(result.applied_tip_lamports, 777);
+        assert_eq!(result.ata_create_rent_lamports, Some(2_039_280));
     }
 
     #[test]

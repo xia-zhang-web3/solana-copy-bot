@@ -705,6 +705,8 @@ impl ExecutionRuntime {
             submit.route.as_str(),
             submit.tx_signature.as_str(),
             submit.submitted_at,
+            Some(submit.applied_tip_lamports),
+            submit.ata_create_rent_lamports,
         )?;
         store.update_copy_signal_status(&intent.signal_id, "execution_submitted")?;
         self.process_submitted_order_by_signature(
@@ -714,6 +716,8 @@ impl ExecutionRuntime {
             submit.route.as_str(),
             submit.tx_signature.as_str(),
             submit.submitted_at,
+            Some(submit.applied_tip_lamports),
+            submit.ata_create_rent_lamports,
             now,
             report,
         )
@@ -745,6 +749,8 @@ impl ExecutionRuntime {
             order.route.as_str(),
             tx_signature,
             order.submit_ts,
+            order.applied_tip_lamports,
+            order.ata_create_rent_lamports,
             now,
             report,
         )
@@ -758,6 +764,8 @@ impl ExecutionRuntime {
         route: &str,
         tx_signature: &str,
         submit_ts: DateTime<Utc>,
+        applied_tip_lamports: Option<u64>,
+        ata_create_rent_lamports: Option<u64>,
         now: DateTime<Utc>,
         report: &mut ExecutionBatchReport,
     ) -> Result<SignalResult> {
@@ -814,10 +822,13 @@ impl ExecutionRuntime {
         match confirm.status {
             ConfirmationStatus::Confirmed => {
                 let confirmed_at = confirm.confirmed_at.unwrap_or_else(Utc::now);
-                let route_tip_lamports = self.route_tip_lamports(route);
+                let route_tip_lamports =
+                    applied_tip_lamports.unwrap_or_else(|| self.route_tip_lamports(route));
+                let ata_create_rent_lamports = ata_create_rent_lamports.unwrap_or(0);
                 let execution_fee_sol = fee_sol_from_lamports(
                     confirm.network_fee_lamports.unwrap_or(0),
                     route_tip_lamports,
+                    ata_create_rent_lamports,
                 );
                 let (avg_price_sol, used_price_fallback, fallback_source) = match store
                     .latest_token_sol_price(&intent.token, confirmed_at)?
@@ -885,6 +896,7 @@ impl ExecutionRuntime {
                         "network_fee_lookup_error_class": if network_fee_lookup_error.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(network_fee_lookup_error.to_string()) },
                         "network_fee_missing_reason": if network_fee_lookup_error.is_empty() { "meta_fee_unavailable" } else { "rpc_lookup_error" },
                         "tip_lamports": route_tip_lamports,
+                        "ata_create_rent_lamports": ata_create_rent_lamports,
                         "fee_sol_applied": execution_fee_sol,
                         "reason": "missing_network_fee_from_confirmation",
                         "manual_reconcile_recommended": true
@@ -1138,8 +1150,15 @@ fn normalize_route_tip_lamports(
         .collect()
 }
 
-fn fee_sol_from_lamports(network_fee_lamports: u64, tip_lamports: u64) -> f64 {
-    (network_fee_lamports.saturating_add(tip_lamports) as f64) / 1_000_000_000.0
+fn fee_sol_from_lamports(
+    network_fee_lamports: u64,
+    tip_lamports: u64,
+    ata_create_rent_lamports: u64,
+) -> f64 {
+    (network_fee_lamports
+        .saturating_add(tip_lamports)
+        .saturating_add(ata_create_rent_lamports) as f64)
+        / 1_000_000_000.0
 }
 
 fn fallback_price_and_source(open_position_avg_cost: Option<f64>) -> (f64, String) {
@@ -1250,6 +1269,29 @@ mod tests {
                 route: route.to_string(),
                 tx_signature: format!("test-sig-{}", calls.len()),
                 submitted_at: Utc::now(),
+                applied_tip_lamports: 0,
+                ata_create_rent_lamports: None,
+            })
+        }
+    }
+
+    struct FixedTipSubmitter {
+        tip_lamports: u64,
+    }
+
+    impl OrderSubmitter for FixedTipSubmitter {
+        fn submit(
+            &self,
+            _intent: &ExecutionIntent,
+            _client_order_id: &str,
+            route: &str,
+        ) -> std::result::Result<submitter::SubmitResult, submitter::SubmitError> {
+            Ok(submitter::SubmitResult {
+                route: route.to_string(),
+                tx_signature: "fixed-tip-sig".to_string(),
+                submitted_at: Utc::now(),
+                applied_tip_lamports: self.tip_lamports,
+                ata_create_rent_lamports: None,
             })
         }
     }
@@ -1601,7 +1643,14 @@ mod tests {
             )?,
             InsertExecutionOrderPendingOutcome::Inserted
         );
-        store.mark_order_submitted("ord-existing-1", "paper", "paper:tx-existing", now)?;
+        store.mark_order_submitted(
+            "ord-existing-1",
+            "paper",
+            "paper:tx-existing",
+            now,
+            None,
+            None,
+        )?;
 
         let mut risk = RiskConfig::default();
         risk.max_position_sol = 1.0;
@@ -2147,6 +2196,8 @@ mod tests {
             "paper",
             "paper:tx-price-missing",
             now,
+            None,
+            None,
         )?;
 
         let mut risk = RiskConfig::default();
@@ -2226,7 +2277,7 @@ mod tests {
             risk,
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
-            submitter: Box::new(PaperOrderSubmitter),
+            submitter: Box::new(FixedTipSubmitter { tip_lamports: 7000 }),
             confirmer: Box::new(NetworkFeeConfirmer {
                 network_fee_lamports: 5000,
             }),
@@ -2280,6 +2331,8 @@ mod tests {
             "paper",
             "paper:tx-price-missing-sell",
             now,
+            None,
+            None,
         )?;
 
         let mut risk = RiskConfig::default();
@@ -2341,7 +2394,7 @@ mod tests {
             )?,
             InsertExecutionOrderPendingOutcome::Inserted
         );
-        store.mark_order_submitted("ord-confirm-retry-1", "paper", "sig-retry", now)?;
+        store.mark_order_submitted("ord-confirm-retry-1", "paper", "sig-retry", now, None, None)?;
 
         let mut risk = RiskConfig::default();
         risk.max_position_sol = 10.0;
@@ -2419,6 +2472,8 @@ mod tests {
             "rpc",
             "sig-manual-reconcile",
             submit_ts,
+            None,
+            None,
         )?;
 
         let mut risk = RiskConfig::default();

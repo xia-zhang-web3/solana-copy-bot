@@ -86,6 +86,8 @@ pub struct ExecutionOrderRow {
     pub signal_id: String,
     pub client_order_id: String,
     pub route: String,
+    pub applied_tip_lamports: Option<u64>,
+    pub ata_create_rent_lamports: Option<u64>,
     pub submit_ts: DateTime<Utc>,
     pub confirm_ts: Option<DateTime<Utc>>,
     pub status: String,
@@ -875,6 +877,8 @@ impl SqliteStore {
                     signal_id,
                     client_order_id,
                     route,
+                    applied_tip_lamports,
+                    ata_create_rent_lamports,
                     submit_ts,
                     confirm_ts,
                     status,
@@ -894,14 +898,16 @@ impl SqliteStore {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, Option<String>>(7)?,
-                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, String>(8)?,
                         row.get::<_, Option<String>>(9)?,
                         row.get::<_, Option<String>>(10)?,
-                        row.get::<_, i64>(11)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                        row.get::<_, i64>(13)?,
                     ))
                 },
             )
@@ -914,6 +920,8 @@ impl SqliteStore {
                 signal_id,
                 client_id,
                 route,
+                applied_tip_lamports_raw,
+                ata_create_rent_lamports_raw,
                 submit_ts_raw,
                 confirm_ts_raw,
                 status,
@@ -943,6 +951,9 @@ impl SqliteStore {
                     signal_id,
                     client_order_id: client_id,
                     route,
+                    applied_tip_lamports: applied_tip_lamports_raw.map(|value| value.max(0) as u64),
+                    ata_create_rent_lamports: ata_create_rent_lamports_raw
+                        .map(|value| value.max(0) as u64),
                     submit_ts,
                     confirm_ts,
                     status,
@@ -1049,6 +1060,8 @@ impl SqliteStore {
         route: &str,
         tx_signature: &str,
         submit_ts: DateTime<Utc>,
+        applied_tip_lamports: Option<u64>,
+        ata_create_rent_lamports: Option<u64>,
     ) -> Result<()> {
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
@@ -1056,9 +1069,18 @@ impl SqliteStore {
                  SET status = 'execution_submitted',
                      route = ?1,
                      tx_signature = ?2,
-                     submit_ts = ?3
-                 WHERE order_id = ?4",
-                params![route, tx_signature, submit_ts.to_rfc3339(), order_id],
+                     submit_ts = ?3,
+                     applied_tip_lamports = ?4,
+                     ata_create_rent_lamports = ?5
+                 WHERE order_id = ?6",
+                params![
+                    route,
+                    tx_signature,
+                    submit_ts.to_rfc3339(),
+                    applied_tip_lamports.map(|value| value as i64),
+                    ata_create_rent_lamports.map(|value| value as i64),
+                    order_id
+                ],
             )
         })?;
         if changed == 0 {
@@ -2477,7 +2499,7 @@ mod tests {
             InsertExecutionOrderPendingOutcome::Duplicate
         );
         store.mark_order_simulated(order_id, "ok", Some("paper_simulation_ok"))?;
-        store.mark_order_submitted(order_id, "paper", "paper:tx-1", now)?;
+        store.mark_order_submitted(order_id, "paper", "paper:tx-1", now, None, None)?;
         store.mark_order_confirmed(order_id, now + Duration::seconds(1))?;
         let order = store
             .execution_order_by_client_order_id(client_order_id)?
@@ -2547,7 +2569,7 @@ mod tests {
             )?,
             InsertExecutionOrderPendingOutcome::Inserted
         );
-        store.mark_order_submitted(order_id, "paper", "paper:tx-finalize", now)?;
+        store.mark_order_submitted(order_id, "paper", "paper:tx-finalize", now, None, None)?;
 
         let first = store.finalize_execution_confirmed_order(
             order_id,
@@ -2632,7 +2654,7 @@ mod tests {
             )?,
             InsertExecutionOrderPendingOutcome::Inserted
         );
-        store.mark_order_submitted("ord-fee-buy-1", "rpc", "sig-fee-buy", now)?;
+        store.mark_order_submitted("ord-fee-buy-1", "rpc", "sig-fee-buy", now, None, None)?;
         assert_eq!(
             store.finalize_execution_confirmed_order(
                 "ord-fee-buy-1",
@@ -2681,6 +2703,8 @@ mod tests {
             "rpc",
             "sig-fee-sell",
             now + Duration::seconds(2),
+            None,
+            None,
         )?;
         assert_eq!(
             store.finalize_execution_confirmed_order(
