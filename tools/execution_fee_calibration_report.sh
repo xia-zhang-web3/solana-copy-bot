@@ -40,38 +40,89 @@ cfg_list_csv() {
   awk -v section="[$section]" -v key="$key" '
     /^\s*\[/ {
       in_section = ($0 == section)
+      if ($0 != section) {
+        collecting = 0
+        value = ""
+      }
     }
     in_section {
       line = $0
       sub(/#.*/, "", line)
-      left = line
-      sub(/=.*/, "", left)
-      gsub(/[[:space:]]/, "", left)
-      if (left == key) {
+      if (!collecting) {
+        left = line
+        sub(/=.*/, "", left)
+        gsub(/[[:space:]]/, "", left)
+        if (left != key) {
+          next
+        }
+        collecting = 1
         value = line
-        sub(/^[^=]*=/, "", value)
-        gsub(/[[:space:]]/, "", value)
-        gsub(/^\[/, "", value)
-        gsub(/\]$/, "", value)
-        gsub(/"/, "", value)
-        gsub(/'\''/, "", value)
-        print value
+      } else {
+        value = value " " line
+      }
+      if (index(value, "]") > 0) {
+        start = index(value, "[")
+        if (start == 0) {
+          print ""
+          exit
+        }
+        body = substr(value, start + 1)
+        end = index(body, "]")
+        if (end == 0) {
+          next
+        }
+        body = substr(body, 1, end - 1)
+        gsub(/"/, "", body)
+        gsub(/'\''/, "", body)
+        gsub(/[[:space:]]/, "", body)
+        gsub(/,+/, ",", body)
+        sub(/^,/, "", body)
+        sub(/,$/, "", body)
+        print body
         exit
       }
     }
   ' "$CONFIG_PATH"
 }
 
+normalize_route_token() {
+  local route="$1"
+  route="${route#"${route%%[![:space:]]*}"}"
+  route="${route%"${route##*[![:space:]]}"}"
+  printf '%s' "$route" | tr '[:upper:]' '[:lower:]'
+}
+
+csv_contains_route() {
+  local csv="$1"
+  local needle="$2"
+  local -a values=()
+  local raw value
+  if [[ -z "$csv" || -z "$needle" ]]; then
+    return 1
+  fi
+  IFS=',' read -r -a values <<< "$csv"
+  for raw in "${values[@]}"; do
+    value="$(normalize_route_token "$raw")"
+    if [[ "$value" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 build_allowed_routes_values() {
   local csv="$1"
   local values=""
+  local -a raw_routes=()
   local seen_routes=""
   local route raw_route normalized escaped_route
+  if [[ -z "${csv//[[:space:]]/}" ]]; then
+    printf "%s" "$values"
+    return
+  fi
   IFS=',' read -r -a raw_routes <<< "$csv"
   for raw_route in "${raw_routes[@]}"; do
-    route="${raw_route#"${raw_route%%[![:space:]]*}"}"
-    route="${route%"${route##*[![:space:]]}"}"
-    normalized="$(printf '%s' "$route" | tr '[:upper:]' '[:lower:]')"
+    normalized="$(normalize_route_token "$raw_route")"
     if [[ -z "$normalized" ]]; then
       continue
     fi
@@ -134,6 +185,7 @@ PRIORITY_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null priority_fee_lamports_hi
 
 SUBMIT_ALLOWED_ROUTES_CSV="$(cfg_list_csv execution submit_allowed_routes)"
 ALLOWED_ROUTES_VALUES="$(build_allowed_routes_values "$SUBMIT_ALLOWED_ROUTES_CSV")"
+DEFAULT_ROUTE="$(normalize_route_token "$(cfg_value execution default_route)")"
 
 echo "=== execution fee calibration (${WINDOW_HOURS}h) ==="
 echo "config: $CONFIG_PATH"
@@ -501,6 +553,7 @@ SQL
 
 echo
 echo "=== recommended submit_route_order (${WINDOW_HOURS}h submit window) ==="
+default_route_injected=0
 if [[ -z "$ALLOWED_ROUTES_VALUES" ]]; then
   RECOMMENDED_ROUTE_ORDER_CSV=""
 else
@@ -584,9 +637,23 @@ SQL
 )"
 fi
 
+if [[ -n "$DEFAULT_ROUTE" ]] \
+  && csv_contains_route "$SUBMIT_ALLOWED_ROUTES_CSV" "$DEFAULT_ROUTE" \
+  && ! csv_contains_route "$RECOMMENDED_ROUTE_ORDER_CSV" "$DEFAULT_ROUTE"; then
+  if [[ -n "$RECOMMENDED_ROUTE_ORDER_CSV" ]]; then
+    RECOMMENDED_ROUTE_ORDER_CSV="${DEFAULT_ROUTE},${RECOMMENDED_ROUTE_ORDER_CSV}"
+  else
+    RECOMMENDED_ROUTE_ORDER_CSV="$DEFAULT_ROUTE"
+  fi
+  default_route_injected=1
+fi
+
 if [[ -n "$RECOMMENDED_ROUTE_ORDER_CSV" ]]; then
   echo "recommended_route_order_csv: $RECOMMENDED_ROUTE_ORDER_CSV"
   echo "env_override: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER=$RECOMMENDED_ROUTE_ORDER_CSV"
+  if [[ "$default_route_injected" -eq 1 ]]; then
+    echo "note: default_route '$DEFAULT_ROUTE' added to recommendation for runtime contract compatibility"
+  fi
 else
   echo "recommended_route_order_csv: <empty>"
   if [[ -z "$ALLOWED_ROUTES_VALUES" ]]; then

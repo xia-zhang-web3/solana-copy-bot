@@ -66,7 +66,74 @@ shadow_hard_exposure_cap_sol = 12.0
 shadow_killswitch_enabled = true
 
 [execution]
+default_route = "paper"
 submit_allowed_routes = ["paper"]
+EOF
+}
+
+write_config_empty_allowlist() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+default_route = "paper"
+submit_allowed_routes = []
+EOF
+}
+
+write_config_multiline_allowlist() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+default_route = "paper"
+submit_allowed_routes = [
+  "paper",
+  "rpc"
+]
+EOF
+}
+
+write_config_default_route_with_rpc_allowlist() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+default_route = "paper"
+submit_allowed_routes = ["paper", "rpc"]
 EOF
 }
 
@@ -182,6 +249,38 @@ VALUES ('order-confirmed-modern', 0.00204928);
 SQL
 }
 
+create_rpc_only_db() {
+  local db_path="$1"
+  init_common_tables "$db_path"
+  sqlite3 "$db_path" <<'SQL'
+CREATE TABLE orders (
+  order_id TEXT PRIMARY KEY,
+  route TEXT,
+  status TEXT,
+  err_code TEXT,
+  simulation_error TEXT,
+  submit_ts TEXT,
+  confirm_ts TEXT,
+  applied_tip_lamports INTEGER,
+  ata_create_rent_lamports INTEGER,
+  network_fee_lamports_hint INTEGER,
+  base_fee_lamports_hint INTEGER,
+  priority_fee_lamports_hint INTEGER
+);
+
+INSERT INTO orders(
+  order_id, route, status, err_code, simulation_error, submit_ts, confirm_ts,
+  applied_tip_lamports, ata_create_rent_lamports, network_fee_lamports_hint,
+  base_fee_lamports_hint, priority_fee_lamports_hint
+)
+VALUES
+  ('order-confirmed-rpc', 'rpc', 'execution_confirmed', NULL, NULL, datetime('now', '-20 minutes'), datetime('now', '-15 minutes'), 3000, 2039280, 7000, 5000, 2000);
+
+INSERT INTO fills(order_id, fee)
+VALUES ('order-confirmed-rpc', 0.00204928);
+SQL
+}
+
 assert_contains() {
   local haystack="$1"
   local needle="$2"
@@ -227,6 +326,44 @@ run_ops_scripts_for_db() {
   echo "[ok] ${label}"
 }
 
+run_calibration_empty_allowlist_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    DB_PATH="$db_path" CONFIG_PATH="$config_path" \
+      bash "$ROOT_DIR/tools/execution_fee_calibration_report.sh" 24
+  )"
+  assert_contains "$output" "recommended_route_order_csv: <empty>"
+  assert_contains "$output" "execution.submit_allowed_routes is empty or missing in config"
+  echo "[ok] calibration empty allowlist branch"
+}
+
+run_calibration_multiline_allowlist_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    DB_PATH="$db_path" CONFIG_PATH="$config_path" \
+      bash "$ROOT_DIR/tools/execution_fee_calibration_report.sh" 24
+  )"
+  assert_contains "$output" "recommended_route_order_csv: paper"
+  echo "[ok] calibration multiline allowlist parse"
+}
+
+run_calibration_default_route_injection_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    DB_PATH="$db_path" CONFIG_PATH="$config_path" \
+      bash "$ROOT_DIR/tools/execution_fee_calibration_report.sh" 24
+  )"
+  assert_contains "$output" "recommended_route_order_csv: paper,rpc"
+  assert_contains "$output" "default_route 'paper' added to recommendation"
+  echo "[ok] calibration default-route injection"
+}
+
 run_runtime_snapshot_no_ingestion_case() {
   local db_path="$1"
   local config_path="$2"
@@ -256,6 +393,20 @@ main() {
   create_modern_db "$modern_db"
   write_config "$modern_cfg" "$modern_db"
   run_ops_scripts_for_db "modern schema" "$modern_db" "$modern_cfg"
+
+  local empty_allowlist_cfg="$TMP_DIR/empty-allowlist.toml"
+  write_config_empty_allowlist "$empty_allowlist_cfg" "$modern_db"
+  run_calibration_empty_allowlist_case "$modern_db" "$empty_allowlist_cfg"
+
+  local multiline_allowlist_cfg="$TMP_DIR/multiline-allowlist.toml"
+  write_config_multiline_allowlist "$multiline_allowlist_cfg" "$modern_db"
+  run_calibration_multiline_allowlist_case "$modern_db" "$multiline_allowlist_cfg"
+
+  local rpc_only_db="$TMP_DIR/rpc-only.db"
+  local default_injection_cfg="$TMP_DIR/default-injection.toml"
+  create_rpc_only_db "$rpc_only_db"
+  write_config_default_route_with_rpc_allowlist "$default_injection_cfg" "$rpc_only_db"
+  run_calibration_default_route_injection_case "$rpc_only_db" "$default_injection_cfg"
 
   echo "ops scripts smoke: PASS"
 }
