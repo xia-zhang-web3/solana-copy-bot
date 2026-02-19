@@ -20,6 +20,9 @@ pub struct SubmitResult {
     pub submitted_at: DateTime<Utc>,
     pub applied_tip_lamports: u64,
     pub ata_create_rent_lamports: Option<u64>,
+    pub network_fee_lamports_hint: Option<u64>,
+    pub base_fee_lamports_hint: Option<u64>,
+    pub priority_fee_lamports_hint: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +99,9 @@ impl OrderSubmitter for PaperOrderSubmitter {
             submitted_at: Utc::now(),
             applied_tip_lamports: 0,
             ata_create_rent_lamports: None,
+            network_fee_lamports_hint: None,
+            base_fee_lamports_hint: None,
+            priority_fee_lamports_hint: None,
         })
     }
 }
@@ -665,6 +671,17 @@ fn parse_adapter_submit_response(
     }
     let applied_tip_lamports = response_tip_lamports.unwrap_or(expected_tip_lamports);
     let ata_create_rent_lamports = body.get("ata_create_rent_lamports").and_then(Value::as_u64);
+    let network_fee_lamports_hint = body.get("network_fee_lamports").and_then(Value::as_u64);
+    let base_fee_lamports_hint = body.get("base_fee_lamports").and_then(Value::as_u64);
+    let priority_fee_lamports_hint = body.get("priority_fee_lamports").and_then(Value::as_u64);
+    let derived_network_fee_lamports_hint = if let (Some(base), Some(priority)) =
+        (base_fee_lamports_hint, priority_fee_lamports_hint)
+    {
+        Some(base.saturating_add(priority))
+    } else {
+        None
+    };
+
     if let Some(value) = ata_create_rent_lamports {
         if value > i64::MAX as u64 {
             return Err(SubmitError::terminal(
@@ -674,6 +691,24 @@ fn parse_adapter_submit_response(
                     value
                 ),
             ));
+        }
+    }
+    for (field, value) in [
+        ("network_fee_lamports", network_fee_lamports_hint),
+        ("base_fee_lamports", base_fee_lamports_hint),
+        ("priority_fee_lamports", priority_fee_lamports_hint),
+        (
+            "derived_network_fee_lamports",
+            derived_network_fee_lamports_hint,
+        ),
+    ] {
+        if let Some(value) = value {
+            if value > i64::MAX as u64 {
+                return Err(SubmitError::terminal(
+                    "submit_adapter_invalid_response",
+                    format!("adapter response {}={} exceeds i64::MAX", field, value),
+                ));
+            }
         }
     }
 
@@ -732,6 +767,9 @@ fn parse_adapter_submit_response(
         submitted_at,
         applied_tip_lamports,
         ata_create_rent_lamports,
+        network_fee_lamports_hint: network_fee_lamports_hint.or(derived_network_fee_lamports_hint),
+        base_fee_lamports_hint,
+        priority_fee_lamports_hint,
     })
 }
 
@@ -1023,6 +1061,9 @@ mod tests {
         );
         assert_eq!(result.applied_tip_lamports, 0);
         assert_eq!(result.ata_create_rent_lamports, None);
+        assert_eq!(result.network_fee_lamports_hint, None);
+        assert_eq!(result.base_fee_lamports_hint, None);
+        assert_eq!(result.priority_fee_lamports_hint, None);
     }
 
     #[test]
@@ -1040,6 +1081,9 @@ mod tests {
         .expect("success payload");
         assert_eq!(result.applied_tip_lamports, 777);
         assert_eq!(result.ata_create_rent_lamports, Some(2_039_280));
+        assert_eq!(result.network_fee_lamports_hint, None);
+        assert_eq!(result.base_fee_lamports_hint, None);
+        assert_eq!(result.priority_fee_lamports_hint, None);
     }
 
     #[test]
@@ -1055,6 +1099,44 @@ mod tests {
             &body, "rpc", "cid-1", "v1", false, 50.0, 777, 300_000, 1_000,
         )
         .expect_err("ata rent above i64 max must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_parses_fee_hints_and_derives_network_fee() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "tip_lamports": 777,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "ata_create_rent_lamports": 2_039_280
+        });
+        let result = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 777, 300_000, 1_000,
+        )
+        .expect("success payload");
+        assert_eq!(result.applied_tip_lamports, 777);
+        assert_eq!(result.ata_create_rent_lamports, Some(2_039_280));
+        assert_eq!(result.network_fee_lamports_hint, Some(17_000));
+        assert_eq!(result.base_fee_lamports_hint, Some(5_000));
+        assert_eq!(result.priority_fee_lamports_hint, Some(12_000));
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_network_fee_hint_above_i64_max() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "network_fee_lamports": (i64::MAX as u64).saturating_add(1)
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("network fee hint above i64 max must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_invalid_response");
     }

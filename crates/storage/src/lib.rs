@@ -88,6 +88,9 @@ pub struct ExecutionOrderRow {
     pub route: String,
     pub applied_tip_lamports: Option<u64>,
     pub ata_create_rent_lamports: Option<u64>,
+    pub network_fee_lamports_hint: Option<u64>,
+    pub base_fee_lamports_hint: Option<u64>,
+    pub priority_fee_lamports_hint: Option<u64>,
     pub submit_ts: DateTime<Utc>,
     pub confirm_ts: Option<DateTime<Utc>>,
     pub status: String,
@@ -879,6 +882,9 @@ impl SqliteStore {
                     route,
                     applied_tip_lamports,
                     ata_create_rent_lamports,
+                    network_fee_lamports_hint,
+                    base_fee_lamports_hint,
+                    priority_fee_lamports_hint,
                     submit_ts,
                     confirm_ts,
                     status,
@@ -900,14 +906,17 @@ impl SqliteStore {
                         row.get::<_, String>(3)?,
                         row.get::<_, Option<i64>>(4)?,
                         row.get::<_, Option<i64>>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                        row.get::<_, String>(8)?,
-                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
+                        row.get::<_, String>(9)?,
                         row.get::<_, Option<String>>(10)?,
-                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, String>(11)?,
                         row.get::<_, Option<String>>(12)?,
-                        row.get::<_, i64>(13)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
+                        row.get::<_, i64>(16)?,
                     ))
                 },
             )
@@ -922,6 +931,9 @@ impl SqliteStore {
                 route,
                 applied_tip_lamports_raw,
                 ata_create_rent_lamports_raw,
+                network_fee_lamports_hint_raw,
+                base_fee_lamports_hint_raw,
+                priority_fee_lamports_hint_raw,
                 submit_ts_raw,
                 confirm_ts_raw,
                 status,
@@ -956,6 +968,21 @@ impl SqliteStore {
                     &order_id,
                     ata_create_rent_lamports_raw,
                 )?;
+                let network_fee_lamports_hint = parse_non_negative_i64(
+                    "orders.network_fee_lamports_hint",
+                    &order_id,
+                    network_fee_lamports_hint_raw,
+                )?;
+                let base_fee_lamports_hint = parse_non_negative_i64(
+                    "orders.base_fee_lamports_hint",
+                    &order_id,
+                    base_fee_lamports_hint_raw,
+                )?;
+                let priority_fee_lamports_hint = parse_non_negative_i64(
+                    "orders.priority_fee_lamports_hint",
+                    &order_id,
+                    priority_fee_lamports_hint_raw,
+                )?;
                 Ok(ExecutionOrderRow {
                     order_id,
                     signal_id,
@@ -963,6 +990,9 @@ impl SqliteStore {
                     route,
                     applied_tip_lamports,
                     ata_create_rent_lamports,
+                    network_fee_lamports_hint,
+                    base_fee_lamports_hint,
+                    priority_fee_lamports_hint,
                     submit_ts,
                     confirm_ts,
                     status,
@@ -1071,12 +1101,24 @@ impl SqliteStore {
         submit_ts: DateTime<Utc>,
         applied_tip_lamports: Option<u64>,
         ata_create_rent_lamports: Option<u64>,
+        network_fee_lamports_hint: Option<u64>,
+        base_fee_lamports_hint: Option<u64>,
+        priority_fee_lamports_hint: Option<u64>,
     ) -> Result<()> {
         let applied_tip_lamports_sql = applied_tip_lamports
             .map(|value| u64_to_sql_i64("orders.applied_tip_lamports", value))
             .transpose()?;
         let ata_create_rent_lamports_sql = ata_create_rent_lamports
             .map(|value| u64_to_sql_i64("orders.ata_create_rent_lamports", value))
+            .transpose()?;
+        let network_fee_lamports_hint_sql = network_fee_lamports_hint
+            .map(|value| u64_to_sql_i64("orders.network_fee_lamports_hint", value))
+            .transpose()?;
+        let base_fee_lamports_hint_sql = base_fee_lamports_hint
+            .map(|value| u64_to_sql_i64("orders.base_fee_lamports_hint", value))
+            .transpose()?;
+        let priority_fee_lamports_hint_sql = priority_fee_lamports_hint
+            .map(|value| u64_to_sql_i64("orders.priority_fee_lamports_hint", value))
             .transpose()?;
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
@@ -1086,14 +1128,20 @@ impl SqliteStore {
                      tx_signature = ?2,
                      submit_ts = ?3,
                      applied_tip_lamports = ?4,
-                     ata_create_rent_lamports = ?5
-                 WHERE order_id = ?6",
+                     ata_create_rent_lamports = ?5,
+                     network_fee_lamports_hint = ?6,
+                     base_fee_lamports_hint = ?7,
+                     priority_fee_lamports_hint = ?8
+                 WHERE order_id = ?9",
                 params![
                     route,
                     tx_signature,
                     submit_ts.to_rfc3339(),
                     applied_tip_lamports_sql,
                     ata_create_rent_lamports_sql,
+                    network_fee_lamports_hint_sql,
+                    base_fee_lamports_hint_sql,
+                    priority_fee_lamports_hint_sql,
                     order_id
                 ],
             )
@@ -2514,7 +2562,17 @@ mod tests {
             InsertExecutionOrderPendingOutcome::Duplicate
         );
         store.mark_order_simulated(order_id, "ok", Some("paper_simulation_ok"))?;
-        store.mark_order_submitted(order_id, "paper", "paper:tx-1", now, None, None)?;
+        store.mark_order_submitted(
+            order_id,
+            "paper",
+            "paper:tx-1",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
         store.mark_order_confirmed(order_id, now + Duration::seconds(1))?;
         let order = store
             .execution_order_by_client_order_id(client_order_id)?
@@ -2584,7 +2642,17 @@ mod tests {
             )?,
             InsertExecutionOrderPendingOutcome::Inserted
         );
-        store.mark_order_submitted(order_id, "paper", "paper:tx-finalize", now, None, None)?;
+        store.mark_order_submitted(
+            order_id,
+            "paper",
+            "paper:tx-finalize",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
 
         let first = store.finalize_execution_confirmed_order(
             order_id,
@@ -2669,7 +2737,17 @@ mod tests {
             )?,
             InsertExecutionOrderPendingOutcome::Inserted
         );
-        store.mark_order_submitted("ord-fee-buy-1", "rpc", "sig-fee-buy", now, None, None)?;
+        store.mark_order_submitted(
+            "ord-fee-buy-1",
+            "rpc",
+            "sig-fee-buy",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
         assert_eq!(
             store.finalize_execution_confirmed_order(
                 "ord-fee-buy-1",
@@ -2718,6 +2796,9 @@ mod tests {
             "rpc",
             "sig-fee-sell",
             now + Duration::seconds(2),
+            None,
+            None,
+            None,
             None,
             None,
         )?;
@@ -2798,12 +2879,70 @@ mod tests {
                 now,
                 None,
                 Some((i64::MAX as u64).saturating_add(1)),
+                None,
+                None,
+                None,
             )
             .expect_err("lamports above i64::MAX must be rejected");
         assert!(
             error
                 .to_string()
                 .contains("orders.ata_create_rent_lamports"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mark_order_submitted_rejects_network_fee_hint_over_i64_max() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-fee-hint-overflow.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-hint-overflow:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-hint-overflow-1",
+                &signal.signal_id,
+                "cb_hint_overflow_a1",
+                "rpc",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let error = store
+            .mark_order_submitted(
+                "ord-hint-overflow-1",
+                "rpc",
+                "sig-hint-overflow",
+                now,
+                None,
+                None,
+                Some((i64::MAX as u64).saturating_add(1)),
+                None,
+                None,
+            )
+            .expect_err("network fee hint above i64::MAX must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("orders.network_fee_lamports_hint"),
             "unexpected error: {error}"
         );
         Ok(())

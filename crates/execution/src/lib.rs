@@ -707,6 +707,9 @@ impl ExecutionRuntime {
             submit.submitted_at,
             Some(submit.applied_tip_lamports),
             submit.ata_create_rent_lamports,
+            submit.network_fee_lamports_hint,
+            submit.base_fee_lamports_hint,
+            submit.priority_fee_lamports_hint,
         )?;
         store.update_copy_signal_status(&intent.signal_id, "execution_submitted")?;
         self.process_submitted_order_by_signature(
@@ -718,6 +721,9 @@ impl ExecutionRuntime {
             submit.submitted_at,
             Some(submit.applied_tip_lamports),
             submit.ata_create_rent_lamports,
+            submit.network_fee_lamports_hint,
+            submit.base_fee_lamports_hint,
+            submit.priority_fee_lamports_hint,
             now,
             report,
         )
@@ -751,6 +757,9 @@ impl ExecutionRuntime {
             order.submit_ts,
             order.applied_tip_lamports,
             order.ata_create_rent_lamports,
+            order.network_fee_lamports_hint,
+            order.base_fee_lamports_hint,
+            order.priority_fee_lamports_hint,
             now,
             report,
         )
@@ -766,6 +775,9 @@ impl ExecutionRuntime {
         submit_ts: DateTime<Utc>,
         applied_tip_lamports: Option<u64>,
         ata_create_rent_lamports: Option<u64>,
+        network_fee_lamports_hint: Option<u64>,
+        base_fee_lamports_hint: Option<u64>,
+        priority_fee_lamports_hint: Option<u64>,
         now: DateTime<Utc>,
         report: &mut ExecutionBatchReport,
     ) -> Result<SignalResult> {
@@ -825,8 +837,12 @@ impl ExecutionRuntime {
                 let route_tip_lamports =
                     applied_tip_lamports.unwrap_or_else(|| self.route_tip_lamports(route));
                 let ata_create_rent_lamports = ata_create_rent_lamports.unwrap_or(0);
+                let resolved_network_fee_lamports = confirm
+                    .network_fee_lamports
+                    .or(network_fee_lamports_hint)
+                    .unwrap_or(0);
                 let execution_fee_sol = fee_sol_from_lamports(
-                    confirm.network_fee_lamports.unwrap_or(0),
+                    resolved_network_fee_lamports,
                     route_tip_lamports,
                     ata_create_rent_lamports,
                 );
@@ -888,23 +904,47 @@ impl ExecutionRuntime {
                         .network_fee_lookup_error
                         .as_deref()
                         .unwrap_or_default();
+                    let network_fee_source = if network_fee_lamports_hint.is_some() {
+                        "adapter_hint"
+                    } else {
+                        "none"
+                    };
                     let details = json!({
                         "signal_id": intent.signal_id,
                         "order_id": order_id,
                         "route": route,
-                        "network_fee_lamports": null,
+                        "network_fee_lamports": if network_fee_lamports_hint.is_some() {
+                            serde_json::Value::from(resolved_network_fee_lamports)
+                        } else {
+                            serde_json::Value::Null
+                        },
                         "network_fee_lookup_error_class": if network_fee_lookup_error.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(network_fee_lookup_error.to_string()) },
                         "network_fee_missing_reason": if network_fee_lookup_error.is_empty() { "meta_fee_unavailable" } else { "rpc_lookup_error" },
+                        "network_fee_source": network_fee_source,
+                        "base_fee_lamports_hint": base_fee_lamports_hint,
+                        "priority_fee_lamports_hint": priority_fee_lamports_hint,
                         "tip_lamports": route_tip_lamports,
                         "ata_create_rent_lamports": ata_create_rent_lamports,
                         "fee_sol_applied": execution_fee_sol,
-                        "reason": "missing_network_fee_from_confirmation",
-                        "manual_reconcile_recommended": true
+                        "reason": if network_fee_lamports_hint.is_some() {
+                            "missing_network_fee_from_confirmation_using_submit_hint"
+                        } else {
+                            "missing_network_fee_from_confirmation"
+                        },
+                        "manual_reconcile_recommended": network_fee_lamports_hint.is_none()
                     })
                     .to_string();
                     let _ = store.insert_risk_event(
-                        "execution_network_fee_unavailable_fallback_used",
-                        "error",
+                        if network_fee_lamports_hint.is_some() {
+                            "execution_network_fee_unavailable_submit_hint_used"
+                        } else {
+                            "execution_network_fee_unavailable_fallback_used"
+                        },
+                        if network_fee_lamports_hint.is_some() {
+                            "warn"
+                        } else {
+                            "error"
+                        },
                         now,
                         Some(&details),
                     );
@@ -1271,6 +1311,9 @@ mod tests {
                 submitted_at: Utc::now(),
                 applied_tip_lamports: 0,
                 ata_create_rent_lamports: None,
+                network_fee_lamports_hint: None,
+                base_fee_lamports_hint: None,
+                priority_fee_lamports_hint: None,
             })
         }
     }
@@ -1292,6 +1335,34 @@ mod tests {
                 submitted_at: Utc::now(),
                 applied_tip_lamports: self.tip_lamports,
                 ata_create_rent_lamports: None,
+                network_fee_lamports_hint: None,
+                base_fee_lamports_hint: None,
+                priority_fee_lamports_hint: None,
+            })
+        }
+    }
+
+    struct FixedFeeHintSubmitter {
+        tip_lamports: u64,
+        network_fee_lamports_hint: u64,
+    }
+
+    impl OrderSubmitter for FixedFeeHintSubmitter {
+        fn submit(
+            &self,
+            _intent: &ExecutionIntent,
+            _client_order_id: &str,
+            route: &str,
+        ) -> std::result::Result<submitter::SubmitResult, submitter::SubmitError> {
+            Ok(submitter::SubmitResult {
+                route: route.to_string(),
+                tx_signature: "fixed-fee-hint-sig".to_string(),
+                submitted_at: Utc::now(),
+                applied_tip_lamports: self.tip_lamports,
+                ata_create_rent_lamports: None,
+                network_fee_lamports_hint: Some(self.network_fee_lamports_hint),
+                base_fee_lamports_hint: None,
+                priority_fee_lamports_hint: None,
             })
         }
     }
@@ -1648,6 +1719,9 @@ mod tests {
             "paper",
             "paper:tx-existing",
             now,
+            None,
+            None,
+            None,
             None,
             None,
         )?;
@@ -2198,6 +2272,9 @@ mod tests {
             now,
             None,
             None,
+            None,
+            None,
+            None,
         )?;
 
         let mut risk = RiskConfig::default();
@@ -2299,6 +2376,67 @@ mod tests {
     }
 
     #[test]
+    fn process_batch_uses_submit_network_fee_hint_when_rpc_fee_unavailable() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-fee-hint-fallback")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-fee-hint", now, "sig-price-fee-hint")?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:s8g:w:buy:t-fee-hint".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-fee-hint".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let mut route_tip_lamports = BTreeMap::new();
+        route_tip_lamports.insert("rpc".to_string(), 0);
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports,
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(FixedFeeHintSubmitter {
+                tip_lamports: 0,
+                network_fee_lamports_hint: 1_000_000_000,
+            }),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 1);
+        let exposure = store.live_open_exposure_sol()?;
+        let expected = 1.1;
+        assert!(
+            (exposure - expected).abs() < 1e-12,
+            "expected exposure to include submit network fee hint fallback; got {} expected {}",
+            exposure,
+            expected
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_sell_uses_open_position_avg_cost_when_price_unavailable() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-price-missing-sell")?;
         let now = Utc::now();
@@ -2331,6 +2469,9 @@ mod tests {
             "paper",
             "paper:tx-price-missing-sell",
             now,
+            None,
+            None,
+            None,
             None,
             None,
         )?;
@@ -2394,7 +2535,17 @@ mod tests {
             )?,
             InsertExecutionOrderPendingOutcome::Inserted
         );
-        store.mark_order_submitted("ord-confirm-retry-1", "paper", "sig-retry", now, None, None)?;
+        store.mark_order_submitted(
+            "ord-confirm-retry-1",
+            "paper",
+            "sig-retry",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
 
         let mut risk = RiskConfig::default();
         risk.max_position_sol = 10.0;
@@ -2472,6 +2623,9 @@ mod tests {
             "rpc",
             "sig-manual-reconcile",
             submit_ts,
+            None,
+            None,
+            None,
             None,
             None,
         )?;

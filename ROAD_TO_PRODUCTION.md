@@ -549,12 +549,13 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 28. reconcile fee accounting wired into confirmed-path finalize: `fee_sol` now uses on-chain network fee (`getTransaction.meta.fee` from RPC confirmer) + applied tip from submit lifecycle (persisted per-order) + optional ATA-create rent from adapter response, and positions/PnL now account for fees instead of fixed `0.0`.
 29. fee diagnostics improved: if confirmed order is processed without resolved network fee in `adapter_submit_confirm`, runtime now emits reasoned telemetry (`rpc_lookup_error` vs `meta_fee_unavailable`) plus sanitized typed lookup error class (`timeout`/`connect`/`invalid_json`/`rpc_error_payload`/`other`) for incident triage.
 30. fee-breakdown persistence safety hardened: adapter response rejects `ata_create_rent_lamports > i64::MAX`, storage write uses checked u64→i64 conversion (no wrap), read path fails on negative lamport fields, and DB triggers enforce non-negative lamports for fee-breakdown columns.
+31. fee-breakdown hints extended and persisted end-to-end: submit adapter response now supports optional `network_fee_lamports` / `base_fee_lamports` / `priority_fee_lamports` hints, persists them on `orders` (`0015`), enforces non-negative safety via trigger refresh (`0016`), and confirmed-path finalize uses persisted `network_fee_lamports_hint` fallback (with explicit risk-event source tagging) when RPC `meta.fee` is unavailable.
 
 Остается в next-code-queue:
 
 1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete production secret distribution/rotation rollout for auth headers.
 2. complete operational calibration for route profiles (Jito-primary/RPC-fallback) using existing slippage/tip/CU policy knobs and explicit `submit_route_order` policy.
-3. tighten fee accounting from current `network_fee + applied_tip + optional_ata_rent` baseline to exact executed fee breakdown from adapter/on-chain telemetry (including explicit priority/base/tip/rent decomposition where available) before unrestricted real-money rollout.
+3. complete exact fee decomposition validation/calibration for live path: runtime now persists adapter `network/base/priority` hints and uses `network_fee_lamports_hint` fallback, but unrestricted rollout still requires strict adapter contract + ops evidence that executed `base/priority/tip/rent` telemetry is complete and reconciled against chain truth.
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 
