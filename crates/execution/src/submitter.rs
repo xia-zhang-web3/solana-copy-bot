@@ -266,7 +266,10 @@ impl AdapterOrderSubmitter {
             })
         };
         let contract_version = contract_version.trim();
-        if contract_version.is_empty() || contract_version.len() > 64 {
+        if contract_version.is_empty()
+            || contract_version.len() > 64
+            || !is_valid_contract_version_token(contract_version)
+        {
             return None;
         }
 
@@ -862,6 +865,12 @@ fn normalize_route(route: &str) -> Option<String> {
     } else {
         Some(route)
     }
+}
+
+fn is_valid_contract_version_token(value: &str) -> bool {
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
 }
 
 fn normalize_allowed_routes(routes: &[String]) -> HashSet<String> {
@@ -1669,6 +1678,25 @@ mod tests {
             50.0,
         );
         assert!(submitter.is_none());
+
+        let invalid_token = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1 beta",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(invalid_token.is_none());
     }
 
     #[test]

@@ -32,6 +32,7 @@ Repository/runtime alignment:
    6. adapter endpoint transport safety gate added: runtime now uses strict URL parsing (`url::Url`) and fail-closes on malformed/hostless adapter URLs (must be explicit valid `http(s)`), and in production-profile families blocks non-loopback `http://` adapter endpoints (`https://` required unless loopback).
    7. adapter endpoint URL security guard added: runtime fail-closes on URL-embedded credentials, query parameters, and fragments for adapter endpoints (header-based auth only, no secret-in-URL patterns).
    8. adapter endpoint placeholder guard added: runtime rejects adapter URLs containing `REPLACE_ME` in case-insensitive form to prevent accidental deployment with template placeholder values.
+   9. adapter contract-version token guard added: runtime rejects malformed `submit_adapter_contract_version` values and enforces `[A-Za-z0-9._-]` character set for adapter contract handshake.
 
 ## Phase Completion Status
 

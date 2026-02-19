@@ -559,6 +559,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 38. adapter endpoint runtime validation hardened: `execution.submit_adapter_http_url` / `execution.submit_adapter_fallback_http_url` are now parsed via strict URL parser (`url::Url`) and must be explicit valid `http(s)` URLs (no bare host / malformed authority), and production-like env profiles fail-closed for non-loopback `http://` endpoints (`https://` required except loopback hosts).
 39. adapter endpoint URL security hardening: runtime now rejects URL-embedded credentials (`user:pass@`), query parameters, and fragments for adapter endpoints to prevent secret-in-URL patterns and enforce header-based auth contract.
 40. adapter endpoint placeholder hardening: runtime now fail-closes when adapter URL contains `REPLACE_ME` in case-insensitive form (`REPLACE_ME` / `replace_me`), preventing accidental startup with template placeholder endpoints.
+41. adapter `submit_adapter_contract_version` token hardening: runtime/submitter now reject non-token contract versions and allow only `[A-Za-z0-9._-]` characters (no spaces/slashes), preventing malformed contract-version values from entering adapter handshake.
 
 Остается в next-code-queue:
 

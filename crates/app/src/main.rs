@@ -509,6 +509,11 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 "execution.submit_adapter_contract_version must be <= 64 chars"
             ));
         }
+        if !is_valid_contract_version_token(contract_version) {
+            return Err(anyhow!(
+                "execution.submit_adapter_contract_version must contain only [A-Za-z0-9._-]"
+            ));
+        }
         if is_production_env_profile(env) && !config.submit_adapter_require_policy_echo {
             return Err(anyhow!(
                 "execution.submit_adapter_require_policy_echo must be true in production-like environments when execution.mode=adapter_submit_confirm"
@@ -832,6 +837,12 @@ fn is_production_env_profile(env: &str) -> bool {
         || env_norm.starts_with("prod_")
         || env_norm.starts_with("production-")
         || env_norm.starts_with("production_")
+}
+
+fn is_valid_contract_version_token(value: &str) -> bool {
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
 }
 
 fn validate_adapter_endpoint_url(
@@ -3582,6 +3593,30 @@ mod app_tests {
             "unexpected error: {}",
             error
         );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_contract_version_token() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        for contract_version in ["v1 beta", "v1/rollout"] {
+            execution.submit_adapter_contract_version = contract_version.to_string();
+            let error = validate_execution_runtime_contract(&execution, "paper")
+                .expect_err("invalid contract version token must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("must contain only [A-Za-z0-9._-]"),
+                "unexpected error for contract_version {}: {}",
+                contract_version,
+                error
+            );
+        }
     }
 
     #[test]
