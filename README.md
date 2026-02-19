@@ -160,6 +160,7 @@ Live canary variant with telemetry gates from journald:
 Cutover runbook:
 
 - `ops/yellowstone_rollout_runbook.md`
+- `ops/execution_manual_reconcile_runbook.md` (`execution_price_unavailable_fallback_used` handling)
 
 ## Layout
 

@@ -531,7 +531,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 10. RPC pre-trade/confirm hardening: new mode `paper_rpc_pretrade_confirm`, signer-balance reserve gate, optional ATA existence policy (`pretrade_require_token_account`), optional priority fee cap (`pretrade_max_priority_fee_lamports`, unit: micro-lamports/CU), and RPC confirmer support for confirmed/failed/pending states.
 11. execution scheduling decoupled from main async loop: execution batch runs in dedicated blocking task to avoid ingestion stalls under RPC latency.
 12. confirm->reconcile path hardened to atomic finalize transaction (`fills + positions + order/signal status`) with idempotent `AlreadyConfirmed` outcome.
-13. execution price policy hardened for confirmed-path consistency: when market price is unavailable at confirm time, runtime uses deterministic reconcile fallback pricing (open-position avg-cost if present, else bounded `1.0`) and emits `execution_price_unavailable_fallback_used` risk event (`manual_reconcile_recommended=true`) instead of marking confirmed tx as failed.
+13. execution price policy hardened for confirmed-path consistency: when market price is unavailable at confirm time, runtime uses deterministic reconcile fallback pricing (open-position avg-cost if present, else bounded `1.0`) and emits `execution_price_unavailable_fallback_used` risk event (`manual_reconcile_recommended=true`) instead of marking confirmed tx as failed; ops handling is fixed in `ops/execution_manual_reconcile_runbook.md` with `tools/execution_price_fallback_report.sh`.
 14. ingestion telemetry now tracks parse rejects by reason (in addition to `parse_rejected_total`).
 15. RPC pre-trade balance gate is side-aware: BUY requires `notional + reserve`, SELL requires reserve only (exit path no longer blocked by BUY notional budget).
 16. submit path hardening advanced: added `adapter_submit_confirm` mode with HTTP adapter submitter contract, route allowlist policy, route-level slippage caps, and fail-closed init behavior for non-paper submit mode.
@@ -591,7 +591,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
    3. live rollout runbook.
 3. `ops/*`:
    1. watchdog deployment steps (actual),
-   2. incident rollback playbook,
+   2. incident rollback playbook + fallback-price manual reconcile SOP (`ops/execution_manual_reconcile_runbook.md`),
    3. key rotation and emergency stop procedures.
 
 ## 10) Master Go/No-Go Checklist (до включения `execution.enabled=true`)
