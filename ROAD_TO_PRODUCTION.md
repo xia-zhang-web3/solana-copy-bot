@@ -547,7 +547,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 26. adapter response contract pinning added: runtime enforces `contract_version` match and optional strict policy-echo checks via `submit_adapter_require_policy_echo`.
 27. route-level tip policy added to submit path (`submit_route_tip_lamports`) with strict runtime validation for allowed/default routes, guardrail `0..=100_000_000 lamports` per route, and optional strict adapter policy-echo verification (`tip_lamports`).
 28. reconcile fee accounting wired into confirmed-path finalize: `fee_sol` now uses on-chain network fee (`getTransaction.meta.fee` from RPC confirmer) + route tip policy, and positions/PnL now account for fees instead of fixed `0.0`.
-29. fee diagnostics improved: if confirmed order is processed without resolved network fee in `adapter_submit_confirm`, runtime now emits reasoned telemetry (`rpc_lookup_error` vs `meta_fee_unavailable`) plus sanitized lookup error class (without endpoint/query secrets) for incident triage.
+29. fee diagnostics improved: if confirmed order is processed without resolved network fee in `adapter_submit_confirm`, runtime now emits reasoned telemetry (`rpc_lookup_error` vs `meta_fee_unavailable`) plus sanitized typed lookup error class (`timeout`/`connect`/`invalid_json`/`rpc_error_payload`/`other`) for incident triage.
 
 Остается в next-code-queue:
 

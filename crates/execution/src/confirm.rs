@@ -124,16 +124,15 @@ impl RpcOrderConfirmer {
                     confirmation.network_fee_lamports = value;
                     confirmation.network_fee_lookup_error = None;
                 }
-                Err(error) => {
-                    let error_class = classify_fee_lookup_error(&error);
+                Err(error_class) => {
                     warn!(
                         endpoint = %redacted_endpoint_label(endpoint),
                         tx_signature,
-                        error_class,
+                        error_class = error_class.as_str(),
                         "fee lookup failed for confirmed signature; proceeding without network fee"
                     );
                     confirmation.network_fee_lamports = None;
-                    confirmation.network_fee_lookup_error = Some(error_class.to_string());
+                    confirmation.network_fee_lookup_error = Some(error_class.as_str().to_string());
                 }
             }
         }
@@ -144,7 +143,7 @@ impl RpcOrderConfirmer {
         &self,
         endpoint: &str,
         tx_signature: &str,
-    ) -> Result<Option<u64>> {
+    ) -> std::result::Result<Option<u64>, FeeLookupErrorClass> {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -163,8 +162,10 @@ impl RpcOrderConfirmer {
             .post(endpoint)
             .json(&payload)
             .send()
-            .context("rpc transaction lookup failed")?;
-        let body: Value = response.json().context("invalid rpc transaction json")?;
+            .map_err(classify_reqwest_send_error)?;
+        let body: Value = response
+            .json()
+            .map_err(|_| FeeLookupErrorClass::InvalidJson)?;
         parse_transaction_fee_lamports_from_rpc_body(&body)
     }
 }
@@ -271,9 +272,12 @@ fn parse_confirmation_from_rpc_body(
     })
 }
 
-fn parse_transaction_fee_lamports_from_rpc_body(body: &Value) -> Result<Option<u64>> {
+fn parse_transaction_fee_lamports_from_rpc_body(
+    body: &Value,
+) -> std::result::Result<Option<u64>, FeeLookupErrorClass> {
     if let Some(error_payload) = body.get("error") {
-        return Err(anyhow!("rpc returned error payload: {}", error_payload));
+        let _ = error_payload;
+        return Err(FeeLookupErrorClass::RpcErrorPayload);
     }
     let Some(result) = body.get("result") else {
         return Ok(None);
@@ -287,25 +291,34 @@ fn parse_transaction_fee_lamports_from_rpc_body(body: &Value) -> Result<Option<u
         .and_then(Value::as_u64))
 }
 
-fn classify_fee_lookup_error(error: &anyhow::Error) -> &'static str {
-    let lowered = error.to_string().to_ascii_lowercase();
-    if lowered.contains("timeout") || lowered.contains("timed out") {
-        "timeout"
-    } else if lowered.contains("dns")
-        || lowered.contains("lookup address")
-        || lowered.contains("name or service not known")
-    {
-        "dns"
-    } else if lowered.contains("connection refused") {
-        "connection_refused"
-    } else if lowered.contains("connection reset") {
-        "connection_reset"
-    } else if lowered.contains("invalid rpc transaction json") {
-        "invalid_json"
-    } else if lowered.contains("rpc returned error payload") {
-        "rpc_error_payload"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeeLookupErrorClass {
+    Timeout,
+    Connect,
+    InvalidJson,
+    RpcErrorPayload,
+    Other,
+}
+
+impl FeeLookupErrorClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::InvalidJson => "invalid_json",
+            Self::RpcErrorPayload => "rpc_error_payload",
+            Self::Other => "other",
+        }
+    }
+}
+
+fn classify_reqwest_send_error(error: reqwest::Error) -> FeeLookupErrorClass {
+    if error.is_timeout() {
+        FeeLookupErrorClass::Timeout
+    } else if error.is_connect() {
+        FeeLookupErrorClass::Connect
     } else {
-        "other"
+        FeeLookupErrorClass::Other
     }
 }
 
@@ -395,7 +408,8 @@ mod tests {
             },
             "id": 1
         });
-        let fee = parse_transaction_fee_lamports_from_rpc_body(&body)?;
+        let fee = parse_transaction_fee_lamports_from_rpc_body(&body)
+            .map_err(|value| anyhow!("unexpected fee parser error: {:?}", value))?;
         assert_eq!(fee, Some(5000));
         Ok(())
     }
@@ -407,15 +421,22 @@ mod tests {
             "result": null,
             "id": 1
         });
-        let fee = parse_transaction_fee_lamports_from_rpc_body(&body)?;
+        let fee = parse_transaction_fee_lamports_from_rpc_body(&body)
+            .map_err(|value| anyhow!("unexpected fee parser error: {:?}", value))?;
         assert_eq!(fee, None);
         Ok(())
     }
 
     #[test]
-    fn classify_fee_lookup_error_returns_timeout_bucket() {
-        let error = anyhow!("request timed out");
-        assert_eq!(classify_fee_lookup_error(&error), "timeout");
+    fn parse_transaction_fee_lamports_from_rpc_body_classifies_rpc_error_payload() {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "error": {"code": -32000, "message": "rpc error"},
+            "id": 1
+        });
+        let error = parse_transaction_fee_lamports_from_rpc_body(&body)
+            .expect_err("rpc error payload should return classified error");
+        assert_eq!(error, FeeLookupErrorClass::RpcErrorPayload);
     }
 
     #[test]
