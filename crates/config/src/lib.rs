@@ -51,6 +51,11 @@ pub struct ExecutionConfig {
     pub rpc_http_url: String,
     pub rpc_fallback_http_url: String,
     pub rpc_devnet_http_url: String,
+    pub submit_adapter_http_url: String,
+    pub submit_adapter_fallback_http_url: String,
+    pub submit_adapter_auth_token: String,
+    pub submit_allowed_routes: Vec<String>,
+    pub submit_timeout_ms: u64,
     pub execution_signer_pubkey: String,
     pub pretrade_min_sol_reserve: f64,
     pub pretrade_require_token_account: bool,
@@ -72,6 +77,11 @@ impl Default for ExecutionConfig {
             rpc_http_url: String::new(),
             rpc_fallback_http_url: String::new(),
             rpc_devnet_http_url: String::new(),
+            submit_adapter_http_url: String::new(),
+            submit_adapter_fallback_http_url: String::new(),
+            submit_adapter_auth_token: String::new(),
+            submit_allowed_routes: vec!["paper".to_string()],
+            submit_timeout_ms: 3_000,
             execution_signer_pubkey: String::new(),
             pretrade_min_sol_reserve: 0.05,
             pretrade_require_token_account: false,
@@ -578,6 +588,40 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     }
     if let Ok(rpc_devnet_http_url) = env::var("SOLANA_COPY_BOT_EXECUTION_RPC_DEVNET_HTTP_URL") {
         config.execution.rpc_devnet_http_url = rpc_devnet_http_url;
+    }
+    if let Ok(submit_adapter_http_url) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HTTP_URL")
+    {
+        config.execution.submit_adapter_http_url = submit_adapter_http_url;
+    }
+    if let Ok(submit_adapter_fallback_http_url) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_FALLBACK_HTTP_URL")
+    {
+        config.execution.submit_adapter_fallback_http_url = submit_adapter_fallback_http_url;
+    }
+    if let Ok(submit_adapter_auth_token) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_AUTH_TOKEN")
+    {
+        config.execution.submit_adapter_auth_token = submit_adapter_auth_token;
+    }
+    if let Ok(submit_allowed_routes_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES")
+    {
+        let routes: Vec<String> = submit_allowed_routes_csv
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        if !routes.is_empty() {
+            config.execution.submit_allowed_routes = routes;
+        }
+    }
+    if let Some(submit_timeout_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.submit_timeout_ms = submit_timeout_ms;
     }
     if let Ok(execution_signer_pubkey) = env::var("SOLANA_COPY_BOT_EXECUTION_SIGNER_PUBKEY") {
         config.execution.execution_signer_pubkey = execution_signer_pubkey;

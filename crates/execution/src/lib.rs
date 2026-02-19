@@ -17,7 +17,10 @@ pub mod reconcile;
 pub mod simulator;
 pub mod submitter;
 
-use confirm::{ConfirmationStatus, OrderConfirmer, PaperOrderConfirmer, RpcOrderConfirmer};
+use confirm::{
+    ConfirmationStatus, FailClosedOrderConfirmer, OrderConfirmer, PaperOrderConfirmer,
+    RpcOrderConfirmer,
+};
 use intent::{ExecutionIntent, ExecutionSide};
 use pretrade::{
     FailClosedPreTradeChecker, PaperPreTradeChecker, PreTradeChecker, PreTradeDecisionKind,
@@ -25,7 +28,10 @@ use pretrade::{
 };
 use reconcile::build_fill;
 use simulator::{IntentSimulator, PaperIntentSimulator};
-use submitter::{OrderSubmitter, PaperOrderSubmitter, SubmitErrorKind};
+use submitter::{
+    AdapterOrderSubmitter, FailClosedOrderSubmitter, OrderSubmitter, PaperOrderSubmitter,
+    SubmitErrorKind,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExecutionBatchReport {
@@ -126,6 +132,54 @@ impl ExecutionRuntime {
                     pretrade,
                     Box::new(PaperIntentSimulator),
                     Box::new(PaperOrderSubmitter),
+                    confirmer,
+                )
+            }
+            "adapter_submit_confirm" => {
+                let pretrade: Box<dyn PreTradeChecker + Send + Sync> = match RpcPreTradeChecker::new(
+                    &config.rpc_http_url,
+                    &config.rpc_fallback_http_url,
+                    config.poll_interval_ms.max(500),
+                    &config.execution_signer_pubkey,
+                    config.pretrade_min_sol_reserve,
+                    config.pretrade_require_token_account,
+                    config.pretrade_max_priority_fee_lamports,
+                ) {
+                    Some(value) => Box::new(value),
+                    None => Box::new(FailClosedPreTradeChecker::new(
+                        "pretrade_checker_init_failed",
+                        "rpc pre-trade checker init failed for adapter_submit_confirm mode",
+                    )),
+                };
+                let submitter: Box<dyn OrderSubmitter + Send + Sync> =
+                    match AdapterOrderSubmitter::new(
+                        &config.submit_adapter_http_url,
+                        &config.submit_adapter_fallback_http_url,
+                        &config.submit_adapter_auth_token,
+                        &config.submit_allowed_routes,
+                        config.submit_timeout_ms.max(500),
+                        config.slippage_bps,
+                    ) {
+                        Some(value) => Box::new(value),
+                        None => Box::new(FailClosedOrderSubmitter::new(
+                            "submitter_init_failed",
+                            "adapter submitter init failed for adapter_submit_confirm mode",
+                        )),
+                    };
+                let confirmer: Box<dyn OrderConfirmer + Send + Sync> = match RpcOrderConfirmer::new(
+                    &config.rpc_http_url,
+                    &config.rpc_fallback_http_url,
+                    config.poll_interval_ms.max(500),
+                ) {
+                    Some(value) => Box::new(value),
+                    None => Box::new(FailClosedOrderConfirmer::new(
+                        "rpc confirmer init failed for adapter_submit_confirm mode",
+                    )),
+                };
+                (
+                    pretrade,
+                    Box::new(PaperIntentSimulator),
+                    submitter,
                     confirmer,
                 )
             }

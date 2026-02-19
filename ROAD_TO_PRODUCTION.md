@@ -19,7 +19,7 @@ Owner: copybot runtime team
 3. BUY-only pause gates активны: operator emergency stop, risk hard-stop и outage-блокировка применяются только к pre-submit BUY.
 4. SELL и confirm-path не блокируются pause-гейтами, что сохраняет возможность закрытия риска.
 5. Execution risk gates в рантайме enforce: `max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness и `sell_requires_open_position`.
-6. Оставшиеся code-gaps до real-money submit: live submit route и перенос CU/slippage policy в real signed-tx submit path.
+6. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend) и перенос CU/slippage policy в real signed-tx submit path.
 
 Текущий статус этапов:
 
@@ -31,7 +31,7 @@ Owner: copybot runtime team
 | Post-cutover 1h/6h/24h evidence | In progress | runtime-ops | 2026-02-20 |
 | 7-day observation closure | Pending | runtime-ops | 2026-02-26 |
 | Execution runtime (paper lifecycle) | Done | execution-dev | 2026-02-19 |
-| Execution runtime (live submit path) | Pending | execution-dev | 2026-03-09 |
+| Execution runtime (live submit path) | In progress | execution-dev | 2026-03-09 |
 | Execution safety hardening (audit batch #1) | Done | execution-dev | 2026-02-19 |
 | Emergency stop (no-restart) | Done | execution-dev | 2026-02-19 |
 | `pause_new_trades_on_outage` wiring/removal | Done | execution-dev | 2026-02-19 |
@@ -160,7 +160,7 @@ Exit criteria Stage B:
    3. BUY-only pause model (operator/hard-stop/outage) без блокировки SELL/confirm,
    4. risk gates в execution path (`max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness, sell-open-position validation).
 2. 🟡 В работе:
-   1. live submit/confirm implementations (сейчас active path paper-only),
+   1. live submit/confirm implementations (paper path + adapter submit mode реализованы; production adapter backend pending),
    2. перенос CU-limit/CU-price/slippage policy из pre-trade validation в real signed-tx submit flow.
 3. ✅ Уже добавлено после audit hardening:
    1. bounded submit retry policy (`max_submit_attempts`) в execution runtime,
@@ -459,10 +459,11 @@ Done now:
 2. timeout handling + repeated confirm attempts до deadline,
 3. recovery of stuck `execution_submitted`/`execution_simulated`,
 4. insert-outcome disambiguation for idempotency path: `Inserted` vs `Duplicate` (+ anomaly error on ignored-without-duplicate),
-5. RPC confirmer path added (`paper_rpc_confirm` / `paper_rpc_pretrade_confirm`) with fallback endpoint support and explicit `confirm_failed` branch.
+5. RPC confirmer path added (`paper_rpc_confirm` / `paper_rpc_pretrade_confirm`) with fallback endpoint support and explicit `confirm_failed` branch,
+6. adapter submit mode added (`adapter_submit_confirm`): HTTP adapter submitter contract + route allowlist policy (`submit_allowed_routes`) + fail-closed wiring for submitter/confirmer initialization.
 Remaining:
-1. live submitter for signed tx path,
-2. route-level policy для real-money send path.
+1. production adapter backend (real signed tx build/send + auth hardening + operational rollout),
+2. route-level policy evolution для Jito-primary/RPC-fallback in real-money path.
 
 `R2P-12` — Devnet dress rehearsal  
 Depends on: R2P-04, R2P-10, R2P-11  
@@ -529,10 +530,11 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 13. execution price policy switched to fail-closed (`price_unavailable`) instead of unsafe fallback `avg_price_sol=1.0`.
 14. ingestion telemetry now tracks parse rejects by reason (in addition to `parse_rejected_total`).
 15. RPC pre-trade balance gate is side-aware: BUY requires `notional + reserve`, SELL requires reserve only (exit path no longer blocked by BUY notional budget).
+16. submit path hardening advanced: added `adapter_submit_confirm` mode with HTTP adapter submitter contract, route allowlist policy, and fail-closed init behavior for non-paper submit mode.
 
 Остается в next-code-queue:
 
-1. real submit implementation (signed tx send path + route policy).
+1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete route policy rollout.
 2. перевести CU-limit/CU-price/slippage-route policy в real signed-tx path (поверх уже добавленных blockhash/balance/ATA/priority-fee pre-trade checks).
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)

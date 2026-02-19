@@ -22,6 +22,25 @@ pub trait OrderConfirmer {
     fn confirm(&self, tx_signature: &str, deadline: DateTime<Utc>) -> Result<ConfirmationResult>;
 }
 
+#[derive(Debug, Clone)]
+pub struct FailClosedOrderConfirmer {
+    detail: String,
+}
+
+impl FailClosedOrderConfirmer {
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl OrderConfirmer for FailClosedOrderConfirmer {
+    fn confirm(&self, _tx_signature: &str, _deadline: DateTime<Utc>) -> Result<ConfirmationResult> {
+        Err(anyhow!("{}", self.detail))
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PaperOrderConfirmer;
 

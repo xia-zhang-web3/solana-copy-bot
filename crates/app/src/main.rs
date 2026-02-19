@@ -350,16 +350,16 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
     let mode = config.mode.trim().to_ascii_lowercase();
     if !matches!(
         mode.as_str(),
-        "paper" | "paper_rpc_confirm" | "paper_rpc_pretrade_confirm"
+        "paper" | "paper_rpc_confirm" | "paper_rpc_pretrade_confirm" | "adapter_submit_confirm"
     ) {
         return Err(anyhow!(
-            "execution.enabled=true but execution.mode={} is unsupported in current runtime; supported modes: paper, paper_rpc_confirm, paper_rpc_pretrade_confirm",
+            "execution.enabled=true but execution.mode={} is unsupported in current runtime; supported modes: paper, paper_rpc_confirm, paper_rpc_pretrade_confirm, adapter_submit_confirm",
             if mode.is_empty() { "<empty>" } else { mode.as_str() }
         ));
     }
     if matches!(
         mode.as_str(),
-        "paper_rpc_confirm" | "paper_rpc_pretrade_confirm"
+        "paper_rpc_confirm" | "paper_rpc_pretrade_confirm" | "adapter_submit_confirm"
     ) {
         let primary = config.rpc_http_url.trim();
         let fallback = config.rpc_fallback_http_url.trim();
@@ -370,10 +370,24 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             ));
         }
     }
-    if mode == "paper_rpc_pretrade_confirm" && config.execution_signer_pubkey.trim().is_empty() {
+    if matches!(
+        mode.as_str(),
+        "paper_rpc_pretrade_confirm" | "adapter_submit_confirm"
+    ) && config.execution_signer_pubkey.trim().is_empty()
+    {
         return Err(anyhow!(
-            "execution.mode=paper_rpc_pretrade_confirm requires non-empty execution.execution_signer_pubkey"
+            "execution.mode={} requires non-empty execution.execution_signer_pubkey",
+            mode
         ));
+    }
+    if mode == "adapter_submit_confirm" {
+        let submit_primary = config.submit_adapter_http_url.trim();
+        let submit_fallback = config.submit_adapter_fallback_http_url.trim();
+        if submit_primary.is_empty() && submit_fallback.is_empty() {
+            return Err(anyhow!(
+                "execution.mode=adapter_submit_confirm requires execution.submit_adapter_http_url or execution.submit_adapter_fallback_http_url"
+            ));
+        }
     }
 
     if config.batch_size == 0 {
@@ -396,6 +410,11 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             "execution.max_submit_attempts must be >= 1 when execution is enabled"
         ));
     }
+    if config.submit_timeout_ms < 100 {
+        return Err(anyhow!(
+            "execution.submit_timeout_ms must be >= 100ms when execution is enabled"
+        ));
+    }
     if !config.pretrade_min_sol_reserve.is_finite() || config.pretrade_min_sol_reserve < 0.0 {
         return Err(anyhow!(
             "execution.pretrade_min_sol_reserve must be finite and >= 0 when execution is enabled"
@@ -404,6 +423,27 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
     if config.slippage_bps < 0.0 {
         return Err(anyhow!(
             "execution.slippage_bps must be >= 0 when execution is enabled"
+        ));
+    }
+    if config.submit_allowed_routes.is_empty() {
+        return Err(anyhow!(
+            "execution.submit_allowed_routes must not be empty when execution is enabled"
+        ));
+    }
+    let default_route = config.default_route.trim().to_ascii_lowercase();
+    let default_route = if default_route.is_empty() {
+        "paper".to_string()
+    } else {
+        default_route
+    };
+    let route_allowed = config
+        .submit_allowed_routes
+        .iter()
+        .any(|route| route.trim().to_ascii_lowercase().eq(default_route.as_str()));
+    if !route_allowed {
+        return Err(anyhow!(
+            "execution.default_route={} must be present in execution.submit_allowed_routes",
+            default_route
         ));
     }
 
@@ -415,6 +455,8 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             mode,
             batch_size = config.batch_size,
             poll_interval_ms = config.poll_interval_ms,
+            submit_timeout_ms = config.submit_timeout_ms,
+            submit_allowed_routes = ?config.submit_allowed_routes,
             pretrade_require_token_account = config.pretrade_require_token_account,
             pretrade_max_priority_fee_lamports = config.pretrade_max_priority_fee_lamports,
             "execution runtime contract validated"
