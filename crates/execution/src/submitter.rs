@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
@@ -125,6 +125,7 @@ pub struct AdapterOrderSubmitter {
     endpoints: Vec<String>,
     auth_token: Option<String>,
     allowed_routes: HashSet<String>,
+    route_max_slippage_bps: HashMap<String, f64>,
     slippage_bps: f64,
     client: Client,
 }
@@ -135,6 +136,7 @@ impl AdapterOrderSubmitter {
         fallback_url: &str,
         auth_token: &str,
         allowed_routes: &[String],
+        route_max_slippage_bps: &BTreeMap<String, f64>,
         timeout_ms: u64,
         slippage_bps: f64,
     ) -> Option<Self> {
@@ -153,6 +155,16 @@ impl AdapterOrderSubmitter {
 
         let allowed_routes = normalize_allowed_routes(allowed_routes);
         if allowed_routes.is_empty() {
+            return None;
+        }
+        let route_max_slippage_bps = normalize_route_slippage_caps(route_max_slippage_bps);
+        if route_max_slippage_bps.is_empty() {
+            return None;
+        }
+        if !allowed_routes
+            .iter()
+            .all(|route| route_max_slippage_bps.contains_key(route))
+        {
             return None;
         }
 
@@ -175,6 +187,7 @@ impl AdapterOrderSubmitter {
             endpoints,
             auth_token,
             allowed_routes,
+            route_max_slippage_bps,
             slippage_bps,
             client,
         })
@@ -256,6 +269,17 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 ),
             ));
         }
+        let route_cap = self
+            .route_max_slippage_bps
+            .get(route.as_str())
+            .copied()
+            .ok_or_else(|| {
+                SubmitError::terminal(
+                    "route_slippage_policy_missing",
+                    format!("missing slippage cap for route={}", route),
+                )
+            })?;
+        let effective_slippage_bps = self.slippage_bps.min(route_cap);
 
         let payload = json!({
             "signal_id": intent.signal_id,
@@ -265,7 +289,8 @@ impl OrderSubmitter for AdapterOrderSubmitter {
             "notional_sol": intent.notional_sol,
             "signal_ts": intent.signal_ts.to_rfc3339(),
             "route": route,
-            "slippage_bps": self.slippage_bps,
+            "slippage_bps": effective_slippage_bps,
+            "route_slippage_cap_bps": route_cap,
         });
 
         let mut last_retryable_error: Option<SubmitError> = None;
@@ -375,11 +400,25 @@ fn normalize_allowed_routes(routes: &[String]) -> HashSet<String> {
         .collect()
 }
 
+fn normalize_route_slippage_caps(route_caps: &BTreeMap<String, f64>) -> HashMap<String, f64> {
+    route_caps
+        .iter()
+        .filter_map(|(route, cap)| {
+            let route = normalize_route(route)?;
+            if !cap.is_finite() || *cap <= 0.0 {
+                return None;
+            }
+            Some((route, *cap))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::intent::{ExecutionIntent, ExecutionSide};
     use chrono::Utc;
+    use std::collections::BTreeMap;
 
     fn make_intent() -> ExecutionIntent {
         ExecutionIntent {
@@ -390,6 +429,10 @@ mod tests {
             notional_sol: 0.1,
             signal_ts: Utc::now(),
         }
+    }
+
+    fn make_route_caps(route: &str, cap: f64) -> BTreeMap<String, f64> {
+        BTreeMap::from([(route.to_string(), cap)])
     }
 
     #[test]
@@ -444,6 +487,7 @@ mod tests {
             "",
             "",
             &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
             1_000,
             50.0,
         )
@@ -453,5 +497,19 @@ mod tests {
             .expect_err("route should be rejected");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "route_not_allowed");
+    }
+
+    #[test]
+    fn adapter_submitter_requires_route_slippage_cap_for_allowed_route() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            &["rpc".to_string()],
+            &make_route_caps("paper", 50.0),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
     }
 }

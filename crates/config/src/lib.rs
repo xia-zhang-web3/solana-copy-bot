@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,7 @@ pub struct ExecutionConfig {
     pub submit_adapter_fallback_http_url: String,
     pub submit_adapter_auth_token: String,
     pub submit_allowed_routes: Vec<String>,
+    pub submit_route_max_slippage_bps: BTreeMap<String, f64>,
     pub submit_timeout_ms: u64,
     pub execution_signer_pubkey: String,
     pub pretrade_min_sol_reserve: f64,
@@ -81,6 +83,7 @@ impl Default for ExecutionConfig {
             submit_adapter_fallback_http_url: String::new(),
             submit_adapter_auth_token: String::new(),
             submit_allowed_routes: vec!["paper".to_string()],
+            submit_route_max_slippage_bps: BTreeMap::from([(String::from("paper"), 50.0)]),
             submit_timeout_ms: 3_000,
             execution_signer_pubkey: String::new(),
             pretrade_min_sol_reserve: 0.05,
@@ -615,6 +618,31 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
             .collect();
         if !routes.is_empty() {
             config.execution.submit_allowed_routes = routes;
+        }
+    }
+    if let Ok(submit_route_max_slippage_bps_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS")
+    {
+        let mut route_caps = BTreeMap::new();
+        for token in submit_route_max_slippage_bps_csv.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let Some((route, value)) = token.split_once(':') else {
+                continue;
+            };
+            let route = route.trim().to_ascii_lowercase();
+            if route.is_empty() {
+                continue;
+            }
+            let Ok(value) = value.trim().parse::<f64>() else {
+                continue;
+            };
+            route_caps.insert(route, value);
+        }
+        if !route_caps.is_empty() {
+            config.execution.submit_route_max_slippage_bps = route_caps;
         }
     }
     if let Some(submit_timeout_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_TIMEOUT_MS")

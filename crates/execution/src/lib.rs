@@ -157,6 +157,7 @@ impl ExecutionRuntime {
                         &config.submit_adapter_fallback_http_url,
                         &config.submit_adapter_auth_token,
                         &config.submit_allowed_routes,
+                        &config.submit_route_max_slippage_bps,
                         config.submit_timeout_ms.max(500),
                         config.slippage_bps,
                     ) {

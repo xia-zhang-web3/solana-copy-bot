@@ -446,6 +446,60 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             default_route
         ));
     }
+    if config.submit_route_max_slippage_bps.is_empty() {
+        return Err(anyhow!(
+            "execution.submit_route_max_slippage_bps must not be empty when execution is enabled"
+        ));
+    }
+    for (route, cap) in &config.submit_route_max_slippage_bps {
+        if route.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_route_max_slippage_bps contains empty route key"
+            ));
+        }
+        if !cap.is_finite() || *cap <= 0.0 {
+            return Err(anyhow!(
+                "execution.submit_route_max_slippage_bps route={} must be finite and > 0, got {}",
+                route,
+                cap
+            ));
+        }
+    }
+    if mode == "adapter_submit_confirm" {
+        let find_route_cap = |route: &str| -> Option<f64> {
+            config
+                .submit_route_max_slippage_bps
+                .iter()
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
+                .map(|(_, cap)| *cap)
+        };
+        for allowed_route in &config.submit_allowed_routes {
+            let route = allowed_route.trim();
+            if route.is_empty() {
+                continue;
+            }
+            if find_route_cap(route).is_none() {
+                return Err(anyhow!(
+                    "execution.submit_route_max_slippage_bps is missing cap for allowed route={}",
+                    route
+                ));
+            }
+        }
+        let default_route_cap = find_route_cap(default_route.as_str()).ok_or_else(|| {
+            anyhow!(
+                "execution.submit_route_max_slippage_bps is missing cap for default route={}",
+                default_route
+            )
+        })?;
+        if config.slippage_bps > default_route_cap {
+            return Err(anyhow!(
+                "execution.slippage_bps ({}) cannot exceed cap ({}) for default route {}",
+                config.slippage_bps,
+                default_route_cap,
+                default_route
+            ));
+        }
+    }
 
     if matches!(
         env.trim().to_ascii_lowercase().as_str(),
@@ -457,6 +511,7 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             poll_interval_ms = config.poll_interval_ms,
             submit_timeout_ms = config.submit_timeout_ms,
             submit_allowed_routes = ?config.submit_allowed_routes,
+            submit_route_max_slippage_bps = ?config.submit_route_max_slippage_bps,
             pretrade_require_token_account = config.pretrade_require_token_account,
             pretrade_max_priority_fee_lamports = config.pretrade_max_priority_fee_lamports,
             "execution runtime contract validated"

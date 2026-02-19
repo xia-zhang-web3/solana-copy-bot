@@ -19,7 +19,7 @@ Owner: copybot runtime team
 3. BUY-only pause gates активны: operator emergency stop, risk hard-stop и outage-блокировка применяются только к pre-submit BUY.
 4. SELL и confirm-path не блокируются pause-гейтами, что сохраняет возможность закрытия риска.
 5. Execution risk gates в рантайме enforce: `max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness и `sell_requires_open_position`.
-6. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend) и перенос CU/slippage policy в real signed-tx submit path.
+6. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend) и перенос CU-limit/CU-price policy в real signed-tx submit path.
 
 Текущий статус этапов:
 
@@ -161,7 +161,7 @@ Exit criteria Stage B:
    4. risk gates в execution path (`max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness, sell-open-position validation).
 2. 🟡 В работе:
    1. live submit/confirm implementations (paper path + adapter submit mode реализованы; production adapter backend pending),
-   2. перенос CU-limit/CU-price/slippage policy из pre-trade validation в real signed-tx submit flow.
+   2. перенос CU-limit/CU-price policy из pre-trade validation в real signed-tx submit flow.
 3. ✅ Уже добавлено после audit hardening:
    1. bounded submit retry policy (`max_submit_attempts`) в execution runtime,
    2. typed submit error taxonomy (`Retryable`/`Terminal`) вместо message-based heuristic,
@@ -460,7 +460,7 @@ Done now:
 3. recovery of stuck `execution_submitted`/`execution_simulated`,
 4. insert-outcome disambiguation for idempotency path: `Inserted` vs `Duplicate` (+ anomaly error on ignored-without-duplicate),
 5. RPC confirmer path added (`paper_rpc_confirm` / `paper_rpc_pretrade_confirm`) with fallback endpoint support and explicit `confirm_failed` branch,
-6. adapter submit mode added (`adapter_submit_confirm`): HTTP adapter submitter contract + route allowlist policy (`submit_allowed_routes`) + fail-closed wiring for submitter/confirmer initialization.
+6. adapter submit mode added (`adapter_submit_confirm`): HTTP adapter submitter contract + route allowlist policy (`submit_allowed_routes`) + route slippage caps (`submit_route_max_slippage_bps`) + fail-closed wiring for submitter/confirmer initialization.
 Remaining:
 1. production adapter backend (real signed tx build/send + auth hardening + operational rollout),
 2. route-level policy evolution для Jito-primary/RPC-fallback in real-money path.
@@ -530,12 +530,12 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 13. execution price policy switched to fail-closed (`price_unavailable`) instead of unsafe fallback `avg_price_sol=1.0`.
 14. ingestion telemetry now tracks parse rejects by reason (in addition to `parse_rejected_total`).
 15. RPC pre-trade balance gate is side-aware: BUY requires `notional + reserve`, SELL requires reserve only (exit path no longer blocked by BUY notional budget).
-16. submit path hardening advanced: added `adapter_submit_confirm` mode with HTTP adapter submitter contract, route allowlist policy, and fail-closed init behavior for non-paper submit mode.
+16. submit path hardening advanced: added `adapter_submit_confirm` mode with HTTP adapter submitter contract, route allowlist policy, route-level slippage caps, and fail-closed init behavior for non-paper submit mode.
 
 Остается в next-code-queue:
 
 1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete route policy rollout.
-2. перевести CU-limit/CU-price/slippage-route policy в real signed-tx path (поверх уже добавленных blockhash/balance/ATA/priority-fee pre-trade checks).
+2. перевести CU-limit/CU-price policy в real signed-tx path (поверх уже добавленных blockhash/balance/ATA/priority-fee pre-trade checks и route-level slippage caps).
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 
