@@ -31,7 +31,7 @@ Repository/runtime alignment:
    5. fallback-price residual risk now has explicit operator SOP in `ops/execution_manual_reconcile_runbook.md` + triage helper `tools/execution_price_fallback_report.sh` (required handling for `execution_price_unavailable_fallback_used`).
    6. adapter endpoint transport safety gate added: runtime now uses strict URL parsing (`url::Url`) and fail-closes on malformed/hostless adapter URLs (must be explicit valid `http(s)`), and in production-profile families blocks non-loopback `http://` adapter endpoints (`https://` required unless loopback).
    7. adapter endpoint URL security guard added: runtime fail-closes on URL-embedded credentials, query parameters, and fragments for adapter endpoints (header-based auth only, no secret-in-URL patterns).
-   8. adapter endpoint placeholder guard added: runtime rejects adapter URLs containing `REPLACE_ME` to prevent accidental deployment with template placeholder values.
+   8. adapter endpoint placeholder guard added: runtime rejects adapter URLs containing `REPLACE_ME` in case-insensitive form to prevent accidental deployment with template placeholder values.
 
 ## Phase Completion Status
 

@@ -391,16 +391,20 @@ impl OperatorEmergencyStop {
 
 fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
     let role_specific = role_specific.trim();
-    if !role_specific.is_empty() && !role_specific.contains("REPLACE_ME") {
+    if !role_specific.is_empty() && !contains_placeholder_value(role_specific) {
         return Some(role_specific.to_string());
     }
 
     let fallback = fallback.trim();
-    if !fallback.is_empty() && !fallback.contains("REPLACE_ME") {
+    if !fallback.is_empty() && !contains_placeholder_value(fallback) {
         return Some(fallback.to_string());
     }
 
     None
+}
+
+fn contains_placeholder_value(value: &str) -> bool {
+    value.to_ascii_uppercase().contains("REPLACE_ME")
 }
 
 fn enforce_quality_gate_http_url(
@@ -835,7 +839,7 @@ fn validate_adapter_endpoint_url(
     field_name: &str,
     strict_transport_policy: bool,
 ) -> Result<()> {
-    if endpoint.trim().contains("REPLACE_ME") {
+    if contains_placeholder_value(endpoint.trim()) {
         return Err(anyhow!(
             "{field_name} must not contain placeholder value REPLACE_ME"
         ));
@@ -3654,16 +3658,19 @@ mod app_tests {
         execution.enabled = true;
         execution.mode = "adapter_submit_confirm".to_string();
         execution.rpc_http_url = "http://rpc.local".to_string();
-        execution.submit_adapter_http_url = "https://REPLACE_ME.example".to_string();
         execution.execution_signer_pubkey = "signer-pubkey".to_string();
 
-        let error = validate_execution_runtime_contract(&execution, "paper")
-            .expect_err("adapter endpoint placeholder must fail contract validation");
-        assert!(
-            error.to_string().contains("must not contain placeholder"),
-            "unexpected error: {}",
-            error
-        );
+        for endpoint in ["https://REPLACE_ME.example", "https://replace_me.example"] {
+            execution.submit_adapter_http_url = endpoint.to_string();
+            let error = validate_execution_runtime_contract(&execution, "paper")
+                .expect_err("adapter endpoint placeholder must fail contract validation");
+            assert!(
+                error.to_string().contains("must not contain placeholder"),
+                "unexpected error for endpoint {}: {}",
+                endpoint,
+                error
+            );
+        }
     }
 
     #[test]
@@ -4679,6 +4686,15 @@ mod app_tests {
 
         let selected_none = select_role_helius_http_url("", "https://x/?api-key=REPLACE_ME");
         assert!(selected_none.is_none());
+
+        let selected_lowercase = select_role_helius_http_url(
+            "https://role.endpoint/?api-key=replace_me",
+            "https://fallback.endpoint/?api-key=def",
+        );
+        assert_eq!(
+            selected_lowercase.as_deref(),
+            Some("https://fallback.endpoint/?api-key=def")
+        );
     }
 
     #[test]
