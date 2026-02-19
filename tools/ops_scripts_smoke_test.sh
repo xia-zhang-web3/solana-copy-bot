@@ -28,7 +28,11 @@ set -euo pipefail
 args="$*"
 if [[ "$args" == *"-n 250"* ]]; then
   cat <<'LOGS'
+2026-02-19T12:00:00Z INFO unrelated runtime line without json payload
+2026-02-19T12:00:00Z INFO ingestion pipeline metrics {not-valid-json
+2026-02-19T12:00:00Z INFO some other metrics {"foo":"bar"}
 2026-02-19T12:00:00Z INFO ingestion pipeline metrics {"ingestion_lag_ms_p95":1400,"ingestion_lag_ms_p99":2100,"ws_to_fetch_queue_depth":1,"fetch_to_output_queue_depth":0,"fetch_concurrency_inflight":2,"ws_notifications_enqueued":111,"ws_notifications_replaced_oldest":0,"reconnect_count":0,"stream_gap_detected":0,"parse_rejected_total":3,"parse_rejected_by_reason":{"other":1,"missing_slot":2},"parse_fallback_by_reason":{"missing_program_ids_fallback":4},"grpc_message_total":12345,"grpc_decode_errors":0,"rpc_429":0,"rpc_5xx":0}
+2026-02-19T12:00:00Z INFO ingestion pipeline metrics {"ingestion_lag_ms_p95":1700,"ingestion_lag_ms_p99":2600,"ws_to_fetch_queue_depth":2,"fetch_to_output_queue_depth":1,"fetch_concurrency_inflight":3,"ws_notifications_enqueued":222,"ws_notifications_replaced_oldest":1,"reconnect_count":1,"stream_gap_detected":0,"parse_rejected_total":5,"parse_rejected_by_reason":{"missing_signer":3,"other":2},"parse_fallback_by_reason":{"missing_program_ids_fallback":1,"missing_slot_fallback":2},"grpc_message_total":22345,"grpc_decode_errors":1,"rpc_429":1,"rpc_5xx":0}
 2026-02-19T12:00:01Z INFO sqlite contention counters {"sqlite_write_retry_total":0,"sqlite_busy_error_total":0}
 LOGS
 fi
@@ -197,8 +201,10 @@ run_ops_scripts_for_db() {
   assert_contains "$snapshot_output" "=== CopyBot Runtime Snapshot ==="
   assert_contains "$snapshot_output" "=== Execution Fee Breakdown by Route (24h) ==="
   assert_contains "$snapshot_output" "=== Recent Risk Events (60m) ==="
-  assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_slot\": 2, \"other\": 1}"
-  assert_contains "$snapshot_output" "parse_fallback_by_reason: {\"missing_program_ids_fallback\": 4}"
+  assert_contains "$snapshot_output" "ingestion_lag_ms_p95: 1700"
+  assert_contains "$snapshot_output" "parse_rejected_total: 5"
+  assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
+  assert_contains "$snapshot_output" "parse_fallback_by_reason: {\"missing_program_ids_fallback\": 1, \"missing_slot_fallback\": 2}"
 
   echo "[ok] ${label}"
 }
