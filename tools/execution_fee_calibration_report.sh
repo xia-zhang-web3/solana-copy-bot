@@ -58,11 +58,25 @@ order_column_expr_or_zero() {
   fi
 }
 
+order_column_expr_or_null() {
+  local column="$1"
+  if order_column_exists "$column"; then
+    printf "o.%s" "$column"
+  else
+    printf "NULL"
+  fi
+}
+
 APPLIED_TIP_EXPR="$(order_column_expr_or_zero applied_tip_lamports)"
 ATA_RENT_EXPR="$(order_column_expr_or_zero ata_create_rent_lamports)"
 NETWORK_FEE_HINT_EXPR="$(order_column_expr_or_zero network_fee_lamports_hint)"
 BASE_FEE_HINT_EXPR="$(order_column_expr_or_zero base_fee_lamports_hint)"
 PRIORITY_FEE_HINT_EXPR="$(order_column_expr_or_zero priority_fee_lamports_hint)"
+APPLIED_TIP_RAW_EXPR="$(order_column_expr_or_null applied_tip_lamports)"
+ATA_RENT_RAW_EXPR="$(order_column_expr_or_null ata_create_rent_lamports)"
+NETWORK_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null network_fee_lamports_hint)"
+BASE_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null base_fee_lamports_hint)"
+PRIORITY_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null priority_fee_lamports_hint)"
 
 echo "=== execution fee calibration (${WINDOW_HOURS}h) ==="
 echo "config: $CONFIG_PATH"
@@ -99,6 +113,38 @@ SELECT
   SUM(priority_fee_lamports_hint) AS priority_fee_hint_lamports_sum
 FROM confirmed_orders o
 LEFT JOIN fills f ON f.order_id = o.order_id
+GROUP BY route
+ORDER BY confirmed_orders DESC, route ASC;
+SQL
+
+echo
+echo "=== fee hint coverage by route (confirmed orders) ==="
+sqlite3 "$DB_PATH" <<SQL
+.headers on
+.mode column
+WITH confirmed_orders AS (
+  SELECT
+    o.order_id,
+    o.route,
+    ${APPLIED_TIP_RAW_EXPR} AS applied_tip_lamports_raw,
+    ${ATA_RENT_RAW_EXPR} AS ata_create_rent_lamports_raw,
+    ${NETWORK_FEE_HINT_RAW_EXPR} AS network_fee_lamports_hint_raw,
+    ${BASE_FEE_HINT_RAW_EXPR} AS base_fee_lamports_hint_raw,
+    ${PRIORITY_FEE_HINT_RAW_EXPR} AS priority_fee_lamports_hint_raw
+  FROM orders o
+  WHERE o.status = 'execution_confirmed'
+    AND o.confirm_ts IS NOT NULL
+    AND datetime(o.confirm_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+)
+SELECT
+  route,
+  COUNT(*) AS confirmed_orders,
+  SUM(CASE WHEN network_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS network_fee_hint_rows,
+  SUM(CASE WHEN base_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS base_fee_hint_rows,
+  SUM(CASE WHEN priority_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS priority_fee_hint_rows,
+  SUM(CASE WHEN applied_tip_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS applied_tip_rows,
+  SUM(CASE WHEN ata_create_rent_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS ata_rent_rows
+FROM confirmed_orders
 GROUP BY route
 ORDER BY confirmed_orders DESC, route ASC;
 SQL
