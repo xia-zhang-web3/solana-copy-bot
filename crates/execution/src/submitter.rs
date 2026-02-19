@@ -140,6 +140,7 @@ pub struct AdapterOrderSubmitter {
     require_policy_echo: bool,
     allowed_routes: HashSet<String>,
     route_max_slippage_bps: HashMap<String, f64>,
+    route_tip_lamports: HashMap<String, u64>,
     route_compute_unit_limit: HashMap<String, u32>,
     route_compute_unit_price_micro_lamports: HashMap<String, u64>,
     slippage_bps: f64,
@@ -158,6 +159,7 @@ impl AdapterOrderSubmitter {
         require_policy_echo: bool,
         allowed_routes: &[String],
         route_max_slippage_bps: &BTreeMap<String, f64>,
+        route_tip_lamports: &BTreeMap<String, u64>,
         route_compute_unit_limit: &BTreeMap<String, u32>,
         route_compute_unit_price_micro_lamports: &BTreeMap<String, u64>,
         timeout_ms: u64,
@@ -184,6 +186,10 @@ impl AdapterOrderSubmitter {
         if route_max_slippage_bps.is_empty() {
             return None;
         }
+        let route_tip_lamports = normalize_route_tip_lamports(route_tip_lamports);
+        if route_tip_lamports.is_empty() {
+            return None;
+        }
         let route_compute_unit_limit = normalize_route_cu_limit(route_compute_unit_limit);
         if route_compute_unit_limit.is_empty() {
             return None;
@@ -196,6 +202,12 @@ impl AdapterOrderSubmitter {
         if !allowed_routes
             .iter()
             .all(|route| route_max_slippage_bps.contains_key(route))
+        {
+            return None;
+        }
+        if !allowed_routes
+            .iter()
+            .all(|route| route_tip_lamports.contains_key(route))
         {
             return None;
         }
@@ -255,6 +267,7 @@ impl AdapterOrderSubmitter {
             require_policy_echo,
             allowed_routes,
             route_max_slippage_bps,
+            route_tip_lamports,
             route_compute_unit_limit,
             route_compute_unit_price_micro_lamports,
             slippage_bps,
@@ -271,6 +284,7 @@ impl AdapterOrderSubmitter {
         expected_contract_version: &str,
         require_policy_echo: bool,
         expected_slippage_bps: f64,
+        expected_tip_lamports: u64,
         expected_cu_limit: u32,
         expected_cu_price_micro_lamports: u64,
     ) -> std::result::Result<SubmitResult, SubmitError> {
@@ -353,6 +367,7 @@ impl AdapterOrderSubmitter {
             expected_contract_version,
             require_policy_echo,
             expected_slippage_bps,
+            expected_tip_lamports,
             expected_cu_limit,
             expected_cu_price_micro_lamports,
         )
@@ -402,6 +417,16 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 )
             })?;
         let effective_slippage_bps = self.slippage_bps.min(route_cap);
+        let route_tip_lamports = self
+            .route_tip_lamports
+            .get(route.as_str())
+            .copied()
+            .ok_or_else(|| {
+                SubmitError::terminal(
+                    "route_tip_policy_missing",
+                    format!("missing tip_lamports policy for route={}", route),
+                )
+            })?;
         let route_cu_limit = self
             .route_compute_unit_limit
             .get(route.as_str())
@@ -438,6 +463,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
             "route": route,
             "slippage_bps": effective_slippage_bps,
             "route_slippage_cap_bps": route_cap,
+            "tip_lamports": route_tip_lamports,
             "compute_budget": {
                 "cu_limit": route_cu_limit,
                 "cu_price_micro_lamports": route_cu_price_micro_lamports
@@ -454,6 +480,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 self.contract_version.as_str(),
                 self.require_policy_echo,
                 effective_slippage_bps,
+                route_tip_lamports,
                 route_cu_limit,
                 route_cu_price_micro_lamports,
             ) {
@@ -481,6 +508,7 @@ fn parse_adapter_submit_response(
     expected_contract_version: &str,
     require_policy_echo: bool,
     expected_slippage_bps: f64,
+    expected_tip_lamports: u64,
     expected_cu_limit: u32,
     expected_cu_price_micro_lamports: u64,
 ) -> std::result::Result<SubmitResult, SubmitError> {
@@ -613,6 +641,24 @@ fn parse_adapter_submit_response(
         ));
     }
 
+    let response_tip_lamports = body.get("tip_lamports").and_then(Value::as_u64);
+    if let Some(value) = response_tip_lamports {
+        if value != expected_tip_lamports {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_mismatch",
+                format!(
+                    "adapter response tip_lamports={} does not match expected tip_lamports={}",
+                    value, expected_tip_lamports
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field tip_lamports".to_string(),
+        ));
+    }
+
     let response_cu_limit = body
         .get("compute_budget")
         .and_then(|value| value.get("cu_limit"))
@@ -722,6 +768,16 @@ fn normalize_route_slippage_caps(route_caps: &BTreeMap<String, f64>) -> HashMap<
         .collect()
 }
 
+fn normalize_route_tip_lamports(route_tips: &BTreeMap<String, u64>) -> HashMap<String, u64> {
+    route_tips
+        .iter()
+        .filter_map(|(route, value)| {
+            let route = normalize_route(route)?;
+            Some((route, *value))
+        })
+        .collect()
+}
+
 fn normalize_route_cu_limit(route_caps: &BTreeMap<String, u32>) -> HashMap<String, u32> {
     route_caps
         .iter()
@@ -770,6 +826,10 @@ mod tests {
         BTreeMap::from([(route.to_string(), cap)])
     }
 
+    fn make_route_tips(route: &str, value: u64) -> BTreeMap<String, u64> {
+        BTreeMap::from([(route.to_string(), value)])
+    }
+
     fn make_route_cu_limits(route: &str, value: u32) -> BTreeMap<String, u32> {
         BTreeMap::from([(route.to_string(), value)])
     }
@@ -790,6 +850,7 @@ mod tests {
             "v1",
             false,
             50.0,
+            0,
             300_000,
             1_000,
         )
@@ -873,9 +934,10 @@ mod tests {
             "tx_signature": "5ig1ature",
             "route": "rpc"
         });
-        let error =
-            parse_adapter_submit_response(&body, "rpc", "cid-1", "v1", true, 50.0, 300_000, 1_000)
-                .expect_err("missing policy echo must fail in strict mode");
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("missing policy echo must fail in strict mode");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_policy_echo_missing");
     }
@@ -893,9 +955,10 @@ mod tests {
                 "cu_price_micro_lamports": 1000
             }
         });
-        let error =
-            parse_adapter_submit_response(&body, "rpc", "cid-1", "v1", true, 50.0, 300_000, 1_000)
-                .expect_err("contract version mismatch must fail");
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("contract version mismatch must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_contract_version_mismatch");
     }
@@ -908,14 +971,38 @@ mod tests {
             "route": "rpc",
             "contract_version": "v1",
             "slippage_bps": 50.0,
+            "tip_lamports": 0,
             "compute_budget": {
                 "cu_limit": 310000,
                 "cu_price_micro_lamports": 1000
             }
         });
-        let error =
-            parse_adapter_submit_response(&body, "rpc", "cid-1", "v1", true, 50.0, 300_000, 1_000)
-                .expect_err("compute budget mismatch must fail");
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("compute budget mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_tip_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 1000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 500, 300_000, 1_000,
+        )
+        .expect_err("tip mismatch must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_policy_mismatch");
     }
@@ -944,6 +1031,7 @@ mod tests {
             false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
             &make_route_cu_limits("rpc", 300_000),
             &make_route_cu_prices("rpc", 1_000),
             1_000,
@@ -970,6 +1058,7 @@ mod tests {
             false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
             &make_route_cu_limits("rpc", 300_000),
             &make_route_cu_prices("rpc", 1_000),
             1_000,
@@ -988,6 +1077,7 @@ mod tests {
             false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
             &make_route_cu_limits("rpc", 300_000),
             &make_route_cu_prices("rpc", 1_000),
             1_000,
@@ -1006,6 +1096,7 @@ mod tests {
             false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
             &make_route_cu_limits("rpc", 300_000),
             &make_route_cu_prices("rpc", 1_000),
             1_000,
@@ -1027,6 +1118,7 @@ mod tests {
             false,
             &["rpc".to_string()],
             &make_route_caps("paper", 50.0),
+            &make_route_tips("rpc", 0),
             &make_route_cu_limits("rpc", 300_000),
             &make_route_cu_prices("rpc", 1_000),
             1_000,
@@ -1048,8 +1140,31 @@ mod tests {
             false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
             &make_route_cu_limits("paper", 300_000),
             &make_route_cu_prices("paper", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_requires_tip_policy_for_allowed_route() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("paper", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
             1_000,
             50.0,
         );
@@ -1069,6 +1184,7 @@ mod tests {
             false,
             &["rpc".to_string()],
             &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
             &make_route_cu_limits("rpc", 300_000),
             &make_route_cu_prices("rpc", 1_000),
             1_000,

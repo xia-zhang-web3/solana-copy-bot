@@ -94,6 +94,7 @@ submit_adapter_require_policy_echo = false
 submit_allowed_routes = ["paper"]
 submit_route_order = []
 submit_route_max_slippage_bps = { paper = 50.0 }
+submit_route_tip_lamports = { paper = 0 }
 submit_route_compute_unit_limit = { paper = 300000 }
 submit_route_compute_unit_price_micro_lamports = { paper = 1000 }
 submit_timeout_ms = 3000

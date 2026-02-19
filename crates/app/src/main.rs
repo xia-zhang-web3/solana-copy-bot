@@ -589,6 +589,18 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             ));
         }
     }
+    if config.submit_route_tip_lamports.is_empty() {
+        return Err(anyhow!(
+            "execution.submit_route_tip_lamports must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS=route:tip,route2:tip2)"
+        ));
+    }
+    for route in config.submit_route_tip_lamports.keys() {
+        if route.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_route_tip_lamports contains empty route key"
+            ));
+        }
+    }
     if config.submit_route_compute_unit_limit.is_empty() {
         return Err(anyhow!(
             "execution.submit_route_compute_unit_limit must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT=route:limit,route2:limit2)"
@@ -638,6 +650,13 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
                 .map(|(_, cap)| *cap)
         };
+        let find_route_tip = |route: &str| -> Option<u64> {
+            config
+                .submit_route_tip_lamports
+                .iter()
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
+                .map(|(_, tip)| *tip)
+        };
         let find_route_cu_limit = |route: &str| -> Option<u32> {
             config
                 .submit_route_compute_unit_limit
@@ -663,6 +682,12 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                     route
                 ));
             }
+            if find_route_tip(route).is_none() {
+                return Err(anyhow!(
+                    "execution.submit_route_tip_lamports is missing tip for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS format route:tip)",
+                    route
+                ));
+            }
             if find_route_cu_limit(route).is_none() {
                 return Err(anyhow!(
                     "execution.submit_route_compute_unit_limit is missing limit for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT format route:limit)",
@@ -679,6 +704,12 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
         let default_route_cap = find_route_cap(default_route.as_str()).ok_or_else(|| {
             anyhow!(
                 "execution.submit_route_max_slippage_bps is missing cap for default route={}",
+                default_route
+            )
+        })?;
+        find_route_tip(default_route.as_str()).ok_or_else(|| {
+            anyhow!(
+                "execution.submit_route_tip_lamports is missing tip for default route={}",
                 default_route
             )
         })?;
@@ -732,6 +763,7 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
             submit_timeout_ms = config.submit_timeout_ms,
             submit_allowed_routes = ?config.submit_allowed_routes,
             submit_route_max_slippage_bps = ?config.submit_route_max_slippage_bps,
+            submit_route_tip_lamports = ?config.submit_route_tip_lamports,
             submit_route_compute_unit_limit = ?config.submit_route_compute_unit_limit,
             submit_route_compute_unit_price_micro_lamports = ?config.submit_route_compute_unit_price_micro_lamports,
             submit_adapter_contract_version = %config.submit_adapter_contract_version,

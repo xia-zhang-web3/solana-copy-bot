@@ -188,6 +188,7 @@ impl ExecutionRuntime {
                         config.submit_adapter_require_policy_echo,
                         &config.submit_allowed_routes,
                         &config.submit_route_max_slippage_bps,
+                        &config.submit_route_tip_lamports,
                         &config.submit_route_compute_unit_limit,
                         &config.submit_route_compute_unit_price_micro_lamports,
                         config.submit_timeout_ms.max(500),
