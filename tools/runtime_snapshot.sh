@@ -187,6 +187,41 @@ WHERE datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours')
 GROUP BY status
 ORDER BY cnt DESC;
 SQL
+
+echo
+echo "=== Execution Fee Breakdown by Route (${WINDOW_HOURS}h) ==="
+sqlite3 "$DB_PATH" <<SQL
+.headers on
+.mode column
+WITH confirmed_orders AS (
+  SELECT
+    o.order_id,
+    o.route,
+    COALESCE(o.applied_tip_lamports, 0) AS applied_tip_lamports,
+    COALESCE(o.ata_create_rent_lamports, 0) AS ata_create_rent_lamports,
+    COALESCE(o.network_fee_lamports_hint, 0) AS network_fee_lamports_hint,
+    COALESCE(o.base_fee_lamports_hint, 0) AS base_fee_lamports_hint,
+    COALESCE(o.priority_fee_lamports_hint, 0) AS priority_fee_lamports_hint
+  FROM orders o
+  WHERE o.status = 'execution_confirmed'
+    AND o.confirm_ts IS NOT NULL
+    AND datetime(o.confirm_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+)
+SELECT
+  route,
+  COUNT(*) AS confirmed_orders,
+  COALESCE(SUM(COALESCE(f.fee, 0.0)), 0.0) AS fee_sol_sum,
+  SUM(applied_tip_lamports) AS tip_lamports_sum,
+  SUM(ata_create_rent_lamports) AS ata_rent_lamports_sum,
+  SUM(network_fee_lamports_hint) AS network_fee_hint_lamports_sum,
+  SUM(base_fee_lamports_hint) AS base_fee_hint_lamports_sum,
+  SUM(priority_fee_lamports_hint) AS priority_fee_hint_lamports_sum
+FROM confirmed_orders o
+LEFT JOIN fills f ON f.order_id = o.order_id
+GROUP BY route
+ORDER BY confirmed_orders DESC, route ASC;
+SQL
+
 echo
 echo "=== Recent Risk Events (${RISK_EVENTS_MINUTES}m) ==="
 sqlite3 "$DB_PATH" <<SQL
