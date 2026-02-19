@@ -129,13 +129,12 @@ sqlite3 "$DB_PATH" <<SQL
 .headers on
 .mode column
 SELECT
-  COALESCE(route, '') AS route,
+  COALESCE(json_extract(details_json, '$.route'), '') AS route,
   COUNT(*) AS cnt
-FROM orders
-WHERE status = 'execution_failed'
-  AND err_code = 'submit_terminal_rejected'
-  AND simulation_error LIKE '%submit_adapter_policy_echo_missing%'
-  AND datetime(submit_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+FROM risk_events
+WHERE type = 'execution_submit_failed'
+  AND json_extract(details_json, '$.error_code') = 'submit_adapter_policy_echo_missing'
+  AND datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours')
 GROUP BY route
 ORDER BY cnt DESC, route ASC;
 SQL
