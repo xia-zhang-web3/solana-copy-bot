@@ -19,7 +19,8 @@ Owner: copybot runtime team
 3. BUY-only pause gates активны: operator emergency stop, risk hard-stop и outage-блокировка применяются только к pre-submit BUY.
 4. SELL и confirm-path не блокируются pause-гейтами, что сохраняет возможность закрытия риска.
 5. Execution risk gates в рантайме enforce: `max_position_sol`, `max_total_exposure_sol`, `max_exposure_per_token_sol`, `max_concurrent_positions`, staleness и `sell_requires_open_position`.
-6. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend + auth/ops rollout по уже готовому runtime контракту).
+6. Submit route policy в runtime уже enforce: route allowlist, per-route slippage/CU caps, adapter-response correlation guards и attempt-based route fallback order.
+7. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend + auth/ops rollout по уже готовому runtime контракту).
 
 Текущий статус этапов:
 
@@ -54,7 +55,7 @@ Owner: copybot runtime team
 
 1. Закрыты safety-gates `R2P-06` и `R2P-16` (runtime BUY-gate).
 2. Execution baseline поднят: `R2P-08` и `R2P-09` закрыты; `R2P-10`/`R2P-11` в прогрессе (paper lifecycle + recovery + risk gates готовы).
-3. До real-money submit остаются code-only блокеры: live submit route и enforcement CU/slippage policy в signed-tx path.
+3. До real-money submit остаются code-only блокеры: live signed-tx backend за адаптерным контрактом + калибровка route-профилей под реальные market regimes.
 
 ## 3) Критичная правда по сроку "завтра торговать"
 
@@ -535,11 +536,12 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 18. route-level compute budget policy added to submit path (`cu_limit`, `cu_price_micro_lamports`) with strict runtime validation for allowed/default routes.
 19. adapter response correlation tightened: optional `client_order_id`/`request_id` echoes must match requested `client_order_id` or submit is terminal-failed (`submit_adapter_client_order_id_mismatch` / `submit_adapter_request_id_mismatch`).
 20. adapter confirm-failure semantics hardened: deadline-passed confirm errors/timeouts are marked with `*_manual_reconcile_required` err-codes + risk events to enforce explicit on-chain reconcile workflow.
+21. submit route fallback hardened: per-attempt route selection now follows ordered policy (`default_route` -> allowed fallbacks), and both pre-trade + submit use the same selected route for deterministic retries.
 
 Остается в next-code-queue:
 
-1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete route policy rollout.
-2. complete operational calibration for route profiles (Jito-primary/RPC-fallback) using existing slippage/CU policy knobs.
+1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) with production-grade auth/key management.
+2. complete operational calibration for route profiles (Jito-primary/RPC-fallback) using existing slippage/CU policy knobs and attempt-based route order.
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 

@@ -59,6 +59,7 @@ pub struct ExecutionRuntime {
     max_submit_attempts: u32,
     max_copy_delay_sec: u64,
     default_route: String,
+    submit_route_order: Vec<String>,
     slippage_bps: f64,
     simulate_before_submit: bool,
     manual_reconcile_required_on_confirm_failure: bool,
@@ -76,6 +77,8 @@ impl ExecutionRuntime {
         } else {
             config.default_route.trim().to_string()
         };
+        let submit_route_order =
+            build_submit_route_order(route.as_str(), &config.submit_allowed_routes);
 
         let mode = config.mode.trim().to_ascii_lowercase();
         let (
@@ -217,6 +220,7 @@ impl ExecutionRuntime {
             max_submit_attempts: config.max_submit_attempts.max(1),
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: route,
+            submit_route_order,
             slippage_bps: config.slippage_bps,
             simulate_before_submit: config.simulate_before_submit,
             manual_reconcile_required_on_confirm_failure,
@@ -446,14 +450,15 @@ impl ExecutionRuntime {
         order: &copybot_storage::ExecutionOrderRow,
         now: DateTime<Utc>,
     ) -> Result<SignalResult> {
+        let attempt = order.attempt.max(1);
+        let selected_route = self.submit_route_for_attempt(attempt);
         let pretrade = self
             .pretrade
-            .check(intent, &self.default_route)
+            .check(intent, selected_route)
             .with_context(|| format!("failed pre-trade checks for signal {}", intent.signal_id))?;
         match pretrade.kind {
             PreTradeDecisionKind::Allow => {}
             PreTradeDecisionKind::RetryableReject => {
-                let attempt = order.attempt.max(1);
                 let reason_code = pretrade.reason_code;
                 let detail_text = pretrade.detail;
                 let detail = format!("{}: {}", reason_code, detail_text);
@@ -467,6 +472,7 @@ impl ExecutionRuntime {
                         "attempt": attempt,
                         "next_attempt": next_attempt,
                         "max_submit_attempts": self.max_submit_attempts,
+                        "route": selected_route,
                         "reason_code": reason_code,
                         "detail": detail_text,
                     })
@@ -490,6 +496,7 @@ impl ExecutionRuntime {
                     "order_id": order.order_id,
                     "attempt": attempt,
                     "max_submit_attempts": self.max_submit_attempts,
+                    "route": selected_route,
                     "reason_code": reason_code,
                     "detail": detail_text,
                 })
@@ -511,6 +518,7 @@ impl ExecutionRuntime {
                 let details = json!({
                     "signal_id": intent.signal_id,
                     "order_id": order.order_id,
+                    "route": selected_route,
                     "reason_code": reason_code,
                     "detail": detail_text,
                 })
@@ -564,16 +572,17 @@ impl ExecutionRuntime {
             return Ok(SignalResult::Failed);
         }
 
+        let selected_route = self.submit_route_for_attempt(attempt);
         let submit = match self
             .submitter
-            .submit(intent, client_order_id, &self.default_route)
+            .submit(intent, client_order_id, selected_route)
         {
             Ok(value) => value,
             Err(error) => {
                 let retryable = matches!(error.kind, SubmitErrorKind::Retryable);
                 let detail = format!(
-                    "submit_error attempt={} max_attempts={} code={} detail={}",
-                    attempt, self.max_submit_attempts, error.code, error.detail
+                    "submit_error attempt={} max_attempts={} route={} code={} detail={}",
+                    attempt, self.max_submit_attempts, selected_route, error.code, error.detail
                 );
                 if retryable && attempt < self.max_submit_attempts {
                     let next_attempt = attempt.saturating_add(1);
@@ -585,6 +594,7 @@ impl ExecutionRuntime {
                         "attempt": attempt,
                         "next_attempt": next_attempt,
                         "max_submit_attempts": self.max_submit_attempts,
+                        "route": selected_route,
                         "error_code": error.code,
                         "retryable": true,
                         "error": error.detail
@@ -611,6 +621,7 @@ impl ExecutionRuntime {
                     "order_id": order.order_id,
                     "attempt": attempt,
                     "max_submit_attempts": self.max_submit_attempts,
+                    "route": selected_route,
                     "error_code": error.code,
                     "retryable": retryable,
                     "error": error.detail
@@ -827,6 +838,15 @@ impl ExecutionRuntime {
         }
     }
 
+    fn submit_route_for_attempt(&self, attempt: u32) -> &str {
+        if self.submit_route_order.is_empty() {
+            return self.default_route.as_str();
+        }
+        let index = attempt.saturating_sub(1) as usize;
+        let index = index.min(self.submit_route_order.len().saturating_sub(1));
+        self.submit_route_order[index].as_str()
+    }
+
     fn should_pause_buy_submission(
         &self,
         intent: &ExecutionIntent,
@@ -918,11 +938,32 @@ impl ExecutionRuntime {
     }
 }
 
+fn build_submit_route_order(default_route: &str, allowed_routes: &[String]) -> Vec<String> {
+    let mut routes = Vec::new();
+    let normalized_default = default_route.trim().to_ascii_lowercase();
+    if !normalized_default.is_empty() {
+        routes.push(normalized_default);
+    }
+    for route in allowed_routes {
+        let normalized = route.trim().to_ascii_lowercase();
+        if normalized.is_empty() || routes.iter().any(|value| value == &normalized) {
+            continue;
+        }
+        routes.push(normalized);
+    }
+    if routes.is_empty() {
+        vec!["paper".to_string()]
+    } else {
+        routes
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use copybot_core_types::SwapEvent;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     struct RetryableFailPreTradeChecker;
 
@@ -967,6 +1008,73 @@ mod tests {
                 "rpc_timeout",
                 "rpc timeout",
             ))
+        }
+    }
+
+    struct RetryableOnceSubmitter {
+        routes: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RetryableOnceSubmitter {
+        fn new(routes: Arc<Mutex<Vec<String>>>) -> Self {
+            Self { routes }
+        }
+    }
+
+    impl OrderSubmitter for RetryableOnceSubmitter {
+        fn submit(
+            &self,
+            _intent: &ExecutionIntent,
+            _client_order_id: &str,
+            route: &str,
+        ) -> std::result::Result<submitter::SubmitResult, submitter::SubmitError> {
+            let mut calls = self
+                .routes
+                .lock()
+                .expect("retryable submitter routes mutex poisoned");
+            calls.push(route.to_string());
+            if calls.len() == 1 {
+                return Err(submitter::SubmitError::retryable(
+                    "submit_retryable_once",
+                    "first submit attempt failed",
+                ));
+            }
+            Ok(submitter::SubmitResult {
+                route: route.to_string(),
+                tx_signature: format!("test-sig-{}", calls.len()),
+                submitted_at: Utc::now(),
+            })
+        }
+    }
+
+    struct RetryableOncePreTradeChecker {
+        routes: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RetryableOncePreTradeChecker {
+        fn new(routes: Arc<Mutex<Vec<String>>>) -> Self {
+            Self { routes }
+        }
+    }
+
+    impl PreTradeChecker for RetryableOncePreTradeChecker {
+        fn check(
+            &self,
+            _intent: &ExecutionIntent,
+            route: &str,
+        ) -> Result<pretrade::PreTradeDecision> {
+            let mut calls = self
+                .routes
+                .lock()
+                .expect("retryable pretrade routes mutex poisoned");
+            calls.push(route.to_string());
+            if calls.len() == 1 {
+                return Ok(pretrade::PreTradeDecision::retryable(
+                    "pretrade_retryable_once",
+                    "first pretrade attempt failed",
+                ));
+            }
+            Ok(pretrade::PreTradeDecision::allow("ok"))
         }
     }
 
@@ -1187,6 +1295,7 @@ mod tests {
             max_submit_attempts: 2,
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -1224,6 +1333,67 @@ mod tests {
     }
 
     #[test]
+    fn process_batch_uses_fallback_route_on_submit_retry() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-submit-route-fallback")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-route-submit", now, "sig-price-route-submit")?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4b:w:buy:route".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-route-submit".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let routes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "jito".to_string(),
+            submit_route_order: vec!["jito".to_string(), "rpc".to_string()],
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(RetryableOnceSubmitter::new(routes.clone())),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
+
+        let second = runtime.process_batch(&store, Utc::now(), None)?;
+        assert_eq!(second.confirmed, 1);
+        let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
+        assert_eq!(observed_routes, vec!["jito".to_string(), "rpc".to_string()]);
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s4b_w_buy_route_a1")?
+            .context("route fallback submit should leave order row")?;
+        assert_eq!(order.route, "rpc");
+        assert_eq!(order.status, "execution_confirmed");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_bounds_retryable_pretrade_failures() -> Result<()> {
         let (store, db_path) = make_test_store("batch-pretrade-retries")?;
         let signal = CopySignalRow {
@@ -1251,6 +1421,7 @@ mod tests {
             max_submit_attempts: 2,
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -1316,6 +1487,7 @@ mod tests {
             max_submit_attempts: 2,
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -1337,6 +1509,73 @@ mod tests {
         assert_eq!(order.err_code.as_deref(), Some("pretrade_rejected"));
         let dropped = store.list_copy_signals_by_status("execution_dropped", 10)?;
         assert_eq!(dropped.len(), 1);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_uses_fallback_route_on_pretrade_retry() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-pretrade-route-fallback")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-route-pretrade",
+            now,
+            "sig-price-route-pretrade",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s6b:w:buy:route".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-route-pretrade".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let routes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "jito".to_string(),
+            submit_route_order: vec!["jito".to_string(), "rpc".to_string()],
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(RetryableOncePreTradeChecker::new(routes.clone())),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.skipped, 1);
+        assert_eq!(first.failed, 0);
+
+        let second = runtime.process_batch(&store, Utc::now(), None)?;
+        assert_eq!(second.confirmed, 1);
+        let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
+        assert_eq!(observed_routes, vec!["jito".to_string(), "rpc".to_string()]);
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s6b_w_buy_route_a1")?
+            .context("route fallback pretrade should leave order row")?;
+        assert_eq!(order.route, "rpc");
+        assert_eq!(order.attempt, 2);
+        assert_eq!(order.status, "execution_confirmed");
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -1369,6 +1608,7 @@ mod tests {
             max_submit_attempts: 2,
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: false,
@@ -1504,6 +1744,7 @@ mod tests {
             max_submit_attempts: 2,
             max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
             default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
             slippage_bps: 50.0,
             simulate_before_submit: true,
             manual_reconcile_required_on_confirm_failure: true,
