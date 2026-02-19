@@ -933,18 +933,20 @@ mod tests {
     fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
         let _guard = ENV_LOCK.lock().expect("lock env test mutex");
         with_temp_config_file("", |config_path| {
-            with_env_var(env_name, env_value, || {
-                let err = load_from_env_or_default(config_path)
-                    .expect_err("duplicate normalized route keys should fail")
-                    .to_string();
-                assert!(
-                    err.contains(env_name),
-                    "error should mention env var, got: {err}"
-                );
-                assert!(
-                    err.contains("duplicate route after normalization"),
-                    "error should describe duplicate normalization, got: {err}"
-                );
+            with_env_removed("SOLANA_COPY_BOT_CONFIG", || {
+                with_env_var(env_name, env_value, || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("duplicate normalized route keys should fail")
+                        .to_string();
+                    assert!(
+                        err.contains(env_name),
+                        "error should mention env var, got: {err}"
+                    );
+                    assert!(
+                        err.contains("duplicate route after normalization"),
+                        "error should describe duplicate normalization, got: {err}"
+                    );
+                });
             });
         });
     }
@@ -964,6 +966,17 @@ mod tests {
         match previous {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),
+        }
+    }
+
+    fn with_env_removed<T>(key: &'static str, run: impl FnOnce() -> T) -> T {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        restore_env_var(key, previous);
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
         }
     }
 
