@@ -2105,7 +2105,7 @@ fn parse_yellowstone_transaction_update(
         }
         runtime_config
             .telemetry
-            .note_parse_fallback("missing_program_ids");
+            .note_parse_fallback("missing_program_ids_fallback");
         program_ids.extend(runtime_config.interested_program_ids.iter().cloned());
     } else if !program_ids
         .iter()
@@ -3183,14 +3183,14 @@ mod tests {
     #[test]
     fn note_parse_fallback_tracks_reason_breakdown() {
         let telemetry = IngestionTelemetry::default();
-        telemetry.note_parse_fallback("missing_program_ids");
-        telemetry.note_parse_fallback("missing_program_ids");
+        telemetry.note_parse_fallback("missing_program_ids_fallback");
+        telemetry.note_parse_fallback("missing_program_ids_fallback");
 
         let reasons = telemetry
             .parse_fallback_by_reason
             .lock()
             .expect("parse_fallback_by_reason mutex should be available");
-        assert_eq!(reasons.get("missing_program_ids"), Some(&2));
+        assert_eq!(reasons.get("missing_program_ids_fallback"), Some(&2));
     }
 
     #[test]
