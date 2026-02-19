@@ -880,10 +880,12 @@ where
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn ingestion_yellowstone_defaults_are_applied() {
@@ -931,7 +933,6 @@ mod tests {
     }
 
     fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
-        let _guard = ENV_LOCK.lock().expect("lock env test mutex");
         with_temp_config_file("", |config_path| {
             with_clean_copybot_env(|| {
                 with_env_var(env_name, env_value, || {
@@ -970,6 +971,8 @@ mod tests {
     }
 
     fn with_clean_copybot_env<T>(run: impl FnOnce() -> T) -> T {
+        // Serialize all SOLANA_COPY_BOT_* env mutations in this test module.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved: Vec<(OsString, OsString)> = std::env::vars_os()
             .filter(|(key, _)| key.to_string_lossy().starts_with("SOLANA_COPY_BOT_"))
             .collect();
@@ -1002,6 +1005,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time before unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("copybot-config-test-{nanos}.toml"))
+        let seq = TEMP_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("copybot-config-test-{pid}-{nanos}-{seq}.toml"))
     }
 }
