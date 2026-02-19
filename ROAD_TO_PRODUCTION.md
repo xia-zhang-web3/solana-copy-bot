@@ -556,6 +556,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 35. prod runtime contract tightened for adapter mode: `execution.submit_adapter_require_policy_echo` is now mandatory (`true`) when `execution.mode=adapter_submit_confirm` in production-like env profiles (`prod`, `production`, `prod-*`, `production-*`, underscore variants), preventing non-strict adapter responses in production deployment profiles.
 36. ops fee diagnostics helpers (`tools/execution_fee_calibration_report.sh`, `tools/runtime_snapshot.sh`) are schema-tolerant for legacy DB snapshots: fee-breakdown report SQL now auto-detects optional `orders` fee columns and falls back to `0` when columns are absent, avoiding hard failure on older local snapshots.
 37. `tools/execution_fee_calibration_report.sh` strict policy reject section now merges structured `risk_events` with legacy `orders.simulation_error` pattern; deduplication is by `order_id` when present (fallback to source-row identity when `order_id` is absent) so historical windows remain comparable across telemetry format migration.
+38. adapter endpoint runtime validation hardened: `execution.submit_adapter_http_url` / `execution.submit_adapter_fallback_http_url` must be explicit `http(s)` URLs (no bare host), and production-like env profiles now fail-closed for non-loopback `http://` endpoints (`https://` required except local loopback).
 
 Остается в next-code-queue:
 

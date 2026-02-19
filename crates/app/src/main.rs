@@ -467,6 +467,20 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 "execution.mode=adapter_submit_confirm requires execution.submit_adapter_http_url or execution.submit_adapter_fallback_http_url"
             ));
         }
+        if !submit_primary.is_empty() {
+            validate_adapter_endpoint_url(
+                submit_primary,
+                "execution.submit_adapter_http_url",
+                is_production_env_profile(env),
+            )?;
+        }
+        if !submit_fallback.is_empty() {
+            validate_adapter_endpoint_url(
+                submit_fallback,
+                "execution.submit_adapter_fallback_http_url",
+                is_production_env_profile(env),
+            )?;
+        }
         let hmac_key_id = config.submit_adapter_hmac_key_id.trim();
         let hmac_secret = config.submit_adapter_hmac_secret.trim();
         if hmac_key_id.is_empty() ^ hmac_secret.is_empty() {
@@ -813,6 +827,61 @@ fn is_production_env_profile(env: &str) -> bool {
         || env_norm.starts_with("prod_")
         || env_norm.starts_with("production-")
         || env_norm.starts_with("production_")
+}
+
+fn validate_adapter_endpoint_url(
+    endpoint: &str,
+    field_name: &str,
+    strict_transport_policy: bool,
+) -> Result<()> {
+    if endpoint.chars().any(char::is_whitespace) {
+        return Err(anyhow!("{field_name} must not contain whitespace"));
+    }
+    let endpoint_norm = endpoint.trim().to_ascii_lowercase();
+    let has_valid_scheme =
+        endpoint_norm.starts_with("https://") || endpoint_norm.starts_with("http://");
+    if !has_valid_scheme {
+        return Err(anyhow!(
+            "{field_name} must start with http:// or https:// (got: {})",
+            endpoint
+        ));
+    }
+
+    let authority_and_path = if endpoint_norm.starts_with("https://") {
+        &endpoint_norm["https://".len()..]
+    } else {
+        &endpoint_norm["http://".len()..]
+    };
+    let authority = authority_and_path
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if authority.is_empty() {
+        return Err(anyhow!("{field_name} must include a host"));
+    }
+
+    if strict_transport_policy
+        && endpoint_norm.starts_with("http://")
+        && !is_loopback_http_authority(authority)
+    {
+        return Err(anyhow!(
+            "{field_name} must use https:// in production-like envs (http:// allowed only for loopback hosts)"
+        ));
+    }
+
+    Ok(())
+}
+
+fn is_loopback_http_authority(authority: &str) -> bool {
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if authority.starts_with('[') {
+        authority.find(']').map(|end| &authority[..=end])
+    } else {
+        authority.split(':').next()
+    }
+    .unwrap_or(authority);
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
 }
 
 fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
@@ -3506,7 +3575,7 @@ mod app_tests {
         execution.enabled = true;
         execution.mode = "adapter_submit_confirm".to_string();
         execution.rpc_http_url = "http://rpc.local".to_string();
-        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local".to_string();
         execution.execution_signer_pubkey = "signer-pubkey".to_string();
         execution.submit_adapter_require_policy_echo = false;
 
@@ -3531,7 +3600,7 @@ mod app_tests {
         execution.enabled = true;
         execution.mode = "adapter_submit_confirm".to_string();
         execution.rpc_http_url = "http://rpc.local".to_string();
-        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local".to_string();
         execution.execution_signer_pubkey = "signer-pubkey".to_string();
 
         execution.submit_adapter_require_policy_echo = false;
@@ -3546,6 +3615,61 @@ mod app_tests {
             validate_execution_runtime_contract(&execution, env)
                 .expect("production-like adapter mode with strict policy echo should pass");
         }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_adapter_endpoint_url() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint without scheme must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must start with http:// or https://"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_non_loopback_http_adapter_endpoint_in_prod() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_adapter_require_policy_echo = true;
+
+        let error = validate_execution_runtime_contract(&execution, "prod")
+            .expect_err("non-loopback http adapter endpoint must fail in production-like env");
+        assert!(
+            error
+                .to_string()
+                .contains("must use https:// in production-like envs"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_allows_loopback_http_adapter_endpoint_in_prod() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://127.0.0.1:8080".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_adapter_require_policy_echo = true;
+
+        validate_execution_runtime_contract(&execution, "prod")
+            .expect("loopback http adapter endpoint should be allowed in production-like env");
     }
 
     #[test]
