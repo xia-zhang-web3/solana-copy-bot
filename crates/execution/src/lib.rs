@@ -882,7 +882,7 @@ impl ExecutionRuntime {
                         "order_id": order_id,
                         "route": route,
                         "network_fee_lamports": null,
-                        "network_fee_lookup_error": if network_fee_lookup_error.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(network_fee_lookup_error.to_string()) },
+                        "network_fee_lookup_error_class": if network_fee_lookup_error.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(network_fee_lookup_error.to_string()) },
                         "network_fee_missing_reason": if network_fee_lookup_error.is_empty() { "meta_fee_unavailable" } else { "rpc_lookup_error" },
                         "tip_lamports": route_tip_lamports,
                         "fee_sol_applied": execution_fee_sol,

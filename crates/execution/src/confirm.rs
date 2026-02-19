@@ -115,10 +115,8 @@ impl RpcOrderConfirmer {
             .post(endpoint)
             .json(&payload)
             .send()
-            .with_context(|| format!("rpc request failed endpoint={endpoint}"))?;
-        let body: Value = response
-            .json()
-            .with_context(|| format!("invalid rpc json endpoint={endpoint}"))?;
+            .context("rpc request failed")?;
+        let body: Value = response.json().context("invalid rpc json")?;
         let mut confirmation = parse_confirmation_from_rpc_body(&body, now)?;
         if matches!(confirmation.status, ConfirmationStatus::Confirmed) {
             match self.query_transaction_fee_lamports(endpoint, tx_signature) {
@@ -127,14 +125,15 @@ impl RpcOrderConfirmer {
                     confirmation.network_fee_lookup_error = None;
                 }
                 Err(error) => {
+                    let error_class = classify_fee_lookup_error(&error);
                     warn!(
-                        endpoint,
+                        endpoint = %redacted_endpoint_label(endpoint),
                         tx_signature,
-                        error = %error,
+                        error_class,
                         "fee lookup failed for confirmed signature; proceeding without network fee"
                     );
                     confirmation.network_fee_lamports = None;
-                    confirmation.network_fee_lookup_error = Some(error.to_string());
+                    confirmation.network_fee_lookup_error = Some(error_class.to_string());
                 }
             }
         }
@@ -164,10 +163,8 @@ impl RpcOrderConfirmer {
             .post(endpoint)
             .json(&payload)
             .send()
-            .with_context(|| format!("rpc transaction lookup failed endpoint={endpoint}"))?;
-        let body: Value = response
-            .json()
-            .with_context(|| format!("invalid rpc transaction json endpoint={endpoint}"))?;
+            .context("rpc transaction lookup failed")?;
+        let body: Value = response.json().context("invalid rpc transaction json")?;
         parse_transaction_fee_lamports_from_rpc_body(&body)
     }
 }
@@ -290,6 +287,45 @@ fn parse_transaction_fee_lamports_from_rpc_body(body: &Value) -> Result<Option<u
         .and_then(Value::as_u64))
 }
 
+fn classify_fee_lookup_error(error: &anyhow::Error) -> &'static str {
+    let lowered = error.to_string().to_ascii_lowercase();
+    if lowered.contains("timeout") || lowered.contains("timed out") {
+        "timeout"
+    } else if lowered.contains("dns")
+        || lowered.contains("lookup address")
+        || lowered.contains("name or service not known")
+    {
+        "dns"
+    } else if lowered.contains("connection refused") {
+        "connection_refused"
+    } else if lowered.contains("connection reset") {
+        "connection_reset"
+    } else if lowered.contains("invalid rpc transaction json") {
+        "invalid_json"
+    } else if lowered.contains("rpc returned error payload") {
+        "rpc_error_payload"
+    } else {
+        "other"
+    }
+}
+
+fn redacted_endpoint_label(endpoint: &str) -> String {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return "unknown".to_string();
+    }
+    match reqwest::Url::parse(endpoint) {
+        Ok(url) => {
+            let host = url.host_str().unwrap_or("unknown");
+            match url.port() {
+                Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+                None => format!("{}://{}", url.scheme(), host),
+            }
+        }
+        Err(_) => "invalid_endpoint".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +410,17 @@ mod tests {
         let fee = parse_transaction_fee_lamports_from_rpc_body(&body)?;
         assert_eq!(fee, None);
         Ok(())
+    }
+
+    #[test]
+    fn classify_fee_lookup_error_returns_timeout_bucket() {
+        let error = anyhow!("request timed out");
+        assert_eq!(classify_fee_lookup_error(&error), "timeout");
+    }
+
+    #[test]
+    fn redacted_endpoint_label_drops_path_and_query() {
+        let label = redacted_endpoint_label("https://rpc.example.org/v1?api-key=secret");
+        assert_eq!(label, "https://rpc.example.org");
     }
 }
