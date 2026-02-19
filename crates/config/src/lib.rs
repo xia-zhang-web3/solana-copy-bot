@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -703,24 +703,11 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(submit_route_max_slippage_bps_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS")
     {
-        let mut route_caps = BTreeMap::new();
-        for token in submit_route_max_slippage_bps_csv.split(',') {
-            let token = token.trim();
-            if token.is_empty() {
-                continue;
-            }
-            let Some((route, value)) = token.split_once(':') else {
-                continue;
-            };
-            let route = route.trim().to_ascii_lowercase();
-            if route.is_empty() {
-                continue;
-            }
-            let Ok(value) = value.trim().parse::<f64>() else {
-                continue;
-            };
-            route_caps.insert(route, value);
-        }
+        let route_caps = parse_execution_route_map_env(
+            &submit_route_max_slippage_bps_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS",
+            |value| value.trim().parse::<f64>().ok(),
+        )?;
         if !route_caps.is_empty() {
             config.execution.submit_route_max_slippage_bps = route_caps;
         }
@@ -728,24 +715,11 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(submit_route_tip_lamports_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS")
     {
-        let mut route_tips = BTreeMap::new();
-        for token in submit_route_tip_lamports_csv.split(',') {
-            let token = token.trim();
-            if token.is_empty() {
-                continue;
-            }
-            let Some((route, value)) = token.split_once(':') else {
-                continue;
-            };
-            let route = route.trim().to_ascii_lowercase();
-            if route.is_empty() {
-                continue;
-            }
-            let Ok(value) = value.trim().parse::<u64>() else {
-                continue;
-            };
-            route_tips.insert(route, value);
-        }
+        let route_tips = parse_execution_route_map_env(
+            &submit_route_tip_lamports_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS",
+            |value| value.trim().parse::<u64>().ok(),
+        )?;
         if !route_tips.is_empty() {
             config.execution.submit_route_tip_lamports = route_tips;
         }
@@ -753,24 +727,11 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(submit_route_compute_unit_limit_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT")
     {
-        let mut route_limits = BTreeMap::new();
-        for token in submit_route_compute_unit_limit_csv.split(',') {
-            let token = token.trim();
-            if token.is_empty() {
-                continue;
-            }
-            let Some((route, value)) = token.split_once(':') else {
-                continue;
-            };
-            let route = route.trim().to_ascii_lowercase();
-            if route.is_empty() {
-                continue;
-            }
-            let Ok(value) = value.trim().parse::<u32>() else {
-                continue;
-            };
-            route_limits.insert(route, value);
-        }
+        let route_limits = parse_execution_route_map_env(
+            &submit_route_compute_unit_limit_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT",
+            |value| value.trim().parse::<u32>().ok(),
+        )?;
         if !route_limits.is_empty() {
             config.execution.submit_route_compute_unit_limit = route_limits;
         }
@@ -778,24 +739,11 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(submit_route_compute_unit_price_micro_lamports_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS")
     {
-        let mut route_prices = BTreeMap::new();
-        for token in submit_route_compute_unit_price_micro_lamports_csv.split(',') {
-            let token = token.trim();
-            if token.is_empty() {
-                continue;
-            }
-            let Some((route, value)) = token.split_once(':') else {
-                continue;
-            };
-            let route = route.trim().to_ascii_lowercase();
-            if route.is_empty() {
-                continue;
-            }
-            let Ok(value) = value.trim().parse::<u64>() else {
-                continue;
-            };
-            route_prices.insert(route, value);
-        }
+        let route_prices = parse_execution_route_map_env(
+            &submit_route_compute_unit_price_micro_lamports_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
+            |value| value.trim().parse::<u64>().ok(),
+        )?;
         if !route_prices.is_empty() {
             config
                 .execution
@@ -892,9 +840,50 @@ fn parse_env_bool(value: String) -> Option<bool> {
     }
 }
 
+fn parse_execution_route_map_env<T, F>(
+    csv: &str,
+    env_name: &str,
+    parse_value: F,
+) -> Result<BTreeMap<String, T>>
+where
+    F: Fn(&str) -> Option<T>,
+{
+    let mut values = BTreeMap::new();
+    let mut seen_normalized = HashSet::new();
+    for token in csv.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let Some((route, raw_value)) = token.split_once(':') else {
+            continue;
+        };
+        let route = route.trim().to_ascii_lowercase();
+        if route.is_empty() {
+            continue;
+        }
+        let Some(parsed_value) = parse_value(raw_value) else {
+            continue;
+        };
+        if !seen_normalized.insert(route.clone()) {
+            return Err(anyhow!(
+                "{env_name} contains duplicate route after normalization: {}",
+                route
+            ));
+        }
+        values.insert(route, parsed_value);
+    }
+    Ok(values)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn ingestion_yellowstone_defaults_are_applied() {
@@ -907,5 +896,93 @@ mod tests {
         assert_eq!(ingestion.yellowstone_reconnect_initial_ms, 500);
         assert_eq!(ingestion.yellowstone_reconnect_max_ms, 8_000);
         assert!(ingestion.yellowstone_program_ids.is_empty());
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_route_max_slippage_keys() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS",
+            "rpc:50,RPC:75",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_route_tip_keys() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS",
+            "rpc:100,RPC:200",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_route_cu_limit_keys() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT",
+            "rpc:300000,RPC:350000",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_route_cu_price_keys() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
+            "rpc:1000,RPC:2000",
+        );
+    }
+
+    fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
+        let _guard = ENV_LOCK.lock().expect("lock env test mutex");
+        with_temp_config_file("", |config_path| {
+            with_env_var(env_name, env_value, || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("duplicate normalized route keys should fail")
+                    .to_string();
+                assert!(
+                    err.contains(env_name),
+                    "error should mention env var, got: {err}"
+                );
+                assert!(
+                    err.contains("duplicate route after normalization"),
+                    "error should describe duplicate normalization, got: {err}"
+                );
+            });
+        });
+    }
+
+    fn with_env_var<T>(key: &'static str, value: &str, run: impl FnOnce() -> T) -> T {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        restore_env_var(key, previous);
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn restore_env_var(key: &'static str, previous: Option<OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    fn with_temp_config_file<T>(contents: &str, run: impl FnOnce(&Path) -> T) -> T {
+        let path = unique_temp_path();
+        fs::write(&path, contents).expect("write temp config");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&path)));
+        let _ = fs::remove_file(&path);
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn unique_temp_path() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("copybot-config-test-{nanos}.toml"))
     }
 }
