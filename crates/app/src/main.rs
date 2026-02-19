@@ -53,6 +53,7 @@ async fn main() -> Result<()> {
             applied_source_override = Some(source_override);
         }
     }
+    resolve_execution_adapter_secrets(&mut config.execution)?;
 
     init_tracing(&config.system.log_level, config.system.log_json);
     info!(
@@ -149,6 +150,56 @@ fn load_ingestion_source_override() -> Option<String> {
         .unwrap_or_else(|_| DEFAULT_INGESTION_OVERRIDE_PATH.to_string());
     let content = fs::read_to_string(&override_path).ok()?;
     parse_ingestion_source_override(&content)
+}
+
+fn resolve_execution_adapter_secrets(config: &mut ExecutionConfig) -> Result<()> {
+    if !config.enabled || config.mode.trim().to_ascii_lowercase() != "adapter_submit_confirm" {
+        return Ok(());
+    }
+
+    let auth_token_file = config.submit_adapter_auth_token_file.trim();
+    if !auth_token_file.is_empty() {
+        if !config.submit_adapter_auth_token.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_adapter_auth_token and execution.submit_adapter_auth_token_file cannot be set at the same time"
+            ));
+        }
+        config.submit_adapter_auth_token =
+            read_trimmed_secret_file(auth_token_file).with_context(|| {
+                format!(
+                    "failed loading execution.submit_adapter_auth_token_file from {}",
+                    auth_token_file
+                )
+            })?;
+    }
+
+    let hmac_secret_file = config.submit_adapter_hmac_secret_file.trim();
+    if !hmac_secret_file.is_empty() {
+        if !config.submit_adapter_hmac_secret.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_adapter_hmac_secret and execution.submit_adapter_hmac_secret_file cannot be set at the same time"
+            ));
+        }
+        config.submit_adapter_hmac_secret = read_trimmed_secret_file(hmac_secret_file)
+            .with_context(|| {
+                format!(
+                    "failed loading execution.submit_adapter_hmac_secret_file from {}",
+                    hmac_secret_file
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
+fn read_trimmed_secret_file(path: &str) -> Result<String> {
+    let value =
+        fs::read_to_string(path).with_context(|| format!("failed reading secret file {}", path))?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("secret file {} is empty", path));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn parse_ingestion_source_override(content: &str) -> Option<String> {
@@ -2947,6 +2998,7 @@ fn shadow_task(
 #[cfg(test)]
 mod app_tests {
     use super::*;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
 
     fn make_test_store(name: &str) -> Result<(SqliteStore, PathBuf)> {
@@ -2963,6 +3015,62 @@ mod app_tests {
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
         Ok((store, db_path))
+    }
+
+    fn write_temp_secret_file(name: &str, content: &str) -> Result<PathBuf> {
+        let path = std::env::temp_dir().join(format!(
+            "copybot-secret-{}-{}-{}.txt",
+            name,
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        ));
+        let mut file = std::fs::File::create(&path)?;
+        file.write_all(content.as_bytes())?;
+        Ok(path)
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_reads_file_sources() -> Result<()> {
+        let auth_path = write_temp_secret_file("auth-token", "token-from-file\n")?;
+        let hmac_path = write_temp_secret_file("hmac-secret", "hmac-from-file \n")?;
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
+        execution.submit_adapter_hmac_secret_file = hmac_path.to_string_lossy().to_string();
+
+        resolve_execution_adapter_secrets(&mut execution)?;
+        assert_eq!(execution.submit_adapter_auth_token, "token-from-file");
+        assert_eq!(execution.submit_adapter_hmac_secret, "hmac-from-file");
+
+        let _ = std::fs::remove_file(auth_path);
+        let _ = std::fs::remove_file(hmac_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_inline_and_file_conflict() -> Result<()> {
+        let auth_path = write_temp_secret_file("auth-conflict", "token-from-file\n")?;
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token = "inline-token".to_string();
+        execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution)
+            .expect_err("inline+file secret conflict must fail");
+        assert!(
+            error.to_string().contains("cannot be set at the same time"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(auth_path);
+        Ok(())
     }
 
     #[test]

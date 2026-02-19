@@ -55,8 +55,10 @@ pub struct ExecutionConfig {
     pub submit_adapter_http_url: String,
     pub submit_adapter_fallback_http_url: String,
     pub submit_adapter_auth_token: String,
+    pub submit_adapter_auth_token_file: String,
     pub submit_adapter_hmac_key_id: String,
     pub submit_adapter_hmac_secret: String,
+    pub submit_adapter_hmac_secret_file: String,
     pub submit_adapter_hmac_ttl_sec: u64,
     pub submit_allowed_routes: Vec<String>,
     pub submit_route_order: Vec<String>,
@@ -88,8 +90,10 @@ impl Default for ExecutionConfig {
             submit_adapter_http_url: String::new(),
             submit_adapter_fallback_http_url: String::new(),
             submit_adapter_auth_token: String::new(),
+            submit_adapter_auth_token_file: String::new(),
             submit_adapter_hmac_key_id: String::new(),
             submit_adapter_hmac_secret: String::new(),
+            submit_adapter_hmac_secret_file: String::new(),
             submit_adapter_hmac_ttl_sec: 30,
             submit_allowed_routes: vec!["paper".to_string()],
             submit_route_order: Vec::new(),
@@ -622,6 +626,11 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_adapter_auth_token = submit_adapter_auth_token;
     }
+    if let Ok(submit_adapter_auth_token_file) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_AUTH_TOKEN_FILE")
+    {
+        config.execution.submit_adapter_auth_token_file = submit_adapter_auth_token_file;
+    }
     if let Ok(submit_adapter_hmac_key_id) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_KEY_ID")
     {
@@ -631,6 +640,11 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET")
     {
         config.execution.submit_adapter_hmac_secret = submit_adapter_hmac_secret;
+    }
+    if let Ok(submit_adapter_hmac_secret_file) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET_FILE")
+    {
+        config.execution.submit_adapter_hmac_secret_file = submit_adapter_hmac_secret_file;
     }
     if let Some(submit_adapter_hmac_ttl_sec) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_TTL_SEC")
