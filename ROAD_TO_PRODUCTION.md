@@ -553,6 +553,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 32. fee-breakdown hint consistency hardened: adapter response is now fail-closed if `network_fee_lamports` disagrees with `base_fee_lamports + priority_fee_lamports`, and runtime emits `execution_network_fee_hint_mismatch` telemetry when RPC `meta.fee` disagrees with persisted submit hint while still preferring RPC fee for accounting.
 33. per-route fee-source telemetry added to execution batch report/logs for adapter mode: confirmed orders now emit route counters for `network_fee` source (`rpc_meta` / `submit_hint` / `missing`) to support route-profile fee calibration and incident triage.
 34. per-route fee lamports aggregation added for confirmed path: execution batch telemetry now includes route-level sums for `network_fee`, `tip`, `ata_rent`, total fee, and optional `base/priority` hint sums for direct calibration of adapter fee policy; ops helper `tools/execution_fee_calibration_report.sh` added for DB-based route breakdown snapshots.
+35. prod runtime contract tightened for adapter mode: `execution.submit_adapter_require_policy_echo` is now mandatory (`true`) when `execution.mode=adapter_submit_confirm` in `env=prod`, preventing non-strict adapter responses in production profile.
 
 Остается в next-code-queue:
 

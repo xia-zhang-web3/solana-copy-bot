@@ -490,6 +490,11 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 "execution.submit_adapter_contract_version must be <= 64 chars"
             ));
         }
+        if env.trim().eq_ignore_ascii_case("prod") && !config.submit_adapter_require_policy_echo {
+            return Err(anyhow!(
+                "execution.submit_adapter_require_policy_echo must be true in prod when execution.mode=adapter_submit_confirm"
+            ));
+        }
     }
 
     if config.batch_size == 0 {
@@ -3484,6 +3489,31 @@ mod app_tests {
             "unexpected error: {}",
             error
         );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_requires_policy_echo_in_prod_adapter_mode() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_adapter_require_policy_echo = false;
+
+        let error = validate_execution_runtime_contract(&execution, "prod")
+            .expect_err("prod adapter mode must require strict policy echo");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_adapter_require_policy_echo must be true in prod"),
+            "unexpected error: {}",
+            error
+        );
+
+        execution.submit_adapter_require_policy_echo = true;
+        validate_execution_runtime_contract(&execution, "prod")
+            .expect("prod adapter mode with strict policy echo should pass");
     }
 
     #[test]
