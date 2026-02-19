@@ -34,6 +34,60 @@ cfg_value() {
   ' "$CONFIG_PATH"
 }
 
+cfg_list_csv() {
+  local section="$1"
+  local key="$2"
+  awk -v section="[$section]" -v key="$key" '
+    /^\s*\[/ {
+      in_section = ($0 == section)
+    }
+    in_section {
+      line = $0
+      sub(/#.*/, "", line)
+      left = line
+      sub(/=.*/, "", left)
+      gsub(/[[:space:]]/, "", left)
+      if (left == key) {
+        value = line
+        sub(/^[^=]*=/, "", value)
+        gsub(/[[:space:]]/, "", value)
+        gsub(/^\[/, "", value)
+        gsub(/\]$/, "", value)
+        gsub(/"/, "", value)
+        gsub(/'\''/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$CONFIG_PATH"
+}
+
+build_allowed_routes_values() {
+  local csv="$1"
+  local values=""
+  local seen_routes=""
+  local route raw_route normalized escaped_route
+  IFS=',' read -r -a raw_routes <<< "$csv"
+  for raw_route in "${raw_routes[@]}"; do
+    route="${raw_route#"${raw_route%%[![:space:]]*}"}"
+    route="${route%"${route##*[![:space:]]}"}"
+    normalized="$(printf '%s' "$route" | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "$normalized" ]]; then
+      continue
+    fi
+    if printf '%s\n' "$seen_routes" | grep -Fqx -- "$normalized"; then
+      continue
+    fi
+    seen_routes+="${normalized}"$'\n'
+    escaped_route="${normalized//\'/\'\'}"
+    if [[ -n "$values" ]]; then
+      values+=", "
+    fi
+    values+="('${escaped_route}')"
+  done
+  printf "%s" "$values"
+}
+
 DB_PATH="${DB_PATH:-$(cfg_value sqlite path)}"
 if [[ -z "$DB_PATH" ]]; then
   echo "failed to read sqlite.path from $CONFIG_PATH" >&2
@@ -77,6 +131,9 @@ ATA_RENT_RAW_EXPR="$(order_column_expr_or_null ata_create_rent_lamports)"
 NETWORK_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null network_fee_lamports_hint)"
 BASE_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null base_fee_lamports_hint)"
 PRIORITY_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null priority_fee_lamports_hint)"
+
+SUBMIT_ALLOWED_ROUTES_CSV="$(cfg_list_csv execution submit_allowed_routes)"
+ALLOWED_ROUTES_VALUES="$(build_allowed_routes_values "$SUBMIT_ALLOWED_ROUTES_CSV")"
 
 echo "=== execution fee calibration (${WINDOW_HOURS}h) ==="
 echo "config: $CONFIG_PATH"
@@ -420,6 +477,7 @@ SELECT
     ORDER BY
       success_rate_pct DESC,
       timeout_rate_pct ASC,
+      CASE WHEN p95_confirm_latency_ms IS NULL THEN 1 ELSE 0 END ASC,
       p95_confirm_latency_ms ASC,
       attempted_orders DESC,
       route ASC
@@ -443,7 +501,10 @@ SQL
 
 echo
 echo "=== recommended submit_route_order (${WINDOW_HOURS}h submit window) ==="
-RECOMMENDED_ROUTE_ORDER_CSV="$(
+if [[ -z "$ALLOWED_ROUTES_VALUES" ]]; then
+  RECOMMENDED_ROUTE_ORDER_CSV=""
+else
+  RECOMMENDED_ROUTE_ORDER_CSV="$(
   sqlite3 -noheader "$DB_PATH" <<SQL
 WITH window_orders AS (
   SELECT
@@ -499,15 +560,20 @@ p95 AS (
   WHERE row_num >= ((row_count * 95 + 99) / 100)
   GROUP BY route
 ),
+allowed_routes(route) AS (
+  VALUES ${ALLOWED_ROUTES_VALUES}
+),
 ranked_routes AS (
   SELECT
     k.route
   FROM route_kpi k
   LEFT JOIN p95 p ON p.route = k.route
+  INNER JOIN allowed_routes a ON LOWER(TRIM(k.route)) = a.route
   WHERE TRIM(k.route) <> ''
   ORDER BY
     k.success_rate_pct DESC,
     k.timeout_rate_pct ASC,
+    CASE WHEN p.p95_confirm_latency_ms IS NULL THEN 1 ELSE 0 END ASC,
     p.p95_confirm_latency_ms ASC,
     k.attempted_orders DESC,
     k.route ASC
@@ -516,11 +582,16 @@ SELECT COALESCE(group_concat(route, ','), '')
 FROM ranked_routes;
 SQL
 )"
+fi
 
 if [[ -n "$RECOMMENDED_ROUTE_ORDER_CSV" ]]; then
   echo "recommended_route_order_csv: $RECOMMENDED_ROUTE_ORDER_CSV"
   echo "env_override: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER=$RECOMMENDED_ROUTE_ORDER_CSV"
 else
   echo "recommended_route_order_csv: <empty>"
-  echo "note: no route data in submit window; keep current route order"
+  if [[ -z "$ALLOWED_ROUTES_VALUES" ]]; then
+    echo "note: execution.submit_allowed_routes is empty or missing in config; cannot compute filtered recommendation"
+  else
+    echo "note: no allowlisted route data in submit window; keep current route order"
+  fi
 fi

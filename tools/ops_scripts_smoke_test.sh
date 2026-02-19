@@ -64,6 +64,9 @@ max_hold_hours = 8
 shadow_soft_exposure_cap_sol = 10.0
 shadow_hard_exposure_cap_sol = 12.0
 shadow_killswitch_enabled = true
+
+[execution]
+submit_allowed_routes = ["paper"]
 EOF
 }
 
@@ -206,6 +209,7 @@ run_ops_scripts_for_db() {
   assert_contains "$calibration_output" "=== route calibration scorecard (24h submit window) ==="
   assert_contains "$calibration_output" "=== recommended submit_route_order (24h submit window) ==="
   assert_contains "$calibration_output" "recommended_route_order_csv:"
+  assert_contains "$calibration_output" "recommended_route_order_csv: paper"
 
   local snapshot_output
   snapshot_output="$(
