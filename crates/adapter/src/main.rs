@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use std::{
     collections::{HashMap, HashSet},
-    env,
+    env, fs,
     net::SocketAddr,
     sync::Arc,
     time::Duration,
@@ -104,7 +104,12 @@ impl AdapterConfig {
 
         let default_submit = optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL");
         let default_simulate = optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL");
-        let default_auth_token = optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN");
+        let default_auth_token = resolve_secret_source(
+            "COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN",
+            optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN").as_deref(),
+            "COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE",
+            optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE").as_deref(),
+        )?;
 
         let mut route_backends = HashMap::new();
         for route in &route_allowlist {
@@ -112,6 +117,7 @@ impl AdapterConfig {
             let submit_key = format!("COPYBOT_ADAPTER_ROUTE_{}_SUBMIT_URL", route_upper);
             let simulate_key = format!("COPYBOT_ADAPTER_ROUTE_{}_SIMULATE_URL", route_upper);
             let auth_key = format!("COPYBOT_ADAPTER_ROUTE_{}_AUTH_TOKEN", route_upper);
+            let auth_file_key = format!("COPYBOT_ADAPTER_ROUTE_{}_AUTH_TOKEN_FILE", route_upper);
 
             let submit_url = optional_non_empty_env(submit_key.as_str())
                 .or_else(|| default_submit.clone())
@@ -136,8 +142,13 @@ impl AdapterConfig {
             validate_endpoint_url(simulate_url.as_str())
                 .map_err(|error| anyhow!("invalid simulate URL for route={}: {}", route, error))?;
 
-            let auth_token =
-                optional_non_empty_env(auth_key.as_str()).or_else(|| default_auth_token.clone());
+            let auth_token = resolve_secret_source(
+                auth_key.as_str(),
+                optional_non_empty_env(auth_key.as_str()).as_deref(),
+                auth_file_key.as_str(),
+                optional_non_empty_env(auth_file_key.as_str()).as_deref(),
+            )?
+            .or_else(|| default_auth_token.clone());
 
             route_backends.insert(
                 route.clone(),
@@ -149,9 +160,19 @@ impl AdapterConfig {
             );
         }
 
-        let bearer_token = optional_non_empty_env("COPYBOT_ADAPTER_BEARER_TOKEN");
+        let bearer_token = resolve_secret_source(
+            "COPYBOT_ADAPTER_BEARER_TOKEN",
+            optional_non_empty_env("COPYBOT_ADAPTER_BEARER_TOKEN").as_deref(),
+            "COPYBOT_ADAPTER_BEARER_TOKEN_FILE",
+            optional_non_empty_env("COPYBOT_ADAPTER_BEARER_TOKEN_FILE").as_deref(),
+        )?;
         let hmac_key_id = optional_non_empty_env("COPYBOT_ADAPTER_HMAC_KEY_ID");
-        let hmac_secret = optional_non_empty_env("COPYBOT_ADAPTER_HMAC_SECRET");
+        let hmac_secret = resolve_secret_source(
+            "COPYBOT_ADAPTER_HMAC_SECRET",
+            optional_non_empty_env("COPYBOT_ADAPTER_HMAC_SECRET").as_deref(),
+            "COPYBOT_ADAPTER_HMAC_SECRET_FILE",
+            optional_non_empty_env("COPYBOT_ADAPTER_HMAC_SECRET_FILE").as_deref(),
+        )?;
         let hmac_ttl_sec = parse_u64_env("COPYBOT_ADAPTER_HMAC_TTL_SEC", 30)?;
         let allow_unauthenticated = parse_bool_env("COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED", false);
         if (hmac_key_id.is_some() && hmac_secret.is_none())
@@ -1240,6 +1261,45 @@ fn optional_non_empty_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn resolve_secret_source(
+    inline_name: &str,
+    inline_value: Option<&str>,
+    file_name: &str,
+    file_value: Option<&str>,
+) -> Result<Option<String>> {
+    let inline_secret = inline_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let file_path = file_value.map(str::trim).filter(|value| !value.is_empty());
+
+    if inline_secret.is_some() && file_path.is_some() {
+        return Err(anyhow!(
+            "{} and {} cannot both be set",
+            inline_name,
+            file_name
+        ));
+    }
+
+    if let Some(path) = file_path {
+        let secret = read_trimmed_secret_file(path)
+            .with_context(|| format!("{} invalid file source path={}", file_name, path))?;
+        return Ok(Some(secret));
+    }
+
+    Ok(inline_secret)
+}
+
+fn read_trimmed_secret_file(path: &str) -> Result<String> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("secret file not found/readable path={}", path))?;
+    let secret = raw.trim().to_string();
+    if secret.is_empty() {
+        return Err(anyhow!("secret file is empty path={}", path));
+    }
+    Ok(secret)
+}
+
 fn parse_u64_env(name: &str, default: u64) -> Result<u64> {
     match env::var(name) {
         Ok(raw) => raw
@@ -1429,9 +1489,12 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use std::{
+        fs as stdfs,
         io::{Read, Write},
         net::TcpListener,
+        path::PathBuf,
         thread,
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     #[test]
@@ -1497,6 +1560,67 @@ mod tests {
         let ok = "11111111111111111111111111111111";
         assert!(validate_pubkey_like(ok).is_ok());
         assert!(validate_pubkey_like("not-base58").is_err());
+    }
+
+    #[test]
+    fn resolve_secret_source_rejects_inline_and_file_conflict() {
+        let error = resolve_secret_source(
+            "COPYBOT_ADAPTER_BEARER_TOKEN",
+            Some("inline"),
+            "COPYBOT_ADAPTER_BEARER_TOKEN_FILE",
+            Some("/tmp/adapter-bearer.secret"),
+        )
+        .expect_err("inline + file must fail-closed");
+        let message = error.to_string();
+        assert!(
+            message.contains("COPYBOT_ADAPTER_BEARER_TOKEN")
+                && message.contains("COPYBOT_ADAPTER_BEARER_TOKEN_FILE")
+        );
+    }
+
+    #[test]
+    fn resolve_secret_source_reads_trimmed_file() {
+        let path = write_temp_secret_file(" \nsecret-value\n");
+        let resolved = resolve_secret_source(
+            "COPYBOT_ADAPTER_BEARER_TOKEN",
+            None,
+            "COPYBOT_ADAPTER_BEARER_TOKEN_FILE",
+            Some(path.to_str().expect("utf8 path")),
+        )
+        .expect("file-backed secret must resolve");
+        assert_eq!(resolved.as_deref(), Some("secret-value"));
+        cleanup_temp_secret_file(path);
+    }
+
+    #[test]
+    fn resolve_secret_source_rejects_empty_file() {
+        let path = write_temp_secret_file(" \n\t ");
+        let error = resolve_secret_source(
+            "COPYBOT_ADAPTER_HMAC_SECRET",
+            None,
+            "COPYBOT_ADAPTER_HMAC_SECRET_FILE",
+            Some(path.to_str().expect("utf8 path")),
+        )
+        .expect_err("empty secret file must fail");
+        let message = format!("{:#}", error);
+        assert!(message.contains("COPYBOT_ADAPTER_HMAC_SECRET_FILE"));
+        assert!(message.contains("secret file is empty"));
+        cleanup_temp_secret_file(path);
+    }
+
+    #[test]
+    fn resolve_secret_source_rejects_missing_file() {
+        let path = temp_secret_path("missing");
+        let error = resolve_secret_source(
+            "COPYBOT_ADAPTER_HMAC_SECRET",
+            None,
+            "COPYBOT_ADAPTER_HMAC_SECRET_FILE",
+            Some(path.to_str().expect("utf8 path")),
+        )
+        .expect_err("missing secret file must fail");
+        let message = format!("{:#}", error);
+        assert!(message.contains("COPYBOT_ADAPTER_HMAC_SECRET_FILE"));
+        assert!(message.contains("secret file not found/readable"));
     }
 
     #[test]
@@ -1649,5 +1773,28 @@ mod tests {
             }
         });
         Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn temp_secret_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("monotonic time")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "copybot_adapter_secret_{}_{}_{}.tmp",
+            prefix,
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    fn write_temp_secret_file(contents: &str) -> PathBuf {
+        let path = temp_secret_path("value");
+        stdfs::write(&path, contents).expect("write temp secret");
+        path
+    }
+
+    fn cleanup_temp_secret_file(path: PathBuf) {
+        let _ = stdfs::remove_file(path);
     }
 }

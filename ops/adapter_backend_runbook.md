@@ -30,9 +30,12 @@ At minimum:
 Optional security:
 
 1. `COPYBOT_ADAPTER_BEARER_TOKEN=<token>` (required from execution client)
-2. `COPYBOT_ADAPTER_HMAC_KEY_ID=<key-id>`
-3. `COPYBOT_ADAPTER_HMAC_SECRET=<secret>`
-4. `COPYBOT_ADAPTER_HMAC_TTL_SEC=30`
+2. `COPYBOT_ADAPTER_BEARER_TOKEN_FILE=/etc/solana-copy-bot/secrets/adapter_bearer.token` (file-based alternative)
+3. `COPYBOT_ADAPTER_HMAC_KEY_ID=<key-id>`
+4. `COPYBOT_ADAPTER_HMAC_SECRET=<secret>`
+5. `COPYBOT_ADAPTER_HMAC_TTL_SEC=30`
+6. `COPYBOT_ADAPTER_HMAC_SECRET_FILE=/etc/solana-copy-bot/secrets/adapter_hmac.secret` (file-based alternative)
+7. `COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/upstream_auth.token` (optional upstream auth default)
 
 Auth policy:
 
@@ -40,7 +43,10 @@ Auth policy:
 2. You must configure at least one inbound auth method:
    1. Bearer (`COPYBOT_ADAPTER_BEARER_TOKEN`) OR
    2. HMAC pair (`COPYBOT_ADAPTER_HMAC_KEY_ID` + `COPYBOT_ADAPTER_HMAC_SECRET`)
-3. Unauthenticated mode is allowed only with explicit override:
+3. Secret source rules are fail-closed:
+   1. inline + file for same secret is startup error,
+   2. secret file is trimmed; empty file is startup error.
+4. Unauthenticated mode is allowed only with explicit override:
    1. `COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=true`
    2. use only for controlled local/non-production tests.
 
@@ -49,7 +55,8 @@ Optional per-route upstream overrides:
 1. `COPYBOT_ADAPTER_ROUTE_RPC_SUBMIT_URL=...`
 2. `COPYBOT_ADAPTER_ROUTE_RPC_SIMULATE_URL=...`
 3. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN=...`
-4. same pattern for `PAPER`, `JITO`, `FASTLANE`, etc.
+4. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_auth.token`
+5. same pattern for `PAPER`, `JITO`, `FASTLANE`, etc.
 
 ## 3) Local Run
 

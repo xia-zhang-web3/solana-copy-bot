@@ -47,6 +47,10 @@ cargo run -p copybot-adapter
 
 Adapter startup is fail-closed without inbound auth by default.
 Set Bearer token or HMAC pair, or explicitly set `COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=true` only for controlled local tests.
+File-based secret sources are also supported:
+`COPYBOT_ADAPTER_BEARER_TOKEN_FILE`, `COPYBOT_ADAPTER_HMAC_SECRET_FILE`,
+`COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE`,
+`COPYBOT_ADAPTER_ROUTE_<ROUTE>_AUTH_TOKEN_FILE`.
 
 Run shadow ingestion against Helius WebSocket + HTTP RPC (no execution logic, only ingest + persist):
 
