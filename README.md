@@ -31,6 +31,19 @@ cd solana-copy-bot
 SOLANA_COPY_BOT_CONFIG=configs/paper.toml cargo run -p copybot-app
 ```
 
+Run adapter backend (contract gateway for `adapter_submit_confirm` mode):
+
+```bash
+cd solana-copy-bot
+COPYBOT_ADAPTER_BIND_ADDR=127.0.0.1:8080 \
+COPYBOT_ADAPTER_CONTRACT_VERSION=v1 \
+COPYBOT_ADAPTER_SIGNER_PUBKEY=<YOUR_SIGNER_PUBKEY> \
+COPYBOT_ADAPTER_ROUTE_ALLOWLIST=rpc,paper \
+COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL=https://<UPSTREAM_EXECUTOR>/submit \
+COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL=https://<UPSTREAM_EXECUTOR>/simulate \
+cargo run -p copybot-adapter
+```
+
 Run shadow ingestion against Helius WebSocket + HTTP RPC (no execution logic, only ingest + persist):
 
 ```bash
@@ -168,6 +181,7 @@ Cutover runbook:
 - `crates/config`: typed TOML config loader.
 - `crates/storage`: SQLite store + migration runner.
 - `crates/core-types`: shared event and domain types.
+- `crates/adapter`: adapter backend HTTP service (`/simulate`, `/submit`, `/healthz`).
 - `migrations`: SQL schema files.
 - `configs`: dev/paper/prod presets.
 
@@ -185,4 +199,5 @@ Cutover runbook:
 - discovery cycle runs every `discovery.refresh_seconds` and recalculates score/follow-list.
 - If URLs are invalid/missing key, bot fails closed for entries and keeps retrying stream connection.
 - Execution runtime is implemented (paper lifecycle + adapter submit/confirm hardening path).
+- Adapter backend deploy/runbook: `ops/adapter_backend_runbook.md`.
 - Keep keys out of repository and mounted via environment/secret files.

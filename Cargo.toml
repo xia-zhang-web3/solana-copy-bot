@@ -7,6 +7,7 @@ members = [
   "crates/discovery",
   "crates/shadow",
   "crates/execution",
+  "crates/adapter",
   "crates/app",
 ]
 resolver = "2"
