@@ -510,7 +510,7 @@ run_go_nogo_unknown_precedence_case() {
   local output
   output="$(
     PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
-      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="unknown-value" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="skip" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="unknown-value" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="skip" \
       bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
   )"
   assert_contains "$output" "fee_decomposition_verdict: UNKNOWN"

@@ -61,6 +61,21 @@ normalize_gate_verdict() {
   esac
 }
 
+normalize_bool_token() {
+  local raw="$1"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    *)
+      printf 'false'
+      ;;
+  esac
+}
+
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
@@ -87,11 +102,14 @@ parse_fallback_by_reason="$(extract_field "parse_fallback_by_reason" "$snapshot_
 replaced_ratio_last_interval="$(extract_field "replaced_ratio_last_interval" "$snapshot_output")"
 
 # Test-only overrides for smoke validation of verdict precedence branches.
-if [[ -n "${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" ]]; then
-  fee_decomposition_verdict="$(normalize_gate_verdict "$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE")"
-fi
-if [[ -n "${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" ]]; then
-  route_profile_verdict="$(normalize_gate_verdict "$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE")"
+go_nogo_test_mode="$(normalize_bool_token "${GO_NOGO_TEST_MODE:-false}")"
+if [[ "$go_nogo_test_mode" == "true" ]]; then
+  if [[ -n "${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" ]]; then
+    fee_decomposition_verdict="$(normalize_gate_verdict "$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE")"
+  fi
+  if [[ -n "${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" ]]; then
+    route_profile_verdict="$(normalize_gate_verdict "$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE")"
+  fi
 fi
 
 overall_go_nogo_verdict="HOLD"
