@@ -148,6 +148,7 @@ impl AdapterIntentSimulator {
         payload: &Value,
         expected_route: &str,
     ) -> Result<SimulationResult> {
+        let endpoint_label = redacted_endpoint_label(endpoint);
         let payload_json = serde_json::to_string(payload)
             .map_err(|error| anyhow!("failed serializing simulate payload: {}", error))?;
         let mut request = self
@@ -179,7 +180,7 @@ impl AdapterIntentSimulator {
         }
         let response = request
             .send()
-            .map_err(|error| anyhow!("endpoint={} request_error={}", endpoint, error))?;
+            .map_err(|error| anyhow!("endpoint={} request_error={}", endpoint_label, error))?;
         let status = response.status();
         if !status.is_success() {
             let status_code = status.as_u16();
@@ -187,7 +188,7 @@ impl AdapterIntentSimulator {
             if status_code == 429 || status.is_server_error() {
                 return Err(anyhow!(
                     "endpoint={} simulate_http_unavailable status={} body={}",
-                    endpoint,
+                    endpoint_label,
                     status_code,
                     body_text
                 ));
@@ -207,7 +208,7 @@ impl AdapterIntentSimulator {
                     accepted: false,
                     detail: format!(
                         "simulation_invalid_json endpoint={} parse_error={}",
-                        endpoint, error
+                        endpoint_label, error
                     ),
                 });
             }
@@ -408,6 +409,23 @@ fn is_valid_contract_version_token(value: &str) -> bool {
     value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn redacted_endpoint_label(endpoint: &str) -> String {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return "unknown".to_string();
+    }
+    match reqwest::Url::parse(endpoint) {
+        Ok(url) => {
+            let host = url.host_str().unwrap_or("unknown");
+            match url.port() {
+                Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+                None => format!("{}://{}", url.scheme(), host),
+            }
+        }
+        Err(_) => "invalid_endpoint".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -678,6 +696,12 @@ mod tests {
             2_000,
         );
         assert!(invalid.is_none());
+    }
+
+    #[test]
+    fn redacted_endpoint_label_drops_path_and_query() {
+        let label = redacted_endpoint_label("https://adapter.example.org/simulate?token=secret");
+        assert_eq!(label, "https://adapter.example.org");
     }
 
     #[test]
