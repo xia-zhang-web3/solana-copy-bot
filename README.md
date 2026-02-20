@@ -41,8 +41,12 @@ COPYBOT_ADAPTER_SIGNER_PUBKEY=<YOUR_SIGNER_PUBKEY> \
 COPYBOT_ADAPTER_ROUTE_ALLOWLIST=rpc,paper \
 COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL=https://<UPSTREAM_EXECUTOR>/submit \
 COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL=https://<UPSTREAM_EXECUTOR>/simulate \
+COPYBOT_ADAPTER_BEARER_TOKEN=<INBOUND_AUTH_TOKEN> \
 cargo run -p copybot-adapter
 ```
+
+Adapter startup is fail-closed without inbound auth by default.
+Set Bearer token or HMAC pair, or explicitly set `COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=true` only for controlled local tests.
 
 Run shadow ingestion against Helius WebSocket + HTTP RPC (no execution logic, only ingest + persist):
 

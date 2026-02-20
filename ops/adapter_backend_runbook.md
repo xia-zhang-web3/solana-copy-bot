@@ -34,6 +34,16 @@ Optional security:
 3. `COPYBOT_ADAPTER_HMAC_SECRET=<secret>`
 4. `COPYBOT_ADAPTER_HMAC_TTL_SEC=30`
 
+Auth policy:
+
+1. By default adapter startup is fail-closed without auth.
+2. You must configure at least one inbound auth method:
+   1. Bearer (`COPYBOT_ADAPTER_BEARER_TOKEN`) OR
+   2. HMAC pair (`COPYBOT_ADAPTER_HMAC_KEY_ID` + `COPYBOT_ADAPTER_HMAC_SECRET`)
+3. Unauthenticated mode is allowed only with explicit override:
+   1. `COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=true`
+   2. use only for controlled local/non-production tests.
+
 Optional per-route upstream overrides:
 
 1. `COPYBOT_ADAPTER_ROUTE_RPC_SUBMIT_URL=...`

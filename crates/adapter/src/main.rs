@@ -29,6 +29,7 @@ const CU_LIMIT_MIN: u32 = 1;
 const CU_LIMIT_MAX: u32 = 1_400_000;
 const CU_PRICE_MIN: u64 = 1;
 const CU_PRICE_MAX: u64 = 10_000_000;
+const POLICY_FLOAT_EPSILON: f64 = 1e-6;
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_TIMEOUT_MS: u64 = 8_000;
 const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
@@ -152,6 +153,7 @@ impl AdapterConfig {
         let hmac_key_id = optional_non_empty_env("COPYBOT_ADAPTER_HMAC_KEY_ID");
         let hmac_secret = optional_non_empty_env("COPYBOT_ADAPTER_HMAC_SECRET");
         let hmac_ttl_sec = parse_u64_env("COPYBOT_ADAPTER_HMAC_TTL_SEC", 30)?;
+        let allow_unauthenticated = parse_bool_env("COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED", false);
         if (hmac_key_id.is_some() && hmac_secret.is_none())
             || (hmac_key_id.is_none() && hmac_secret.is_some())
         {
@@ -164,6 +166,11 @@ impl AdapterConfig {
                 "COPYBOT_ADAPTER_HMAC_TTL_SEC must be in 5..=300 when HMAC auth is enabled"
             ));
         }
+        require_authenticated_mode(
+            bearer_token.as_deref(),
+            hmac_key_id.as_deref(),
+            allow_unauthenticated,
+        )?;
 
         let request_timeout_ms =
             parse_u64_env("COPYBOT_ADAPTER_REQUEST_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;
@@ -238,7 +245,7 @@ impl AuthVerifier {
             let provided = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
                 Reject::terminal("auth_invalid", "Authorization header must use Bearer token")
             })?;
-            if provided.trim() != expected {
+            if !constant_time_eq(provided.trim().as_bytes(), expected.as_bytes()) {
                 return Err(Reject::terminal("auth_invalid", "Bearer token mismatch"));
             }
         }
@@ -500,7 +507,7 @@ async fn simulate(
     match handle_simulate(&state, &request, raw_body.as_ref()).await {
         Ok(value) => (StatusCode::OK, Json(value)),
         Err(reject) => (
-            StatusCode::OK,
+            simulate_http_status_for_reject(&reject),
             Json(reject_to_json(
                 &reject,
                 None,
@@ -696,7 +703,9 @@ async fn handle_submit(
             "route_slippage_cap_bps must be finite and > 0",
         ));
     }
-    if request.slippage_bps - request.route_slippage_cap_bps > 1e-9 {
+    // Keep same tolerance as execution submitter echo checks to avoid float drift false rejects.
+    // This checks only that caller did not exceed route cap.
+    if request.slippage_bps - request.route_slippage_cap_bps > POLICY_FLOAT_EPSILON {
         return Err(Reject::terminal(
             "slippage_exceeds_route_cap",
             format!(
@@ -987,6 +996,36 @@ async fn forward_to_upstream(
     })?;
 
     let status = response.status();
+
+    if !status.is_success() {
+        let body_text = response.text().await.unwrap_or_default();
+        let retryable = status.as_u16() == 429 || status.is_server_error();
+        let reject = if retryable {
+            Reject::retryable(
+                "upstream_http_unavailable",
+                format!(
+                    "upstream {} status={} endpoint={} body={}",
+                    action.as_str(),
+                    status,
+                    endpoint_label,
+                    body_text
+                ),
+            )
+        } else {
+            Reject::terminal(
+                "upstream_http_rejected",
+                format!(
+                    "upstream {} status={} endpoint={} body={}",
+                    action.as_str(),
+                    status,
+                    endpoint_label,
+                    body_text
+                ),
+            )
+        };
+        return Err(reject);
+    }
+
     let body: Value = response.json().await.map_err(|error| {
         Reject::terminal(
             "upstream_invalid_json",
@@ -998,34 +1037,6 @@ async fn forward_to_upstream(
             ),
         )
     })?;
-
-    if !status.is_success() {
-        let retryable = status.as_u16() == 429 || status.is_server_error();
-        let reject = if retryable {
-            Reject::retryable(
-                "upstream_http_unavailable",
-                format!(
-                    "upstream {} status={} endpoint={} body={}",
-                    action.as_str(),
-                    status,
-                    endpoint_label,
-                    body
-                ),
-            )
-        } else {
-            Reject::terminal(
-                "upstream_http_rejected",
-                format!(
-                    "upstream {} status={} endpoint={} body={}",
-                    action.as_str(),
-                    status,
-                    endpoint_label,
-                    body
-                ),
-            )
-        };
-        return Err(reject);
-    }
 
     Ok(body)
 }
@@ -1192,6 +1203,14 @@ fn reject_to_json(reject: &Reject, client_order_id: Option<&str>, contract_versi
         payload["client_order_id"] = Value::String(client_order_id.to_string());
     }
     payload
+}
+
+fn simulate_http_status_for_reject(reject: &Reject) -> StatusCode {
+    if reject.retryable {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    }
 }
 
 fn parse_socket_addr(value: String) -> Result<SocketAddr> {
@@ -1389,9 +1408,31 @@ fn validate_pubkey_like(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn require_authenticated_mode(
+    bearer_token: Option<&str>,
+    hmac_key_id: Option<&str>,
+    allow_unauthenticated: bool,
+) -> Result<()> {
+    if allow_unauthenticated {
+        return Ok(());
+    }
+    if bearer_token.is_none() && hmac_key_id.is_none() {
+        return Err(anyhow!(
+            "adapter auth is required: set COPYBOT_ADAPTER_BEARER_TOKEN or HMAC pair (COPYBOT_ADAPTER_HMAC_KEY_ID/COPYBOT_ADAPTER_HMAC_SECRET); or explicitly set COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=true for controlled non-production setups"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
 
     #[test]
     fn contract_version_token_validation() {
@@ -1456,5 +1497,157 @@ mod tests {
         let ok = "11111111111111111111111111111111";
         assert!(validate_pubkey_like(ok).is_ok());
         assert!(validate_pubkey_like("not-base58").is_err());
+    }
+
+    #[test]
+    fn require_authenticated_mode_fails_closed_by_default() {
+        assert!(require_authenticated_mode(None, None, false).is_err());
+        assert!(require_authenticated_mode(Some("token"), None, false).is_ok());
+        assert!(require_authenticated_mode(None, Some("kid"), false).is_ok());
+        assert!(require_authenticated_mode(None, None, true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_rejects_wrong_bearer_token() {
+        let verifier = AuthVerifier {
+            bearer_token: Some("correct-token".to_string()),
+            hmac: None,
+            nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer wrong-token"),
+        );
+        let reject = verifier
+            .verify(&headers, b"{}")
+            .await
+            .expect_err("wrong bearer token must fail");
+        assert_eq!(reject.code, "auth_invalid");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_accepts_correct_bearer_token() {
+        let verifier = AuthVerifier {
+            bearer_token: Some("correct-token".to_string()),
+            hmac: None,
+            nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer correct-token"),
+        );
+        verifier
+            .verify(&headers, b"{\"ping\":true}")
+            .await
+            .expect("correct bearer token should pass");
+    }
+
+    #[test]
+    fn simulate_status_is_503_for_retryable_reject() {
+        let reject = Reject::retryable("busy", "upstream temporary issue");
+        assert_eq!(
+            simulate_http_status_for_reject(&reject),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let reject = Reject::terminal("invalid", "bad request");
+        assert_eq!(simulate_http_status_for_reject(&reject), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_treats_plaintext_503_as_retryable() {
+        let Some((url, handle)) =
+            spawn_one_shot_upstream_raw(503, "text/plain", "temporary upstream outage")
+        else {
+            return;
+        };
+        let state = test_state(url.as_str());
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}")
+            .await
+            .expect_err("503 upstream should be retryable");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_http_unavailable");
+        assert!(
+            reject.detail.contains("temporary upstream outage"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    fn test_state(endpoint: &str) -> AppState {
+        let mut route_allowlist = HashSet::new();
+        route_allowlist.insert("rpc".to_string());
+        let mut route_backends = HashMap::new();
+        route_backends.insert(
+            "rpc".to_string(),
+            RouteBackend {
+                submit_url: endpoint.to_string(),
+                simulate_url: endpoint.to_string(),
+                auth_token: None,
+            },
+        );
+        let config = AdapterConfig {
+            bind_addr: "127.0.0.1:8080".parse().expect("valid bind"),
+            contract_version: "v1".to_string(),
+            signer_pubkey: "11111111111111111111111111111111".to_string(),
+            route_allowlist,
+            route_backends,
+            bearer_token: None,
+            hmac_key_id: None,
+            hmac_secret: None,
+            hmac_ttl_sec: 30,
+            request_timeout_ms: 2_000,
+            max_notional_sol: 10.0,
+            allow_nonzero_tip: true,
+        };
+        let auth = Arc::new(AuthVerifier::new(&config));
+        let http = Client::builder()
+            .timeout(Duration::from_millis(2_000))
+            .build()
+            .expect("http client");
+        AppState { config, http, auth }
+    }
+
+    fn spawn_one_shot_upstream_raw(
+        status: u16,
+        content_type: &str,
+        body: &str,
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let response_body = body.to_string();
+        let content_type = content_type.to_string();
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            _ => "Unknown",
+        }
+        .to_string();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let _ = stream.read(&mut request_buf);
+                let response = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    reason,
+                    content_type,
+                    response_body.len(),
+                    response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
     }
 }
