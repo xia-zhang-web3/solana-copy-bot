@@ -1315,6 +1315,62 @@ run_adapter_rollout_evidence_case() {
     exit 1
   fi
 
+  local rehearsal_hold_output=""
+  if rehearsal_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="SKIP" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="SKIP" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for rollout helper when rehearsal verdict is HOLD" >&2
+    exit 1
+  else
+    local rehearsal_hold_exit_code=$?
+    if [[ "$rehearsal_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for rehearsal HOLD branch, got $rehearsal_hold_exit_code" >&2
+      echo "$rehearsal_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$rehearsal_hold_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$rehearsal_hold_output" "devnet_rehearsal_verdict: HOLD"
+  assert_contains "$rehearsal_hold_output" "adapter_rollout_verdict: HOLD"
+
+  local rehearsal_nogo_output=""
+  if rehearsal_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="WARN" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when rehearsal verdict is NO_GO" >&2
+    exit 1
+  else
+    local rehearsal_nogo_exit_code=$?
+    if [[ "$rehearsal_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for rehearsal NO_GO branch, got $rehearsal_nogo_exit_code" >&2
+      echo "$rehearsal_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$rehearsal_nogo_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$rehearsal_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_contains "$rehearsal_nogo_output" "adapter_rollout_verdict: NO_GO"
+
   chmod 644 "$secrets_dir/adapter_bearer.token"
   local warn_output=""
   if warn_output="$(
@@ -1371,6 +1427,33 @@ run_adapter_rollout_evidence_case() {
   fi
   assert_contains "$fail_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$fail_output" "adapter_rollout_verdict: NO_GO"
+
+  local missing_env_output=""
+  if missing_env_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$TMP_DIR/adapter-rollout-missing.env" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper with missing adapter env input" >&2
+    exit 1
+  else
+    local missing_env_exit_code=$?
+    if [[ "$missing_env_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for missing env input, got $missing_env_exit_code" >&2
+      echo "$missing_env_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$missing_env_output" "adapter_rollout_verdict: NO_GO"
+  assert_contains "$missing_env_output" "input_error: adapter env file not found:"
   echo "[ok] adapter rollout evidence helper"
 }
 

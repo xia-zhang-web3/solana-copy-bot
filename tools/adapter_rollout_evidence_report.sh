@@ -12,26 +12,6 @@ OUTPUT_DIR="${OUTPUT_DIR:-}"
 RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
 
-if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
-  echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
-  exit 1
-fi
-
-if ! [[ "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
-  echo "risk events minutes must be an integer (got: $RISK_EVENTS_MINUTES)" >&2
-  exit 1
-fi
-
-if [[ ! -f "$ADAPTER_ENV_PATH" ]]; then
-  echo "adapter env file not found: $ADAPTER_ENV_PATH" >&2
-  exit 1
-fi
-
-if [[ ! -f "$CONFIG_PATH" ]]; then
-  echo "config file not found: $CONFIG_PATH" >&2
-  exit 1
-fi
-
 extract_field() {
   local key="$1"
   local text="$2"
@@ -81,6 +61,20 @@ normalize_rehearsal_verdict() {
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
+declare -a input_errors=()
+if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
+  input_errors+=("window hours must be an integer (got: $WINDOW_HOURS)")
+fi
+if ! [[ "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+  input_errors+=("risk events minutes must be an integer (got: $RISK_EVENTS_MINUTES)")
+fi
+if [[ ! -f "$ADAPTER_ENV_PATH" ]]; then
+  input_errors+=("adapter env file not found: $ADAPTER_ENV_PATH")
+fi
+if [[ ! -f "$CONFIG_PATH" ]]; then
+  input_errors+=("config file not found: $CONFIG_PATH")
+fi
+
 rotation_output_dir=""
 rehearsal_output_dir=""
 if [[ -n "$OUTPUT_DIR" ]]; then
@@ -90,66 +84,101 @@ if [[ -n "$OUTPUT_DIR" ]]; then
 fi
 
 rotation_output=""
-rotation_exit_code=0
-if rotation_output="$(
-  ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
-    OUTPUT_DIR="$rotation_output_dir" \
-    bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
-)"; then
-  rotation_exit_code=0
-else
-  rotation_exit_code=$?
-fi
+rotation_exit_code=3
+rotation_verdict="UNKNOWN"
+rotation_reason="rotation helper not executed"
+if [[ -f "$ADAPTER_ENV_PATH" ]]; then
+  if rotation_output="$(
+    ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
+      OUTPUT_DIR="$rotation_output_dir" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
+  )"; then
+    rotation_exit_code=0
+  else
+    rotation_exit_code=$?
+  fi
 
-rotation_verdict="$(normalize_rotation_verdict "$(extract_field "rotation_readiness_verdict" "$rotation_output")")"
-rotation_reason="$(extract_field "rotation_readiness_reason" "$rotation_output")"
-rotation_first_error="$(printf '%s\n' "$rotation_output" | awk -F': ' '$1=="error" {print substr($0, index($0, ": ") + 2); exit}')"
-rotation_first_warning="$(printf '%s\n' "$rotation_output" | awk -F': ' '$1=="warning" {print substr($0, index($0, ": ") + 2); exit}')"
-if [[ "$rotation_verdict" == "FAIL" ]]; then
-  rotation_reason="$(trim_string "${rotation_first_error:-${rotation_reason:-rotation helper reported FAIL}}")"
-elif [[ "$rotation_verdict" == "WARN" ]]; then
-  rotation_reason="$(trim_string "${rotation_first_warning:-${rotation_reason:-rotation helper reported WARN}}")"
-elif [[ "$rotation_verdict" == "UNKNOWN" ]]; then
-  rotation_reason="unable to classify rotation helper verdict (exit=$rotation_exit_code)"
-elif [[ -z "${rotation_reason:-}" ]]; then
-  rotation_reason="rotation helper PASS"
+  rotation_verdict="$(normalize_rotation_verdict "$(extract_field "rotation_readiness_verdict" "$rotation_output")")"
+  rotation_reason="$(extract_field "rotation_readiness_reason" "$rotation_output")"
+  rotation_first_error="$(printf '%s\n' "$rotation_output" | awk '
+    /^--- errors ---$/ {in_errors=1; next}
+    /^--- / && in_errors {exit}
+    in_errors && NF {print; exit}
+  ')"
+  rotation_first_warning="$(printf '%s\n' "$rotation_output" | awk '
+    /^--- warnings ---$/ {in_warnings=1; next}
+    /^--- / && in_warnings {exit}
+    in_warnings && NF {print; exit}
+  ')"
+  if [[ "$rotation_verdict" == "FAIL" ]]; then
+    rotation_reason="$(trim_string "${rotation_first_error:-${rotation_reason:-rotation helper reported FAIL}}")"
+  elif [[ "$rotation_verdict" == "WARN" ]]; then
+    rotation_reason="$(trim_string "${rotation_first_warning:-${rotation_reason:-rotation helper reported WARN}}")"
+  elif [[ "$rotation_verdict" == "UNKNOWN" ]]; then
+    rotation_reason="unable to classify rotation helper verdict (exit=$rotation_exit_code)"
+  elif [[ -z "${rotation_reason:-}" ]]; then
+    rotation_reason="rotation helper PASS"
+  fi
+else
+  rotation_exit_code=1
+  rotation_verdict="FAIL"
+  rotation_reason="adapter env file not found: $ADAPTER_ENV_PATH"
 fi
 
 rehearsal_output=""
-rehearsal_exit_code=0
-if rehearsal_output="$(
-  PATH="$PATH" \
-    DB_PATH="${DB_PATH:-}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    SERVICE="$SERVICE" \
-    OUTPUT_DIR="$rehearsal_output_dir" \
-    RUN_TESTS="$RUN_TESTS" \
-    DEVNET_REHEARSAL_TEST_MODE="$DEVNET_REHEARSAL_TEST_MODE" \
-    GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
-    GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
-    GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
-    bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
-)"; then
-  rehearsal_exit_code=0
+rehearsal_exit_code=3
+rehearsal_verdict="UNKNOWN"
+rehearsal_reason="execution devnet rehearsal helper not executed"
+preflight_verdict=""
+go_nogo_verdict=""
+tests_run=""
+tests_failed=""
+if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+  rehearsal_exit_code=3
+  rehearsal_verdict="NO_GO"
+  rehearsal_reason="invalid rehearsal window arguments"
+elif [[ ! -f "$CONFIG_PATH" ]]; then
+  rehearsal_exit_code=3
+  rehearsal_verdict="NO_GO"
+  rehearsal_reason="config file not found: $CONFIG_PATH"
 else
-  rehearsal_exit_code=$?
-fi
+  if rehearsal_output="$(
+    PATH="$PATH" \
+      DB_PATH="${DB_PATH:-}" \
+      CONFIG_PATH="$CONFIG_PATH" \
+      SERVICE="$SERVICE" \
+      OUTPUT_DIR="$rehearsal_output_dir" \
+      RUN_TESTS="$RUN_TESTS" \
+      DEVNET_REHEARSAL_TEST_MODE="$DEVNET_REHEARSAL_TEST_MODE" \
+      GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+  )"; then
+    rehearsal_exit_code=0
+  else
+    rehearsal_exit_code=$?
+  fi
 
-rehearsal_verdict="$(normalize_rehearsal_verdict "$(extract_field "devnet_rehearsal_verdict" "$rehearsal_output")")"
-rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
-preflight_verdict="$(trim_string "$(extract_field "preflight_verdict" "$rehearsal_output")")"
-go_nogo_verdict="$(trim_string "$(extract_field "overall_go_nogo_verdict" "$rehearsal_output")")"
-tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
-tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
-if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
-  rehearsal_reason="unable to classify rehearsal verdict (exit=$rehearsal_exit_code)"
-elif [[ -z "$rehearsal_reason" ]]; then
-  rehearsal_reason="execution devnet rehearsal reported $rehearsal_verdict"
+  rehearsal_verdict="$(normalize_rehearsal_verdict "$(extract_field "devnet_rehearsal_verdict" "$rehearsal_output")")"
+  rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
+  preflight_verdict="$(trim_string "$(extract_field "preflight_verdict" "$rehearsal_output")")"
+  go_nogo_verdict="$(trim_string "$(extract_field "overall_go_nogo_verdict" "$rehearsal_output")")"
+  tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
+  tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
+  if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
+    rehearsal_reason="unable to classify rehearsal verdict (exit=$rehearsal_exit_code)"
+  elif [[ -z "$rehearsal_reason" ]]; then
+    rehearsal_reason="execution devnet rehearsal reported $rehearsal_verdict"
+  fi
 fi
 
 adapter_rollout_verdict="NO_GO"
 adapter_rollout_reason="unrecognized rollout gate state"
-if [[ "$rotation_verdict" == "FAIL" ]]; then
+if ((${#input_errors[@]} > 0)); then
+  adapter_rollout_verdict="NO_GO"
+  adapter_rollout_reason="${input_errors[0]}"
+elif [[ "$rotation_verdict" == "FAIL" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="rotation readiness failed: ${rotation_reason:-n/a}"
 elif [[ "$rotation_verdict" == "UNKNOWN" ]]; then
@@ -193,6 +222,7 @@ preflight_verdict: ${preflight_verdict:-unknown}
 overall_go_nogo_verdict: ${go_nogo_verdict:-unknown}
 tests_run: ${tests_run:-unknown}
 tests_failed: ${tests_failed:-unknown}
+input_error_count: ${#input_errors[@]}
 
 adapter_rollout_verdict: $adapter_rollout_verdict
 adapter_rollout_reason: $adapter_rollout_reason
@@ -200,6 +230,11 @@ EOF
 )"
 
 echo "$summary_output"
+if ((${#input_errors[@]} > 0)); then
+  for input_error in "${input_errors[@]}"; do
+    echo "input_error: $input_error"
+  done
+fi
 
 if [[ -n "$OUTPUT_DIR" ]]; then
   mkdir -p "$OUTPUT_DIR"
