@@ -62,13 +62,14 @@ Out of scope:
    1. non-colon delimiter variants produce different IDs
    2. colon-delimited legacy IDs stay stable
 6. CU bounds parity (`crates/config/src/lib.rs`, `crates/app/src/main.rs`, `crates/execution/src/submitter.rs`)
-   1. same min/max constants used across parse/validate/submitter-normalization
+   1. same min/max constants used across config load type-parse, runtime validate, and submitter normalization
 
 ## Targeted Test Commands
 
 ```bash
 cargo test -p copybot-app -q risk_guard_infra_blocks_when_parser_stall_detected
 cargo test -p copybot-app -q risk_guard_infra_parser_stall_does_not_block_below_ratio_threshold
+cargo test -p copybot-app -q risk_guard_infra_parser_stall_blocks_at_ratio_threshold_boundary
 cargo test -p copybot-app -q stale_lot_cleanup_ignores_micro_swap_outlier_price
 cargo test -p copybot-app -q stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing
 
@@ -92,7 +93,7 @@ WHERE type = 'shadow_stale_close_price_unavailable';
 -- parser-stall/no-progress infra events
 SELECT type, COUNT(*) AS cnt
 FROM risk_events
-WHERE type IN ('shadow_infra_event')
+WHERE type IN ('shadow_risk_infra_stop', 'shadow_risk_infra_cleared')
 GROUP BY type;
 ```
 
