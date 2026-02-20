@@ -416,7 +416,7 @@ impl ExecutionRuntime {
                 return Ok(SignalResult::Dropped);
             }
 
-            if let Some(reason) = self.execution_risk_block_reason(store, &intent)? {
+            if let Some(reason) = self.execution_risk_block_reason(store, &intent, now)? {
                 if let Some(existing) = order.as_ref() {
                     let _ = store.mark_order_dropped(
                         &existing.order_id,
@@ -1161,6 +1161,7 @@ impl ExecutionRuntime {
         &self,
         store: &SqliteStore,
         intent: &ExecutionIntent,
+        now: DateTime<Utc>,
     ) -> Result<Option<String>> {
         match intent.side {
             ExecutionSide::Sell => {
@@ -1212,22 +1213,26 @@ impl ExecutionRuntime {
                 }
 
                 if let Some(daily_loss_limit_sol) = self.daily_loss_limit_sol() {
-                    let (_, pnl_24h) =
-                        store.live_realized_pnl_since(Utc::now() - Duration::hours(24))?;
+                    let loss_window_start = now - Duration::hours(24);
+                    let (_, pnl_24h) = store.live_realized_pnl_since(loss_window_start)?;
                     if pnl_24h <= -daily_loss_limit_sol {
                         return Ok(Some(format!(
-                            "daily_loss_limit_exceeded pnl_24h={:.6} loss_limit_sol={:.6} loss_limit_pct={:.4}",
-                            pnl_24h, daily_loss_limit_sol, self.risk.daily_loss_limit_pct
+                            "daily_loss_limit_exceeded pnl_24h={:.6} loss_limit_sol={:.6} loss_limit_pct={:.4} window_start={}",
+                            pnl_24h, daily_loss_limit_sol, self.risk.daily_loss_limit_pct, loss_window_start.to_rfc3339()
                         )));
                     }
                 }
 
                 if let Some(max_drawdown_limit_sol) = self.max_drawdown_limit_sol() {
-                    let max_drawdown_sol = store.live_max_drawdown_sol()?;
+                    let drawdown_window_start = now - Duration::hours(24);
+                    let max_drawdown_sol = store.live_max_drawdown_since(drawdown_window_start)?;
                     if max_drawdown_sol >= max_drawdown_limit_sol {
                         return Ok(Some(format!(
-                            "max_drawdown_exceeded max_drawdown_sol={:.6} drawdown_limit_sol={:.6} drawdown_limit_pct={:.4}",
-                            max_drawdown_sol, max_drawdown_limit_sol, self.risk.max_drawdown_pct
+                            "max_drawdown_exceeded max_drawdown_sol={:.6} drawdown_limit_sol={:.6} drawdown_limit_pct={:.4} window_start={}",
+                            max_drawdown_sol,
+                            max_drawdown_limit_sol,
+                            self.risk.max_drawdown_pct,
+                            drawdown_window_start.to_rfc3339()
                         )));
                     }
                 }
@@ -2381,6 +2386,69 @@ mod tests {
             "unexpected risk block detail: {:?}",
             order.simulation_error
         );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_allows_buy_when_drawdown_breach_is_outside_24h_window() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-max-drawdown-window-clears")?;
+        let now = Utc::now();
+        let old = now - Duration::hours(30);
+        store.apply_execution_fill_to_positions("token-window-seed", "buy", 1.0, 0.10, old)?;
+        store.apply_execution_fill_to_positions(
+            "token-window-seed",
+            "sell",
+            1.0,
+            0.20,
+            old + Duration::minutes(1),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-window-seed",
+            "buy",
+            1.0,
+            0.20,
+            old + Duration::minutes(2),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-window-seed",
+            "sell",
+            1.0,
+            0.05,
+            old + Duration::minutes(3),
+        )?;
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:s9:w:buy:drawdown-clear".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-window-new".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 1.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        risk.daily_loss_limit_pct = 0.0;
+        risk.max_drawdown_pct = 5.0; // 0.05 SOL threshold.
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 10;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(
+            report.confirmed, 1,
+            "old drawdown events outside 24h window should not block new BUY"
+        );
+        assert_eq!(report.dropped, 0);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

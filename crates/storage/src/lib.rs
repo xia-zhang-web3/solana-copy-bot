@@ -2383,7 +2383,7 @@ impl SqliteStore {
         Ok((trades.max(0) as u64, pnl))
     }
 
-    pub fn live_max_drawdown_sol(&self) -> Result<f64> {
+    pub fn live_max_drawdown_since(&self, since: DateTime<Utc>) -> Result<f64> {
         let mut stmt = self
             .conn
             .prepare(
@@ -2391,11 +2391,15 @@ impl SqliteStore {
                  FROM positions
                  WHERE state = 'closed'
                    AND closed_ts IS NOT NULL
-                 ORDER BY datetime(closed_ts) ASC, position_id ASC",
+                   AND closed_ts >= ?1
+                 ORDER BY
+                    julianday(closed_ts) ASC,
+                    closed_ts ASC,
+                    rowid ASC",
             )
             .context("failed to prepare live drawdown query")?;
         let pnl_rows = stmt
-            .query_map([], |row| row.get::<_, f64>(0))
+            .query_map(params![since.to_rfc3339()], |row| row.get::<_, f64>(0))
             .context("failed querying live drawdown rows")?;
 
         let mut cumulative_pnl = 0.0_f64;
@@ -3090,6 +3094,104 @@ mod tests {
         assert_eq!(windows[0], (base + Duration::minutes(1)).to_rfc3339());
         assert_eq!(windows[1], (base + Duration::minutes(2)).to_rfc3339());
         assert_eq!(windows[2], (base + Duration::minutes(3)).to_rfc3339());
+        Ok(())
+    }
+
+    #[test]
+    fn live_max_drawdown_since_respects_subsecond_closed_ts_order() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-max-drawdown-subsecond-order.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, 0.0, 0.0, ?3, ?4, ?5, 'closed')",
+            params![
+                "pos-loss-first",
+                "token-drawdown",
+                (base - Duration::minutes(5)).to_rfc3339(),
+                (base + Duration::milliseconds(100)).to_rfc3339(),
+                -0.4_f64
+            ],
+        )?;
+        store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, 0.0, 0.0, ?3, ?4, ?5, 'closed')",
+            params![
+                "pos-profit-second",
+                "token-drawdown",
+                (base - Duration::minutes(4)).to_rfc3339(),
+                (base + Duration::milliseconds(900)).to_rfc3339(),
+                0.5_f64
+            ],
+        )?;
+        store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, 0.0, 0.0, ?3, ?4, ?5, 'closed')",
+            params![
+                "pos-loss-third",
+                "token-drawdown",
+                (base - Duration::minutes(3)).to_rfc3339(),
+                (base + Duration::seconds(1)).to_rfc3339(),
+                -0.4_f64
+            ],
+        )?;
+
+        let drawdown = store.live_max_drawdown_since(base - Duration::seconds(1))?;
+        assert!(
+            (drawdown - 0.4).abs() < 1e-9,
+            "drawdown should follow subsecond close ordering, got {drawdown}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_max_drawdown_since_excludes_history_outside_window() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-max-drawdown-window.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::hours(24);
+
+        store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, 0.0, 0.0, ?3, ?4, ?5, 'closed')",
+            params![
+                "pos-old-loss",
+                "token-old",
+                (now - Duration::hours(50)).to_rfc3339(),
+                (now - Duration::hours(48)).to_rfc3339(),
+                -1.0_f64
+            ],
+        )?;
+        store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, 0.0, 0.0, ?3, ?4, ?5, 'closed')",
+            params![
+                "pos-recent-gain",
+                "token-new",
+                (now - Duration::hours(2)).to_rfc3339(),
+                (now - Duration::hours(1)).to_rfc3339(),
+                0.2_f64
+            ],
+        )?;
+
+        let drawdown = store.live_max_drawdown_since(window_start)?;
+        assert!(
+            drawdown <= 1e-9,
+            "drawdown should ignore old losses outside window, got {drawdown}"
+        );
         Ok(())
     }
 }
