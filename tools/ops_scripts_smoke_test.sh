@@ -71,6 +71,29 @@ submit_allowed_routes = ["paper"]
 EOF
 }
 
+write_config_adapter_mode() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+mode = "adapter_submit_confirm"
+default_route = "paper"
+submit_allowed_routes = ["paper", "rpc"]
+submit_adapter_require_policy_echo = true
+EOF
+}
+
 write_config_empty_allowlist() {
   local config_path="$1"
   local db_path="$2"
@@ -332,6 +355,8 @@ run_ops_scripts_for_db() {
   assert_contains "$calibration_output" "=== recommended submit_route_order (24h submit window) ==="
   assert_contains "$calibration_output" "recommended_route_order_csv:"
   assert_contains "$calibration_output" "recommended_route_order_csv: paper"
+  assert_contains "$calibration_output" "=== route profile readiness verdict (24h submit window) ==="
+  assert_contains "$calibration_output" "route_profile_verdict: SKIP"
 
   local snapshot_output
   snapshot_output="$(
@@ -400,6 +425,21 @@ run_calibration_default_route_runtime_fallback_case() {
   echo "[ok] calibration runtime default-route fallback"
 }
 
+run_calibration_adapter_mode_route_profile_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    DB_PATH="$db_path" CONFIG_PATH="$config_path" \
+      bash "$ROOT_DIR/tools/execution_fee_calibration_report.sh" 24
+  )"
+  assert_contains "$output" "=== route profile readiness verdict (24h submit window) ==="
+  assert_contains "$output" "calibration_knobs: submit_route_order + submit_route_max_slippage_bps + submit_route_tip_lamports + submit_route_compute_unit_limit + submit_route_compute_unit_price_micro_lamports"
+  assert_contains "$output" "primary_route: paper"
+  assert_contains "$output" "route_profile_verdict: WARN"
+  echo "[ok] calibration adapter-mode route profile verdict"
+}
+
 run_runtime_snapshot_no_ingestion_case() {
   local db_path="$1"
   local config_path="$2"
@@ -447,6 +487,10 @@ main() {
   local runtime_default_fallback_cfg="$TMP_DIR/default-fallback.toml"
   write_config_missing_default_route_with_rpc_allowlist "$runtime_default_fallback_cfg" "$rpc_only_db"
   run_calibration_default_route_runtime_fallback_case "$rpc_only_db" "$runtime_default_fallback_cfg"
+
+  local adapter_mode_cfg="$TMP_DIR/adapter-mode.toml"
+  write_config_adapter_mode "$adapter_mode_cfg" "$modern_db"
+  run_calibration_adapter_mode_route_profile_case "$modern_db" "$adapter_mode_cfg"
 
   echo "ops scripts smoke: PASS"
 }

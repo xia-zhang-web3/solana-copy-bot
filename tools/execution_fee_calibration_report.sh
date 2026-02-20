@@ -125,6 +125,126 @@ csv_contains_route() {
   return 1
 }
 
+csv_first_route() {
+  local csv="$1"
+  local -a values=()
+  local raw normalized
+  if [[ -z "$csv" ]]; then
+    printf ""
+    return
+  fi
+  IFS=',' read -r -a values <<< "$csv"
+  for raw in "${values[@]}"; do
+    normalized="$(normalize_route_token "$raw")"
+    if [[ -n "$normalized" ]]; then
+      printf "%s" "$normalized"
+      return
+    fi
+  done
+  printf ""
+}
+
+csv_second_route() {
+  local csv="$1"
+  local -a values=()
+  local raw normalized
+  local seen=0
+  if [[ -z "$csv" ]]; then
+    printf ""
+    return
+  fi
+  IFS=',' read -r -a values <<< "$csv"
+  for raw in "${values[@]}"; do
+    normalized="$(normalize_route_token "$raw")"
+    if [[ -z "$normalized" ]]; then
+      continue
+    fi
+    if (( seen == 0 )); then
+      seen=1
+      continue
+    fi
+    printf "%s" "$normalized"
+    return
+  done
+  printf ""
+}
+
+csv_route_count() {
+  local csv="$1"
+  local -a values=()
+  local raw normalized
+  local seen_routes=""
+  local count=0
+  if [[ -z "$csv" ]]; then
+    printf "0"
+    return
+  fi
+  IFS=',' read -r -a values <<< "$csv"
+  for raw in "${values[@]}"; do
+    normalized="$(normalize_route_token "$raw")"
+    if [[ -z "$normalized" ]]; then
+      continue
+    fi
+    if printf '%s\n' "$seen_routes" | grep -Fqx -- "$normalized"; then
+      continue
+    fi
+    seen_routes+="${normalized}"$'\n'
+    count=$((count + 1))
+  done
+  printf "%s" "$count"
+}
+
+float_lt() {
+  local lhs="${1:-0}"
+  local rhs="${2:-0}"
+  awk -v lhs="$lhs" -v rhs="$rhs" 'BEGIN { exit !((lhs + 0.0) < (rhs + 0.0)) }'
+}
+
+float_gt() {
+  local lhs="${1:-0}"
+  local rhs="${2:-0}"
+  awk -v lhs="$lhs" -v rhs="$rhs" 'BEGIN { exit !((lhs + 0.0) > (rhs + 0.0)) }'
+}
+
+route_metrics_csv() {
+  local route="$1"
+  local escaped_route metrics_csv
+  if [[ -z "$route" ]]; then
+    printf "0,0,0"
+    return
+  fi
+  escaped_route="${route//\'/\'\'}"
+  metrics_csv="$(
+    sqlite3 -csv -noheader "$DB_PATH" <<SQL
+WITH window_orders AS (
+  SELECT
+    COALESCE(route, '') AS route,
+    COALESCE(status, '') AS status,
+    COALESCE(err_code, '') AS err_code
+  FROM orders
+  WHERE datetime(submit_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+)
+SELECT
+  COUNT(*) AS attempted_orders,
+  ROUND(
+    100.0 * SUM(CASE WHEN status = 'execution_confirmed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS success_rate_pct,
+  ROUND(
+    100.0 * SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS timeout_rate_pct
+FROM window_orders
+WHERE LOWER(TRIM(route)) = '${escaped_route}';
+SQL
+  )"
+  if [[ -z "$metrics_csv" ]]; then
+    printf "0,0,0"
+    return
+  fi
+  printf "%s" "$metrics_csv"
+}
+
 build_allowed_routes_values() {
   local csv="$1"
   local values=""
@@ -851,4 +971,84 @@ else
   else
     echo "note: no allowlisted route data in submit window; keep current route order"
   fi
+fi
+
+echo
+echo "=== route profile readiness verdict (${WINDOW_HOURS}h submit window) ==="
+if [[ "$EXECUTION_MODE" != "adapter_submit_confirm" ]]; then
+  echo "route_profile_verdict: SKIP"
+  echo "route_profile_reason: execution.mode=$EXECUTION_MODE (gate applies to adapter_submit_confirm)"
+else
+  ROUTE_PROFILE_MIN_ATTEMPTED_PRIMARY=20
+  ROUTE_PROFILE_MIN_ATTEMPTED_FALLBACK=5
+  ROUTE_PROFILE_MIN_SUCCESS_RATE_PCT=90.0
+  ROUTE_PROFILE_MAX_TIMEOUT_RATE_PCT=5.0
+
+  primary_route="$(csv_first_route "$RECOMMENDED_ROUTE_ORDER_CSV")"
+  fallback_route="$(csv_second_route "$RECOMMENDED_ROUTE_ORDER_CSV")"
+  allowlisted_route_count="$(csv_route_count "$SUBMIT_ALLOWED_ROUTES_CSV")"
+
+  echo "calibration_knobs: submit_route_order + submit_route_max_slippage_bps + submit_route_tip_lamports + submit_route_compute_unit_limit + submit_route_compute_unit_price_micro_lamports"
+  echo "recommended_route_order_csv: ${RECOMMENDED_ROUTE_ORDER_CSV:-<empty>}"
+  echo "allowlisted_route_count: $allowlisted_route_count"
+  echo "primary_route: ${primary_route:-<none>}"
+  echo "fallback_route: ${fallback_route:-<none>}"
+  echo "min_attempted_primary: $ROUTE_PROFILE_MIN_ATTEMPTED_PRIMARY"
+  echo "min_attempted_fallback: $ROUTE_PROFILE_MIN_ATTEMPTED_FALLBACK"
+  echo "min_success_rate_pct: $ROUTE_PROFILE_MIN_SUCCESS_RATE_PCT"
+  echo "max_timeout_rate_pct: $ROUTE_PROFILE_MAX_TIMEOUT_RATE_PCT"
+
+  route_profile_verdict="PASS"
+  route_profile_reason="kpi thresholds are green for recommended route profile"
+
+  if [[ -z "$primary_route" ]]; then
+    route_profile_verdict="NO_DATA"
+    route_profile_reason="recommended route order is empty for adapter mode"
+  else
+    IFS=',' read -r primary_attempted_orders primary_success_rate_pct primary_timeout_rate_pct <<<"$(route_metrics_csv "$primary_route")"
+    primary_attempted_orders="${primary_attempted_orders:-0}"
+    primary_success_rate_pct="${primary_success_rate_pct:-0}"
+    primary_timeout_rate_pct="${primary_timeout_rate_pct:-0}"
+    echo "primary_attempted_orders: $primary_attempted_orders"
+    echo "primary_success_rate_pct: $primary_success_rate_pct"
+    echo "primary_timeout_rate_pct: $primary_timeout_rate_pct"
+
+    if (( primary_attempted_orders < ROUTE_PROFILE_MIN_ATTEMPTED_PRIMARY )); then
+      route_profile_verdict="WARN"
+      route_profile_reason="primary route sample is below minimum attempted threshold"
+    elif float_lt "$primary_success_rate_pct" "$ROUTE_PROFILE_MIN_SUCCESS_RATE_PCT"; then
+      route_profile_verdict="WARN"
+      route_profile_reason="primary route success rate is below threshold"
+    elif float_gt "$primary_timeout_rate_pct" "$ROUTE_PROFILE_MAX_TIMEOUT_RATE_PCT"; then
+      route_profile_verdict="WARN"
+      route_profile_reason="primary route timeout rate is above threshold"
+    fi
+
+    if [[ -n "$fallback_route" ]]; then
+      IFS=',' read -r fallback_attempted_orders fallback_success_rate_pct fallback_timeout_rate_pct <<<"$(route_metrics_csv "$fallback_route")"
+      fallback_attempted_orders="${fallback_attempted_orders:-0}"
+      fallback_success_rate_pct="${fallback_success_rate_pct:-0}"
+      fallback_timeout_rate_pct="${fallback_timeout_rate_pct:-0}"
+      echo "fallback_attempted_orders: $fallback_attempted_orders"
+      echo "fallback_success_rate_pct: $fallback_success_rate_pct"
+      echo "fallback_timeout_rate_pct: $fallback_timeout_rate_pct"
+
+      if (( fallback_attempted_orders < ROUTE_PROFILE_MIN_ATTEMPTED_FALLBACK )) && [[ "$route_profile_verdict" == "PASS" ]]; then
+        route_profile_verdict="WARN"
+        route_profile_reason="fallback route sample is below minimum attempted threshold"
+      elif float_lt "$fallback_success_rate_pct" "$ROUTE_PROFILE_MIN_SUCCESS_RATE_PCT" && [[ "$route_profile_verdict" == "PASS" ]]; then
+        route_profile_verdict="WARN"
+        route_profile_reason="fallback route success rate is below threshold"
+      elif float_gt "$fallback_timeout_rate_pct" "$ROUTE_PROFILE_MAX_TIMEOUT_RATE_PCT" && [[ "$route_profile_verdict" == "PASS" ]]; then
+        route_profile_verdict="WARN"
+        route_profile_reason="fallback route timeout rate is above threshold"
+      fi
+    elif (( allowlisted_route_count > 1 )) && [[ "$route_profile_verdict" == "PASS" ]]; then
+      route_profile_verdict="WARN"
+      route_profile_reason="allowlist has multiple routes but fallback route is missing in recommendation"
+    fi
+  fi
+
+  echo "route_profile_verdict: $route_profile_verdict"
+  echo "route_profile_reason: $route_profile_reason"
 fi
