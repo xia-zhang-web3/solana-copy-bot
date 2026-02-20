@@ -1549,6 +1549,25 @@ fn optional_non_empty_env(name: &str) -> Option<String> {
 fn parse_submit_signature_verify_config() -> Result<Option<SubmitSignatureVerifyConfig>> {
     let primary = optional_non_empty_env("COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL");
     let fallback = optional_non_empty_env("COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_FALLBACK_URL");
+    let attempts = parse_u64_env(
+        "COPYBOT_ADAPTER_SUBMIT_VERIFY_ATTEMPTS",
+        DEFAULT_SUBMIT_VERIFY_ATTEMPTS,
+    )?;
+    let interval_ms = parse_u64_env(
+        "COPYBOT_ADAPTER_SUBMIT_VERIFY_INTERVAL_MS",
+        DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
+    )?;
+    let strict = parse_bool_env("COPYBOT_ADAPTER_SUBMIT_VERIFY_STRICT", false);
+    build_submit_signature_verify_config(primary, fallback, attempts, interval_ms, strict)
+}
+
+fn build_submit_signature_verify_config(
+    primary: Option<String>,
+    fallback: Option<String>,
+    attempts: u64,
+    interval_ms: u64,
+    strict: bool,
+) -> Result<Option<SubmitSignatureVerifyConfig>> {
     if primary.is_none() && fallback.is_none() {
         return Ok(None);
     }
@@ -1577,25 +1596,16 @@ fn parse_submit_signature_verify_config() -> Result<Option<SubmitSignatureVerify
         endpoints.push(fallback_url);
     }
 
-    let attempts = parse_u64_env(
-        "COPYBOT_ADAPTER_SUBMIT_VERIFY_ATTEMPTS",
-        DEFAULT_SUBMIT_VERIFY_ATTEMPTS,
-    )?;
     if attempts == 0 || attempts > 20 {
         return Err(anyhow!(
             "COPYBOT_ADAPTER_SUBMIT_VERIFY_ATTEMPTS must be in 1..=20"
         ));
     }
-    let interval_ms = parse_u64_env(
-        "COPYBOT_ADAPTER_SUBMIT_VERIFY_INTERVAL_MS",
-        DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
-    )?;
     if interval_ms == 0 || interval_ms > 60_000 {
         return Err(anyhow!(
             "COPYBOT_ADAPTER_SUBMIT_VERIFY_INTERVAL_MS must be in 1..=60000"
         ));
     }
-    let strict = parse_bool_env("COPYBOT_ADAPTER_SUBMIT_VERIFY_STRICT", false);
 
     Ok(Some(SubmitSignatureVerifyConfig {
         endpoints,
@@ -1983,6 +1993,64 @@ mod tests {
     }
 
     #[test]
+    fn build_submit_signature_verify_config_rejects_fallback_without_primary() {
+        let error = build_submit_signature_verify_config(
+            None,
+            Some("https://rpc-fallback.example.com".to_string()),
+            3,
+            250,
+            false,
+        )
+        .expect_err("fallback without primary must fail");
+        assert!(error
+            .to_string()
+            .contains("requires COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL"));
+    }
+
+    #[test]
+    fn build_submit_signature_verify_config_rejects_same_endpoint_identity() {
+        let error = build_submit_signature_verify_config(
+            Some("https://RPC.example.com".to_string()),
+            Some("https://rpc.example.com:443/".to_string()),
+            3,
+            250,
+            false,
+        )
+        .expect_err("same primary/fallback identity must fail");
+        assert!(error
+            .to_string()
+            .contains("must resolve to distinct endpoint"));
+    }
+
+    #[test]
+    fn build_submit_signature_verify_config_rejects_attempts_out_of_range() {
+        let error = build_submit_signature_verify_config(
+            Some("https://rpc.example.com".to_string()),
+            None,
+            0,
+            250,
+            false,
+        )
+        .expect_err("attempts=0 must fail");
+        assert!(error.to_string().contains("ATTEMPTS must be in 1..=20"));
+    }
+
+    #[test]
+    fn build_submit_signature_verify_config_rejects_interval_out_of_range() {
+        let error = build_submit_signature_verify_config(
+            Some("https://rpc.example.com".to_string()),
+            None,
+            3,
+            0,
+            false,
+        )
+        .expect_err("interval=0 must fail");
+        assert!(error
+            .to_string()
+            .contains("INTERVAL_MS must be in 1..=60000"));
+    }
+
+    #[test]
     fn resolve_secret_source_rejects_inline_and_file_conflict() {
         let error = resolve_secret_source(
             "COPYBOT_ADAPTER_BEARER_TOKEN",
@@ -2303,6 +2371,32 @@ mod tests {
             .expect_err("strict mode must reject unseen signature");
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_rejects_when_onchain_error_seen() {
+        let signature = bs58::encode([12u8; 64]).into_string();
+        let body =
+            r#"{"jsonrpc":"2.0","result":{"value":[{"err":{"InstructionError":[0,"Custom"]}}]}}"#;
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            false,
+        );
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str())
+            .await
+            .expect_err("on-chain err must be terminal reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_failed_onchain");
         let _ = handle.join();
     }
 
