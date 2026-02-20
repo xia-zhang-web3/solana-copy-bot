@@ -8,10 +8,12 @@ use uuid::Uuid;
 
 use crate::auth::compute_hmac_signature_hex;
 use crate::intent::ExecutionIntent;
-use copybot_config::EXECUTION_ROUTE_TIP_LAMPORTS_MAX;
+use copybot_config::{
+    EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX, EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN,
+    EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+    EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN, EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+};
 
-const ROUTE_COMPUTE_UNIT_LIMIT_MAX: u32 = 1_400_000;
-const ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX: u64 = 10_000_000;
 const POLICY_FLOAT_EPSILON: f64 = 1e-6;
 
 #[derive(Debug, Clone)]
@@ -943,7 +945,9 @@ fn normalize_route_cu_limit(route_caps: &BTreeMap<String, u32>) -> HashMap<Strin
         .iter()
         .filter_map(|(route, value)| {
             let route = normalize_route(route)?;
-            if *value == 0 || *value > ROUTE_COMPUTE_UNIT_LIMIT_MAX {
+            if *value < EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN
+                || *value > EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX
+            {
                 return None;
             }
             Some((route, *value))
@@ -956,7 +960,9 @@ fn normalize_route_cu_price(route_caps: &BTreeMap<String, u64>) -> HashMap<Strin
         .iter()
         .filter_map(|(route, value)| {
             let route = normalize_route(route)?;
-            if *value == 0 || *value > ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX {
+            if *value < EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN
+                || *value > EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX
+            {
                 return None;
             }
             Some((route, *value))

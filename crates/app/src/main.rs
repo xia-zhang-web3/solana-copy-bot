@@ -2,7 +2,10 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{
     load_from_env_or_default, ExecutionConfig, RiskConfig, ShadowConfig,
-    EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+    EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX, EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN,
+    EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+    EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+    EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN, EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
 };
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
@@ -728,10 +731,14 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 "execution.submit_route_compute_unit_limit contains empty route key"
             ));
         }
-        if *limit == 0 || *limit > 1_400_000 {
+        if *limit < EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN
+            || *limit > EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX
+        {
             return Err(anyhow!(
-                "execution.submit_route_compute_unit_limit route={} must be in 1..=1400000, got {}",
+                "execution.submit_route_compute_unit_limit route={} must be in {}..={}, got {}",
                 route,
+                EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN,
+                EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX,
                 limit
             ));
         }
@@ -754,10 +761,14 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 "execution.submit_route_compute_unit_price_micro_lamports contains empty route key"
             ));
         }
-        if *price == 0 || *price > 10_000_000 {
+        if *price < EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN
+            || *price > EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX
+        {
             return Err(anyhow!(
-                "execution.submit_route_compute_unit_price_micro_lamports route={} must be in 1..=10000000, got {}",
+                "execution.submit_route_compute_unit_price_micro_lamports route={} must be in {}..={}, got {}",
                 route,
+                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
                 price
             ));
         }
@@ -869,11 +880,12 @@ fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> R
                 }
             }
         }
-        if default_route_limit < 100_000 {
+        if default_route_limit < EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN {
             return Err(anyhow!(
-                "execution.submit_route_compute_unit_limit default route {} limit ({}) is too low for reliable swaps; expected >= 100000",
+                "execution.submit_route_compute_unit_limit default route {} limit ({}) is too low for reliable swaps; expected >= {}",
                 default_route,
-                default_route_limit
+                default_route_limit,
+                EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN
             ));
         }
     }
