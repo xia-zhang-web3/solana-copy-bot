@@ -331,7 +331,7 @@ fn parse_adapter_simulate_response(
             status.as_str(),
             "reject" | "rejected" | "error" | "failed" | "failure"
         );
-    if !status.is_empty() && accepted_flag.is_none() && ok_flag.is_none() && !is_known_status {
+    if !status.is_empty() && !is_known_status {
         return Ok(SimulationResult {
             accepted: false,
             detail: format!("simulation_invalid_status: {}", status),
@@ -584,6 +584,35 @@ mod tests {
             parsed.detail,
             "simulation_rejected: adapter simulation rejected order"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_adapter_simulate_response_rejects_unknown_status_even_with_accepted_true() -> Result<()>
+    {
+        let body = json!({
+            "status": "pending",
+            "accepted": true,
+            "route": "rpc",
+            "contract_version": "v1"
+        });
+        let parsed = parse_adapter_simulate_response(&body, "rpc", "v1", true)?;
+        assert!(!parsed.accepted);
+        assert_eq!(parsed.detail, "simulation_invalid_status: pending");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_adapter_simulate_response_rejects_unknown_status_even_with_ok_true() -> Result<()> {
+        let body = json!({
+            "status": "pending",
+            "ok": true,
+            "route": "rpc",
+            "contract_version": "v1"
+        });
+        let parsed = parse_adapter_simulate_response(&body, "rpc", "v1", true)?;
+        assert!(!parsed.accepted);
+        assert_eq!(parsed.detail, "simulation_invalid_status: pending");
         Ok(())
     }
 
