@@ -124,6 +124,10 @@ submit_adapter_require_policy_echo = true
 default_route = "paper"
 submit_allowed_routes = ["paper", "rpc"]
 submit_route_order = ["paper", "rpc"]
+submit_route_max_slippage_bps = { paper = 50.0, rpc = 40.0 }
+submit_route_tip_lamports = { paper = 0, rpc = 1000 }
+submit_route_compute_unit_limit = { paper = 250000, rpc = 300000 }
+submit_route_compute_unit_price_micro_lamports = { paper = 1, rpc = 2000 }
 submit_adapter_auth_token_file = "secrets/auth.token"
 submit_adapter_hmac_key_id = "key-123"
 submit_adapter_hmac_secret_file = "secrets/hmac.secret"
@@ -158,6 +162,119 @@ submit_adapter_contract_version = "v1"
 submit_adapter_require_policy_echo = false
 default_route = "paper"
 submit_allowed_routes = ["paper"]
+submit_route_order = ["paper"]
+submit_route_max_slippage_bps = { paper = 50.0 }
+submit_route_tip_lamports = { paper = 0 }
+submit_route_compute_unit_limit = { paper = 250000 }
+submit_route_compute_unit_price_micro_lamports = { paper = 1 }
+EOF
+}
+
+write_config_adapter_preflight_missing_route_policy_map() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[system]
+env = "prod-eu"
+
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+enabled = true
+mode = "adapter_submit_confirm"
+execution_signer_pubkey = "Signer1111111111111111111111111111111111"
+submit_adapter_http_url = "https://adapter.primary.local/submit"
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = true
+default_route = "paper"
+submit_allowed_routes = ["paper", "rpc"]
+submit_route_order = ["paper", "rpc"]
+submit_route_max_slippage_bps = { paper = 50.0 }
+submit_route_tip_lamports = { paper = 0, rpc = 1000 }
+submit_route_compute_unit_limit = { paper = 250000, rpc = 300000 }
+submit_route_compute_unit_price_micro_lamports = { paper = 1, rpc = 2000 }
+submit_adapter_auth_token = "token-inline"
+EOF
+}
+
+write_config_adapter_preflight_invalid_route_order() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[system]
+env = "prod-eu"
+
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+enabled = true
+mode = "adapter_submit_confirm"
+execution_signer_pubkey = "Signer1111111111111111111111111111111111"
+submit_adapter_http_url = "https://adapter.primary.local/submit"
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = true
+default_route = "paper"
+submit_allowed_routes = ["paper"]
+submit_route_order = ["paper", "rpc"]
+submit_route_max_slippage_bps = { paper = 50.0 }
+submit_route_tip_lamports = { paper = 0 }
+submit_route_compute_unit_limit = { paper = 250000 }
+submit_route_compute_unit_price_micro_lamports = { paper = 1 }
+submit_adapter_auth_token = "token-inline"
+EOF
+}
+
+write_config_adapter_preflight_missing_secret_file() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[system]
+env = "prod-eu"
+
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+enabled = true
+mode = "adapter_submit_confirm"
+execution_signer_pubkey = "Signer1111111111111111111111111111111111"
+submit_adapter_http_url = "https://adapter.primary.local/submit"
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = true
+default_route = "paper"
+submit_allowed_routes = ["paper"]
+submit_route_order = ["paper"]
+submit_route_max_slippage_bps = { paper = 50.0 }
+submit_route_tip_lamports = { paper = 0 }
+submit_route_compute_unit_limit = { paper = 250000 }
+submit_route_compute_unit_price_micro_lamports = { paper = 1 }
+submit_adapter_auth_token_file = "secrets/missing.token"
 EOF
 }
 
@@ -591,7 +708,13 @@ run_adapter_preflight_case() {
   local db_path="$1"
   local pass_cfg="$TMP_DIR/adapter-preflight-pass.toml"
   local fail_cfg="$TMP_DIR/adapter-preflight-fail.toml"
+  local missing_map_cfg="$TMP_DIR/adapter-preflight-missing-map.toml"
+  local invalid_route_order_cfg="$TMP_DIR/adapter-preflight-invalid-route-order.toml"
+  local missing_secret_cfg="$TMP_DIR/adapter-preflight-missing-secret.toml"
   local secrets_dir="$TMP_DIR/secrets"
+  local missing_map_output
+  local invalid_route_order_output
+  local missing_secret_output
   mkdir -p "$secrets_dir"
   printf 'token-pass\n' >"$secrets_dir/auth.token"
   printf 'hmac-pass\n' >"$secrets_dir/hmac.secret"
@@ -616,7 +739,41 @@ run_adapter_preflight_case() {
   fi
   assert_contains "$fail_output" "preflight_verdict: FAIL"
   assert_contains "$fail_output" "submit_adapter_require_policy_echo must be true in production-like env profiles"
-  echo "[ok] adapter preflight pass/fail"
+
+  write_config_adapter_preflight_missing_route_policy_map "$missing_map_cfg" "$db_path"
+  if missing_map_output="$(
+    CONFIG_PATH="$missing_map_cfg" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for missing route policy map coverage" >&2
+    exit 1
+  fi
+  assert_contains "$missing_map_output" "preflight_verdict: FAIL"
+  assert_contains "$missing_map_output" "execution.submit_route_max_slippage_bps is missing entry for allowed route=rpc"
+
+  write_config_adapter_preflight_invalid_route_order "$invalid_route_order_cfg" "$db_path"
+  if invalid_route_order_output="$(
+    CONFIG_PATH="$invalid_route_order_cfg" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for invalid submit_route_order" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_route_order_output" "preflight_verdict: FAIL"
+  assert_contains "$invalid_route_order_output" "execution.submit_route_order route=rpc must be present in execution.submit_allowed_routes"
+
+  write_config_adapter_preflight_missing_secret_file "$missing_secret_cfg" "$db_path"
+  if missing_secret_output="$(
+    CONFIG_PATH="$missing_secret_cfg" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for missing auth token secret file" >&2
+    exit 1
+  fi
+  assert_contains "$missing_secret_output" "preflight_verdict: FAIL"
+  assert_contains "$missing_secret_output" "execution.submit_adapter_auth_token_file invalid: secret file not found:"
+
+  echo "[ok] adapter preflight pass/fail + route-policy + route-order + secret diagnostics"
 }
 
 main() {

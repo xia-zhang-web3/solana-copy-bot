@@ -84,6 +84,78 @@ cfg_list_csv() {
   ' "$CONFIG_PATH"
 }
 
+cfg_map_keys_csv() {
+  local section="$1"
+  local key="$2"
+  awk -v section="[$section]" -v key="$key" '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    /^\s*\[/ {
+      in_section = ($0 == section)
+      if ($0 != section) {
+        collecting = 0
+        value = ""
+      }
+    }
+    in_section {
+      line = $0
+      sub(/#.*/, "", line)
+      if (!collecting) {
+        left = line
+        sub(/=.*/, "", left)
+        gsub(/[[:space:]]/, "", left)
+        if (left != key) {
+          next
+        }
+        collecting = 1
+        value = line
+      } else {
+        value = value " " line
+      }
+      if (index(value, "}") > 0) {
+        start = index(value, "{")
+        if (start == 0) {
+          print ""
+          exit
+        }
+        body = substr(value, start + 1)
+        end = index(body, "}")
+        if (end == 0) {
+          next
+        }
+        body = substr(body, 1, end - 1)
+        n = split(body, pairs, ",")
+        out = ""
+        for (i = 1; i <= n; i++) {
+          pair = trim(pairs[i])
+          if (pair == "") {
+            continue
+          }
+          eq = index(pair, "=")
+          if (eq == 0) {
+            continue
+          }
+          map_key = trim(substr(pair, 1, eq - 1))
+          gsub(/^"|"$/, "", map_key)
+          gsub(/^'\''|'\''$/, "", map_key)
+          gsub(/[[:space:]]/, "", map_key)
+          if (map_key == "") {
+            continue
+          }
+          if (out != "") {
+            out = out ","
+          }
+          out = out map_key
+        }
+        print out
+        exit
+      }
+    }
+  ' "$CONFIG_PATH"
+}
+
 normalize_bool_token() {
   local raw="$1"
   raw="${raw#"${raw%%[![:space:]]*}"}"
@@ -153,6 +225,29 @@ csv_contains_route() {
     if [[ "$normalized" == "$needle" ]]; then
       return 0
     fi
+  done
+  return 1
+}
+
+csv_first_duplicate_normalized() {
+  local csv="$1"
+  local -a values=()
+  local seen_routes=""
+  local raw normalized
+  if [[ -z "$csv" ]]; then
+    return 1
+  fi
+  IFS=',' read -r -a values <<< "$csv"
+  for raw in "${values[@]}"; do
+    normalized="$(normalize_route_token "$raw")"
+    if [[ -z "$normalized" ]]; then
+      continue
+    fi
+    if printf '%s\n' "$seen_routes" | grep -Fqx -- "$normalized"; then
+      printf "%s" "$normalized"
+      return 0
+    fi
+    seen_routes+="${normalized}"$'\n'
   done
   return 1
 }
@@ -303,6 +398,10 @@ hmac_key_id="$(trim_string "$(cfg_value execution submit_adapter_hmac_key_id)")"
 hmac_secret_inline="$(trim_string "$(cfg_value execution submit_adapter_hmac_secret)")"
 hmac_secret_file_raw="$(trim_string "$(cfg_value execution submit_adapter_hmac_secret_file)")"
 hmac_ttl_sec_raw="$(trim_string "$(cfg_value execution submit_adapter_hmac_ttl_sec)")"
+submit_route_max_slippage_bps_keys_csv="$(cfg_map_keys_csv execution submit_route_max_slippage_bps)"
+submit_route_tip_lamports_keys_csv="$(cfg_map_keys_csv execution submit_route_tip_lamports)"
+submit_route_compute_unit_limit_keys_csv="$(cfg_map_keys_csv execution submit_route_compute_unit_limit)"
+submit_route_compute_unit_price_keys_csv="$(cfg_map_keys_csv execution submit_route_compute_unit_price_micro_lamports)"
 
 if [[ -z "$signer_pubkey" ]]; then
   errors+=("execution.execution_signer_pubkey must be non-empty in adapter_submit_confirm mode")
@@ -346,16 +445,77 @@ elif ! csv_contains_route "$submit_allowed_routes_csv" "$default_route"; then
   errors+=("execution.default_route=$default_route must be present in execution.submit_allowed_routes")
 fi
 
-if [[ -n "${submit_route_order_csv//[[:space:]]/}" ]] && ! csv_contains_route "$submit_route_order_csv" "$default_route"; then
-  errors+=("execution.submit_route_order must include execution.default_route=$default_route")
+if duplicate_route="$(csv_first_duplicate_normalized "$submit_allowed_routes_csv")"; then
+  errors+=("execution.submit_allowed_routes contains duplicate route after normalization: $duplicate_route")
 fi
+
+declare -a allowed_routes_normalized=()
+allowed_routes_seen=""
+IFS=',' read -r -a submit_allowed_routes_values <<< "$submit_allowed_routes_csv"
+for raw_route in "${submit_allowed_routes_values[@]}"; do
+  normalized_route="$(normalize_route_token "$raw_route")"
+  if [[ -z "$normalized_route" ]]; then
+    continue
+  fi
+  if printf '%s\n' "$allowed_routes_seen" | grep -Fqx -- "$normalized_route"; then
+    continue
+  fi
+  allowed_routes_seen+="${normalized_route}"$'\n'
+  allowed_routes_normalized+=("$normalized_route")
+done
+
+if [[ -n "${submit_route_order_csv//[[:space:]]/}" ]]; then
+  if duplicate_route="$(csv_first_duplicate_normalized "$submit_route_order_csv")"; then
+    errors+=("execution.submit_route_order contains duplicate route after normalization: $duplicate_route")
+  fi
+  IFS=',' read -r -a submit_route_order_values <<< "$submit_route_order_csv"
+  for raw_route in "${submit_route_order_values[@]}"; do
+    normalized_route="$(normalize_route_token "$raw_route")"
+    if [[ -z "$normalized_route" ]]; then
+      errors+=("execution.submit_route_order contains an empty route value")
+      continue
+    fi
+    if ! csv_contains_route "$submit_allowed_routes_csv" "$normalized_route"; then
+      errors+=("execution.submit_route_order route=$normalized_route must be present in execution.submit_allowed_routes")
+    fi
+  done
+  if ! csv_contains_route "$submit_route_order_csv" "$default_route"; then
+    errors+=("execution.submit_route_order must include execution.default_route=$default_route")
+  fi
+fi
+
+validate_route_policy_map_coverage() {
+  local field_name="$1"
+  local map_keys_csv="$2"
+  local duplicate_map_route normalized_route
+  if [[ -z "${map_keys_csv//[[:space:]]/}" ]]; then
+    errors+=("${field_name} must not be empty in adapter_submit_confirm mode")
+    return
+  fi
+  if duplicate_map_route="$(csv_first_duplicate_normalized "$map_keys_csv")"; then
+    errors+=("${field_name} contains duplicate route key after normalization: $duplicate_map_route")
+  fi
+  for normalized_route in "${allowed_routes_normalized[@]}"; do
+    if ! csv_contains_route "$map_keys_csv" "$normalized_route"; then
+      errors+=("${field_name} is missing entry for allowed route=$normalized_route")
+    fi
+  done
+  if ! csv_contains_route "$map_keys_csv" "$default_route"; then
+    errors+=("${field_name} is missing entry for default route=$default_route")
+  fi
+}
+
+validate_route_policy_map_coverage "execution.submit_route_max_slippage_bps" "$submit_route_max_slippage_bps_keys_csv"
+validate_route_policy_map_coverage "execution.submit_route_tip_lamports" "$submit_route_tip_lamports_keys_csv"
+validate_route_policy_map_coverage "execution.submit_route_compute_unit_limit" "$submit_route_compute_unit_limit_keys_csv"
+validate_route_policy_map_coverage "execution.submit_route_compute_unit_price_micro_lamports" "$submit_route_compute_unit_price_keys_csv"
 
 if [[ -n "$auth_token_inline" && -n "$auth_token_file_raw" ]]; then
   errors+=("execution.submit_adapter_auth_token and execution.submit_adapter_auth_token_file cannot both be set")
 fi
 if [[ -n "$auth_token_file_raw" ]]; then
   auth_token_file_resolved="$(resolve_secret_path "$auth_token_file_raw")"
-  if ! secret_error="$(read_non_empty_secret "$auth_token_file_resolved" 2>&1 >/dev/null)"; then
+  if ! secret_error="$(read_non_empty_secret "$auth_token_file_resolved" 2>&1)"; then
     errors+=("execution.submit_adapter_auth_token_file invalid: $secret_error")
   fi
 fi
@@ -369,7 +529,7 @@ if [[ -n "$hmac_secret_inline" || -n "$hmac_secret_file_raw" ]]; then
 fi
 if [[ -n "$hmac_secret_file_raw" ]]; then
   hmac_secret_file_resolved="$(resolve_secret_path "$hmac_secret_file_raw")"
-  if ! secret_error="$(read_non_empty_secret "$hmac_secret_file_resolved" 2>&1 >/dev/null)"; then
+  if ! secret_error="$(read_non_empty_secret "$hmac_secret_file_resolved" 2>&1)"; then
     errors+=("execution.submit_adapter_hmac_secret_file invalid: $secret_error")
   fi
 fi

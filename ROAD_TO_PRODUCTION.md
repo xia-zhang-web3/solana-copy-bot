@@ -632,14 +632,3 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 1. Переход tiny-live -> limited-live только после минимум 24h green KPI.
 2. Переход limited-live -> standard-live только после минимум 48h green KPI + закрытых инцидентов.
 3. Любой P0 автоматически возвращает режим на предыдущую ступень лимитов до разбора причины.
-
-## 12) Target Calendar (рабочий план, UTC)
-
-1. 2026-02-20: закрыть server watchdog systemd deploy + первые 1h/6h/24h артефакты.
-2. 2026-02-26: закрыть 7-day observation и Stage A.
-3. 2026-02-27 — 2026-03-02: Stage B (security/ops baseline) и фиксация go/no-go для начала Stage C.
-4. 2026-03-03 — 2026-03-09: Stage C + C.5 (execution MVP + devnet rehearsal).
-5. 2026-03-10 — 2026-03-14: Stage D + E (Jito primary + live risk enforcement).
-6. 2026-03-15 — 2026-03-18: Stage F (dry-run -> tiny-live -> limited-live при green KPI).
-7. 2026-03-19 — 2026-03-26: Stage G (controlled-live stabilization).
-8. 2026-03-27+: Stage H (standard-live handoff / steady-state ops).
