@@ -1547,6 +1547,7 @@ impl ShadowRiskGuard {
                 self.config.shadow_rug_loss_return_threshold,
             )?;
             let (_, rug_sample_total, rug_rate_recent) = store.shadow_rug_loss_rate_recent(
+                rug_window_start,
                 self.config.shadow_rug_loss_rate_sample_size.max(1),
                 self.config.shadow_rug_loss_return_threshold,
             )?;
@@ -4305,6 +4306,70 @@ mod app_tests {
             } => assert!(detail.contains("rug_loss")),
             other => panic!("expected hard stop block, got {other:?}"),
         }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_rug_rate_hard_stop_auto_clears_after_window_without_new_trades() -> Result<()> {
+        let (store, db_path) = make_test_store("rug-rate-autoclear")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_rug_loss_window_minutes = 1;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_sample_size = 200;
+        cfg.shadow_rug_loss_rate_threshold = 0.5;
+        cfg.shadow_rug_loss_return_threshold = -0.70;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-rug-rate-lock",
+            "wallet-a",
+            "token-a",
+            1.0,
+            1.0,
+            0.2,
+            -0.8,
+            now - chrono::Duration::seconds(55),
+            now - chrono::Duration::seconds(50),
+        )?;
+
+        match guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::HardStop,
+                ..
+            } => {}
+            other => panic!("expected hard-stop block from rug-rate breach, got {other:?}"),
+        }
+        assert!(
+            guard.hard_stop_reason.is_some(),
+            "hard stop should be active after rug-rate breach"
+        );
+
+        let refresh_step_seconds = (RISK_DB_REFRESH_MIN_SECONDS + 1).max(6);
+        let mut cleared = false;
+        for cycle in 1..=30 {
+            let cycle_ts = now + chrono::Duration::seconds(refresh_step_seconds * cycle as i64);
+            if matches!(
+                guard.can_open_buy(&store, cycle_ts, true),
+                BuyRiskDecision::Allow
+            ) {
+                cleared = true;
+                break;
+            }
+        }
+        assert!(
+            cleared,
+            "hard stop should auto-clear after rug window expires even without new trades"
+        );
+        assert!(
+            guard.hard_stop_reason.is_none(),
+            "hard stop reason should clear after healthy refresh streak"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

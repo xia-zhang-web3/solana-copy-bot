@@ -2386,6 +2386,7 @@ impl SqliteStore {
 
     pub fn shadow_rug_loss_rate_recent(
         &self,
+        since: DateTime<Utc>,
         sample_size: u64,
         return_threshold: f64,
     ) -> Result<(u64, u64, f64)> {
@@ -2398,7 +2399,7 @@ impl SqliteStore {
                         SUM(
                             CASE
                                 WHEN entry_cost_sol > 0
-                                     AND pnl_sol <= entry_cost_sol * ?1
+                                     AND pnl_sol <= entry_cost_sol * ?2
                                 THEN 1
                                 ELSE 0
                             END
@@ -2406,13 +2407,14 @@ impl SqliteStore {
                         0
                     ) AS rug_count,
                     COUNT(*) AS total_count
-                 FROM (
-                    SELECT entry_cost_sol, pnl_sol
-                    FROM shadow_closed_trades
-                    ORDER BY closed_ts DESC, id DESC
-                    LIMIT ?2
-                 )",
-                params![return_threshold, limit],
+                     FROM (
+                        SELECT entry_cost_sol, pnl_sol
+                        FROM shadow_closed_trades
+                        WHERE closed_ts >= ?1
+                        ORDER BY closed_ts DESC, id DESC
+                        LIMIT ?3
+                     )",
+                params![since.to_rfc3339(), return_threshold, limit],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .context("failed querying shadow rug-loss recent sample")?;
