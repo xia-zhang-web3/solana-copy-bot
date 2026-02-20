@@ -79,3 +79,16 @@ GO_NOGO_TEST_MODE=true GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS GO_NOGO_TEST_ROUTE
 ```
 
 Never use `DEVNET_REHEARSAL_TEST_MODE=true` for real devnet sign-off.
+
+## 8) Combined Adapter Rollout Evidence
+
+When Stage C.5 evidence must be attached together with adapter secret-rotation readiness, run:
+
+```bash
+ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env \
+CONFIG_PATH=configs/paper.toml \
+OUTPUT_DIR="state/adapter-rollout-$(date -u +%Y%m%dT%H%M%SZ)" \
+./tools/adapter_rollout_evidence_report.sh 24 60
+```
+
+Expected top-level gate: `adapter_rollout_verdict: GO`.

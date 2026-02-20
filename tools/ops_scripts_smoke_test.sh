@@ -1263,6 +1263,117 @@ run_devnet_rehearsal_case() {
   echo "[ok] execution devnet rehearsal helper"
 }
 
+run_adapter_rollout_evidence_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local env_path="$TMP_DIR/adapter-rollout.env"
+  local secrets_dir="$TMP_DIR/secrets"
+  local artifacts_dir="$TMP_DIR/adapter-rollout-artifacts"
+  mkdir -p "$secrets_dir"
+  write_adapter_env_rotation_report "$env_path"
+
+  printf 'bearer-pass\n' >"$secrets_dir/adapter_bearer.token"
+  printf 'hmac-pass\n' >"$secrets_dir/adapter_hmac.secret"
+  printf 'upstream-pass\n' >"$secrets_dir/upstream_auth.token"
+  printf 'upstream-fallback-pass\n' >"$secrets_dir/upstream_fallback_auth.token"
+  printf 'send-rpc-pass\n' >"$secrets_dir/send_rpc_auth.token"
+  printf 'send-rpc-fallback-pass\n' >"$secrets_dir/send_rpc_fallback_auth.token"
+  printf 'route-pass\n' >"$secrets_dir/route_rpc_auth.token"
+  printf 'route-send-rpc-pass\n' >"$secrets_dir/route_rpc_send_rpc_auth.token"
+  chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
+
+  local pass_output
+  pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$artifacts_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60
+  )"
+  assert_contains "$pass_output" "=== Adapter Rollout Evidence Summary ==="
+  assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$pass_output" "devnet_rehearsal_verdict: GO"
+  assert_contains "$pass_output" "adapter_rollout_verdict: GO"
+  assert_contains "$pass_output" "artifact_summary:"
+  if ! ls "$artifacts_dir"/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
+    echo "expected adapter rollout summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/adapter_secret_rotation_captured_*.txt >/dev/null 2>&1; then
+    echo "expected adapter rollout rotation capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_captured_*.txt >/dev/null 2>&1; then
+    echo "expected adapter rollout rehearsal capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+
+  chmod 644 "$secrets_dir/adapter_bearer.token"
+  local warn_output=""
+  if warn_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for rollout helper when rotation readiness is WARN" >&2
+    exit 1
+  else
+    local warn_exit_code=$?
+    if [[ "$warn_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2, got $warn_exit_code" >&2
+      echo "$warn_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$warn_output" "rotation_readiness_verdict: WARN"
+  assert_contains "$warn_output" "adapter_rollout_verdict: HOLD"
+
+  chmod 600 "$secrets_dir/adapter_bearer.token"
+  rm -f "$secrets_dir/route_rpc_auth.token"
+  local fail_output=""
+  if fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when rotation readiness is FAIL" >&2
+    exit 1
+  else
+    local fail_exit_code=$?
+    if [[ "$fail_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3, got $fail_exit_code" >&2
+      echo "$fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$fail_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$fail_output" "adapter_rollout_verdict: NO_GO"
+  echo "[ok] adapter rollout evidence helper"
+}
+
 main() {
   write_fake_journalctl
 
@@ -1280,6 +1391,7 @@ main() {
   local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
   write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
   run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
+  run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"
