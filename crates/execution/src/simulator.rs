@@ -3,6 +3,7 @@ use chrono::Utc;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::auth::compute_hmac_signature_hex;
@@ -199,9 +200,18 @@ impl AdapterIntentSimulator {
                 ),
             });
         }
-        let body: Value = response
-            .json()
-            .map_err(|error| anyhow!("endpoint={} invalid_json parse_error={}", endpoint, error))?;
+        let body: Value = match response.json() {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(SimulationResult {
+                    accepted: false,
+                    detail: format!(
+                        "simulation_invalid_json endpoint={} parse_error={}",
+                        endpoint, error
+                    ),
+                });
+            }
+        };
         parse_adapter_simulate_response(
             &body,
             expected_route,
@@ -238,12 +248,46 @@ impl IntentSimulator for AdapterIntentSimulator {
 
         let mut last_error: Option<anyhow::Error> = None;
         for endpoint in &self.endpoints {
+            debug!(
+                endpoint = %endpoint,
+                route = %route,
+                signal_id = %intent.signal_id,
+                "adapter simulator attempt"
+            );
             match self.simulate_via_endpoint(endpoint, &payload, route.as_str()) {
-                Ok(result) => return Ok(result),
-                Err(error) => last_error = Some(error),
+                Ok(result) => {
+                    if !result.accepted {
+                        warn!(
+                            endpoint = %endpoint,
+                            route = %route,
+                            signal_id = %intent.signal_id,
+                            detail = %result.detail,
+                            "adapter simulator terminal reject"
+                        );
+                    }
+                    return Ok(result);
+                }
+                Err(error) => {
+                    warn!(
+                        endpoint = %endpoint,
+                        route = %route,
+                        signal_id = %intent.signal_id,
+                        error = %error,
+                        "adapter simulator retryable endpoint error; trying fallback if available"
+                    );
+                    last_error = Some(error);
+                }
             }
         }
-        Err(last_error.unwrap_or_else(|| anyhow!("all simulate adapter endpoints failed")))
+        let final_error =
+            last_error.unwrap_or_else(|| anyhow!("all simulate adapter endpoints failed"));
+        warn!(
+            route = %route,
+            signal_id = %intent.signal_id,
+            error = %final_error,
+            "adapter simulator failed on all endpoints"
+        );
+        Err(final_error)
     }
 }
 
@@ -404,6 +448,15 @@ mod tests {
         status: u16,
         response_body: Value,
     ) -> Option<(String, thread::JoinHandle<CapturedHttpRequest>)> {
+        let body = response_body.to_string();
+        spawn_one_shot_simulate_adapter_raw(status, "application/json", &body)
+    }
+
+    fn spawn_one_shot_simulate_adapter_raw(
+        status: u16,
+        content_type: &str,
+        response_body: &str,
+    ) -> Option<(String, thread::JoinHandle<CapturedHttpRequest>)> {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(listener) => listener,
             Err(error) => {
@@ -432,6 +485,7 @@ mod tests {
             }
         };
         let response_body = response_body.to_string();
+        let content_type = content_type.to_string();
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept simulator client");
             stream
@@ -489,9 +543,10 @@ mod tests {
 
             let reason = if status == 200 { "OK" } else { "ERR" };
             let response = format!(
-                "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 status,
                 reason,
+                content_type,
                 response_body.len(),
                 response_body
             );
@@ -820,5 +875,38 @@ mod tests {
         let _ = handle
             .join()
             .expect("join fallback simulator server thread");
+    }
+
+    #[test]
+    fn adapter_intent_simulator_does_not_fallback_on_invalid_json_terminal_reject() {
+        let Some((endpoint, handle)) =
+            spawn_one_shot_simulate_adapter_raw(200, "application/json", "{not-json}")
+        else {
+            return;
+        };
+
+        let simulator = AdapterIntentSimulator::new(
+            &endpoint,
+            "http://127.0.0.1:1/simulate",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            2_000,
+        )
+        .expect("simulator should initialize");
+
+        let result = simulator
+            .simulate(&make_intent(), "rpc")
+            .expect("invalid JSON must be terminal reject without fallback");
+        assert!(!result.accepted);
+        assert!(
+            result.detail.contains("simulation_invalid_json"),
+            "unexpected detail: {}",
+            result.detail
+        );
+        let _ = handle.join().expect("join primary simulator server thread");
     }
 }
