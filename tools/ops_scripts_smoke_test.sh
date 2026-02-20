@@ -1043,6 +1043,7 @@ run_adapter_secret_rotation_report_case() {
   printf 'hmac-pass\n' >"$secrets_dir/adapter_hmac.secret"
   printf 'upstream-pass\n' >"$secrets_dir/upstream_auth.token"
   printf 'route-pass\n' >"$secrets_dir/route_rpc_auth.token"
+  printf 'route-fast-lane-pass\n' >"$secrets_dir/route_fast_lane_auth.token"
   chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
 
   local pass_output
@@ -1092,6 +1093,30 @@ run_adapter_secret_rotation_report_case() {
   assert_contains "$conflict_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$conflict_output" "COPYBOT_ADAPTER_BEARER_TOKEN and COPYBOT_ADAPTER_BEARER_TOKEN_FILE cannot both be set"
 
+  local route_conflict_env_path="$TMP_DIR/adapter-rotation-route-conflict.env"
+  cp "$env_path" "$route_conflict_env_path"
+  {
+    echo 'COPYBOT_ADAPTER_ROUTE_FAST_LANE_AUTH_TOKEN_FILE="secrets/route_fast_lane_auth.token"'
+    echo 'COPYBOT_ADAPTER_ROUTE_FAST_LANE_AUTH_TOKEN="inline-fast-lane-conflict"'
+  } >>"$route_conflict_env_path"
+  local route_conflict_output=""
+  if route_conflict_output="$(
+    ADAPTER_ENV_PATH="$route_conflict_env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected FAIL exit for FAST_LANE route inline+file conflict" >&2
+    exit 1
+  else
+    local route_conflict_exit_code=$?
+    if [[ "$route_conflict_exit_code" -ne 1 ]]; then
+      echo "expected FAIL exit code 1 for FAST_LANE route conflict, got $route_conflict_exit_code" >&2
+      echo "$route_conflict_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_conflict_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$route_conflict_output" "COPYBOT_ADAPTER_ROUTE_FAST_LANE_AUTH_TOKEN and COPYBOT_ADAPTER_ROUTE_FAST_LANE_AUTH_TOKEN_FILE cannot both be set"
+
   chmod 644 "$secrets_dir/adapter_bearer.token"
   local warn_output=""
   if warn_output="$(
@@ -1129,7 +1154,7 @@ run_adapter_secret_rotation_report_case() {
   fi
   assert_contains "$fail_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$fail_output" "COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE missing file"
-  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence"
+  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence + underscore route conflict"
 }
 
 run_devnet_rehearsal_case() {

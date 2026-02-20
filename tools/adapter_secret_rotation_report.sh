@@ -209,7 +209,7 @@ list_route_auth_ids() {
         next
       }
       key = trim(substr(line, 1, eq - 1))
-      if (key ~ /^COPYBOT_ADAPTER_ROUTE_[A-Za-z0-9]+_AUTH_TOKEN(_FILE)?$/) {
+      if (key ~ /^COPYBOT_ADAPTER_ROUTE_[A-Za-z0-9_]+_AUTH_TOKEN(_FILE)?$/) {
         route = key
         sub(/^COPYBOT_ADAPTER_ROUTE_/, "", route)
         sub(/_AUTH_TOKEN(_FILE)?$/, "", route)
