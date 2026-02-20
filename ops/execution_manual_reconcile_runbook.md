@@ -7,8 +7,10 @@ This runbook defines mandatory operator actions for execution incidents where ru
 Run this procedure immediately when any of these `risk_events.type` values appear:
 
 1. `execution_price_unavailable_fallback_used`
-2. `execution_confirm_failed_manual_reconcile_required`
-3. `execution_confirm_timeout_manual_reconcile_required`
+2. `execution_confirm_price_unavailable_manual_reconcile_required`
+3. `execution_confirm_price_unavailable`
+4. `execution_confirm_failed_manual_reconcile_required`
+5. `execution_confirm_timeout_manual_reconcile_required`
 
 ## 2) Immediate Containment (<= 2 minutes)
 
@@ -40,7 +42,7 @@ CONFIG_PATH=configs/paper.toml ./tools/execution_price_fallback_report.sh 24
 
 ## 4) Triage Rules
 
-1. Treat as `P0` if `fallback_source=fixed_1_sol` for any event.
+1. Treat as `P0` if any event has `reason=missing_latest_price_no_fallback`.
 2. Treat as `P0` if `tx_signature` is missing or cannot be verified from your execution telemetry source.
 3. Otherwise classify as `P1` and continue manual reconcile.
 4. Create/update incident note with: `signal_id`, `order_id`, `token`, `route`, `fallback_source`, `tx_signature`, timestamp.

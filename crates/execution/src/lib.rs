@@ -963,7 +963,44 @@ impl ExecutionRuntime {
                                     None
                                 }
                             });
-                        let (fallback, source) = fallback_price_and_source(open_position_avg_cost);
+                        let Some((fallback, source)) =
+                            fallback_price_and_source(open_position_avg_cost)
+                        else {
+                            let manual_reconcile_required =
+                                self.manual_reconcile_required_on_confirm_failure;
+                            let err_code = if manual_reconcile_required {
+                                "confirm_price_unavailable_manual_reconcile_required"
+                            } else {
+                                "confirm_price_unavailable"
+                            };
+                            let detail = "price_unavailable_no_position_avg";
+                            store.mark_order_failed(order_id, err_code, Some(detail))?;
+                            store
+                                .update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                            bump_route_counter(&mut report.confirm_failed_by_route, route);
+
+                            let details = json!({
+                                "signal_id": intent.signal_id,
+                                "order_id": order_id,
+                                "token": intent.token,
+                                "route": route,
+                                "err_code": err_code,
+                                "reason": "missing_latest_price_no_fallback",
+                                "manual_reconcile_required": manual_reconcile_required,
+                            })
+                            .to_string();
+                            let _ = store.insert_risk_event(
+                                if manual_reconcile_required {
+                                    "execution_confirm_price_unavailable_manual_reconcile_required"
+                                } else {
+                                    "execution_confirm_price_unavailable"
+                                },
+                                "error",
+                                now,
+                                Some(&details),
+                            );
+                            return Ok(SignalResult::Failed);
+                        };
                         warn!(
                             signal_id = %intent.signal_id,
                             token = %intent.token,
@@ -1369,11 +1406,9 @@ fn fee_sol_from_lamports(
         / 1_000_000_000.0
 }
 
-fn fallback_price_and_source(open_position_avg_cost: Option<f64>) -> (f64, String) {
-    match open_position_avg_cost {
-        Some(avg_cost) => (avg_cost.max(1e-9), "open_position_avg_cost".to_string()),
-        None => (1.0, "fixed_1_sol".to_string()),
-    }
+fn fallback_price_and_source(open_position_avg_cost: Option<f64>) -> Option<(f64, String)> {
+    open_position_avg_cost
+        .map(|avg_cost| (avg_cost.max(1e-9), "open_position_avg_cost".to_string()))
 }
 
 fn bump_route_counter(counters: &mut BTreeMap<String, u64>, route: &str) {
@@ -1683,13 +1718,14 @@ mod tests {
 
     #[test]
     fn fallback_price_and_source_keeps_open_position_label_when_avg_cost_is_exactly_one() {
-        let (avg_price, source) = fallback_price_and_source(Some(1.0));
+        let (avg_price, source) = fallback_price_and_source(Some(1.0)).expect("fallback exists");
         assert!((avg_price - 1.0).abs() < 1e-12);
         assert_eq!(source, "open_position_avg_cost");
 
-        let (avg_price, source) = fallback_price_and_source(None);
-        assert!((avg_price - 1.0).abs() < 1e-12);
-        assert_eq!(source, "fixed_1_sol");
+        assert!(
+            fallback_price_and_source(None).is_none(),
+            "fallback should be unavailable when open position avg cost is missing"
+        );
     }
 
     #[test]
@@ -2683,6 +2719,7 @@ mod tests {
             0.05,
             old + Duration::minutes(3),
         )?;
+        seed_token_price(&store, "token-window-new", now, "sig-price-window-new")?;
 
         let signal = CopySignalRow {
             signal_id: "shadow:s9:w:buy:drawdown-clear".to_string(),
@@ -2857,7 +2894,7 @@ mod tests {
     }
 
     #[test]
-    fn process_batch_confirms_with_fallback_when_price_unavailable_on_confirmation() -> Result<()> {
+    fn process_batch_fails_confirm_when_price_unavailable_without_fallback() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-price-missing")?;
         let now = Utc::now();
         let signal = CopySignalRow {
@@ -2907,27 +2944,105 @@ mod tests {
         let runtime = ExecutionRuntime::from_config(execution, risk);
 
         let report = runtime.process_batch(&store, now, None)?;
-        assert_eq!(report.failed, 0);
-        assert_eq!(report.confirmed, 1);
-        assert_eq!(
-            report.confirm_confirmed_by_route.get("paper"),
-            Some(&1),
-            "missing price fallback path should still confirm and update exposure"
-        );
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.confirmed, 0);
         let exposure = store.live_open_exposure_sol()?;
         assert!(
-            (exposure - 0.1).abs() < 1e-9,
-            "fallback confirm should keep exposure consistent with notional, got {}",
+            exposure.abs() < 1e-9,
+            "failed confirm without fallback must not write synthetic exposure, got {}",
             exposure
         );
 
-        let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
-        assert_eq!(confirmed.len(), 1);
+        let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
+        assert_eq!(failed.len(), 1);
         let order = store
             .execution_order_by_client_order_id(&client_order_id)?
-            .context("order should remain present after missing-price fallback confirm")?;
-        assert_eq!(order.status, "execution_confirmed");
-        assert_eq!(order.err_code.as_deref(), None);
+            .context("order should remain present after missing-price confirm failure")?;
+        assert_eq!(order.status, "execution_failed");
+        assert_eq!(order.err_code.as_deref(), Some("confirm_price_unavailable"));
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_marks_manual_reconcile_when_price_unavailable_without_fallback() -> Result<()>
+    {
+        let (store, db_path) = make_test_store("batch-confirm-price-missing-manual-reconcile")?;
+        let now = Utc::now();
+        let signal = CopySignalRow {
+            signal_id: "shadow:s8:w:buy:t-missing-manual".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-missing-manual".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-price-missing-manual-1",
+                &signal.signal_id,
+                &client_order_id,
+                "rpc",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-price-missing-manual-1",
+            "rpc",
+            "sig-missing-price-manual",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.confirmed, 0);
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should remain present after missing-price manual-reconcile failure")?;
+        assert_eq!(order.status, "execution_failed");
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_price_unavailable_manual_reconcile_required")
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

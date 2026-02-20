@@ -74,6 +74,9 @@ pub struct ExecutionConfig {
     pub execution_signer_pubkey: String,
     pub pretrade_min_sol_reserve: f64,
     pub pretrade_require_token_account: bool,
+    /// Legacy field name kept for backward compatibility.
+    /// Unit is micro-lamports per CU (not plain lamports).
+    #[serde(alias = "pretrade_max_priority_fee_micro_lamports_per_cu")]
     pub pretrade_max_priority_fee_lamports: u64,
     pub slippage_bps: f64,
     pub max_confirm_seconds: u64,
@@ -334,11 +337,11 @@ impl Default for ShadowConfig {
             min_leader_notional_sol: 0.5,
             max_signal_lag_seconds: 45,
             quality_gates_enabled: true,
-            min_token_age_seconds: 0,
-            min_holders: 0,
-            min_liquidity_sol: 0.0,
-            min_volume_5m_sol: 0.0,
-            min_unique_traders_5m: 0,
+            min_token_age_seconds: 30,
+            min_holders: 1,
+            min_liquidity_sol: 1.0,
+            min_volume_5m_sol: 0.5,
+            min_unique_traders_5m: 1,
         }
     }
 }
@@ -769,7 +772,14 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.pretrade_require_token_account = pretrade_require_token_account;
     }
-    if let Some(pretrade_max_priority_fee_lamports) =
+    if let Some(pretrade_max_priority_fee_micro_lamports) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.pretrade_max_priority_fee_lamports =
+            pretrade_max_priority_fee_micro_lamports;
+    } else if let Some(pretrade_max_priority_fee_lamports) =
         env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -813,6 +823,254 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.shadow.causal_holdback_ms = holdback_ms;
     }
+    if let Some(quality_gates_enabled) = env::var("SOLANA_COPY_BOT_SHADOW_QUALITY_GATES_ENABLED")
+        .ok()
+        .and_then(parse_env_bool)
+    {
+        config.shadow.quality_gates_enabled = quality_gates_enabled;
+    }
+    if let Some(min_token_age_seconds) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.min_token_age_seconds = min_token_age_seconds;
+    }
+    if let Some(min_holders) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.min_holders = min_holders;
+    }
+    if let Some(min_liquidity_sol) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_LIQUIDITY_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.shadow.min_liquidity_sol = min_liquidity_sol;
+    }
+    if let Some(min_volume_5m_sol) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_VOLUME_5M_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.shadow.min_volume_5m_sol = min_volume_5m_sol;
+    }
+    if let Some(min_unique_traders_5m) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_UNIQUE_TRADERS_5M")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.min_unique_traders_5m = min_unique_traders_5m;
+    }
+    if let Some(max_position_sol) = env::var("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.max_position_sol = max_position_sol;
+    }
+    if let Some(max_total_exposure_sol) = env::var("SOLANA_COPY_BOT_RISK_MAX_TOTAL_EXPOSURE_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.max_total_exposure_sol = max_total_exposure_sol;
+    }
+    if let Some(max_exposure_per_token_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_MAX_EXPOSURE_PER_TOKEN_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.max_exposure_per_token_sol = max_exposure_per_token_sol;
+    }
+    if let Some(max_concurrent_positions) =
+        env::var("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.risk.max_concurrent_positions = max_concurrent_positions;
+    }
+    if let Some(daily_loss_limit_pct) = env::var("SOLANA_COPY_BOT_RISK_DAILY_LOSS_LIMIT_PCT")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.daily_loss_limit_pct = daily_loss_limit_pct;
+    }
+    if let Some(max_drawdown_pct) = env::var("SOLANA_COPY_BOT_RISK_MAX_DRAWDOWN_PCT")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.max_drawdown_pct = max_drawdown_pct;
+    }
+    if let Some(max_hold_hours) = env::var("SOLANA_COPY_BOT_RISK_MAX_HOLD_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.risk.max_hold_hours = max_hold_hours;
+    }
+    if let Some(max_copy_delay_sec) = env::var("SOLANA_COPY_BOT_RISK_MAX_COPY_DELAY_SEC")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.max_copy_delay_sec = max_copy_delay_sec;
+    }
+    if let Some(shadow_killswitch_enabled) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.risk.shadow_killswitch_enabled = shadow_killswitch_enabled;
+    }
+    if let Some(shadow_soft_exposure_cap_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_soft_exposure_cap_sol = shadow_soft_exposure_cap_sol;
+    }
+    if let Some(shadow_soft_pause_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_PAUSE_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_soft_pause_minutes = shadow_soft_pause_minutes;
+    }
+    if let Some(shadow_hard_exposure_cap_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_HARD_EXPOSURE_CAP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_hard_exposure_cap_sol = shadow_hard_exposure_cap_sol;
+    }
+    if let Some(shadow_drawdown_1h_stop_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_1H_STOP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_drawdown_1h_stop_sol = shadow_drawdown_1h_stop_sol;
+    }
+    if let Some(shadow_drawdown_1h_pause_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_1H_PAUSE_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_drawdown_1h_pause_minutes = shadow_drawdown_1h_pause_minutes;
+    }
+    if let Some(shadow_drawdown_6h_stop_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_6H_STOP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_drawdown_6h_stop_sol = shadow_drawdown_6h_stop_sol;
+    }
+    if let Some(shadow_drawdown_6h_pause_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_6H_PAUSE_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_drawdown_6h_pause_minutes = shadow_drawdown_6h_pause_minutes;
+    }
+    if let Some(shadow_drawdown_24h_stop_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_24H_STOP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_drawdown_24h_stop_sol = shadow_drawdown_24h_stop_sol;
+    }
+    if let Some(shadow_rug_loss_return_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RETURN_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_rug_loss_return_threshold = shadow_rug_loss_return_threshold;
+    }
+    if let Some(shadow_rug_loss_window_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_WINDOW_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_rug_loss_window_minutes = shadow_rug_loss_window_minutes;
+    }
+    if let Some(shadow_rug_loss_count_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_COUNT_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_rug_loss_count_threshold = shadow_rug_loss_count_threshold;
+    }
+    if let Some(shadow_rug_loss_rate_sample_size) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_SAMPLE_SIZE")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_rug_loss_rate_sample_size = shadow_rug_loss_rate_sample_size;
+    }
+    if let Some(shadow_rug_loss_rate_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_rug_loss_rate_threshold = shadow_rug_loss_rate_threshold;
+    }
+    if let Some(shadow_infra_window_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_WINDOW_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_window_minutes = shadow_infra_window_minutes;
+    }
+    if let Some(shadow_infra_lag_p95_threshold_ms) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_LAG_P95_THRESHOLD_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_lag_p95_threshold_ms = shadow_infra_lag_p95_threshold_ms;
+    }
+    if let Some(shadow_infra_lag_breach_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_LAG_BREACH_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_lag_breach_minutes = shadow_infra_lag_breach_minutes;
+    }
+    if let Some(shadow_infra_replaced_ratio_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_REPLACED_RATIO_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_infra_replaced_ratio_threshold = shadow_infra_replaced_ratio_threshold;
+    }
+    if let Some(shadow_infra_rpc429_delta_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_RPC429_DELTA_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_rpc429_delta_threshold = shadow_infra_rpc429_delta_threshold;
+    }
+    if let Some(shadow_infra_rpc5xx_delta_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_RPC5XX_DELTA_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_rpc5xx_delta_threshold = shadow_infra_rpc5xx_delta_threshold;
+    }
+    if let Some(shadow_universe_min_active_follow_wallets) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_MIN_ACTIVE_FOLLOW_WALLETS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_universe_min_active_follow_wallets =
+            shadow_universe_min_active_follow_wallets;
+    }
+    if let Some(shadow_universe_min_eligible_wallets) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_MIN_ELIGIBLE_WALLETS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_universe_min_eligible_wallets = shadow_universe_min_eligible_wallets;
+    }
+    if let Some(shadow_universe_breach_cycles) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_universe_breach_cycles = shadow_universe_breach_cycles;
+    }
     if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_PROGRAM_IDS") {
         let values: Vec<String> = program_ids_csv
             .split(',')
@@ -852,14 +1110,24 @@ where
             continue;
         }
         let Some((route, raw_value)) = token.split_once(':') else {
-            continue;
+            return Err(anyhow!(
+                "{env_name} contains malformed token (expected route:value): {}",
+                token
+            ));
         };
         let route = route.trim().to_ascii_lowercase();
         if route.is_empty() {
-            continue;
+            return Err(anyhow!(
+                "{env_name} contains empty route key in token: {}",
+                token
+            ));
         }
         let Some(parsed_value) = parse_value(raw_value) else {
-            continue;
+            return Err(anyhow!(
+                "{env_name} contains invalid numeric value for route={}: {}",
+                route,
+                raw_value.trim()
+            ));
         };
         if !seen_normalized.insert(route.clone()) {
             return Err(anyhow!(
@@ -964,6 +1232,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_from_env_rejects_malformed_route_map_token() {
+        assert_route_map_env_rejected_contains(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS",
+            "rpc:50,jito",
+            "malformed token",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_invalid_route_map_numeric_value() {
+        assert_route_map_env_rejected_contains(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS",
+            "rpc:not-a-number",
+            "invalid numeric value",
+        );
+    }
+
+    #[test]
+    fn load_from_env_applies_risk_and_shadow_quality_overrides() {
+        with_temp_config_file("", |config_path| {
+            with_clean_copybot_env(|| {
+                with_env_var("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL", "0.99", || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED",
+                        "false",
+                        || {
+                            with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "42", || {
+                                with_env_var(
+                                "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS",
+                                "12345",
+                                || {
+                                    let (cfg, _) = load_from_env_or_default(config_path)
+                                        .expect("load config with env overrides");
+                                    assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
+                                    assert!(!cfg.risk.shadow_killswitch_enabled);
+                                    assert_eq!(cfg.shadow.min_holders, 42);
+                                    assert_eq!(
+                                        cfg.execution.pretrade_max_priority_fee_lamports,
+                                        12_345
+                                    );
+                                },
+                            );
+                            });
+                        },
+                    );
+                });
+            });
+        });
+    }
+
     fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
         with_temp_config_file("", |config_path| {
             with_clean_copybot_env(|| {
@@ -978,6 +1297,30 @@ mod tests {
                     assert!(
                         err.contains("duplicate route after normalization"),
                         "error should describe duplicate normalization, got: {err}"
+                    );
+                });
+            });
+        });
+    }
+
+    fn assert_route_map_env_rejected_contains(
+        env_name: &'static str,
+        env_value: &str,
+        needle: &str,
+    ) {
+        with_temp_config_file("", |config_path| {
+            with_clean_copybot_env(|| {
+                with_env_var(env_name, env_value, || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("invalid route map env should fail")
+                        .to_string();
+                    assert!(
+                        err.contains(env_name),
+                        "error should mention env var, got: {err}"
+                    );
+                    assert!(
+                        err.contains(needle),
+                        "error should contain '{needle}', got: {err}"
                     );
                 });
             });
@@ -1004,7 +1347,9 @@ mod tests {
 
     fn with_clean_copybot_env<T>(run: impl FnOnce() -> T) -> T {
         // Serialize all SOLANA_COPY_BOT_* env mutations in this test module.
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved: Vec<(OsString, OsString)> = std::env::vars_os()
             .filter(|(key, _)| key.to_string_lossy().starts_with("SOLANA_COPY_BOT_"))
             .collect();

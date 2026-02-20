@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{
-    load_from_env_or_default, ExecutionConfig, RiskConfig, EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+    load_from_env_or_default, ExecutionConfig, RiskConfig, ShadowConfig,
+    EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
 };
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
@@ -104,6 +105,7 @@ async fn main() -> Result<()> {
         config.shadow.quality_gates_enabled,
         shadow_http_url,
     )?;
+    validate_shadow_quality_gate_contract(&config.shadow, &config.system.env)?;
     let discovery = DiscoveryService::new_with_helius(
         config.discovery.clone(),
         config.shadow.clone(),
@@ -424,6 +426,36 @@ fn enforce_quality_gate_http_url(
         ));
     }
     Ok(endpoint)
+}
+
+fn validate_shadow_quality_gate_contract(config: &ShadowConfig, env: &str) -> Result<()> {
+    if !config.quality_gates_enabled {
+        return Ok(());
+    }
+    if !config.min_liquidity_sol.is_finite() || config.min_liquidity_sol < 0.0 {
+        return Err(anyhow!(
+            "shadow.min_liquidity_sol must be finite and >= 0 when quality gates are enabled in {}",
+            env
+        ));
+    }
+    if !config.min_volume_5m_sol.is_finite() || config.min_volume_5m_sol < 0.0 {
+        return Err(anyhow!(
+            "shadow.min_volume_5m_sol must be finite and >= 0 when quality gates are enabled in {}",
+            env
+        ));
+    }
+    let all_thresholds_zero = config.min_token_age_seconds == 0
+        && config.min_holders == 0
+        && config.min_liquidity_sol <= 0.0
+        && config.min_volume_5m_sol <= 0.0
+        && config.min_unique_traders_5m == 0;
+    if all_thresholds_zero {
+        return Err(anyhow!(
+            "shadow.quality_gates_enabled=true but all quality thresholds are zero in {}; set at least one non-zero threshold",
+            env
+        ));
+    }
+    Ok(())
 }
 
 fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> Result<()> {
@@ -1732,6 +1764,11 @@ impl ShadowRiskGuard {
         let window_start =
             now - chrono::Duration::minutes(self.config.shadow_infra_window_minutes.max(1) as i64);
         let latest = self.infra_samples.back().copied()?;
+        let has_full_window_coverage = self
+            .infra_samples
+            .front()
+            .map(|sample| sample.ts_utc <= window_start)
+            .unwrap_or(false);
         let baseline = self
             .infra_samples
             .iter()
@@ -1747,6 +1784,18 @@ impl ShadowRiskGuard {
             .saturating_sub(baseline.ws_notifications_replaced_oldest);
         let delta_rpc_429 = latest.rpc_429.saturating_sub(baseline.rpc_429);
         let delta_rpc_5xx = latest.rpc_5xx.saturating_sub(baseline.rpc_5xx);
+
+        if has_full_window_coverage
+            && delta_enqueued == 0
+            && delta_replaced == 0
+            && delta_rpc_429 == 0
+            && delta_rpc_5xx == 0
+        {
+            return Some(format!(
+                "no_ingestion_progress_for={}m",
+                self.config.shadow_infra_window_minutes.max(1)
+            ));
+        }
 
         if delta_enqueued > 0 {
             let replaced_ratio = delta_replaced as f64 / delta_enqueued as f64;
@@ -2171,10 +2220,15 @@ async fn run_app_loop(
                 );
             }
             _ = risk_refresh_interval.tick() => {
+                let now = Utc::now();
+                shadow_risk_guard.observe_ingestion_snapshot(
+                    &store,
+                    now,
+                    ingestion.runtime_snapshot(),
+                );
                 if !shadow_risk_guard.config.shadow_killswitch_enabled {
                     continue;
                 }
-                let now = Utc::now();
                 if let Err(error) = shadow_risk_guard.maybe_refresh_db_state(&store, now) {
                     if shadow_risk_guard.on_risk_refresh_error(now) {
                         warn!(error = %error, "shadow risk background refresh failed");
@@ -2328,6 +2382,12 @@ async fn run_app_loop(
                 )));
             }
             maybe_swap = ingestion.next_swap() => {
+                let now = Utc::now();
+                shadow_risk_guard.observe_ingestion_snapshot(
+                    &store,
+                    now,
+                    ingestion.runtime_snapshot(),
+                );
                 let swap = match maybe_swap {
                     Ok(Some(swap)) => swap,
                     Ok(None) => {
@@ -2339,12 +2399,6 @@ async fn run_app_loop(
                         continue;
                     }
                 };
-                let now = Utc::now();
-                shadow_risk_guard.observe_ingestion_snapshot(
-                    &store,
-                    now,
-                    ingestion.runtime_snapshot(),
-                );
 
                 match insert_observed_swap_with_retry(&store, &swap).await {
                     Ok(true) => {
@@ -4171,6 +4225,49 @@ mod app_tests {
     }
 
     #[test]
+    fn risk_guard_infra_blocks_when_no_ingestion_progress_for_full_window() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        let reason = guard
+            .compute_infra_block_reason(now)
+            .expect("no progress over full infra window must trigger block");
+        assert!(
+            reason.contains("no_ingestion_progress_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
     fn risk_guard_universe_stops_after_consecutive_breaches() -> Result<()> {
         let (store, db_path) = make_test_store("universe-stop")?;
         let mut cfg = RiskConfig::default();
@@ -5038,6 +5135,34 @@ mod app_tests {
 
         let result = enforce_quality_gate_http_url("shadow", "paper", false, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_shadow_quality_gate_contract_rejects_all_zero_thresholds_when_enabled() {
+        let mut cfg = ShadowConfig::default();
+        cfg.quality_gates_enabled = true;
+        cfg.min_token_age_seconds = 0;
+        cfg.min_holders = 0;
+        cfg.min_liquidity_sol = 0.0;
+        cfg.min_volume_5m_sol = 0.0;
+        cfg.min_unique_traders_5m = 0;
+        let err = validate_shadow_quality_gate_contract(&cfg, "prod")
+            .expect_err("all-zero quality thresholds must fail when gates are enabled")
+            .to_string();
+        assert!(err.contains("all quality thresholds are zero"));
+    }
+
+    #[test]
+    fn validate_shadow_quality_gate_contract_allows_non_zero_thresholds_when_enabled() {
+        let mut cfg = ShadowConfig::default();
+        cfg.quality_gates_enabled = true;
+        cfg.min_token_age_seconds = 30;
+        cfg.min_holders = 5;
+        cfg.min_liquidity_sol = 1.0;
+        cfg.min_volume_5m_sol = 0.5;
+        cfg.min_unique_traders_5m = 2;
+        validate_shadow_quality_gate_contract(&cfg, "prod")
+            .expect("non-zero thresholds should pass quality gate validation");
     }
 
     #[test]

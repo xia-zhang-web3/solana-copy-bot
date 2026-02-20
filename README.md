@@ -184,5 +184,5 @@ Cutover runbook:
 - app emits SQLite contention counters (`sqlite_write_retry_total`, `sqlite_busy_error_total`) in heartbeat logs.
 - discovery cycle runs every `discovery.refresh_seconds` and recalculates score/follow-list.
 - If URLs are invalid/missing key, bot fails closed for entries and keeps retrying stream connection.
-- Execution/copy trading logic is not implemented yet.
+- Execution runtime is implemented (paper lifecycle + adapter submit/confirm hardening path).
 - Keep keys out of repository and mounted via environment/secret files.

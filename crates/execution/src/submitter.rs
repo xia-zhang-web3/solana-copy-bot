@@ -530,7 +530,20 @@ fn parse_adapter_submit_response(
         .trim()
         .to_ascii_lowercase();
     let ok_flag = body.get("ok").and_then(Value::as_bool);
-    let is_reject = status == "reject" || ok_flag == Some(false);
+    let accepted_flag = body.get("accepted").and_then(Value::as_bool);
+    let is_known_success_status = matches!(status.as_str(), "ok" | "accepted" | "success");
+    let is_known_reject_status = matches!(
+        status.as_str(),
+        "reject" | "rejected" | "error" | "failed" | "failure"
+    );
+    if !status.is_empty() && !is_known_success_status && !is_known_reject_status {
+        return Err(SubmitError::terminal(
+            "submit_adapter_invalid_status",
+            format!("adapter response status={} is not recognized", status),
+        ));
+    }
+    let is_reject =
+        is_known_reject_status || ok_flag == Some(false) || accepted_flag == Some(false);
     if is_reject {
         let retryable = body
             .get("retryable")
@@ -554,6 +567,13 @@ fn parse_adapter_submit_response(
             SubmitError::terminal(code, detail)
         });
     }
+    let is_success = accepted_flag.or(ok_flag).unwrap_or(is_known_success_status);
+    if !is_success {
+        return Err(SubmitError::terminal(
+            "submit_adapter_invalid_response",
+            "adapter response did not explicitly confirm submit success".to_string(),
+        ));
+    }
 
     let tx_signature = body
         .get("tx_signature")
@@ -570,7 +590,12 @@ fn parse_adapter_submit_response(
         .get("route")
         .and_then(Value::as_str)
         .and_then(normalize_route)
-        .unwrap_or_else(|| expected_route.to_string());
+        .ok_or_else(|| {
+            SubmitError::terminal(
+                "submit_adapter_policy_echo_missing",
+                "adapter response missing required field route".to_string(),
+            )
+        })?;
     if route != expected_route {
         return Err(SubmitError::terminal(
             "submit_adapter_route_mismatch",
@@ -791,11 +816,31 @@ fn parse_adapter_submit_response(
         }
     }
 
-    let submitted_at = body
-        .get("submitted_at")
-        .and_then(Value::as_str)
-        .and_then(parse_rfc3339_utc)
-        .unwrap_or_else(Utc::now);
+    let submitted_at = match body.get("submitted_at") {
+        Some(value) => {
+            let raw = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    SubmitError::terminal(
+                        "submit_adapter_invalid_response",
+                        "adapter response field submitted_at must be a non-empty RFC3339 string"
+                            .to_string(),
+                    )
+                })?;
+            parse_rfc3339_utc(raw).ok_or_else(|| {
+                SubmitError::terminal(
+                    "submit_adapter_invalid_response",
+                    format!(
+                        "adapter response submitted_at is not valid RFC3339 timestamp: {}",
+                        raw
+                    ),
+                )
+            })?
+        }
+        None => Utc::now(),
+    };
 
     Ok(SubmitResult {
         route,
@@ -1359,6 +1404,58 @@ mod tests {
         let error = parse_response(&body, "jito", "cid-1").expect_err("route mismatch must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_route_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_missing_route_echo() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature"
+        });
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("missing route must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_unknown_status_even_with_ok_true() {
+        let body = json!({
+            "status": "pending",
+            "ok": true,
+            "tx_signature": "5ig1ature",
+            "route": "rpc"
+        });
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("unknown status must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_status");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_unknown_status_even_with_accepted_true() {
+        let body = json!({
+            "status": "pending",
+            "accepted": true,
+            "tx_signature": "5ig1ature",
+            "route": "rpc"
+        });
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("unknown status must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_status");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_invalid_submitted_at_timestamp() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "submitted_at": "not-a-timestamp"
+        });
+        let error =
+            parse_response(&body, "rpc", "cid-1").expect_err("invalid submitted_at must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+        assert!(error.detail.contains("submitted_at"));
     }
 
     #[test]

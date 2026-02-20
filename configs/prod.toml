@@ -10,7 +10,7 @@ pause_new_trades_on_outage = true
 path = "state/prod_copybot.db"
 
 [ingestion]
-source = "helius_ws"
+source = "yellowstone_grpc"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_urls = []
@@ -71,6 +71,11 @@ copy_notional_sol = 0.20
 min_leader_notional_sol = 0.75
 max_signal_lag_seconds = 30
 quality_gates_enabled = true
+min_token_age_seconds = 30
+min_holders = 1
+min_liquidity_sol = 1.0
+min_volume_5m_sol = 0.5
+min_unique_traders_5m = 1
 
 [execution]
 enabled = false

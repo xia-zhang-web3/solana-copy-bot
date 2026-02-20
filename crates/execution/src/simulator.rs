@@ -125,7 +125,10 @@ impl AdapterIntentSimulator {
             })
         };
         let contract_version = contract_version.trim();
-        if contract_version.is_empty() || contract_version.len() > 64 {
+        if contract_version.is_empty()
+            || contract_version.len() > 64
+            || !is_valid_contract_version_token(contract_version)
+        {
             return None;
         }
         Some(Self {
@@ -357,6 +360,12 @@ fn parse_adapter_simulate_response(
     })
 }
 
+fn is_valid_contract_version_token(value: &str) -> bool {
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,6 +594,35 @@ mod tests {
             "simulation_rejected: adapter simulation rejected order"
         );
         Ok(())
+    }
+
+    #[test]
+    fn adapter_intent_simulator_requires_non_empty_contract_version_token() {
+        let missing = AdapterIntentSimulator::new(
+            "https://adapter.example/simulate",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "",
+            false,
+            2_000,
+        );
+        assert!(missing.is_none());
+
+        let invalid = AdapterIntentSimulator::new(
+            "https://adapter.example/simulate",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1 beta",
+            false,
+            2_000,
+        );
+        assert!(invalid.is_none());
     }
 
     #[test]
