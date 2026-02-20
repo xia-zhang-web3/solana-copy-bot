@@ -1322,10 +1322,22 @@ async fn send_signed_transaction_via_rpc(
             "signed_tx_base64 must be non-empty when present",
         ));
     }
-    BASE64_STANDARD.decode(signed_tx_base64).map_err(|error| {
+    let signed_tx_bytes = BASE64_STANDARD.decode(signed_tx_base64).map_err(|error| {
         Reject::retryable(
             "submit_adapter_invalid_response",
             format!("signed_tx_base64 is not valid base64: {}", error),
+        )
+    })?;
+    let expected_signature = extract_expected_signature_from_signed_tx_bytes(
+        signed_tx_bytes.as_slice(),
+    )
+    .map_err(|error| {
+        Reject::retryable(
+            "submit_adapter_invalid_response",
+            format!(
+                "signed_tx_base64 does not contain valid transaction signature bytes: {}",
+                error
+            ),
         )
     })?;
 
@@ -1435,25 +1447,47 @@ async fn send_signed_transaction_via_rpc(
         })?;
         if let Some(error_payload) = body.get("error") {
             if !error_payload.is_null() {
-                let reject = Reject::retryable(
-                    "send_rpc_error_payload",
-                    format!(
-                        "send RPC returned error endpoint={} payload={}",
-                        endpoint_label, error_payload
-                    ),
-                );
-                if attempt_idx + 1 < endpoints.len() {
-                    warn!(
-                        route = %route,
-                        endpoint = %endpoint_label,
-                        attempt = attempt_idx + 1,
-                        total = endpoints.len(),
-                        "send RPC error payload, trying fallback endpoint"
-                    );
-                    last_retryable = Some(reject);
-                    continue;
+                match classify_send_rpc_error_payload(error_payload) {
+                    SendRpcErrorPayloadDisposition::AlreadyProcessed => {
+                        warn!(
+                            route = %route,
+                            endpoint = %endpoint_label,
+                            signature = %expected_signature,
+                            "send RPC returned already-processed error payload; accepting expected signature"
+                        );
+                        return Ok(expected_signature.clone());
+                    }
+                    SendRpcErrorPayloadDisposition::Retryable => {
+                        let reject = Reject::retryable(
+                            "send_rpc_error_payload_retryable",
+                            format!(
+                                "send RPC returned retryable error endpoint={} payload={}",
+                                endpoint_label, error_payload
+                            ),
+                        );
+                        if attempt_idx + 1 < endpoints.len() {
+                            warn!(
+                                route = %route,
+                                endpoint = %endpoint_label,
+                                attempt = attempt_idx + 1,
+                                total = endpoints.len(),
+                                "send RPC retryable error payload, trying fallback endpoint"
+                            );
+                            last_retryable = Some(reject);
+                            continue;
+                        }
+                        return Err(reject);
+                    }
+                    SendRpcErrorPayloadDisposition::Terminal => {
+                        return Err(Reject::terminal(
+                            "send_rpc_error_payload_terminal",
+                            format!(
+                                "send RPC returned terminal error endpoint={} payload={}",
+                                endpoint_label, error_payload
+                            ),
+                        ));
+                    }
                 }
-                return Err(reject);
             }
         }
         let signature = body
@@ -1476,6 +1510,15 @@ async fn send_signed_transaction_via_rpc(
                 format!("send RPC result signature is invalid: {}", error),
             )
         })?;
+        if signature != expected_signature {
+            return Err(Reject::terminal(
+                "send_rpc_signature_mismatch",
+                format!(
+                    "send RPC returned signature mismatch endpoint={} expected={} actual={}",
+                    endpoint_label, expected_signature, signature
+                ),
+            ));
+        }
         return Ok(signature.to_string());
     }
 
@@ -1488,6 +1531,85 @@ async fn send_signed_transaction_via_rpc(
             ),
         )
     }))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SendRpcErrorPayloadDisposition {
+    AlreadyProcessed,
+    Retryable,
+    Terminal,
+}
+
+fn classify_send_rpc_error_payload(error_payload: &Value) -> SendRpcErrorPayloadDisposition {
+    let code = error_payload.get("code").and_then(Value::as_i64);
+    let payload_lower = error_payload.to_string().to_ascii_lowercase();
+
+    if code == Some(-32002)
+        && (payload_lower.contains("already processed")
+            || payload_lower.contains("already confirmed")
+            || payload_lower.contains("already finalized"))
+    {
+        return SendRpcErrorPayloadDisposition::AlreadyProcessed;
+    }
+
+    if code == Some(-32005)
+        || payload_lower.contains("node is unhealthy")
+        || payload_lower.contains("temporarily unavailable")
+        || payload_lower.contains("rate limit")
+        || payload_lower.contains("try again")
+        || payload_lower.contains("timed out")
+        || payload_lower.contains("timeout")
+    {
+        return SendRpcErrorPayloadDisposition::Retryable;
+    }
+
+    SendRpcErrorPayloadDisposition::Terminal
+}
+
+fn extract_expected_signature_from_signed_tx_bytes(bytes: &[u8]) -> Result<String> {
+    let (signature_count, prefix_len) = parse_shortvec_len(bytes)?;
+    if signature_count == 0 {
+        return Err(anyhow!("transaction contains zero signatures"));
+    }
+    let signatures_len = signature_count
+        .checked_mul(64)
+        .ok_or_else(|| anyhow!("signature count overflow"))?;
+    let required_len = prefix_len
+        .checked_add(signatures_len)
+        .ok_or_else(|| anyhow!("signature section length overflow"))?;
+    if bytes.len() < required_len {
+        return Err(anyhow!("transaction signature section is truncated"));
+    }
+    let first_signature = &bytes[prefix_len..prefix_len + 64];
+    Ok(bs58::encode(first_signature).into_string())
+}
+
+fn parse_shortvec_len(bytes: &[u8]) -> Result<(usize, usize)> {
+    if bytes.is_empty() {
+        return Err(anyhow!("shortvec is empty"));
+    }
+    let mut value: u64 = 0;
+    let mut shift: u32 = 0;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        let part = u64::from(byte & 0x7f);
+        let shifted = part
+            .checked_shl(shift)
+            .ok_or_else(|| anyhow!("shortvec shift overflow"))?;
+        value = value
+            .checked_add(shifted)
+            .ok_or_else(|| anyhow!("shortvec value overflow"))?;
+        if byte & 0x80 == 0 {
+            let parsed = usize::try_from(value).map_err(|_| anyhow!("shortvec exceeds usize"))?;
+            return Ok((parsed, index + 1));
+        }
+        shift = shift
+            .checked_add(7)
+            .ok_or_else(|| anyhow!("shortvec shift overflow"))?;
+        if shift >= 64 {
+            return Err(anyhow!("shortvec uses too many bytes"));
+        }
+    }
+    Err(anyhow!("shortvec is truncated"))
 }
 
 #[derive(Clone, Copy)]
@@ -2647,7 +2769,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_signed_transaction_via_rpc_returns_signature_result() {
-        let rpc_signature = bs58::encode([13u8; 64]).into_string();
+        let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([13u8; 64]);
         let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
         let Some((send_rpc_url, send_rpc_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", rpc_body.as_str())
@@ -2667,7 +2789,6 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let signed_tx_base64 = BASE64_STANDARD.encode([1u8, 2, 3, 4]);
         let signature = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
             .await
             .expect("send RPC should return tx signature");
@@ -2676,8 +2797,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_signature_mismatch() {
+        let (signed_tx_base64, expected_signature) =
+            test_signed_tx_base64_with_signature([31u8; 64]);
+        let rpc_signature = bs58::encode([32u8; 64]).into_string();
+        assert_ne!(expected_signature, rpc_signature);
+        let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", rpc_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+            .await
+            .expect_err("mismatched send RPC signature must fail");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_signature_mismatch");
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_uses_fallback_auth_token_when_retrying() {
+        let (signed_tx_base64, expected_signature) =
+            test_signed_tx_base64_with_signature([33u8; 64]);
+        let fallback_token = "Send-Rpc-Fallback-Token";
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_raw(503, "text/plain", "send rpc primary unavailable")
+        else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_send_rpc_expect_bearer(fallback_token, expected_signature.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+            backend.send_rpc_fallback_url = Some(fallback_url);
+            backend.send_rpc_primary_auth_token = Some("send-rpc-primary-token".to_string());
+            backend.send_rpc_fallback_auth_token = Some(fallback_token.to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let signature = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+            .await
+            .expect("fallback send RPC with dedicated auth token should succeed");
+        assert_eq!(signature, expected_signature);
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_accepts_already_processed_error() {
+        let (signed_tx_base64, expected_signature) =
+            test_signed_tx_base64_with_signature([34u8; 64]);
+        let rpc_body = r#"{"jsonrpc":"2.0","error":{"code":-32002,"message":"Transaction already processed"}}"#;
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", rpc_body)
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let signature = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+            .await
+            .expect("already processed error should resolve to expected signature");
+        assert_eq!(signature, expected_signature);
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_treats_unknown_error_payload_as_terminal() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([35u8; 64]);
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            r#"{"jsonrpc":"2.0","error":{"code":-32002,"message":"Blockhash not found"}}"#,
+        ) else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+            backend.send_rpc_fallback_url =
+                Some("http://127.0.0.1:1/send-rpc-fallback".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+            .await
+            .expect_err("unknown send RPC error payload should be terminal");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_error_payload_terminal");
+        let _ = primary_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_uses_send_rpc_when_upstream_returns_signed_tx_base64() {
-        let signed_tx_base64 = BASE64_STANDARD.encode([1u8, 2, 3, 4, 5]);
+        let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([14u8; 64]);
         let upstream_body = format!(
             r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
             signed_tx_base64
@@ -2687,7 +2944,6 @@ mod tests {
         else {
             return;
         };
-        let rpc_signature = bs58::encode([14u8; 64]).into_string();
         let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
         let Some((send_rpc_url, send_rpc_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", rpc_body.as_str())
@@ -3022,6 +3278,79 @@ mod tests {
             }
         });
         Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn spawn_one_shot_send_rpc_expect_bearer(
+        expected_token: &str,
+        signature: &str,
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let expected_token = expected_token.to_string();
+        let signature = signature.to_string();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let bytes_read = stream.read(&mut request_buf).unwrap_or(0);
+                let request_raw = String::from_utf8_lossy(&request_buf[..bytes_read]);
+                let authorized = request_raw.lines().any(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        return false;
+                    }
+                    let Some((name, value)) = trimmed.split_once(':') else {
+                        return false;
+                    };
+                    if !name.trim().eq_ignore_ascii_case("authorization") {
+                        return false;
+                    }
+                    let value = value.trim();
+                    if value.len() < "bearer ".len()
+                        || !value[.."bearer ".len()].eq_ignore_ascii_case("bearer ")
+                    {
+                        return false;
+                    }
+                    let provided_token = &value["bearer ".len()..];
+                    provided_token == expected_token
+                });
+
+                let (status, reason, body) = if authorized {
+                    (
+                        200u16,
+                        "OK",
+                        format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, signature),
+                    )
+                } else {
+                    (
+                        401u16,
+                        "Unauthorized",
+                        "missing or invalid bearer token".to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    reason,
+                    if status == 200 { "application/json" } else { "text/plain" },
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn test_signed_tx_base64_with_signature(signature: [u8; 64]) -> (String, String) {
+        let mut tx_bytes = Vec::with_capacity(1 + signature.len() + 1);
+        tx_bytes.push(1u8);
+        tx_bytes.extend_from_slice(&signature);
+        tx_bytes.push(0u8);
+        (
+            BASE64_STANDARD.encode(tx_bytes),
+            bs58::encode(signature).into_string(),
+        )
     }
 
     fn temp_secret_path(prefix: &str) -> PathBuf {

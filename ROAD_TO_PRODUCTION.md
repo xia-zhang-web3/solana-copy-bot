@@ -583,7 +583,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 
 Остается в next-code-queue:
 
-1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete server-side secret distribution/rotation rollout (systemd mounts + executed rotation drill on server + archived evidence).
+1. complete production adapter backend rollout for signed-tx send path (`adapter_submit_confirm`): server-side secret distribution/rotation rollout (systemd mounts + executed rotation drill + archived evidence) and final runtime evidence package.
 2. run route-profile calibration windows in adapter mode and attach evidence package (`route_profile_verdict=PASS`, stable primary/fallback KPI) before tightening Jito-primary/RPC-fallback policy for go/no-go (`tools/execution_go_nogo_report.sh` summary + raw artifacts).
 3. finish live fee decomposition sign-off package: run adapter-mode calibration windows and attach evidence that `base/priority/tip/rent` telemetry is complete, mismatch/fallback counters are green, and totals reconcile against chain truth for go/no-go (`tools/execution_go_nogo_report.sh` + `tools/execution_fee_calibration_report.sh` raw output).
 4. execute Stage C.5 devnet rehearsal with `tools/execution_devnet_rehearsal.sh`, attach artifact bundle, and close residual P0/P1 before moving to Stage D.
