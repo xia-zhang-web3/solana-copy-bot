@@ -94,6 +94,73 @@ submit_adapter_require_policy_echo = true
 EOF
 }
 
+write_config_adapter_preflight_pass() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[system]
+env = "prod-eu"
+
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+enabled = true
+mode = "adapter_submit_confirm"
+execution_signer_pubkey = "Signer1111111111111111111111111111111111"
+rpc_http_url = "https://rpc.primary.local"
+submit_adapter_http_url = "https://adapter.primary.local/submit"
+submit_adapter_fallback_http_url = "https://adapter.fallback.local/submit"
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = true
+default_route = "paper"
+submit_allowed_routes = ["paper", "rpc"]
+submit_route_order = ["paper", "rpc"]
+submit_adapter_auth_token_file = "secrets/auth.token"
+submit_adapter_hmac_key_id = "key-123"
+submit_adapter_hmac_secret_file = "secrets/hmac.secret"
+submit_adapter_hmac_ttl_sec = 30
+EOF
+}
+
+write_config_adapter_preflight_fail() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[system]
+env = "prod-eu"
+
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+enabled = true
+mode = "adapter_submit_confirm"
+execution_signer_pubkey = "Signer1111111111111111111111111111111111"
+submit_adapter_http_url = "https://adapter.primary.local/submit"
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = false
+default_route = "paper"
+submit_allowed_routes = ["paper"]
+EOF
+}
+
 write_config_empty_allowlist() {
   local config_path="$1"
   local db_path="$2"
@@ -520,6 +587,38 @@ run_go_nogo_unknown_precedence_case() {
   echo "[ok] go-no-go UNKNOWN precedence"
 }
 
+run_adapter_preflight_case() {
+  local db_path="$1"
+  local pass_cfg="$TMP_DIR/adapter-preflight-pass.toml"
+  local fail_cfg="$TMP_DIR/adapter-preflight-fail.toml"
+  local secrets_dir="$TMP_DIR/secrets"
+  mkdir -p "$secrets_dir"
+  printf 'token-pass\n' >"$secrets_dir/auth.token"
+  printf 'hmac-pass\n' >"$secrets_dir/hmac.secret"
+
+  write_config_adapter_preflight_pass "$pass_cfg" "$db_path"
+  local pass_output
+  pass_output="$(
+    CONFIG_PATH="$pass_cfg" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh"
+  )"
+  assert_contains "$pass_output" "=== Execution Adapter Preflight ==="
+  assert_contains "$pass_output" "preflight_verdict: PASS"
+
+  write_config_adapter_preflight_fail "$fail_cfg" "$db_path"
+  local fail_output
+  if fail_output="$(
+    CONFIG_PATH="$fail_cfg" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for invalid config" >&2
+    exit 1
+  fi
+  assert_contains "$fail_output" "preflight_verdict: FAIL"
+  assert_contains "$fail_output" "submit_adapter_require_policy_echo must be true in production-like env profiles"
+  echo "[ok] adapter preflight pass/fail"
+}
+
 main() {
   write_fake_journalctl
 
@@ -531,6 +630,7 @@ main() {
   run_runtime_snapshot_no_ingestion_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_artifact_export_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_unknown_precedence_case "$legacy_db" "$legacy_cfg"
+  run_adapter_preflight_case "$legacy_db"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"
