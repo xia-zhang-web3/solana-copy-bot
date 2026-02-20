@@ -17,6 +17,10 @@ pub const STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
 pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL: f64 = 0.05;
 pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES: usize = 3;
 pub const STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
+const LIVE_UNREALIZED_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
+const LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SOL_NOTIONAL: f64 = 0.05;
+const LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SAMPLES: usize = 1;
+const LIVE_UNREALIZED_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
 static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
@@ -1923,10 +1927,46 @@ impl SqliteStore {
         token: &str,
         as_of: DateTime<Utc>,
     ) -> Result<Option<f64>> {
+        self.reliable_token_sol_price(
+            token,
+            as_of,
+            STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
+            STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+            STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES,
+            STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
+            "stale-close",
+        )
+    }
+
+    fn reliable_token_sol_price_for_live_unrealized(
+        &self,
+        token: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<f64>> {
+        self.reliable_token_sol_price(
+            token,
+            as_of,
+            LIVE_UNREALIZED_RELIABLE_PRICE_WINDOW_MINUTES,
+            LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+            LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SAMPLES,
+            LIVE_UNREALIZED_RELIABLE_PRICE_MAX_SAMPLES,
+            "live-unrealized",
+        )
+    }
+
+    fn reliable_token_sol_price(
+        &self,
+        token: &str,
+        as_of: DateTime<Utc>,
+        window_minutes: i64,
+        min_sol_notional: f64,
+        min_samples: usize,
+        max_samples: usize,
+        context_label: &str,
+    ) -> Result<Option<f64>> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
         let as_of_raw = as_of.to_rfc3339();
-        let since_raw =
-            (as_of - Duration::minutes(STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES)).to_rfc3339();
+        let since_raw = (as_of - Duration::minutes(window_minutes.max(1))).to_rfc3339();
         let mut stmt = self
             .conn
             .prepare(
@@ -1954,37 +1994,47 @@ impl SqliteStore {
                  ORDER BY ts DESC
                  LIMIT ?6",
             )
-            .context("failed to prepare reliable stale-close price query")?;
+            .with_context(|| {
+                format!(
+                    "failed to prepare reliable {} token/sol price query",
+                    context_label
+                )
+            })?;
         let mut rows = stmt
             .query(params![
                 SOL_MINT,
                 token,
                 since_raw,
                 as_of_raw,
-                STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
-                STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES as i64,
+                min_sol_notional,
+                max_samples as i64,
             ])
-            .context("failed querying reliable stale-close price samples")?;
+            .with_context(|| {
+                format!(
+                    "failed querying reliable {} token/sol price samples",
+                    context_label
+                )
+            })?;
 
-        let mut prices = Vec::with_capacity(STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES);
-        while let Some(row) = rows
-            .next()
-            .context("failed iterating reliable stale-close price samples")?
-        {
+        let mut prices = Vec::with_capacity(max_samples);
+        while let Some(row) = rows.next().with_context(|| {
+            format!(
+                "failed iterating reliable {} token/sol price samples",
+                context_label
+            )
+        })? {
             let price_sol: f64 = row.get(0).context("failed reading price_sol sample")?;
             let sol_notional: f64 = row.get(1).context("failed reading sol_notional sample")?;
             if !price_sol.is_finite() || price_sol <= 0.0 {
                 continue;
             }
-            if !sol_notional.is_finite()
-                || sol_notional < STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL
-            {
+            if !sol_notional.is_finite() || sol_notional < min_sol_notional {
                 continue;
             }
             prices.push(price_sol);
         }
 
-        if prices.len() < STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES {
+        if prices.len() < min_samples.max(1) {
             return Ok(None);
         }
         prices.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
@@ -2557,7 +2607,9 @@ impl SqliteStore {
                 ));
             }
 
-            if let Some(price_sol) = self.latest_token_sol_price(&token, as_of)? {
+            if let Some(price_sol) =
+                self.reliable_token_sol_price_for_live_unrealized(&token, as_of)?
+            {
                 let mark_value_sol = qty * price_sol;
                 if !mark_value_sol.is_finite() {
                     return Err(anyhow!(
@@ -3405,7 +3457,7 @@ mod tests {
     }
 
     #[test]
-    fn live_unrealized_pnl_sol_uses_latest_price_and_counts_missing_quotes() -> Result<()> {
+    fn live_unrealized_pnl_sol_uses_reliable_price_and_counts_missing_quotes() -> Result<()> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("live-unrealized-pnl.db");
@@ -3436,6 +3488,89 @@ mod tests {
         assert!(
             (unrealized_pnl_sol + 0.10).abs() < 1e-9,
             "unexpected unrealized pnl: {unrealized_pnl_sol}"
+        );
+        assert_eq!(missing_price_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn live_unrealized_pnl_sol_ignores_micro_swap_outlier_price() -> Result<()> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-unrealized-pnl-micro-outlier.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.apply_execution_fill_to_positions("token-priced", "buy", 1.0, 0.20, now)?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-priced".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-live-unrealized-normal".to_string(),
+            slot: 12346,
+            ts_utc: now + Duration::seconds(1),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-priced".to_string(),
+            amount_in: 0.001,
+            amount_out: 0.000001,
+            signature: "sig-live-unrealized-micro-outlier".to_string(),
+            slot: 12347,
+            ts_utc: now + Duration::seconds(2),
+        })?;
+
+        let (unrealized_pnl_sol, missing_price_count) =
+            store.live_unrealized_pnl_sol(now + Duration::seconds(3))?;
+        assert!(
+            (unrealized_pnl_sol + 0.10).abs() < 1e-9,
+            "micro notional outlier should be ignored, got unrealized pnl={unrealized_pnl_sol}"
+        );
+        assert_eq!(missing_price_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn live_unrealized_pnl_sol_counts_missing_when_only_micro_quotes_exist() -> Result<()> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-unrealized-pnl-only-micro.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.apply_execution_fill_to_positions("token-micro-only", "buy", 1.0, 0.20, now)?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-micro-only".to_string(),
+            amount_in: 0.001,
+            amount_out: 0.01,
+            signature: "sig-live-unrealized-only-micro".to_string(),
+            slot: 12348,
+            ts_utc: now + Duration::seconds(1),
+        })?;
+
+        let (unrealized_pnl_sol, missing_price_count) =
+            store.live_unrealized_pnl_sol(now + Duration::seconds(2))?;
+        assert!(
+            unrealized_pnl_sol.abs() < 1e-9,
+            "expected zero unrealized pnl when reliable quote is unavailable, got {unrealized_pnl_sol}"
         );
         assert_eq!(missing_price_count, 1);
         Ok(())

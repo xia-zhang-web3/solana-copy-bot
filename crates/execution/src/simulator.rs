@@ -178,9 +178,13 @@ impl AdapterIntentSimulator {
                 .header("x-copybot-signature", signature)
                 .header("x-copybot-signature-alg", "hmac-sha256-v1");
         }
-        let response = request
-            .send()
-            .map_err(|error| anyhow!("endpoint={} request_error={}", endpoint_label, error))?;
+        let response = request.send().map_err(|error| {
+            anyhow!(
+                "endpoint={} request_error_class={}",
+                endpoint_label,
+                classify_request_error(&error)
+            )
+        })?;
         let status = response.status();
         if !status.is_success() {
             let status_code = status.as_u16();
@@ -426,6 +430,26 @@ fn redacted_endpoint_label(endpoint: &str) -> String {
             }
         }
         Err(_) => "invalid_endpoint".to_string(),
+    }
+}
+
+fn classify_request_error(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_request() {
+        "request"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_redirect() {
+        "redirect"
+    } else if error.is_status() {
+        "status"
+    } else {
+        "other"
     }
 }
 
@@ -933,5 +957,35 @@ mod tests {
             result.detail
         );
         let _ = handle.join().expect("join primary simulator server thread");
+    }
+
+    #[test]
+    fn adapter_intent_simulator_redacts_endpoint_on_retryable_send_error() {
+        let simulator = AdapterIntentSimulator::new(
+            "http://127.0.0.1:1/private/simulate?token=secret",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            2_000,
+        )
+        .expect("simulator should initialize");
+
+        let error = simulator
+            .simulate(&make_intent(), "rpc")
+            .expect_err("connection failure should bubble as retryable error");
+        let detail = error.to_string();
+        assert!(detail.contains("request_error_class="), "detail={detail}");
+        assert!(
+            !detail.contains("/private/simulate"),
+            "raw endpoint path must be redacted, detail={detail}"
+        );
+        assert!(
+            !detail.contains("token=secret"),
+            "endpoint query must be redacted, detail={detail}"
+        );
     }
 }

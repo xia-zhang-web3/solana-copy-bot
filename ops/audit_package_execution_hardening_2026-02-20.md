@@ -3,8 +3,8 @@
 Branch: `feat/yellowstone-grpc-migration`
 
 Scope commit range:
-1. `f2c71f2` -> `6d1ce27`
-2. Includes follow-up commits `a423f02`, `8e73564`, `9d554e9`, `3dabd14`, `b49cf3c`
+1. `f2c71f2` -> `347172d`
+2. Includes follow-up commits `a423f02`, `8e73564`, `9d554e9`, `3dabd14`, `b49cf3c`, `6d1ce27`
 
 Out of scope:
 1. External adapter backend behavior outside current repo
@@ -43,6 +43,11 @@ Out of scope:
    Files: `crates/execution/src/simulator.rs`
    Highlights:
    1. structured logs now also use redacted endpoint label
+8. `347172d`: parser-stall boundary threshold coverage
+   Files: `crates/app/src/main.rs`, `ops/audit_package_execution_hardening_2026-02-20.md`
+   Highlights:
+   1. added boundary test for `error_ratio == 0.95` blocking behavior
+   2. updated audit package test matrix and wording parity notes
 
 ## Mandatory Verification Points
 
@@ -62,7 +67,7 @@ Out of scope:
    1. non-colon delimiter variants produce different IDs
    2. colon-delimited legacy IDs stay stable
 6. CU bounds parity (`crates/config/src/lib.rs`, `crates/app/src/main.rs`, `crates/execution/src/submitter.rs`)
-   1. same min/max constants used across config load type-parse, runtime validate, and submitter normalization
+   1. config load performs type-parse; min/max bounds are enforced consistently in runtime validate and submitter normalization using the same constants
 
 ## Targeted Test Commands
 
