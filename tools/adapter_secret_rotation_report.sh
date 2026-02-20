@@ -31,17 +31,6 @@ normalize_bool_token() {
   esac
 }
 
-strip_wrapping_quotes() {
-  local value="$1"
-  local first_char="${value:0:1}"
-  local last_char="${value: -1}"
-  if [[ ${#value} -ge 2 && "$first_char" == "$last_char" && ( "$first_char" == "'" || "$first_char" == '"' ) ]]; then
-    printf '%s' "${value:1:${#value}-2}"
-  else
-    printf '%s' "$value"
-  fi
-}
-
 resolve_path() {
   local raw="$1"
   if [[ "$raw" = /* ]]; then
@@ -60,6 +49,30 @@ env_value() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
       return s
     }
+    function strip_comment(s,    out, i, ch, in_single, in_double, sq) {
+      out = ""
+      in_single = 0
+      in_double = 0
+      sq = sprintf("%c", 39)
+      for (i = 1; i <= length(s); i++) {
+        ch = substr(s, i, 1)
+        if (ch == "\"" && !in_single) {
+          in_double = !in_double
+          out = out ch
+          continue
+        }
+        if (ch == sq && !in_double) {
+          in_single = !in_single
+          out = out ch
+          continue
+        }
+        if (ch == "#" && !in_single && !in_double) {
+          break
+        }
+        out = out ch
+      }
+      return out
+    }
     function unquote(s, first, last) {
       first = substr(s, 1, 1)
       last = substr(s, length(s), 1)
@@ -69,8 +82,7 @@ env_value() {
       return s
     }
     {
-      line = $0
-      sub(/#.*/, "", line)
+      line = strip_comment($0)
       line = trim(line)
       if (line == "") {
         next
@@ -89,8 +101,13 @@ env_value() {
       }
       value = trim(substr(line, eq + 1))
       value = unquote(value)
-      print value
-      exit
+      found = 1
+      last = value
+    }
+    END {
+      if (found) {
+        print last
+      }
     }
   ' "$ADAPTER_ENV_PATH"
 }
@@ -101,9 +118,32 @@ list_secret_file_keys() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
       return s
     }
+    function strip_comment(s,    out, i, ch, in_single, in_double, sq) {
+      out = ""
+      in_single = 0
+      in_double = 0
+      sq = sprintf("%c", 39)
+      for (i = 1; i <= length(s); i++) {
+        ch = substr(s, i, 1)
+        if (ch == "\"" && !in_single) {
+          in_double = !in_double
+          out = out ch
+          continue
+        }
+        if (ch == sq && !in_double) {
+          in_single = !in_single
+          out = out ch
+          continue
+        }
+        if (ch == "#" && !in_single && !in_double) {
+          break
+        }
+        out = out ch
+      }
+      return out
+    }
     {
-      line = $0
-      sub(/#.*/, "", line)
+      line = strip_comment($0)
       line = trim(line)
       if (line == "") {
         next
@@ -119,6 +159,63 @@ list_secret_file_keys() {
       key = trim(substr(line, 1, eq - 1))
       if (key ~ /^COPYBOT_ADAPTER_.*_FILE$/) {
         print key
+      }
+    }
+  ' "$ADAPTER_ENV_PATH" | sort -u
+}
+
+list_route_auth_ids() {
+  awk '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    function strip_comment(s,    out, i, ch, in_single, in_double, sq) {
+      out = ""
+      in_single = 0
+      in_double = 0
+      sq = sprintf("%c", 39)
+      for (i = 1; i <= length(s); i++) {
+        ch = substr(s, i, 1)
+        if (ch == "\"" && !in_single) {
+          in_double = !in_double
+          out = out ch
+          continue
+        }
+        if (ch == sq && !in_double) {
+          in_single = !in_single
+          out = out ch
+          continue
+        }
+        if (ch == "#" && !in_single && !in_double) {
+          break
+        }
+        out = out ch
+      }
+      return out
+    }
+    {
+      line = strip_comment($0)
+      line = trim(line)
+      if (line == "") {
+        next
+      }
+      if (line ~ /^export[[:space:]]+/) {
+        sub(/^export[[:space:]]+/, "", line)
+        line = trim(line)
+      }
+      eq = index(line, "=")
+      if (eq == 0) {
+        next
+      }
+      key = trim(substr(line, 1, eq - 1))
+      if (key ~ /^COPYBOT_ADAPTER_ROUTE_[A-Za-z0-9]+_AUTH_TOKEN(_FILE)?$/) {
+        route = key
+        sub(/^COPYBOT_ADAPTER_ROUTE_/, "", route)
+        sub(/_AUTH_TOKEN(_FILE)?$/, "", route)
+        if (route != "") {
+          print route
+        }
       }
     }
   ' "$ADAPTER_ENV_PATH" | sort -u
@@ -193,7 +290,29 @@ bearer_file="$(trim_string "$(env_value COPYBOT_ADAPTER_BEARER_TOKEN_FILE)")"
 hmac_key_id="$(trim_string "$(env_value COPYBOT_ADAPTER_HMAC_KEY_ID)")"
 hmac_secret_inline="$(trim_string "$(env_value COPYBOT_ADAPTER_HMAC_SECRET)")"
 hmac_secret_file="$(trim_string "$(env_value COPYBOT_ADAPTER_HMAC_SECRET_FILE)")"
+upstream_auth_inline="$(trim_string "$(env_value COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN)")"
+upstream_auth_file="$(trim_string "$(env_value COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE)")"
 allow_unauthenticated="$(normalize_bool_token "$(env_value COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED)")"
+
+if [[ -n "$bearer_inline" && -n "$bearer_file" ]]; then
+  errors+=("COPYBOT_ADAPTER_BEARER_TOKEN and COPYBOT_ADAPTER_BEARER_TOKEN_FILE cannot both be set")
+fi
+if [[ -n "$hmac_secret_inline" && -n "$hmac_secret_file" ]]; then
+  errors+=("COPYBOT_ADAPTER_HMAC_SECRET and COPYBOT_ADAPTER_HMAC_SECRET_FILE cannot both be set")
+fi
+if [[ -n "$upstream_auth_inline" && -n "$upstream_auth_file" ]]; then
+  errors+=("COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN and COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE cannot both be set")
+fi
+while IFS= read -r route_id; do
+  [[ -z "$route_id" ]] && continue
+  route_inline_key="COPYBOT_ADAPTER_ROUTE_${route_id}_AUTH_TOKEN"
+  route_file_key="COPYBOT_ADAPTER_ROUTE_${route_id}_AUTH_TOKEN_FILE"
+  route_inline="$(trim_string "$(env_value "$route_inline_key")")"
+  route_file="$(trim_string "$(env_value "$route_file_key")")"
+  if [[ -n "$route_inline" && -n "$route_file" ]]; then
+    errors+=("${route_inline_key} and ${route_file_key} cannot both be set")
+  fi
+done < <(list_route_auth_ids)
 
 if [[ "$allow_unauthenticated" != "true" ]]; then
   has_bearer="false"

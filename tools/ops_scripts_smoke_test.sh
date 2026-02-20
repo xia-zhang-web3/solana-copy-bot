@@ -1058,6 +1058,40 @@ run_adapter_secret_rotation_report_case() {
     exit 1
   fi
 
+  local duplicate_key_env_path="$TMP_DIR/adapter-rotation-duplicate.env"
+  cp "$env_path" "$duplicate_key_env_path"
+  {
+    echo 'COPYBOT_ADAPTER_BEARER_TOKEN_FILE="secrets/missing-first.token"'
+    echo 'COPYBOT_ADAPTER_BEARER_TOKEN_FILE="secrets/adapter_bearer.token"'
+  } >>"$duplicate_key_env_path"
+  local duplicate_key_output
+  duplicate_key_output="$(
+    ADAPTER_ENV_PATH="$duplicate_key_env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh"
+  )"
+  assert_contains "$duplicate_key_output" "rotation_readiness_verdict: PASS"
+
+  local conflict_env_path="$TMP_DIR/adapter-rotation-conflict.env"
+  cp "$env_path" "$conflict_env_path"
+  echo 'COPYBOT_ADAPTER_BEARER_TOKEN="inline-conflict-token"' >>"$conflict_env_path"
+  local conflict_output=""
+  if conflict_output="$(
+    ADAPTER_ENV_PATH="$conflict_env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected FAIL exit for inline+file secret conflict" >&2
+    exit 1
+  else
+    local conflict_exit_code=$?
+    if [[ "$conflict_exit_code" -ne 1 ]]; then
+      echo "expected FAIL exit code 1 for conflict, got $conflict_exit_code" >&2
+      echo "$conflict_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$conflict_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$conflict_output" "COPYBOT_ADAPTER_BEARER_TOKEN and COPYBOT_ADAPTER_BEARER_TOKEN_FILE cannot both be set"
+
   chmod 644 "$secrets_dir/adapter_bearer.token"
   local warn_output=""
   if warn_output="$(
@@ -1095,7 +1129,7 @@ run_adapter_secret_rotation_report_case() {
   fi
   assert_contains "$fail_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$fail_output" "COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE missing file"
-  echo "[ok] adapter secret rotation report pass/warn/fail"
+  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence"
 }
 
 run_devnet_rehearsal_case() {
