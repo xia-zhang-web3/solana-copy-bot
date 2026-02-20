@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use reqwest::Client;
@@ -69,6 +70,10 @@ struct RouteBackend {
     simulate_fallback_url: Option<String>,
     primary_auth_token: Option<String>,
     fallback_auth_token: Option<String>,
+    send_rpc_url: Option<String>,
+    send_rpc_fallback_url: Option<String>,
+    send_rpc_primary_auth_token: Option<String>,
+    send_rpc_fallback_auth_token: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +127,9 @@ impl AdapterConfig {
         let default_simulate = optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL");
         let default_simulate_fallback =
             optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL");
+        let default_send_rpc = optional_non_empty_env("COPYBOT_ADAPTER_SEND_RPC_URL");
+        let default_send_rpc_fallback =
+            optional_non_empty_env("COPYBOT_ADAPTER_SEND_RPC_FALLBACK_URL");
         let default_auth_token = resolve_secret_source(
             "COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN",
             optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN").as_deref(),
@@ -133,6 +141,18 @@ impl AdapterConfig {
             optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN").as_deref(),
             "COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE",
             optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE").as_deref(),
+        )?;
+        let default_send_rpc_auth_token = resolve_secret_source(
+            "COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN",
+            optional_non_empty_env("COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN").as_deref(),
+            "COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE",
+            optional_non_empty_env("COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE").as_deref(),
+        )?;
+        let default_send_rpc_fallback_auth_token = resolve_secret_source(
+            "COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN",
+            optional_non_empty_env("COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN").as_deref(),
+            "COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE",
+            optional_non_empty_env("COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE").as_deref(),
         )?;
 
         let mut route_backends = HashMap::new();
@@ -146,12 +166,31 @@ impl AdapterConfig {
                 "COPYBOT_ADAPTER_ROUTE_{}_SIMULATE_FALLBACK_URL",
                 route_upper
             );
+            let send_rpc_key = format!("COPYBOT_ADAPTER_ROUTE_{}_SEND_RPC_URL", route_upper);
+            let send_rpc_fallback_key = format!(
+                "COPYBOT_ADAPTER_ROUTE_{}_SEND_RPC_FALLBACK_URL",
+                route_upper
+            );
             let auth_key = format!("COPYBOT_ADAPTER_ROUTE_{}_AUTH_TOKEN", route_upper);
             let auth_file_key = format!("COPYBOT_ADAPTER_ROUTE_{}_AUTH_TOKEN_FILE", route_upper);
             let fallback_auth_key =
                 format!("COPYBOT_ADAPTER_ROUTE_{}_FALLBACK_AUTH_TOKEN", route_upper);
             let fallback_auth_file_key = format!(
                 "COPYBOT_ADAPTER_ROUTE_{}_FALLBACK_AUTH_TOKEN_FILE",
+                route_upper
+            );
+            let send_rpc_auth_key =
+                format!("COPYBOT_ADAPTER_ROUTE_{}_SEND_RPC_AUTH_TOKEN", route_upper);
+            let send_rpc_auth_file_key = format!(
+                "COPYBOT_ADAPTER_ROUTE_{}_SEND_RPC_AUTH_TOKEN_FILE",
+                route_upper
+            );
+            let send_rpc_fallback_auth_key = format!(
+                "COPYBOT_ADAPTER_ROUTE_{}_SEND_RPC_FALLBACK_AUTH_TOKEN",
+                route_upper
+            );
+            let send_rpc_fallback_auth_file_key = format!(
+                "COPYBOT_ADAPTER_ROUTE_{}_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE",
                 route_upper
             );
 
@@ -177,6 +216,10 @@ impl AdapterConfig {
                 .or_else(|| default_submit_fallback.clone());
             let simulate_fallback_url = optional_non_empty_env(simulate_fallback_key.as_str())
                 .or_else(|| default_simulate_fallback.clone());
+            let send_rpc_url =
+                optional_non_empty_env(send_rpc_key.as_str()).or_else(|| default_send_rpc.clone());
+            let send_rpc_fallback_url = optional_non_empty_env(send_rpc_fallback_key.as_str())
+                .or_else(|| default_send_rpc_fallback.clone());
             validate_endpoint_url(submit_url.as_str())
                 .map_err(|error| anyhow!("invalid submit URL for route={}: {}", route, error))?;
             validate_endpoint_url(simulate_url.as_str())
@@ -207,6 +250,38 @@ impl AdapterConfig {
                     ));
                 }
             }
+            if send_rpc_url.is_none() && send_rpc_fallback_url.is_some() {
+                return Err(anyhow!(
+                    "send RPC fallback URL for route={} requires primary send RPC URL",
+                    route
+                ));
+            }
+            if let Some(url) = send_rpc_url.as_deref() {
+                validate_endpoint_url(url).map_err(|error| {
+                    anyhow!("invalid send RPC URL for route={}: {}", route, error)
+                })?;
+            }
+            if let Some(url) = send_rpc_fallback_url.as_deref() {
+                validate_endpoint_url(url).map_err(|error| {
+                    anyhow!(
+                        "invalid send RPC fallback URL for route={}: {}",
+                        route,
+                        error
+                    )
+                })?;
+                if endpoint_identity(url)?
+                    == endpoint_identity(
+                        send_rpc_url
+                            .as_deref()
+                            .expect("checked send_rpc_url before fallback"),
+                    )?
+                {
+                    return Err(anyhow!(
+                        "send RPC fallback URL for route={} must resolve to distinct endpoint",
+                        route
+                    ));
+                }
+            }
 
             let primary_auth_token = resolve_secret_source(
                 auth_key.as_str(),
@@ -223,6 +298,21 @@ impl AdapterConfig {
             )?
             .or_else(|| default_fallback_auth_token.clone())
             .or_else(|| primary_auth_token.clone());
+            let send_rpc_primary_auth_token = resolve_secret_source(
+                send_rpc_auth_key.as_str(),
+                optional_non_empty_env(send_rpc_auth_key.as_str()).as_deref(),
+                send_rpc_auth_file_key.as_str(),
+                optional_non_empty_env(send_rpc_auth_file_key.as_str()).as_deref(),
+            )?
+            .or_else(|| default_send_rpc_auth_token.clone());
+            let send_rpc_fallback_auth_token = resolve_secret_source(
+                send_rpc_fallback_auth_key.as_str(),
+                optional_non_empty_env(send_rpc_fallback_auth_key.as_str()).as_deref(),
+                send_rpc_fallback_auth_file_key.as_str(),
+                optional_non_empty_env(send_rpc_fallback_auth_file_key.as_str()).as_deref(),
+            )?
+            .or_else(|| default_send_rpc_fallback_auth_token.clone())
+            .or_else(|| send_rpc_primary_auth_token.clone());
 
             route_backends.insert(
                 route.clone(),
@@ -233,6 +323,10 @@ impl AdapterConfig {
                     simulate_fallback_url,
                     primary_auth_token,
                     fallback_auth_token,
+                    send_rpc_url,
+                    send_rpc_fallback_url,
+                    send_rpc_primary_auth_token,
+                    send_rpc_fallback_auth_token,
                 },
             );
         }
@@ -899,27 +993,36 @@ async fn handle_submit(
         }
     }
 
-    let tx_signature = backend_response
+    let upstream_tx_signature = backend_response
         .get("tx_signature")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
+        .filter(|value| !value.is_empty());
+    let signed_tx_base64 = backend_response
+        .get("signed_tx_base64")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let (tx_signature, submit_transport) = if let Some(value) = upstream_tx_signature {
+        validate_signature_like(value).map_err(|error| {
             Reject::retryable(
                 "submit_adapter_invalid_response",
-                "upstream response missing tx_signature",
+                format!(
+                    "upstream tx_signature is not valid base58 signature: {}",
+                    error
+                ),
             )
-        })?
-        .to_string();
-    validate_signature_like(tx_signature.as_str()).map_err(|error| {
-        Reject::retryable(
+        })?;
+        (value.to_string(), "upstream_signature")
+    } else if let Some(value) = signed_tx_base64 {
+        let signature = send_signed_transaction_via_rpc(state, route.as_str(), value).await?;
+        (signature, "adapter_send_rpc")
+    } else {
+        return Err(Reject::retryable(
             "submit_adapter_invalid_response",
-            format!(
-                "upstream tx_signature is not valid base58 signature: {}",
-                error
-            ),
-        )
-    })?;
+            "upstream response missing tx_signature and signed_tx_base64",
+        ));
+    };
 
     let submit_signature_verify =
         verify_submitted_signature_visibility(state, route.as_str(), tx_signature.as_str()).await?;
@@ -1039,6 +1142,7 @@ async fn handle_submit(
         "client_order_id": request.client_order_id,
         "request_id": request.request_id,
         "tx_signature": tx_signature,
+        "submit_transport": submit_transport,
         "submitted_at": submitted_at.to_rfc3339(),
         "slippage_bps": request.slippage_bps,
         "tip_lamports": request.tip_lamports,
@@ -1197,6 +1301,193 @@ fn submit_signature_verification_to_json(value: &SubmitSignatureVerification) ->
             "reason": reason,
         }),
     }
+}
+
+async fn send_signed_transaction_via_rpc(
+    state: &AppState,
+    route: &str,
+    signed_tx_base64: &str,
+) -> std::result::Result<String, Reject> {
+    let backend = state.config.route_backends.get(route).ok_or_else(|| {
+        Reject::terminal(
+            "route_not_allowed",
+            format!("route={} not configured", route),
+        )
+    })?;
+
+    let signed_tx_base64 = signed_tx_base64.trim();
+    if signed_tx_base64.is_empty() {
+        return Err(Reject::retryable(
+            "submit_adapter_invalid_response",
+            "signed_tx_base64 must be non-empty when present",
+        ));
+    }
+    BASE64_STANDARD.decode(signed_tx_base64).map_err(|error| {
+        Reject::retryable(
+            "submit_adapter_invalid_response",
+            format!("signed_tx_base64 is not valid base64: {}", error),
+        )
+    })?;
+
+    let Some(primary_url) = backend.send_rpc_url.as_deref() else {
+        return Err(Reject::terminal(
+            "adapter_send_rpc_not_configured",
+            format!(
+                "route={} missing send RPC URL (set COPYBOT_ADAPTER_ROUTE_{}_SEND_RPC_URL or COPYBOT_ADAPTER_SEND_RPC_URL)",
+                route,
+                route.to_ascii_uppercase()
+            ),
+        ));
+    };
+    let mut endpoints = Vec::with_capacity(2);
+    endpoints.push((primary_url, backend.send_rpc_primary_auth_token.as_deref()));
+    if let Some(url) = backend.send_rpc_fallback_url.as_deref() {
+        endpoints.push((url, backend.send_rpc_fallback_auth_token.as_deref()));
+    }
+
+    let mut last_retryable: Option<Reject> = None;
+    for (attempt_idx, (url, auth_token)) in endpoints.iter().enumerate() {
+        let endpoint_label = redacted_endpoint_label(url);
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [
+                signed_tx_base64,
+                {
+                    "encoding": "base64",
+                    "skipPreflight": false,
+                    "maxRetries": 0
+                }
+            ]
+        });
+        let mut request = state.http.post(*url).json(&payload);
+        if let Some(token) = auth_token {
+            request = request.bearer_auth(token);
+        }
+        let response = match request.send().await {
+            Ok(value) => value,
+            Err(error) => {
+                let reject = Reject::retryable(
+                    "send_rpc_unavailable",
+                    format!(
+                        "send RPC request failed endpoint={} class={}",
+                        endpoint_label,
+                        classify_request_error(&error)
+                    ),
+                );
+                if attempt_idx + 1 < endpoints.len() {
+                    warn!(
+                        route = %route,
+                        endpoint = %endpoint_label,
+                        attempt = attempt_idx + 1,
+                        total = endpoints.len(),
+                        "retryable send RPC failure, trying fallback endpoint"
+                    );
+                    last_retryable = Some(reject);
+                    continue;
+                }
+                return Err(reject);
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            let reject = if status.as_u16() == 429 || status.is_server_error() {
+                Reject::retryable(
+                    "send_rpc_http_unavailable",
+                    format!(
+                        "send RPC status={} endpoint={} body={}",
+                        status, endpoint_label, body_text
+                    ),
+                )
+            } else {
+                Reject::terminal(
+                    "send_rpc_http_rejected",
+                    format!(
+                        "send RPC status={} endpoint={} body={}",
+                        status, endpoint_label, body_text
+                    ),
+                )
+            };
+            if reject.retryable && attempt_idx + 1 < endpoints.len() {
+                warn!(
+                    route = %route,
+                    endpoint = %endpoint_label,
+                    status = %status,
+                    attempt = attempt_idx + 1,
+                    total = endpoints.len(),
+                    "retryable send RPC HTTP status, trying fallback endpoint"
+                );
+                last_retryable = Some(reject);
+                continue;
+            }
+            return Err(reject);
+        }
+        let body: Value = response.json().await.map_err(|error| {
+            Reject::terminal(
+                "send_rpc_invalid_json",
+                format!(
+                    "send RPC response invalid JSON endpoint={} err={}",
+                    endpoint_label, error
+                ),
+            )
+        })?;
+        if let Some(error_payload) = body.get("error") {
+            if !error_payload.is_null() {
+                let reject = Reject::retryable(
+                    "send_rpc_error_payload",
+                    format!(
+                        "send RPC returned error endpoint={} payload={}",
+                        endpoint_label, error_payload
+                    ),
+                );
+                if attempt_idx + 1 < endpoints.len() {
+                    warn!(
+                        route = %route,
+                        endpoint = %endpoint_label,
+                        attempt = attempt_idx + 1,
+                        total = endpoints.len(),
+                        "send RPC error payload, trying fallback endpoint"
+                    );
+                    last_retryable = Some(reject);
+                    continue;
+                }
+                return Err(reject);
+            }
+        }
+        let signature = body
+            .get("result")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                Reject::terminal(
+                    "send_rpc_invalid_response",
+                    format!(
+                        "send RPC response missing result signature endpoint={}",
+                        endpoint_label
+                    ),
+                )
+            })?;
+        validate_signature_like(signature).map_err(|error| {
+            Reject::terminal(
+                "send_rpc_invalid_response",
+                format!("send RPC result signature is invalid: {}", error),
+            )
+        })?;
+        return Ok(signature.to_string());
+    }
+
+    Err(last_retryable.unwrap_or_else(|| {
+        Reject::retryable(
+            "send_rpc_unavailable",
+            format!(
+                "send RPC failed for all configured endpoints route={}",
+                route
+            ),
+        )
+    }))
 }
 
 #[derive(Clone, Copy)]
@@ -2355,6 +2646,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_returns_signature_result() {
+        let rpc_signature = bs58::encode([13u8; 64]).into_string();
+        let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", rpc_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url.clone());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let signed_tx_base64 = BASE64_STANDARD.encode([1u8, 2, 3, 4]);
+        let signature = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+            .await
+            .expect("send RPC should return tx signature");
+        assert_eq!(signature, rpc_signature);
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_uses_send_rpc_when_upstream_returns_signed_tx_base64() {
+        let signed_tx_base64 = BASE64_STANDARD.encode([1u8, 2, 3, 4, 5]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+        let rpc_signature = bs58::encode([14u8; 64]).into_string();
+        let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", rpc_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("submit should succeed via send RPC");
+        assert_eq!(
+            response.get("tx_signature").and_then(Value::as_str),
+            Some(rpc_signature.as_str())
+        );
+        assert_eq!(
+            response.get("submit_transport").and_then(Value::as_str),
+            Some("adapter_send_rpc")
+        );
+        let _ = upstream_handle.join();
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_seen_when_rpc_reports_confirmation() {
         let signature = bs58::encode([9u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
@@ -2512,6 +2898,10 @@ mod tests {
                 simulate_fallback_url: simulate_fallback.map(|value| value.to_string()),
                 primary_auth_token: None,
                 fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
             },
         );
         let config = AdapterConfig {

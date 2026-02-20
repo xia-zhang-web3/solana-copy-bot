@@ -519,7 +519,10 @@ COPYBOT_ADAPTER_HMAC_KEY_ID="key-rotation"
 COPYBOT_ADAPTER_HMAC_SECRET_FILE="secrets/adapter_hmac.secret"
 COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE="secrets/upstream_auth.token"
 COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE="secrets/upstream_fallback_auth.token"
+COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE="secrets/send_rpc_auth.token"
+COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE="secrets/send_rpc_fallback_auth.token"
 COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE="secrets/route_rpc_auth.token"
+COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_AUTH_TOKEN_FILE="secrets/route_rpc_send_rpc_auth.token"
 COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=false
 EOF
 }
@@ -1044,7 +1047,10 @@ run_adapter_secret_rotation_report_case() {
   printf 'hmac-pass\n' >"$secrets_dir/adapter_hmac.secret"
   printf 'upstream-pass\n' >"$secrets_dir/upstream_auth.token"
   printf 'upstream-fallback-pass\n' >"$secrets_dir/upstream_fallback_auth.token"
+  printf 'send-rpc-pass\n' >"$secrets_dir/send_rpc_auth.token"
+  printf 'send-rpc-fallback-pass\n' >"$secrets_dir/send_rpc_fallback_auth.token"
   printf 'route-pass\n' >"$secrets_dir/route_rpc_auth.token"
+  printf 'route-send-rpc-pass\n' >"$secrets_dir/route_rpc_send_rpc_auth.token"
   printf 'route-fast-lane-pass\n' >"$secrets_dir/route_fast_lane_auth.token"
   chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
 
@@ -1128,6 +1134,27 @@ run_adapter_secret_rotation_report_case() {
   fi
   assert_contains "$upstream_fallback_conflict_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$upstream_fallback_conflict_output" "COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN and COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE cannot both be set"
+
+  local send_rpc_fallback_conflict_env_path="$TMP_DIR/adapter-rotation-send-rpc-fallback-conflict.env"
+  cp "$env_path" "$send_rpc_fallback_conflict_env_path"
+  echo 'COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN="inline-send-rpc-fallback-conflict"' >>"$send_rpc_fallback_conflict_env_path"
+  local send_rpc_fallback_conflict_output=""
+  if send_rpc_fallback_conflict_output="$(
+    ADAPTER_ENV_PATH="$send_rpc_fallback_conflict_env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected FAIL exit for send RPC fallback auth inline+file conflict" >&2
+    exit 1
+  else
+    local send_rpc_fallback_conflict_exit_code=$?
+    if [[ "$send_rpc_fallback_conflict_exit_code" -ne 1 ]]; then
+      echo "expected FAIL exit code 1 for send RPC fallback auth conflict, got $send_rpc_fallback_conflict_exit_code" >&2
+      echo "$send_rpc_fallback_conflict_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$send_rpc_fallback_conflict_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$send_rpc_fallback_conflict_output" "COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN and COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE cannot both be set"
 
   local route_conflict_env_path="$TMP_DIR/adapter-rotation-route-conflict.env"
   cp "$env_path" "$route_conflict_env_path"

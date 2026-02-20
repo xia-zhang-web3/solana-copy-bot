@@ -33,6 +33,8 @@ At minimum:
 11. `COPYBOT_ADAPTER_SUBMIT_VERIFY_ATTEMPTS=3` (optional, default `3`)
 12. `COPYBOT_ADAPTER_SUBMIT_VERIFY_INTERVAL_MS=250` (optional, default `250`)
 13. `COPYBOT_ADAPTER_SUBMIT_VERIFY_STRICT=false` (optional; if `true`, unseen signature causes retryable reject)
+14. `COPYBOT_ADAPTER_SEND_RPC_URL=<optional RPC broadcast URL used when upstream returns signed_tx_base64>`
+15. `COPYBOT_ADAPTER_SEND_RPC_FALLBACK_URL=<optional fallback RPC broadcast URL>`
 
 Optional security:
 
@@ -44,6 +46,8 @@ Optional security:
 6. `COPYBOT_ADAPTER_HMAC_SECRET_FILE=/etc/solana-copy-bot/secrets/adapter_hmac.secret` (file-based alternative)
 7. `COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/upstream_auth.token` (optional upstream auth default)
 8. `COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/upstream_fallback_auth.token` (optional fallback upstream auth)
+9. `COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/send_rpc_auth.token` (optional send RPC auth default)
+10. `COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/send_rpc_fallback_auth.token` (optional fallback send RPC auth)
 
 Auth policy:
 
@@ -68,7 +72,13 @@ Optional per-route upstream overrides:
 6. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_auth.token`
 7. `COPYBOT_ADAPTER_ROUTE_RPC_FALLBACK_AUTH_TOKEN=...`
 8. `COPYBOT_ADAPTER_ROUTE_RPC_FALLBACK_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_fallback_auth.token`
-9. same pattern for `PAPER`, `JITO`, `FASTLANE`, etc.
+9. `COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_URL=...`
+10. `COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_FALLBACK_URL=...`
+11. `COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_AUTH_TOKEN=...`
+12. `COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_send_rpc_auth.token`
+13. `COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_FALLBACK_AUTH_TOKEN=...`
+14. `COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_send_rpc_fallback_auth.token`
+15. same pattern for `PAPER`, `JITO`, `FASTLANE`, etc.
 
 ## 3) Local Run
 
@@ -138,17 +148,21 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
 3. Upstream HTTP `429/5xx` is treated as retryable.
 4. Adapter failover policy: retryable upstream transport errors (`send`, `429`, `5xx`) try fallback endpoint when configured; terminal upstream rejects (`4xx`, invalid contract response) do not fail over.
    1. fallback can use dedicated auth token (`COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN[_FILE]` or route-specific `..._FALLBACK_AUTH_TOKEN[_FILE]`), otherwise inherits primary route auth token.
-5. All endpoint diagnostics are redacted to `scheme://host[:port]` labels in logs.
-6. Optional post-submit signature visibility check:
+5. Submit signed-tx broadcast path:
+   1. if upstream returns `tx_signature`, adapter returns it directly after contract checks;
+   2. if upstream returns `signed_tx_base64` (without `tx_signature`), adapter sends via `sendTransaction` to `SEND_RPC_URL` endpoint set and returns resulting signature;
+   3. send RPC fallback uses retryable policy (`send`/`429`/`5xx`/RPC error payload) with terminal short-circuit on non-retryable HTTP and invalid response.
+6. All endpoint diagnostics are redacted to `scheme://host[:port]` labels in logs.
+7. Optional post-submit signature visibility check:
    1. if `COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL` is set, adapter polls `getSignatureStatuses` after upstream submit,
    2. `COPYBOT_ADAPTER_SUBMIT_VERIFY_STRICT=true` makes unseen signature fail-closed as retryable reject (`upstream_submit_signature_unseen`),
    3. strict mode should be enabled only after baseline RPC visibility is stable.
-7. Secret rotation pattern (atomic):
+8. Secret rotation pattern (atomic):
    1. write new secret to a temp file in the same directory,
    2. set owner-only permissions (`chmod 600` or `chmod 400`),
    3. replace target file via atomic rename (`mv temp target`),
    4. restart adapter service and verify `/healthz`.
-8. Rotation readiness/evidence helper:
+9. Rotation readiness/evidence helper:
    1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env OUTPUT_DIR=state/adapter-rotation ./tools/adapter_secret_rotation_report.sh`
    2. expected `rotation_readiness_verdict: PASS` (or `WARN` only for non-blocking permission hardening),
    3. attach emitted `artifact_report` file to ops evidence package.
