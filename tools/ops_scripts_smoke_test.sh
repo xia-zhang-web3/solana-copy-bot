@@ -94,6 +94,44 @@ submit_adapter_require_policy_echo = true
 EOF
 }
 
+write_config_devnet_rehearsal() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[system]
+env = "dev"
+
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+enabled = true
+mode = "adapter_submit_confirm"
+execution_signer_pubkey = "Signer1111111111111111111111111111111111"
+rpc_http_url = "https://rpc.mainnet.local"
+rpc_devnet_http_url = "https://api.devnet.solana.com"
+submit_adapter_http_url = "https://adapter.primary.local/submit"
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = true
+default_route = "paper"
+submit_allowed_routes = ["paper"]
+submit_route_order = ["paper"]
+submit_route_max_slippage_bps = { paper = 50.0 }
+submit_route_tip_lamports = { paper = 0 }
+submit_route_compute_unit_limit = { paper = 300000 }
+submit_route_compute_unit_price_micro_lamports = { paper = 1000 }
+submit_adapter_auth_token = "token-inline"
+EOF
+}
+
 write_config_adapter_preflight_pass() {
   local config_path="$1"
   local db_path="$2"
@@ -982,6 +1020,45 @@ run_adapter_preflight_case() {
   echo "[ok] adapter preflight pass/fail + route-policy + route-order + secret diagnostics + numeric parity guards"
 }
 
+run_devnet_rehearsal_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local artifacts_dir="$TMP_DIR/devnet-rehearsal-artifacts"
+  local output
+  output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" OUTPUT_DIR="$artifacts_dir" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
+  )"
+  assert_contains "$output" "=== Execution Devnet Rehearsal ==="
+  assert_contains "$output" "preflight_verdict: PASS"
+  assert_contains "$output" "overall_go_nogo_verdict: GO"
+  assert_contains "$output" "tests_run: false"
+  assert_contains "$output" "devnet_rehearsal_verdict: GO"
+  assert_contains "$output" "artifact_summary:"
+  assert_contains "$output" "artifact_preflight:"
+  assert_contains "$output" "artifact_go_nogo:"
+  assert_contains "$output" "artifact_tests:"
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_summary_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_preflight_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal preflight artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_go_nogo_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal go/no-go artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_tests_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal tests artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  echo "[ok] execution devnet rehearsal helper"
+}
+
 main() {
   write_fake_journalctl
 
@@ -995,6 +1072,9 @@ main() {
   run_go_nogo_unknown_precedence_case "$legacy_db" "$legacy_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_go_nogo_preflight_fail_case "$legacy_db"
+  local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
+  write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
+  run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"

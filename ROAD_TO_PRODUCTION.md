@@ -45,7 +45,7 @@ Owner: copybot runtime team
 | A | Закрыть Yellowstone migration observation | In progress | systemd watchdog deploy + 1h/6h/24h evidence + 7-day window |
 | B | Закрыть security/ops baseline до первого submit | In progress | key policy + alert delivery + rollback drill |
 | C | Поднять execution core MVP | In progress | закрыть live submit-path + real tx policy (CU-limit/CU-price + route slippage bounds) |
-| C.5 | Пройти devnet dress rehearsal | Pending | end-to-end smoke без критичных дефектов |
+| C.5 | Пройти devnet dress rehearsal | In progress | собрать Stage C.5 evidence через `tools/execution_devnet_rehearsal.sh` + устранить P0/P1 по отчету |
 | D | Подключить Jito как primary route | Pending | route policy + tip strategy + fallback policy |
 | E | Заэнфорсить live risk limits в execution | In progress | добрать fee reserve/cooldown policy + live-runtime проверку |
 | F | Пройти staged rollout (dry/tiny/limited) | Pending | KPI-gates по success/timeout/duplicates |
@@ -470,8 +470,10 @@ Remaining:
 2. route-level policy evolution для Jito-primary/RPC-fallback in real-money path.
 
 `R2P-12` — Devnet dress rehearsal  
+Status: 🟡 In progress (rehearsal tooling + runbook ready)  
 Depends on: R2P-04, R2P-10, R2P-11  
-Artifacts: devnet smoke report
+Files: `tools/execution_devnet_rehearsal.sh`, `ops/execution_devnet_rehearsal_runbook.md`, `tools/ops_scripts_smoke_test.sh`  
+Artifacts: devnet smoke report + preflight/go-no-go/test logs bundle
 
 `R2P-13` — Jito primary + RPC fallback + tip strategy  
 Depends on: R2P-11, R2P-12  
@@ -569,12 +571,14 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 48. adapter production preflight helper added: `tools/execution_adapter_preflight.sh` validates adapter-submit contract readiness before process startup (mode/env gates, strict URL policy, signer/contract token checks, route/default invariants, secret source conflicts, secret-file resolution relative to config, HMAC pair+TTL bounds, strict-policy-echo requirement in production-like profiles) and returns fail-closed `preflight_verdict: FAIL` on contract drift; smoke suite covers both PASS and FAIL branches.
 49. go/no-go summary now includes explicit adapter preflight gate: `tools/execution_go_nogo_report.sh` runs `tools/execution_adapter_preflight.sh` in-band, surfaces `preflight_verdict/preflight_reason/error_count` in summary, forces `NO_GO` on `preflight_verdict=FAIL|UNKNOWN`, and writes preflight raw artifact alongside calibration/snapshot exports.
 50. adapter simulation path is now wired for `adapter_submit_confirm`: execution no longer uses paper simulator in adapter mode; it calls adapter HTTP simulation endpoint contract (same endpoint set, `action=simulate`, optional strict policy-echo for `route`/`contract_version`, HMAC/Bearer parity with submit path), and fail-closes to dropped intent via `FailClosedIntentSimulator` when simulator init fails.
+51. Stage C.5 devnet rehearsal helper added: `tools/execution_devnet_rehearsal.sh` now orchestrates adapter preflight + go/no-go evidence + targeted regression tests into a single rehearsal verdict (`GO/HOLD/NO_GO`) with artifact export; operator workflow is documented in `ops/execution_devnet_rehearsal_runbook.md`, and smoke suite covers a test-mode execution path for the helper.
 
 Остается в next-code-queue:
 
 1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete production secret distribution/rotation rollout for auth headers.
 2. run route-profile calibration windows in adapter mode and attach evidence package (`route_profile_verdict=PASS`, stable primary/fallback KPI) before tightening Jito-primary/RPC-fallback policy for go/no-go (`tools/execution_go_nogo_report.sh` summary + raw artifacts).
 3. finish live fee decomposition sign-off package: run adapter-mode calibration windows and attach evidence that `base/priority/tip/rent` telemetry is complete, mismatch/fallback counters are green, and totals reconcile against chain truth for go/no-go (`tools/execution_go_nogo_report.sh` + `tools/execution_fee_calibration_report.sh` raw output).
+4. execute Stage C.5 devnet rehearsal with `tools/execution_devnet_rehearsal.sh`, attach artifact bundle, and close residual P0/P1 before moving to Stage D.
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 
