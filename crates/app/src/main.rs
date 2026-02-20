@@ -1043,6 +1043,24 @@ fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
             config.max_copy_delay_sec
         ));
     }
+    if !config.daily_loss_limit_pct.is_finite()
+        || config.daily_loss_limit_pct < 0.0
+        || config.daily_loss_limit_pct > 100.0
+    {
+        return Err(anyhow!(
+            "risk.daily_loss_limit_pct must be finite and in [0, 100], got {}",
+            config.daily_loss_limit_pct
+        ));
+    }
+    if !config.max_drawdown_pct.is_finite()
+        || config.max_drawdown_pct < 0.0
+        || config.max_drawdown_pct > 100.0
+    {
+        return Err(anyhow!(
+            "risk.max_drawdown_pct must be finite and in [0, 100], got {}",
+            config.max_drawdown_pct
+        ));
+    }
 
     if !config.shadow_soft_exposure_cap_sol.is_finite()
         || config.shadow_soft_exposure_cap_sol <= 0.0
@@ -4049,6 +4067,29 @@ mod app_tests {
             error
                 .to_string()
                 .contains("risk.shadow_soft_exposure_cap_sol"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_risk_contract_rejects_invalid_live_loss_limits() {
+        let mut risk = RiskConfig::default();
+        risk.daily_loss_limit_pct = -0.1;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("negative daily loss limit percent must fail");
+        assert!(
+            error.to_string().contains("risk.daily_loss_limit_pct"),
+            "unexpected error: {}",
+            error
+        );
+
+        let mut risk = RiskConfig::default();
+        risk.max_drawdown_pct = 150.0;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("max drawdown percent above 100 must fail");
+        assert!(
+            error.to_string().contains("risk.max_drawdown_pct"),
             "unexpected error: {}",
             error
         );

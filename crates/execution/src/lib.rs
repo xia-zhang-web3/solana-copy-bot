@@ -1211,9 +1211,44 @@ impl ExecutionRuntime {
                     )));
                 }
 
+                if let Some(daily_loss_limit_sol) = self.daily_loss_limit_sol() {
+                    let (_, pnl_24h) =
+                        store.live_realized_pnl_since(Utc::now() - Duration::hours(24))?;
+                    if pnl_24h <= -daily_loss_limit_sol {
+                        return Ok(Some(format!(
+                            "daily_loss_limit_exceeded pnl_24h={:.6} loss_limit_sol={:.6} loss_limit_pct={:.4}",
+                            pnl_24h, daily_loss_limit_sol, self.risk.daily_loss_limit_pct
+                        )));
+                    }
+                }
+
+                if let Some(max_drawdown_limit_sol) = self.max_drawdown_limit_sol() {
+                    let max_drawdown_sol = store.live_max_drawdown_sol()?;
+                    if max_drawdown_sol >= max_drawdown_limit_sol {
+                        return Ok(Some(format!(
+                            "max_drawdown_exceeded max_drawdown_sol={:.6} drawdown_limit_sol={:.6} drawdown_limit_pct={:.4}",
+                            max_drawdown_sol, max_drawdown_limit_sol, self.risk.max_drawdown_pct
+                        )));
+                    }
+                }
+
                 Ok(None)
             }
         }
+    }
+
+    fn daily_loss_limit_sol(&self) -> Option<f64> {
+        if !self.risk.daily_loss_limit_pct.is_finite() || self.risk.daily_loss_limit_pct <= 0.0 {
+            return None;
+        }
+        Some(self.risk.max_total_exposure_sol * (self.risk.daily_loss_limit_pct / 100.0))
+    }
+
+    fn max_drawdown_limit_sol(&self) -> Option<f64> {
+        if !self.risk.max_drawdown_pct.is_finite() || self.risk.max_drawdown_pct <= 0.0 {
+            return None;
+        }
+        Some(self.risk.max_total_exposure_sol * (self.risk.max_drawdown_pct / 100.0))
     }
 }
 
@@ -2180,6 +2215,172 @@ mod tests {
         assert_eq!(order.err_code.as_deref(), Some("pretrade_rejected"));
         let dropped = store.list_copy_signals_by_status("execution_dropped", 10)?;
         assert_eq!(dropped.len(), 1);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_drops_buy_when_daily_loss_limit_is_exceeded() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-daily-loss-limit")?;
+        let now = Utc::now();
+        store.apply_execution_fill_to_positions(
+            "token-loss-seed",
+            "buy",
+            1.0,
+            0.20,
+            now - Duration::minutes(90),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-loss-seed",
+            "sell",
+            1.0,
+            0.10,
+            now - Duration::minutes(60),
+        )?;
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:s7:w:buy:daily".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-buy-daily".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-daily-loss-1",
+                &signal.signal_id,
+                "cb_shadow_s7_w_buy_daily_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 1.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        risk.daily_loss_limit_pct = 5.0; // 0.05 SOL on 1.0 exposure budget.
+        risk.max_drawdown_pct = 100.0; // keep drawdown gate out of this test.
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 10;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.dropped, 1);
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s7_w_buy_daily_a1")?
+            .context("daily-loss blocked signal should create and drop execution order")?;
+        assert_eq!(order.status, "execution_dropped");
+        assert_eq!(order.err_code.as_deref(), Some("risk_blocked"));
+        assert!(
+            order
+                .simulation_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("daily_loss_limit_exceeded"),
+            "unexpected risk block detail: {:?}",
+            order.simulation_error
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_drops_buy_when_max_drawdown_is_exceeded() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-max-drawdown-limit")?;
+        let now = Utc::now();
+        store.apply_execution_fill_to_positions(
+            "token-drawdown-seed",
+            "buy",
+            1.0,
+            0.10,
+            now - Duration::hours(3),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-drawdown-seed",
+            "sell",
+            1.0,
+            0.16,
+            now - Duration::minutes(170),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-drawdown-seed",
+            "buy",
+            1.0,
+            0.20,
+            now - Duration::minutes(160),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-drawdown-seed",
+            "sell",
+            1.0,
+            0.05,
+            now - Duration::minutes(150),
+        )?;
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:s8:w:buy:drawdown".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-buy-drawdown".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-max-drawdown-1",
+                &signal.signal_id,
+                "cb_shadow_s8_w_buy_drawdown_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 1.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        risk.daily_loss_limit_pct = 0.0; // isolate drawdown gate in this test.
+        risk.max_drawdown_pct = 5.0; // 0.05 SOL on 1.0 exposure budget.
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 10;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.dropped, 1);
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s8_w_buy_drawdown_a1")?
+            .context("drawdown-blocked signal should create and drop execution order")?;
+        assert_eq!(order.status, "execution_dropped");
+        assert_eq!(order.err_code.as_deref(), Some("risk_blocked"));
+        assert!(
+            order
+                .simulation_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("max_drawdown_exceeded"),
+            "unexpected risk block detail: {:?}",
+            order.simulation_error
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

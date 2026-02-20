@@ -2364,6 +2364,63 @@ impl SqliteStore {
         Ok((trades.max(0) as u64, pnl))
     }
 
+    pub fn live_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT COUNT(*) as trades, COALESCE(SUM(COALESCE(pnl_sol, 0.0)), 0.0) as pnl
+                 FROM positions
+                 WHERE state = 'closed'
+                   AND closed_ts IS NOT NULL
+                   AND closed_ts >= ?1",
+            )
+            .context("failed to prepare live pnl query")?;
+        let (trades, pnl): (i64, f64) = stmt
+            .query_row(params![since.to_rfc3339()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .context("failed querying live pnl summary")?;
+        Ok((trades.max(0) as u64, pnl))
+    }
+
+    pub fn live_max_drawdown_sol(&self) -> Result<f64> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT COALESCE(pnl_sol, 0.0)
+                 FROM positions
+                 WHERE state = 'closed'
+                   AND closed_ts IS NOT NULL
+                 ORDER BY datetime(closed_ts) ASC, position_id ASC",
+            )
+            .context("failed to prepare live drawdown query")?;
+        let pnl_rows = stmt
+            .query_map([], |row| row.get::<_, f64>(0))
+            .context("failed querying live drawdown rows")?;
+
+        let mut cumulative_pnl = 0.0_f64;
+        let mut peak_pnl = 0.0_f64;
+        let mut max_drawdown_sol = 0.0_f64;
+        for pnl_row in pnl_rows {
+            let pnl = pnl_row.context("failed reading live drawdown pnl row")?;
+            if !pnl.is_finite() {
+                return Err(anyhow!(
+                    "non-finite closed position pnl in live drawdown series"
+                ));
+            }
+            cumulative_pnl += pnl;
+            if cumulative_pnl > peak_pnl {
+                peak_pnl = cumulative_pnl;
+            }
+            let drawdown = (peak_pnl - cumulative_pnl).max(0.0);
+            if drawdown > max_drawdown_sol {
+                max_drawdown_sol = drawdown;
+            }
+        }
+
+        Ok(max_drawdown_sol)
+    }
+
     pub fn shadow_rug_loss_count_since(
         &self,
         since: DateTime<Utc>,
