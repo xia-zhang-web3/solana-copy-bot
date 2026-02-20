@@ -2479,9 +2479,15 @@ impl SqliteStore {
 
     pub fn live_max_drawdown_with_unrealized_since(
         &self,
-        as_of: DateTime<Utc>,
         since: DateTime<Utc>,
-    ) -> Result<(f64, u64)> {
+        unrealized_pnl_sol: f64,
+    ) -> Result<f64> {
+        if !unrealized_pnl_sol.is_finite() {
+            return Err(anyhow!(
+                "invalid unrealized_pnl_sol for drawdown calculation: {}",
+                unrealized_pnl_sol
+            ));
+        }
         let mut stmt = self
             .conn
             .prepare(
@@ -2520,14 +2526,13 @@ impl SqliteStore {
             }
         }
 
-        let (unrealized_pnl_sol, missing_price_count) = self.live_unrealized_pnl_sol(as_of)?;
         let terminal_pnl = cumulative_pnl + unrealized_pnl_sol;
         let terminal_drawdown = (peak_pnl - terminal_pnl).max(0.0);
         if terminal_drawdown > max_drawdown_sol {
             max_drawdown_sol = terminal_drawdown;
         }
 
-        Ok((max_drawdown_sol, missing_price_count))
+        Ok(max_drawdown_sol)
     }
 
     pub fn shadow_rug_loss_count_since(
@@ -3378,8 +3383,10 @@ mod tests {
             ts_utc: now + Duration::seconds(1),
         })?;
 
-        let (drawdown_sol, missing_price_count) = store
-            .live_max_drawdown_with_unrealized_since(now + Duration::seconds(2), window_start)?;
+        let (unrealized_pnl_sol, missing_price_count) =
+            store.live_unrealized_pnl_sol(now + Duration::seconds(2))?;
+        let drawdown_sol =
+            store.live_max_drawdown_with_unrealized_since(window_start, unrealized_pnl_sol)?;
         assert!(
             (drawdown_sol - 0.30).abs() < 1e-9,
             "drawdown should include terminal open-position unrealized loss, got {drawdown_sol}"
