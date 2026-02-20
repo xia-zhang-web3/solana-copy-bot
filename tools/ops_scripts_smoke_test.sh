@@ -1452,6 +1452,7 @@ run_adapter_rollout_evidence_case() {
       exit 1
     fi
   fi
+  assert_contains "$missing_env_output" "=== Adapter Rollout Evidence Summary ==="
   assert_contains "$missing_env_output" "adapter_rollout_verdict: NO_GO"
   assert_contains "$missing_env_output" "input_error: adapter env file not found:"
   echo "[ok] adapter rollout evidence helper"
