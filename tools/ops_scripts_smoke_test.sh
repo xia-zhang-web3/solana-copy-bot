@@ -673,6 +673,7 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "=== Execution Go/No-Go Summary ==="
   assert_contains "$go_nogo_output" "fee_decomposition_verdict: SKIP"
   assert_contains "$go_nogo_output" "route_profile_verdict: SKIP"
+  assert_contains "$go_nogo_output" "preflight_verdict: SKIP"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
 
   echo "[ok] ${label}"
@@ -751,6 +752,7 @@ run_calibration_adapter_mode_route_profile_case() {
   )"
   assert_contains "$go_nogo_output" "fee_decomposition_verdict: WARN"
   assert_contains "$go_nogo_output" "route_profile_verdict: WARN"
+  assert_contains "$go_nogo_output" "preflight_verdict: SKIP"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: NO_GO"
   echo "[ok] calibration adapter-mode route profile verdict"
 }
@@ -781,6 +783,7 @@ run_go_nogo_artifact_export_case() {
   assert_contains "$output" "artifacts_written: true"
   assert_contains "$output" "artifact_calibration:"
   assert_contains "$output" "artifact_snapshot:"
+  assert_contains "$output" "artifact_preflight:"
   assert_contains "$output" "artifact_summary:"
   if ! ls "$artifacts_dir"/execution_go_nogo_summary_*.txt >/dev/null 2>&1; then
     echo "expected go/no-go summary artifact in $artifacts_dir" >&2
@@ -792,6 +795,10 @@ run_go_nogo_artifact_export_case() {
   fi
   if ! ls "$artifacts_dir"/runtime_snapshot_*.txt >/dev/null 2>&1; then
     echo "expected runtime snapshot artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_adapter_preflight_*.txt >/dev/null 2>&1; then
+    echo "expected adapter preflight artifact in $artifacts_dir" >&2
     exit 1
   fi
   echo "[ok] go-no-go artifact export"
@@ -811,6 +818,21 @@ run_go_nogo_unknown_precedence_case() {
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
   assert_contains "$output" "overall_go_nogo_reason: unable to classify readiness gate verdicts from tool output"
   echo "[ok] go-no-go UNKNOWN precedence"
+}
+
+run_go_nogo_preflight_fail_case() {
+  local db_path="$1"
+  local fail_cfg="$TMP_DIR/go-nogo-preflight-fail.toml"
+  local output
+  write_config_adapter_preflight_fail "$fail_cfg" "$db_path"
+  output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$fail_cfg" SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$output" "preflight_verdict: FAIL"
+  assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
+  assert_contains "$output" "overall_go_nogo_reason: adapter preflight failed:"
+  echo "[ok] go-no-go preflight fail gate"
 }
 
 run_adapter_preflight_case() {
@@ -961,6 +983,7 @@ main() {
   run_go_nogo_artifact_export_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_unknown_precedence_case "$legacy_db" "$legacy_cfg"
   run_adapter_preflight_case "$legacy_db"
+  run_go_nogo_preflight_fail_case "$legacy_db"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"

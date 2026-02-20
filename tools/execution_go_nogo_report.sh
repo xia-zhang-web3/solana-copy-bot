@@ -61,6 +61,21 @@ normalize_gate_verdict() {
   esac
 }
 
+normalize_preflight_verdict() {
+  local raw="$1"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
+  case "$raw" in
+    PASS|SKIP|FAIL)
+      printf "%s" "$raw"
+      ;;
+    *)
+      printf "UNKNOWN"
+      ;;
+  esac
+}
+
 normalize_bool_token() {
   local raw="$1"
   raw="${raw#"${raw%%[![:space:]]*}"}"
@@ -83,12 +98,37 @@ calibration_output="$(
   DB_PATH="${DB_PATH:-}" CONFIG_PATH="$CONFIG_PATH" \
     bash "$ROOT_DIR/tools/execution_fee_calibration_report.sh" "$WINDOW_HOURS"
 )"
+preflight_output=""
+preflight_exit_code=0
+if preflight_output="$(
+  CONFIG_PATH="$CONFIG_PATH" \
+    bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+)"; then
+  preflight_exit_code=0
+else
+  preflight_exit_code=$?
+fi
 snapshot_output="$(
   PATH="${PATH}" DB_PATH="${DB_PATH:-}" CONFIG_PATH="$CONFIG_PATH" SERVICE="$SERVICE" \
     bash "$ROOT_DIR/tools/runtime_snapshot.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES"
 )"
 
 db_path="$(first_non_empty "$(extract_field "db" "$calibration_output")" "$(extract_field "db" "$snapshot_output")")"
+preflight_verdict="$(normalize_preflight_verdict "$(extract_field "preflight_verdict" "$preflight_output")")"
+preflight_reason="$(extract_field "preflight_reason" "$preflight_output")"
+preflight_error_count="$(extract_field "error_count" "$preflight_output")"
+preflight_first_error="$(printf '%s\n' "$preflight_output" | awk -F': ' '$1=="error" {print substr($0, index($0, ": ") + 2); exit}')"
+if [[ "$preflight_verdict" == "FAIL" ]]; then
+  if [[ -n "${preflight_first_error:-}" ]]; then
+    preflight_reason="$preflight_first_error"
+  elif [[ -z "${preflight_reason:-}" ]]; then
+    preflight_reason="adapter preflight returned FAIL"
+  fi
+elif [[ "$preflight_verdict" == "UNKNOWN" && "$preflight_exit_code" -ne 0 ]]; then
+  preflight_reason="adapter preflight exited with code $preflight_exit_code without recognizable verdict"
+elif [[ -z "${preflight_reason:-}" ]]; then
+  preflight_reason="n/a"
+fi
 fee_decomposition_verdict="$(normalize_gate_verdict "$(extract_field "fee_decomposition_verdict" "$calibration_output")")"
 fee_decomposition_reason="$(extract_field "fee_decomposition_reason" "$calibration_output")"
 route_profile_verdict="$(normalize_gate_verdict "$(extract_field "route_profile_verdict" "$calibration_output")")"
@@ -114,9 +154,15 @@ fi
 
 overall_go_nogo_verdict="HOLD"
 overall_go_nogo_reason="readiness gates are not in final pass state yet"
-if [[ "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" ]]; then
+if [[ "$preflight_verdict" == "FAIL" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="adapter preflight failed: ${preflight_reason:-unknown preflight failure}"
+elif [[ "$preflight_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify adapter preflight verdict; fail-closed"
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" ]]; then
   overall_go_nogo_verdict="GO"
-  overall_go_nogo_reason="fee decomposition and route profile readiness gates are PASS"
+  overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
 elif [[ "$fee_decomposition_verdict" == "UNKNOWN" || "$route_profile_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify readiness gate verdicts from tool output"
@@ -148,6 +194,9 @@ fee_decomposition_reason: ${fee_decomposition_reason:-n/a}
 route_profile_verdict: $route_profile_verdict
 route_profile_reason: ${route_profile_reason:-n/a}
 recommended_route_order_csv: ${recommended_route_order_csv:-n/a}
+preflight_verdict: $preflight_verdict
+preflight_reason: ${preflight_reason:-n/a}
+preflight_error_count: ${preflight_error_count:-0}
 
 ingestion_lag_ms_p95: ${ingestion_lag_ms_p95:-n/a}
 ingestion_lag_ms_p99: ${ingestion_lag_ms_p99:-n/a}
@@ -167,13 +216,16 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   mkdir -p "$OUTPUT_DIR"
   calibration_path="$OUTPUT_DIR/execution_fee_calibration_${timestamp_compact}.txt"
   snapshot_path="$OUTPUT_DIR/runtime_snapshot_${timestamp_compact}.txt"
+  preflight_path="$OUTPUT_DIR/execution_adapter_preflight_${timestamp_compact}.txt"
   summary_path="$OUTPUT_DIR/execution_go_nogo_summary_${timestamp_compact}.txt"
   printf '%s\n' "$calibration_output" > "$calibration_path"
   printf '%s\n' "$snapshot_output" > "$snapshot_path"
+  printf '%s\n' "$preflight_output" > "$preflight_path"
   printf '%s\n' "$summary_output" > "$summary_path"
   echo
   echo "artifacts_written: true"
   echo "artifact_calibration: $calibration_path"
   echo "artifact_snapshot: $snapshot_path"
+  echo "artifact_preflight: $preflight_path"
   echo "artifact_summary: $summary_path"
 fi
