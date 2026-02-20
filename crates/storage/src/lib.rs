@@ -2425,6 +2425,111 @@ impl SqliteStore {
         Ok(max_drawdown_sol)
     }
 
+    pub fn live_unrealized_pnl_sol(&self, as_of: DateTime<Utc>) -> Result<(f64, u64)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT token, qty, cost_sol
+                 FROM positions
+                 WHERE state = 'open'
+                   AND qty > 0
+                   AND cost_sol >= 0",
+            )
+            .context("failed to prepare live open positions query")?;
+        let mut rows = stmt
+            .query([])
+            .context("failed querying live open positions")?;
+
+        let mut unrealized_pnl_sol = 0.0_f64;
+        let mut missing_price_count = 0_u64;
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating live open positions")?
+        {
+            let token: String = row.get(0).context("failed reading positions.token")?;
+            let qty: f64 = row.get(1).context("failed reading positions.qty")?;
+            let cost_sol: f64 = row.get(2).context("failed reading positions.cost_sol")?;
+            if !qty.is_finite() || !cost_sol.is_finite() || qty <= 0.0 || cost_sol < 0.0 {
+                return Err(anyhow!(
+                    "invalid open position row for unrealized pnl token={} qty={} cost_sol={}",
+                    token,
+                    qty,
+                    cost_sol
+                ));
+            }
+
+            if let Some(price_sol) = self.latest_token_sol_price(&token, as_of)? {
+                let mark_value_sol = qty * price_sol;
+                if !mark_value_sol.is_finite() {
+                    return Err(anyhow!(
+                        "non-finite mark value for unrealized pnl token={} qty={} price_sol={}",
+                        token,
+                        qty,
+                        price_sol
+                    ));
+                }
+                unrealized_pnl_sol += mark_value_sol - cost_sol;
+            } else {
+                missing_price_count = missing_price_count.saturating_add(1);
+            }
+        }
+
+        Ok((unrealized_pnl_sol, missing_price_count))
+    }
+
+    pub fn live_max_drawdown_with_unrealized_since(
+        &self,
+        as_of: DateTime<Utc>,
+        since: DateTime<Utc>,
+    ) -> Result<(f64, u64)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT COALESCE(pnl_sol, 0.0)
+                 FROM positions
+                 WHERE state = 'closed'
+                   AND closed_ts IS NOT NULL
+                   AND closed_ts >= ?1
+                 ORDER BY
+                    julianday(closed_ts) ASC,
+                    closed_ts ASC,
+                    rowid ASC",
+            )
+            .context("failed to prepare live drawdown query")?;
+        let pnl_rows = stmt
+            .query_map(params![since.to_rfc3339()], |row| row.get::<_, f64>(0))
+            .context("failed querying live drawdown rows")?;
+
+        let mut cumulative_pnl = 0.0_f64;
+        let mut peak_pnl = 0.0_f64;
+        let mut max_drawdown_sol = 0.0_f64;
+        for pnl_row in pnl_rows {
+            let pnl = pnl_row.context("failed reading live drawdown pnl row")?;
+            if !pnl.is_finite() {
+                return Err(anyhow!(
+                    "non-finite closed position pnl in live drawdown series"
+                ));
+            }
+            cumulative_pnl += pnl;
+            if cumulative_pnl > peak_pnl {
+                peak_pnl = cumulative_pnl;
+            }
+            let drawdown = (peak_pnl - cumulative_pnl).max(0.0);
+            if drawdown > max_drawdown_sol {
+                max_drawdown_sol = drawdown;
+            }
+        }
+
+        let (unrealized_pnl_sol, missing_price_count) = self.live_unrealized_pnl_sol(as_of)?;
+        let terminal_pnl = cumulative_pnl + unrealized_pnl_sol;
+        let terminal_drawdown = (peak_pnl - terminal_pnl).max(0.0);
+        if terminal_drawdown > max_drawdown_sol {
+            max_drawdown_sol = terminal_drawdown;
+        }
+
+        Ok((max_drawdown_sol, missing_price_count))
+    }
+
     pub fn shadow_rug_loss_count_since(
         &self,
         since: DateTime<Utc>,
@@ -3192,6 +3297,94 @@ mod tests {
             drawdown <= 1e-9,
             "drawdown should ignore old losses outside window, got {drawdown}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn live_unrealized_pnl_sol_uses_latest_price_and_counts_missing_quotes() -> Result<()> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-unrealized-pnl.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.apply_execution_fill_to_positions("token-priced", "buy", 1.0, 0.20, now)?;
+        store.apply_execution_fill_to_positions("token-missing", "buy", 1.0, 0.30, now)?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-priced".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-live-unrealized".to_string(),
+            slot: 12345,
+            ts_utc: now + Duration::seconds(1),
+        })?;
+
+        let (unrealized_pnl_sol, missing_price_count) =
+            store.live_unrealized_pnl_sol(now + Duration::seconds(2))?;
+        assert!(
+            (unrealized_pnl_sol + 0.10).abs() < 1e-9,
+            "unexpected unrealized pnl: {unrealized_pnl_sol}"
+        );
+        assert_eq!(missing_price_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn live_max_drawdown_with_unrealized_since_includes_open_position_loss() -> Result<()> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-drawdown-with-unrealized.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::hours(24);
+
+        store.apply_execution_fill_to_positions(
+            "token-closed",
+            "buy",
+            1.0,
+            0.10,
+            now - Duration::minutes(30),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-closed",
+            "sell",
+            1.0,
+            0.30,
+            now - Duration::minutes(29),
+        )?;
+        store.apply_execution_fill_to_positions("token-open", "buy", 1.0, 0.40, now)?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-open".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-drawdown-unrealized".to_string(),
+            slot: 12346,
+            ts_utc: now + Duration::seconds(1),
+        })?;
+
+        let (drawdown_sol, missing_price_count) = store
+            .live_max_drawdown_with_unrealized_since(now + Duration::seconds(2), window_start)?;
+        assert!(
+            (drawdown_sol - 0.30).abs() < 1e-9,
+            "drawdown should include terminal open-position unrealized loss, got {drawdown_sol}"
+        );
+        assert_eq!(missing_price_count, 0);
         Ok(())
     }
 }

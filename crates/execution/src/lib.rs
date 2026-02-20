@@ -1214,22 +1214,33 @@ impl ExecutionRuntime {
 
                 if let Some(daily_loss_limit_sol) = self.daily_loss_limit_sol() {
                     let loss_window_start = now - Duration::hours(24);
-                    let (_, pnl_24h) = store.live_realized_pnl_since(loss_window_start)?;
+                    let (_, realized_pnl_24h) = store.live_realized_pnl_since(loss_window_start)?;
+                    let (unrealized_pnl_sol, unrealized_missing_price_count) =
+                        store.live_unrealized_pnl_sol(now)?;
+                    let pnl_24h = realized_pnl_24h + unrealized_pnl_sol;
                     if pnl_24h <= -daily_loss_limit_sol {
                         return Ok(Some(format!(
-                            "daily_loss_limit_exceeded pnl_24h={:.6} loss_limit_sol={:.6} loss_limit_pct={:.4} window_start={}",
-                            pnl_24h, daily_loss_limit_sol, self.risk.daily_loss_limit_pct, loss_window_start.to_rfc3339()
+                            "daily_loss_limit_exceeded pnl_24h={:.6} realized_pnl_24h={:.6} unrealized_pnl={:.6} unrealized_missing_price_count={} loss_limit_sol={:.6} loss_limit_pct={:.4} window_start={}",
+                            pnl_24h,
+                            realized_pnl_24h,
+                            unrealized_pnl_sol,
+                            unrealized_missing_price_count,
+                            daily_loss_limit_sol,
+                            self.risk.daily_loss_limit_pct,
+                            loss_window_start.to_rfc3339()
                         )));
                     }
                 }
 
                 if let Some(max_drawdown_limit_sol) = self.max_drawdown_limit_sol() {
                     let drawdown_window_start = now - Duration::hours(24);
-                    let max_drawdown_sol = store.live_max_drawdown_since(drawdown_window_start)?;
+                    let (max_drawdown_sol, unrealized_missing_price_count) = store
+                        .live_max_drawdown_with_unrealized_since(now, drawdown_window_start)?;
                     if max_drawdown_sol >= max_drawdown_limit_sol {
                         return Ok(Some(format!(
-                            "max_drawdown_exceeded max_drawdown_sol={:.6} drawdown_limit_sol={:.6} drawdown_limit_pct={:.4} window_start={}",
+                            "max_drawdown_exceeded max_drawdown_sol={:.6} unrealized_missing_price_count={} drawdown_limit_sol={:.6} drawdown_limit_pct={:.4} window_start={}",
                             max_drawdown_sol,
+                            unrealized_missing_price_count,
                             max_drawdown_limit_sol,
                             self.risk.max_drawdown_pct,
                             drawdown_window_start.to_rfc3339()
@@ -2385,6 +2396,162 @@ mod tests {
                 .contains("max_drawdown_exceeded"),
             "unexpected risk block detail: {:?}",
             order.simulation_error
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_drops_buy_when_daily_loss_is_exceeded_by_unrealized_pnl() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-daily-loss-unrealized")?;
+        let now = Utc::now();
+        store.apply_execution_fill_to_positions(
+            "token-open-loss",
+            "buy",
+            1.0,
+            0.20,
+            now - Duration::minutes(10),
+        )?;
+        seed_token_price(
+            &store,
+            "token-open-loss",
+            now - Duration::minutes(9),
+            "sig-price-open-loss",
+        )?;
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:s10:w:buy:daily-unrealized".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-daily-unrealized".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-daily-loss-unrealized-1",
+                &signal.signal_id,
+                "cb_shadow_s10_w_buy_daily_unrealized_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 1.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        risk.daily_loss_limit_pct = 5.0; // 0.05 SOL
+        risk.max_drawdown_pct = 100.0;
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 10;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.dropped, 1);
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s10_w_buy_daily_unrealized_a1")?
+            .context("daily-loss-unrealized blocked signal should create and drop order")?;
+        assert_eq!(order.status, "execution_dropped");
+        assert_eq!(order.err_code.as_deref(), Some("risk_blocked"));
+        let detail = order.simulation_error.unwrap_or_default();
+        assert!(
+            detail.contains("daily_loss_limit_exceeded") && detail.contains("unrealized_pnl"),
+            "unexpected risk block detail: {detail}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_drops_buy_when_drawdown_is_exceeded_by_unrealized_pnl() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-drawdown-unrealized")?;
+        let now = Utc::now();
+        store.apply_execution_fill_to_positions(
+            "token-closed-profit",
+            "buy",
+            1.0,
+            0.10,
+            now - Duration::minutes(20),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-closed-profit",
+            "sell",
+            1.0,
+            0.30,
+            now - Duration::minutes(19),
+        )?;
+        store.apply_execution_fill_to_positions(
+            "token-open-drawdown",
+            "buy",
+            1.0,
+            0.40,
+            now - Duration::minutes(10),
+        )?;
+        seed_token_price(
+            &store,
+            "token-open-drawdown",
+            now - Duration::minutes(9),
+            "sig-price-open-drawdown",
+        )?;
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:s11:w:buy:drawdown-unrealized".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-drawdown-unrealized".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-drawdown-unrealized-1",
+                &signal.signal_id,
+                "cb_shadow_s11_w_buy_drawdown_unrealized_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 1.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        risk.daily_loss_limit_pct = 0.0;
+        risk.max_drawdown_pct = 5.0; // 0.05 SOL
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 10;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.dropped, 1);
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s11_w_buy_drawdown_unrealized_a1")?
+            .context("drawdown-unrealized blocked signal should create and drop order")?;
+        assert_eq!(order.status, "execution_dropped");
+        assert_eq!(order.err_code.as_deref(), Some("risk_blocked"));
+        let detail = order.simulation_error.unwrap_or_default();
+        assert!(
+            detail.contains("max_drawdown_exceeded"),
+            "unexpected risk block detail: {detail}"
         );
 
         let _ = std::fs::remove_file(db_path);
