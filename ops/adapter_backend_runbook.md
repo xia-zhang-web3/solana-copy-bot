@@ -43,6 +43,7 @@ Optional security:
 5. `COPYBOT_ADAPTER_HMAC_TTL_SEC=30`
 6. `COPYBOT_ADAPTER_HMAC_SECRET_FILE=/etc/solana-copy-bot/secrets/adapter_hmac.secret` (file-based alternative)
 7. `COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/upstream_auth.token` (optional upstream auth default)
+8. `COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/upstream_fallback_auth.token` (optional fallback upstream auth)
 
 Auth policy:
 
@@ -65,7 +66,9 @@ Optional per-route upstream overrides:
 4. `COPYBOT_ADAPTER_ROUTE_RPC_SIMULATE_FALLBACK_URL=...`
 5. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN=...`
 6. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_auth.token`
-7. same pattern for `PAPER`, `JITO`, `FASTLANE`, etc.
+7. `COPYBOT_ADAPTER_ROUTE_RPC_FALLBACK_AUTH_TOKEN=...`
+8. `COPYBOT_ADAPTER_ROUTE_RPC_FALLBACK_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_fallback_auth.token`
+9. same pattern for `PAPER`, `JITO`, `FASTLANE`, etc.
 
 ## 3) Local Run
 
@@ -134,6 +137,7 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
 2. Unknown upstream status is fail-closed (`upstream_invalid_status`).
 3. Upstream HTTP `429/5xx` is treated as retryable.
 4. Adapter failover policy: retryable upstream transport errors (`send`, `429`, `5xx`) try fallback endpoint when configured; terminal upstream rejects (`4xx`, invalid contract response) do not fail over.
+   1. fallback can use dedicated auth token (`COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN[_FILE]` or route-specific `..._FALLBACK_AUTH_TOKEN[_FILE]`), otherwise inherits primary route auth token.
 5. All endpoint diagnostics are redacted to `scheme://host[:port]` labels in logs.
 6. Optional post-submit signature visibility check:
    1. if `COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL` is set, adapter polls `getSignatureStatuses` after upstream submit,

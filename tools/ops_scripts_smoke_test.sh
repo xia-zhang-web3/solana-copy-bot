@@ -518,6 +518,7 @@ COPYBOT_ADAPTER_BEARER_TOKEN_FILE="secrets/adapter_bearer.token"
 COPYBOT_ADAPTER_HMAC_KEY_ID="key-rotation"
 COPYBOT_ADAPTER_HMAC_SECRET_FILE="secrets/adapter_hmac.secret"
 COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE="secrets/upstream_auth.token"
+COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE="secrets/upstream_fallback_auth.token"
 COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE="secrets/route_rpc_auth.token"
 COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=false
 EOF
@@ -1042,6 +1043,7 @@ run_adapter_secret_rotation_report_case() {
   printf 'bearer-pass\n' >"$secrets_dir/adapter_bearer.token"
   printf 'hmac-pass\n' >"$secrets_dir/adapter_hmac.secret"
   printf 'upstream-pass\n' >"$secrets_dir/upstream_auth.token"
+  printf 'upstream-fallback-pass\n' >"$secrets_dir/upstream_fallback_auth.token"
   printf 'route-pass\n' >"$secrets_dir/route_rpc_auth.token"
   printf 'route-fast-lane-pass\n' >"$secrets_dir/route_fast_lane_auth.token"
   chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
@@ -1106,6 +1108,27 @@ run_adapter_secret_rotation_report_case() {
   assert_contains "$conflict_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$conflict_output" "COPYBOT_ADAPTER_BEARER_TOKEN and COPYBOT_ADAPTER_BEARER_TOKEN_FILE cannot both be set"
 
+  local upstream_fallback_conflict_env_path="$TMP_DIR/adapter-rotation-upstream-fallback-conflict.env"
+  cp "$env_path" "$upstream_fallback_conflict_env_path"
+  echo 'COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN="inline-upstream-fallback-conflict"' >>"$upstream_fallback_conflict_env_path"
+  local upstream_fallback_conflict_output=""
+  if upstream_fallback_conflict_output="$(
+    ADAPTER_ENV_PATH="$upstream_fallback_conflict_env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected FAIL exit for upstream fallback auth inline+file conflict" >&2
+    exit 1
+  else
+    local upstream_fallback_conflict_exit_code=$?
+    if [[ "$upstream_fallback_conflict_exit_code" -ne 1 ]]; then
+      echo "expected FAIL exit code 1 for upstream fallback auth conflict, got $upstream_fallback_conflict_exit_code" >&2
+      echo "$upstream_fallback_conflict_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$upstream_fallback_conflict_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$upstream_fallback_conflict_output" "COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN and COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE cannot both be set"
+
   local route_conflict_env_path="$TMP_DIR/adapter-rotation-route-conflict.env"
   cp "$env_path" "$route_conflict_env_path"
   {
@@ -1167,7 +1190,7 @@ run_adapter_secret_rotation_report_case() {
   fi
   assert_contains "$fail_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$fail_output" "COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE missing file"
-  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence + quoted-hash + underscore route conflict"
+  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence + quoted-hash + underscore route conflict + fallback auth conflict"
 }
 
 run_devnet_rehearsal_case() {

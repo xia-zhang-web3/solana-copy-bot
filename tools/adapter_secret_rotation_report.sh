@@ -209,10 +209,10 @@ list_route_auth_ids() {
         next
       }
       key = trim(substr(line, 1, eq - 1))
-      if (key ~ /^COPYBOT_ADAPTER_ROUTE_[A-Za-z0-9_]+_AUTH_TOKEN(_FILE)?$/) {
+      if (key ~ /^COPYBOT_ADAPTER_ROUTE_[A-Za-z0-9_]+_(FALLBACK_)?AUTH_TOKEN(_FILE)?$/) {
         route = key
         sub(/^COPYBOT_ADAPTER_ROUTE_/, "", route)
-        sub(/_AUTH_TOKEN(_FILE)?$/, "", route)
+        sub(/_(FALLBACK_)?AUTH_TOKEN(_FILE)?$/, "", route)
         if (route != "") {
           print route
         }
@@ -292,6 +292,8 @@ hmac_secret_inline="$(trim_string "$(env_value COPYBOT_ADAPTER_HMAC_SECRET)")"
 hmac_secret_file="$(trim_string "$(env_value COPYBOT_ADAPTER_HMAC_SECRET_FILE)")"
 upstream_auth_inline="$(trim_string "$(env_value COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN)")"
 upstream_auth_file="$(trim_string "$(env_value COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE)")"
+upstream_fallback_auth_inline="$(trim_string "$(env_value COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN)")"
+upstream_fallback_auth_file="$(trim_string "$(env_value COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE)")"
 allow_unauthenticated="$(normalize_bool_token "$(env_value COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED)")"
 
 if [[ -n "$bearer_inline" && -n "$bearer_file" ]]; then
@@ -303,6 +305,9 @@ fi
 if [[ -n "$upstream_auth_inline" && -n "$upstream_auth_file" ]]; then
   errors+=("COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN and COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE cannot both be set")
 fi
+if [[ -n "$upstream_fallback_auth_inline" && -n "$upstream_fallback_auth_file" ]]; then
+  errors+=("COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN and COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE cannot both be set")
+fi
 while IFS= read -r route_id; do
   [[ -z "$route_id" ]] && continue
   route_inline_key="COPYBOT_ADAPTER_ROUTE_${route_id}_AUTH_TOKEN"
@@ -311,6 +316,13 @@ while IFS= read -r route_id; do
   route_file="$(trim_string "$(env_value "$route_file_key")")"
   if [[ -n "$route_inline" && -n "$route_file" ]]; then
     errors+=("${route_inline_key} and ${route_file_key} cannot both be set")
+  fi
+  route_fallback_inline_key="COPYBOT_ADAPTER_ROUTE_${route_id}_FALLBACK_AUTH_TOKEN"
+  route_fallback_file_key="COPYBOT_ADAPTER_ROUTE_${route_id}_FALLBACK_AUTH_TOKEN_FILE"
+  route_fallback_inline="$(trim_string "$(env_value "$route_fallback_inline_key")")"
+  route_fallback_file="$(trim_string "$(env_value "$route_fallback_file_key")")"
+  if [[ -n "$route_fallback_inline" && -n "$route_fallback_file" ]]; then
+    errors+=("${route_fallback_inline_key} and ${route_fallback_file_key} cannot both be set")
   fi
 done < <(list_route_auth_ids)
 

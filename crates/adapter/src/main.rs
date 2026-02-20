@@ -67,7 +67,8 @@ struct RouteBackend {
     submit_fallback_url: Option<String>,
     simulate_url: String,
     simulate_fallback_url: Option<String>,
-    auth_token: Option<String>,
+    primary_auth_token: Option<String>,
+    fallback_auth_token: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +128,12 @@ impl AdapterConfig {
             "COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE",
             optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE").as_deref(),
         )?;
+        let default_fallback_auth_token = resolve_secret_source(
+            "COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN",
+            optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN").as_deref(),
+            "COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE",
+            optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE").as_deref(),
+        )?;
 
         let mut route_backends = HashMap::new();
         for route in &route_allowlist {
@@ -141,6 +148,12 @@ impl AdapterConfig {
             );
             let auth_key = format!("COPYBOT_ADAPTER_ROUTE_{}_AUTH_TOKEN", route_upper);
             let auth_file_key = format!("COPYBOT_ADAPTER_ROUTE_{}_AUTH_TOKEN_FILE", route_upper);
+            let fallback_auth_key =
+                format!("COPYBOT_ADAPTER_ROUTE_{}_FALLBACK_AUTH_TOKEN", route_upper);
+            let fallback_auth_file_key = format!(
+                "COPYBOT_ADAPTER_ROUTE_{}_FALLBACK_AUTH_TOKEN_FILE",
+                route_upper
+            );
 
             let submit_url = optional_non_empty_env(submit_key.as_str())
                 .or_else(|| default_submit.clone())
@@ -195,13 +208,21 @@ impl AdapterConfig {
                 }
             }
 
-            let auth_token = resolve_secret_source(
+            let primary_auth_token = resolve_secret_source(
                 auth_key.as_str(),
                 optional_non_empty_env(auth_key.as_str()).as_deref(),
                 auth_file_key.as_str(),
                 optional_non_empty_env(auth_file_key.as_str()).as_deref(),
             )?
             .or_else(|| default_auth_token.clone());
+            let fallback_auth_token = resolve_secret_source(
+                fallback_auth_key.as_str(),
+                optional_non_empty_env(fallback_auth_key.as_str()).as_deref(),
+                fallback_auth_file_key.as_str(),
+                optional_non_empty_env(fallback_auth_file_key.as_str()).as_deref(),
+            )?
+            .or_else(|| default_fallback_auth_token.clone())
+            .or_else(|| primary_auth_token.clone());
 
             route_backends.insert(
                 route.clone(),
@@ -210,7 +231,8 @@ impl AdapterConfig {
                     submit_fallback_url,
                     simulate_url,
                     simulate_fallback_url,
-                    auth_token,
+                    primary_auth_token,
+                    fallback_auth_token,
                 },
             );
         }
@@ -1238,7 +1260,12 @@ async fn forward_to_upstream(
             .post(*url)
             .header("content-type", "application/json")
             .body(raw_body.to_vec());
-        if let Some(token) = backend.auth_token.as_deref() {
+        let selected_auth_token = if attempt_idx == 0 {
+            backend.primary_auth_token.as_deref()
+        } else {
+            backend.fallback_auth_token.as_deref()
+        };
+        if let Some(token) = selected_auth_token {
             request = request.bearer_auth(token);
         }
 
@@ -2293,6 +2320,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_uses_fallback_auth_token_when_retrying() {
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_raw(503, "text/plain", "temporary outage")
+        else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_upstream_expect_bearer("fallback-token")
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.primary_auth_token = Some("primary-token".to_string());
+            backend.fallback_auth_token = Some("fallback-token".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}")
+            .await
+            .expect("fallback with dedicated token should succeed");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_seen_when_rpc_reports_confirmation() {
         let signature = bs58::encode([9u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
@@ -2448,7 +2509,8 @@ mod tests {
                 submit_fallback_url: submit_fallback.map(|value| value.to_string()),
                 simulate_url: simulate_primary.to_string(),
                 simulate_fallback_url: simulate_fallback.map(|value| value.to_string()),
-                auth_token: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
             },
         );
         let config = AdapterConfig {
@@ -2507,6 +2569,51 @@ mod tests {
                     content_type,
                     response_body.len(),
                     response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn spawn_one_shot_upstream_expect_bearer(
+        expected_token: &str,
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let expected = format!("bearer {}", expected_token);
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let bytes_read = stream.read(&mut request_buf).unwrap_or(0);
+                let request_raw = String::from_utf8_lossy(&request_buf[..bytes_read]);
+                let authorized = request_raw.lines().any(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        return false;
+                    }
+                    let lower = trimmed.to_ascii_lowercase();
+                    lower.starts_with("authorization: ")
+                        && lower["authorization: ".len()..].trim() == expected
+                });
+
+                let (status, reason, body) = if authorized {
+                    (
+                        200u16,
+                        "OK",
+                        "{\"status\":\"ok\",\"ok\":true,\"accepted\":true}",
+                    )
+                } else {
+                    (401u16, "Unauthorized", "missing or invalid bearer token")
+                };
+                let response = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    reason,
+                    if status == 200 { "application/json" } else { "text/plain" },
+                    body.len(),
+                    body
                 );
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.flush();
