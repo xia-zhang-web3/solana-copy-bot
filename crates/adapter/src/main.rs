@@ -2321,13 +2321,14 @@ mod tests {
 
     #[tokio::test]
     async fn forward_to_upstream_uses_fallback_auth_token_when_retrying() {
+        let fallback_token = "FallBack-Token-123";
         let Some((primary_url, primary_handle)) =
             spawn_one_shot_upstream_raw(503, "text/plain", "temporary outage")
         else {
             return;
         };
         let Some((fallback_url, fallback_handle)) =
-            spawn_one_shot_upstream_expect_bearer("fallback-token")
+            spawn_one_shot_upstream_expect_bearer(fallback_token)
         else {
             return;
         };
@@ -2340,7 +2341,7 @@ mod tests {
         );
         if let Some(backend) = state.config.route_backends.get_mut("rpc") {
             backend.primary_auth_token = Some("primary-token".to_string());
-            backend.fallback_auth_token = Some("fallback-token".to_string());
+            backend.fallback_auth_token = Some(fallback_token.to_string());
         } else {
             panic!("rpc backend must exist");
         }
@@ -2582,7 +2583,7 @@ mod tests {
     ) -> Option<(String, thread::JoinHandle<()>)> {
         let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().ok()?;
-        let expected = format!("bearer {}", expected_token);
+        let expected_token = expected_token.to_string();
         let handle = thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut request_buf = [0u8; 8192];
@@ -2593,9 +2594,20 @@ mod tests {
                     if trimmed.is_empty() {
                         return false;
                     }
-                    let lower = trimmed.to_ascii_lowercase();
-                    lower.starts_with("authorization: ")
-                        && lower["authorization: ".len()..].trim() == expected
+                    let Some((name, value)) = trimmed.split_once(':') else {
+                        return false;
+                    };
+                    if !name.trim().eq_ignore_ascii_case("authorization") {
+                        return false;
+                    }
+                    let value = value.trim();
+                    if value.len() < "bearer ".len()
+                        || !value[.."bearer ".len()].eq_ignore_ascii_case("bearer ")
+                    {
+                        return false;
+                    }
+                    let provided_token = &value["bearer ".len()..];
+                    provided_token == expected_token
                 });
 
                 let (status, reason, body) = if authorized {
