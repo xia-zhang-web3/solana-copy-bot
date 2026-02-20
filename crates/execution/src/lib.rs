@@ -27,7 +27,9 @@ use pretrade::{
     RpcPreTradeChecker,
 };
 use reconcile::build_fill;
-use simulator::{IntentSimulator, PaperIntentSimulator};
+use simulator::{
+    AdapterIntentSimulator, FailClosedIntentSimulator, IntentSimulator, PaperIntentSimulator,
+};
 use std::collections::BTreeMap;
 use submitter::{
     AdapterOrderSubmitter, FailClosedOrderSubmitter, OrderSubmitter, PaperOrderSubmitter,
@@ -238,13 +240,24 @@ impl ExecutionRuntime {
                         "rpc confirmer init failed for adapter_submit_confirm mode",
                     )),
                 };
-                (
-                    pretrade,
-                    Box::new(PaperIntentSimulator),
-                    submitter,
-                    confirmer,
-                    true,
-                )
+                let simulator: Box<dyn IntentSimulator + Send + Sync> =
+                    match AdapterIntentSimulator::new(
+                        &config.submit_adapter_http_url,
+                        &config.submit_adapter_fallback_http_url,
+                        &config.submit_adapter_auth_token,
+                        &config.submit_adapter_hmac_key_id,
+                        &config.submit_adapter_hmac_secret,
+                        config.submit_adapter_hmac_ttl_sec,
+                        &config.submit_adapter_contract_version,
+                        config.submit_adapter_require_policy_echo,
+                        config.submit_timeout_ms.max(500),
+                    ) {
+                        Some(value) => Box::new(value),
+                        None => Box::new(FailClosedIntentSimulator::new(
+                            "adapter simulation init failed for adapter_submit_confirm mode",
+                        )),
+                    };
+                (pretrade, simulator, submitter, confirmer, true)
             }
             _ => (
                 Box::new(PaperPreTradeChecker),
@@ -603,9 +616,12 @@ impl ExecutionRuntime {
         }
 
         if self.simulate_before_submit {
-            let sim = self.simulator.simulate(intent).with_context(|| {
-                format!("failed to simulate order for signal {}", intent.signal_id)
-            })?;
+            let sim = self
+                .simulator
+                .simulate(intent, selected_route)
+                .with_context(|| {
+                    format!("failed to simulate order for signal {}", intent.signal_id)
+                })?;
             if !sim.accepted {
                 store.mark_order_dropped(
                     &order.order_id,
