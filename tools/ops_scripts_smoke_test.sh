@@ -504,6 +504,22 @@ run_go_nogo_artifact_export_case() {
   echo "[ok] go-no-go artifact export"
 }
 
+run_go_nogo_unknown_precedence_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="unknown-value" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="skip" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$output" "fee_decomposition_verdict: UNKNOWN"
+  assert_contains "$output" "route_profile_verdict: SKIP"
+  assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
+  assert_contains "$output" "overall_go_nogo_reason: unable to classify readiness gate verdicts from tool output"
+  echo "[ok] go-no-go UNKNOWN precedence"
+}
+
 main() {
   write_fake_journalctl
 
@@ -514,6 +530,7 @@ main() {
   run_ops_scripts_for_db "legacy schema" "$legacy_db" "$legacy_cfg"
   run_runtime_snapshot_no_ingestion_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_artifact_export_case "$legacy_db" "$legacy_cfg"
+  run_go_nogo_unknown_precedence_case "$legacy_db" "$legacy_cfg"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"

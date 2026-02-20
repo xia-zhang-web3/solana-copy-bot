@@ -86,11 +86,22 @@ parse_rejected_by_reason="$(extract_field "parse_rejected_by_reason" "$snapshot_
 parse_fallback_by_reason="$(extract_field "parse_fallback_by_reason" "$snapshot_output")"
 replaced_ratio_last_interval="$(extract_field "replaced_ratio_last_interval" "$snapshot_output")"
 
+# Test-only overrides for smoke validation of verdict precedence branches.
+if [[ -n "${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" ]]; then
+  fee_decomposition_verdict="$(normalize_gate_verdict "$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE")"
+fi
+if [[ -n "${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" ]]; then
+  route_profile_verdict="$(normalize_gate_verdict "$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE")"
+fi
+
 overall_go_nogo_verdict="HOLD"
 overall_go_nogo_reason="readiness gates are not in final pass state yet"
 if [[ "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="fee decomposition and route profile readiness gates are PASS"
+elif [[ "$fee_decomposition_verdict" == "UNKNOWN" || "$route_profile_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify readiness gate verdicts from tool output"
 elif [[ "$fee_decomposition_verdict" == "WARN" || "$route_profile_verdict" == "WARN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="at least one readiness gate is WARN; rollout escalation required before live enable"
@@ -100,9 +111,9 @@ elif [[ "$fee_decomposition_verdict" == "NO_DATA" || "$route_profile_verdict" ==
 elif [[ "$fee_decomposition_verdict" == "SKIP" || "$route_profile_verdict" == "SKIP" ]]; then
   overall_go_nogo_verdict="HOLD"
   overall_go_nogo_reason="execution mode is not adapter_submit_confirm; live readiness gates skipped"
-elif [[ "$fee_decomposition_verdict" == "UNKNOWN" || "$route_profile_verdict" == "UNKNOWN" ]]; then
+else
   overall_go_nogo_verdict="NO_GO"
-  overall_go_nogo_reason="unable to classify readiness gate verdicts from tool output"
+  overall_go_nogo_reason="unrecognized go/no-go gate state; fail-closed"
 fi
 
 summary_output="$(cat <<EOF
