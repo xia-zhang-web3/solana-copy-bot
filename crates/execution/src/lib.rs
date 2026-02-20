@@ -2499,11 +2499,12 @@ mod tests {
             status: "execution_pending".to_string(),
         };
         store.insert_copy_signal(&signal)?;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
         assert_eq!(
             store.insert_execution_order_pending(
                 "ord-daily-loss-unrealized-1",
                 &signal.signal_id,
-                "cb_shadow_s10_w_buy_daily_unrealized_a1",
+                &client_order_id,
                 "paper",
                 now,
                 1
@@ -2528,7 +2529,7 @@ mod tests {
         assert_eq!(report.dropped, 1);
 
         let order = store
-            .execution_order_by_client_order_id("cb_shadow_s10_w_buy_daily_unrealized_a1")?
+            .execution_order_by_client_order_id(&client_order_id)?
             .context("daily-loss-unrealized blocked signal should create and drop order")?;
         assert_eq!(order.status, "execution_dropped");
         assert_eq!(order.err_code.as_deref(), Some("risk_blocked"));
@@ -2584,11 +2585,12 @@ mod tests {
             status: "execution_pending".to_string(),
         };
         store.insert_copy_signal(&signal)?;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
         assert_eq!(
             store.insert_execution_order_pending(
                 "ord-drawdown-unrealized-1",
                 &signal.signal_id,
-                "cb_shadow_s11_w_buy_drawdown_unrealized_a1",
+                &client_order_id,
                 "paper",
                 now,
                 1
@@ -2613,7 +2615,7 @@ mod tests {
         assert_eq!(report.dropped, 1);
 
         let order = store
-            .execution_order_by_client_order_id("cb_shadow_s11_w_buy_drawdown_unrealized_a1")?
+            .execution_order_by_client_order_id(&client_order_id)?
             .context("drawdown-unrealized blocked signal should create and drop order")?;
         assert_eq!(order.status, "execution_dropped");
         assert_eq!(order.err_code.as_deref(), Some("risk_blocked"));
@@ -2649,11 +2651,12 @@ mod tests {
             status: "execution_pending".to_string(),
         };
         store.insert_copy_signal(&signal)?;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
         assert_eq!(
             store.insert_execution_order_pending(
                 "ord-missing-price-1",
                 &signal.signal_id,
-                "cb_shadow_s12_w_buy_missing_price_a1",
+                &client_order_id,
                 "paper",
                 now,
                 1
@@ -2678,7 +2681,7 @@ mod tests {
         assert_eq!(report.dropped, 1);
 
         let order = store
-            .execution_order_by_client_order_id("cb_shadow_s12_w_buy_missing_price_a1")?
+            .execution_order_by_client_order_id(&client_order_id)?
             .context("missing-price blocked signal should create and drop order")?;
         assert_eq!(order.status, "execution_dropped");
         assert_eq!(order.err_code.as_deref(), Some("risk_blocked"));
