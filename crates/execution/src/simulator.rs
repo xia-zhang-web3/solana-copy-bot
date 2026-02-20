@@ -1,15 +1,12 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
-use sha2::Sha256;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
+use crate::auth::compute_hmac_signature_hex;
 use crate::intent::ExecutionIntent;
-
-type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone)]
 pub struct SimulationResult {
@@ -360,23 +357,148 @@ fn parse_adapter_simulate_response(
     })
 }
 
-fn compute_hmac_signature_hex(secret: &[u8], payload: &[u8]) -> Result<String> {
-    let mut mac = HmacSha256::new_from_slice(secret)
-        .map_err(|error| anyhow!("invalid HMAC secret: {}", error))?;
-    mac.update(payload);
-    let digest = mac.finalize().into_bytes();
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{:02x}", byte);
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::intent::ExecutionSide;
+    use chrono::Utc;
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration as StdDuration;
+
+    fn make_intent() -> ExecutionIntent {
+        ExecutionIntent {
+            signal_id: "shadow:test:wallet:buy:token".to_string(),
+            leader_wallet: "leader".to_string(),
+            side: ExecutionSide::Buy,
+            token: "token".to_string(),
+            notional_sol: 0.1,
+            signal_ts: Utc::now(),
+        }
+    }
+
+    #[derive(Debug)]
+    struct CapturedHttpRequest {
+        path: String,
+        headers: HashMap<String, String>,
+        body: String,
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+
+    fn spawn_one_shot_simulate_adapter(
+        status: u16,
+        response_body: Value,
+    ) -> Option<(String, thread::JoinHandle<CapturedHttpRequest>)> {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!(
+                    "skipping simulator HTTP integration test: failed to bind 127.0.0.1:0: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        if let Err(error) = listener.set_nonblocking(false) {
+            eprintln!(
+                "skipping simulator HTTP integration test: failed to set blocking mode: {}",
+                error
+            );
+            return None;
+        }
+        let addr = match listener.local_addr() {
+            Ok(addr) => addr,
+            Err(error) => {
+                eprintln!(
+                    "skipping simulator HTTP integration test: failed to read listener addr: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        let response_body = response_body.to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept simulator client");
+            stream
+                .set_read_timeout(Some(StdDuration::from_secs(5)))
+                .expect("set read timeout");
+            let mut buffer = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            let mut header_end = None;
+            while header_end.is_none() {
+                let read = stream.read(&mut chunk).expect("read request headers");
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                header_end = find_header_end(&buffer).map(|offset| offset + 4);
+            }
+
+            let header_end = header_end.expect("request headers must be present");
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+            let mut lines = header_text.split("\r\n");
+            let request_line = lines.next().unwrap_or_default().to_string();
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let mut headers = HashMap::new();
+            let mut content_length = 0usize;
+            for line in lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    let key = name.trim().to_ascii_lowercase();
+                    let value = value.trim().to_string();
+                    if key == "content-length" {
+                        content_length = value.parse::<usize>().unwrap_or(0);
+                    }
+                    headers.insert(key, value);
+                }
+            }
+
+            while buffer.len() < header_end.saturating_add(content_length) {
+                let read = stream.read(&mut chunk).expect("read request body");
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            let body_end = header_end
+                .saturating_add(content_length)
+                .min(buffer.len())
+                .max(header_end);
+            let body = String::from_utf8_lossy(&buffer[header_end..body_end]).to_string();
+
+            let reason = if status == 200 { "OK" } else { "ERR" };
+            let response = format!(
+                "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                status,
+                reason,
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write simulator response");
+            stream.flush().expect("flush simulator response");
+
+            CapturedHttpRequest {
+                path,
+                headers,
+                body,
+            }
+        });
+        Some((format!("http://{}/simulate", addr), handle))
+    }
 
     #[test]
     fn parse_adapter_simulate_response_accepts_success() -> Result<()> {
@@ -463,5 +585,173 @@ mod tests {
             "simulation_rejected: adapter simulation rejected order"
         );
         Ok(())
+    }
+
+    #[test]
+    fn adapter_intent_simulator_posts_simulation_payload() {
+        let response = json!({
+            "status": "ok",
+            "ok": true,
+            "route": "rpc",
+            "contract_version": "v1",
+            "detail": "simulated"
+        });
+        let Some((endpoint, handle)) = spawn_one_shot_simulate_adapter(200, response) else {
+            return;
+        };
+        let simulator =
+            AdapterIntentSimulator::new(&endpoint, "", "", "", "", 30, "v1", true, 2_000)
+                .expect("simulator should initialize");
+        let result = simulator
+            .simulate(&make_intent(), "rpc")
+            .expect("simulate call should succeed");
+        assert!(result.accepted);
+
+        let captured = handle.join().expect("join simulator server thread");
+        assert_eq!(captured.path, "/simulate");
+        assert_eq!(
+            captured
+                .headers
+                .get("content-type")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            "application/json"
+        );
+        let payload: Value = serde_json::from_str(&captured.body).expect("parse captured payload");
+        assert_eq!(
+            payload
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "simulate"
+        );
+        assert_eq!(
+            payload
+                .get("route")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "rpc"
+        );
+        assert_eq!(
+            payload
+                .get("contract_version")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "v1"
+        );
+        assert_eq!(
+            payload
+                .get("dry_run")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            true
+        );
+    }
+
+    #[test]
+    fn adapter_intent_simulator_hmac_signature_matches_raw_http_body() {
+        let response = json!({
+            "status": "ok",
+            "ok": true,
+            "route": "rpc",
+            "contract_version": "v1",
+            "detail": "simulated"
+        });
+        let Some((endpoint, handle)) = spawn_one_shot_simulate_adapter(200, response) else {
+            return;
+        };
+        let hmac_secret = "super-secret";
+        let simulator = AdapterIntentSimulator::new(
+            &endpoint,
+            "",
+            "",
+            "key-123",
+            hmac_secret,
+            30,
+            "v1",
+            true,
+            2_000,
+        )
+        .expect("simulator should initialize");
+        let result = simulator
+            .simulate(&make_intent(), "rpc")
+            .expect("simulate call should succeed");
+        assert!(result.accepted);
+
+        let captured = handle.join().expect("join simulator server thread");
+        let headers = &captured.headers;
+        let key_id = headers
+            .get("x-copybot-key-id")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let timestamp = headers
+            .get("x-copybot-timestamp")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let ttl = headers
+            .get("x-copybot-auth-ttl-sec")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let nonce = headers
+            .get("x-copybot-nonce")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let signature = headers
+            .get("x-copybot-signature")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let alg = headers
+            .get("x-copybot-signature-alg")
+            .map(String::as_str)
+            .unwrap_or_default();
+
+        assert_eq!(key_id, "key-123");
+        assert_eq!(ttl, "30");
+        assert_eq!(alg, "hmac-sha256-v1");
+        assert!(!timestamp.is_empty(), "timestamp header must be present");
+        assert!(!nonce.is_empty(), "nonce header must be present");
+        assert!(!signature.is_empty(), "signature header must be present");
+
+        let signed_payload = format!("{}\n{}\n{}\n{}", timestamp, ttl, nonce, captured.body);
+        let expected_signature = crate::auth::compute_hmac_signature_hex(
+            hmac_secret.as_bytes(),
+            signed_payload.as_bytes(),
+        )
+        .expect("compute expected signature");
+        assert_eq!(signature, expected_signature);
+    }
+
+    #[test]
+    fn adapter_intent_simulator_uses_fallback_endpoint_after_primary_failure() {
+        let response = json!({
+            "status": "ok",
+            "ok": true,
+            "route": "rpc",
+            "contract_version": "v1",
+            "detail": "simulated"
+        });
+        let Some((fallback_endpoint, handle)) = spawn_one_shot_simulate_adapter(200, response)
+        else {
+            return;
+        };
+        let simulator = AdapterIntentSimulator::new(
+            "http://127.0.0.1:1/simulate",
+            &fallback_endpoint,
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            2_000,
+        )
+        .expect("simulator should initialize");
+        let result = simulator
+            .simulate(&make_intent(), "rpc")
+            .expect("simulate should succeed via fallback endpoint");
+        assert!(result.accepted);
+        let _ = handle
+            .join()
+            .expect("join fallback simulator server thread");
     }
 }

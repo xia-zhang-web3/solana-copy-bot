@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+pub mod auth;
 pub mod confirm;
 pub mod idempotency;
 pub mod intent;

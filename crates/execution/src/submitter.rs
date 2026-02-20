@@ -1,17 +1,14 @@
 use chrono::{DateTime, Utc};
-use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
-use sha2::Sha256;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::fmt::Write as _;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
+use crate::auth::compute_hmac_signature_hex;
 use crate::intent::ExecutionIntent;
 use copybot_config::EXECUTION_ROUTE_TIP_LAMPORTS_MAX;
-type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone)]
 pub struct SubmitResult {
@@ -842,20 +839,6 @@ fn parse_optional_non_negative_u64_field(
 
 fn approx_f64_eq(left: f64, right: f64) -> bool {
     (left - right).abs() <= 1e-9
-}
-
-fn compute_hmac_signature_hex(
-    secret: &[u8],
-    payload: &[u8],
-) -> Result<String, hmac::digest::InvalidLength> {
-    let mut mac = HmacSha256::new_from_slice(secret)?;
-    mac.update(payload);
-    let signature_bytes = mac.finalize().into_bytes();
-    let mut hex = String::with_capacity(signature_bytes.len() * 2);
-    for byte in signature_bytes {
-        let _ = write!(&mut hex, "{byte:02x}");
-    }
-    Ok(hex)
 }
 
 fn normalize_route(route: &str) -> Option<String> {
