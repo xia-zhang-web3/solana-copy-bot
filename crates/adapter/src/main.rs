@@ -61,7 +61,9 @@ struct AdapterConfig {
 #[derive(Clone, Debug)]
 struct RouteBackend {
     submit_url: String,
+    submit_fallback_url: Option<String>,
     simulate_url: String,
+    simulate_fallback_url: Option<String>,
     auth_token: Option<String>,
 }
 
@@ -103,7 +105,11 @@ impl AdapterConfig {
         }
 
         let default_submit = optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL");
+        let default_submit_fallback =
+            optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL");
         let default_simulate = optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL");
+        let default_simulate_fallback =
+            optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL");
         let default_auth_token = resolve_secret_source(
             "COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN",
             optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN").as_deref(),
@@ -115,7 +121,13 @@ impl AdapterConfig {
         for route in &route_allowlist {
             let route_upper = route.to_ascii_uppercase();
             let submit_key = format!("COPYBOT_ADAPTER_ROUTE_{}_SUBMIT_URL", route_upper);
+            let submit_fallback_key =
+                format!("COPYBOT_ADAPTER_ROUTE_{}_SUBMIT_FALLBACK_URL", route_upper);
             let simulate_key = format!("COPYBOT_ADAPTER_ROUTE_{}_SIMULATE_URL", route_upper);
+            let simulate_fallback_key = format!(
+                "COPYBOT_ADAPTER_ROUTE_{}_SIMULATE_FALLBACK_URL",
+                route_upper
+            );
             let auth_key = format!("COPYBOT_ADAPTER_ROUTE_{}_AUTH_TOKEN", route_upper);
             let auth_file_key = format!("COPYBOT_ADAPTER_ROUTE_{}_AUTH_TOKEN_FILE", route_upper);
 
@@ -137,10 +149,40 @@ impl AdapterConfig {
                         simulate_key
                     )
                 })?;
+            let submit_fallback_url = optional_non_empty_env(submit_fallback_key.as_str())
+                .or_else(|| default_submit_fallback.clone());
+            let simulate_fallback_url = optional_non_empty_env(simulate_fallback_key.as_str())
+                .or_else(|| default_simulate_fallback.clone());
             validate_endpoint_url(submit_url.as_str())
                 .map_err(|error| anyhow!("invalid submit URL for route={}: {}", route, error))?;
             validate_endpoint_url(simulate_url.as_str())
                 .map_err(|error| anyhow!("invalid simulate URL for route={}: {}", route, error))?;
+            if let Some(url) = submit_fallback_url.as_deref() {
+                validate_endpoint_url(url).map_err(|error| {
+                    anyhow!("invalid submit fallback URL for route={}: {}", route, error)
+                })?;
+                if endpoint_identity(url)? == endpoint_identity(submit_url.as_str())? {
+                    return Err(anyhow!(
+                        "submit fallback URL for route={} must resolve to distinct endpoint",
+                        route
+                    ));
+                }
+            }
+            if let Some(url) = simulate_fallback_url.as_deref() {
+                validate_endpoint_url(url).map_err(|error| {
+                    anyhow!(
+                        "invalid simulate fallback URL for route={}: {}",
+                        route,
+                        error
+                    )
+                })?;
+                if endpoint_identity(url)? == endpoint_identity(simulate_url.as_str())? {
+                    return Err(anyhow!(
+                        "simulate fallback URL for route={} must resolve to distinct endpoint",
+                        route
+                    ));
+                }
+            }
 
             let auth_token = resolve_secret_source(
                 auth_key.as_str(),
@@ -154,7 +196,9 @@ impl AdapterConfig {
                 route.clone(),
                 RouteBackend {
                     submit_url,
+                    submit_fallback_url,
                     simulate_url,
+                    simulate_fallback_url,
                     auth_token,
                 },
             );
@@ -955,6 +999,7 @@ async fn handle_submit(
     }))
 }
 
+#[derive(Clone, Copy)]
 enum UpstreamAction {
     Simulate,
     Submit,
@@ -982,84 +1027,146 @@ async fn forward_to_upstream(
         )
     })?;
 
-    let url = match action {
-        UpstreamAction::Simulate => backend.simulate_url.as_str(),
-        UpstreamAction::Submit => backend.submit_url.as_str(),
-    };
-
-    let endpoint_label = redacted_endpoint_label(url);
-    debug!(route = %route, action = %action.as_str(), endpoint = %endpoint_label, "forwarding adapter request upstream");
-
-    let mut request = state
-        .http
-        .post(url)
-        .header("content-type", "application/json")
-        .body(raw_body.to_vec());
-    if let Some(token) = backend.auth_token.as_deref() {
-        request = request.bearer_auth(token);
+    let mut endpoints = Vec::with_capacity(2);
+    match action {
+        UpstreamAction::Simulate => {
+            endpoints.push(backend.simulate_url.as_str());
+            if let Some(url) = backend.simulate_fallback_url.as_deref() {
+                endpoints.push(url);
+            }
+        }
+        UpstreamAction::Submit => {
+            endpoints.push(backend.submit_url.as_str());
+            if let Some(url) = backend.submit_fallback_url.as_deref() {
+                endpoints.push(url);
+            }
+        }
     }
 
-    let response = request.send().await.map_err(|error| {
-        let code = if error.is_timeout() || error.is_connect() || error.is_request() {
-            "upstream_unavailable"
-        } else {
-            "upstream_request_failed"
+    let mut last_retryable: Option<Reject> = None;
+    for (attempt_idx, url) in endpoints.iter().enumerate() {
+        let endpoint_label = redacted_endpoint_label(url);
+        debug!(
+            route = %route,
+            action = %action.as_str(),
+            endpoint = %endpoint_label,
+            attempt = attempt_idx + 1,
+            total = endpoints.len(),
+            "forwarding adapter request upstream"
+        );
+
+        let mut request = state
+            .http
+            .post(*url)
+            .header("content-type", "application/json")
+            .body(raw_body.to_vec());
+        if let Some(token) = backend.auth_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+
+        let response = match request.send().await {
+            Ok(value) => value,
+            Err(error) => {
+                let code = if error.is_timeout() || error.is_connect() || error.is_request() {
+                    "upstream_unavailable"
+                } else {
+                    "upstream_request_failed"
+                };
+                let reject = Reject::retryable(
+                    code,
+                    format!(
+                        "upstream {} request failed endpoint={} class={}",
+                        action.as_str(),
+                        endpoint_label,
+                        classify_request_error(&error)
+                    ),
+                );
+                if attempt_idx + 1 < endpoints.len() {
+                    warn!(
+                        route = %route,
+                        action = %action.as_str(),
+                        endpoint = %endpoint_label,
+                        attempt = attempt_idx + 1,
+                        total = endpoints.len(),
+                        code = %reject.code,
+                        "retryable upstream request failure, trying fallback endpoint"
+                    );
+                    last_retryable = Some(reject);
+                    continue;
+                }
+                return Err(reject);
+            }
         };
-        Reject::retryable(
-            code,
-            format!(
-                "upstream {} request failed endpoint={} class={}",
-                action.as_str(),
-                endpoint_label,
-                classify_request_error(&error)
-            ),
-        )
-    })?;
 
-    let status = response.status();
+        let status = response.status();
 
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        let retryable = status.as_u16() == 429 || status.is_server_error();
-        let reject = if retryable {
-            Reject::retryable(
-                "upstream_http_unavailable",
-                format!(
-                    "upstream {} status={} endpoint={} body={}",
-                    action.as_str(),
-                    status,
-                    endpoint_label,
-                    body_text
-                ),
-            )
-        } else {
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            let retryable = status.as_u16() == 429 || status.is_server_error();
+            let reject = if retryable {
+                Reject::retryable(
+                    "upstream_http_unavailable",
+                    format!(
+                        "upstream {} status={} endpoint={} body={}",
+                        action.as_str(),
+                        status,
+                        endpoint_label,
+                        body_text
+                    ),
+                )
+            } else {
+                Reject::terminal(
+                    "upstream_http_rejected",
+                    format!(
+                        "upstream {} status={} endpoint={} body={}",
+                        action.as_str(),
+                        status,
+                        endpoint_label,
+                        body_text
+                    ),
+                )
+            };
+            if reject.retryable && attempt_idx + 1 < endpoints.len() {
+                warn!(
+                    route = %route,
+                    action = %action.as_str(),
+                    endpoint = %endpoint_label,
+                    status = %status,
+                    attempt = attempt_idx + 1,
+                    total = endpoints.len(),
+                    "retryable upstream HTTP status, trying fallback endpoint"
+                );
+                last_retryable = Some(reject);
+                continue;
+            }
+            return Err(reject);
+        }
+
+        let body: Value = response.json().await.map_err(|error| {
             Reject::terminal(
-                "upstream_http_rejected",
+                "upstream_invalid_json",
                 format!(
-                    "upstream {} status={} endpoint={} body={}",
+                    "upstream {} response invalid JSON endpoint={} err={}",
                     action.as_str(),
-                    status,
                     endpoint_label,
-                    body_text
+                    error
                 ),
             )
-        };
-        return Err(reject);
+        })?;
+
+        return Ok(body);
     }
 
-    let body: Value = response.json().await.map_err(|error| {
-        Reject::terminal(
-            "upstream_invalid_json",
+    Err(last_retryable.unwrap_or_else(|| {
+        Reject::retryable(
+            "upstream_unavailable",
             format!(
-                "upstream {} response invalid JSON endpoint={} err={}",
+                "upstream {} failed for all configured endpoints route={}",
                 action.as_str(),
-                endpoint_label,
-                error
+                route
             ),
         )
-    })?;
-
-    Ok(body)
+    }))
 }
 
 fn parse_upstream_outcome(body: &Value, default_reject_code: &str) -> UpstreamOutcome {
@@ -1446,6 +1553,27 @@ fn validate_endpoint_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+fn endpoint_identity(url: &str) -> Result<String> {
+    let parsed = reqwest::Url::parse(url).context("invalid URL parse")?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(anyhow!("unsupported scheme {}", parsed.scheme()));
+    }
+    let host = parsed.host_str().ok_or_else(|| anyhow!("host missing"))?;
+    let port = parsed.port_or_known_default().unwrap_or(0);
+    let mut path = parsed.path().trim().to_string();
+    if path.is_empty() {
+        path = "/".to_string();
+    }
+    Ok(format!(
+        "{}://{}:{}{}",
+        scheme,
+        host.to_ascii_lowercase(),
+        port,
+        path
+    ))
+}
+
 fn redacted_endpoint_label(endpoint: &str) -> String {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() {
@@ -1763,15 +1891,99 @@ mod tests {
         let _ = handle.join();
     }
 
+    #[tokio::test]
+    async fn forward_to_upstream_uses_fallback_after_primary_send_error() {
+        let Some((fallback_url, handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            "{\"status\":\"ok\",\"accepted\":true}",
+        ) else {
+            return;
+        };
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            Some(fallback_url.as_str()),
+            "http://127.0.0.1:1/upstream",
+            Some(fallback_url.as_str()),
+        );
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}")
+            .await
+            .expect("fallback should succeed after primary send error");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_uses_fallback_after_primary_retryable_status() {
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_raw(503, "text/plain", "temporary outage")
+        else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            "{\"status\":\"ok\",\"accepted\":true}",
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+        );
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}")
+            .await
+            .expect("fallback should succeed after retryable status");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_does_not_fallback_after_primary_terminal_status() {
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_raw(401, "text/plain", "unauthorized")
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            primary_url.as_str(),
+            Some("http://127.0.0.1:1/upstream"),
+            primary_url.as_str(),
+            Some("http://127.0.0.1:1/upstream"),
+        );
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}")
+            .await
+            .expect_err("terminal status should short-circuit");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_http_rejected");
+        let _ = primary_handle.join();
+    }
+
     fn test_state(endpoint: &str) -> AppState {
+        test_state_with_backends(endpoint, None, endpoint, None)
+    }
+
+    fn test_state_with_backends(
+        submit_primary: &str,
+        submit_fallback: Option<&str>,
+        simulate_primary: &str,
+        simulate_fallback: Option<&str>,
+    ) -> AppState {
         let mut route_allowlist = HashSet::new();
         route_allowlist.insert("rpc".to_string());
         let mut route_backends = HashMap::new();
         route_backends.insert(
             "rpc".to_string(),
             RouteBackend {
-                submit_url: endpoint.to_string(),
-                simulate_url: endpoint.to_string(),
+                submit_url: submit_primary.to_string(),
+                submit_fallback_url: submit_fallback.map(|value| value.to_string()),
+                simulate_url: simulate_primary.to_string(),
+                simulate_fallback_url: simulate_fallback.map(|value| value.to_string()),
                 auth_token: None,
             },
         );

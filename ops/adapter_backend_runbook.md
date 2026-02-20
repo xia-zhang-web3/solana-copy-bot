@@ -26,6 +26,8 @@ At minimum:
 4. `COPYBOT_ADAPTER_ROUTE_ALLOWLIST=rpc,paper` (example)
 5. `COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL=<executor submit URL>`
 6. `COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL=<executor simulate URL>`
+7. `COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL=<optional fallback submit URL>`
+8. `COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL=<optional fallback simulate URL>`
 
 Optional security:
 
@@ -53,10 +55,12 @@ Auth policy:
 Optional per-route upstream overrides:
 
 1. `COPYBOT_ADAPTER_ROUTE_RPC_SUBMIT_URL=...`
-2. `COPYBOT_ADAPTER_ROUTE_RPC_SIMULATE_URL=...`
-3. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN=...`
-4. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_auth.token`
-5. same pattern for `PAPER`, `JITO`, `FASTLANE`, etc.
+2. `COPYBOT_ADAPTER_ROUTE_RPC_SUBMIT_FALLBACK_URL=...`
+3. `COPYBOT_ADAPTER_ROUTE_RPC_SIMULATE_URL=...`
+4. `COPYBOT_ADAPTER_ROUTE_RPC_SIMULATE_FALLBACK_URL=...`
+5. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN=...`
+6. `COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/route_rpc_auth.token`
+7. same pattern for `PAPER`, `JITO`, `FASTLANE`, etc.
 
 ## 3) Local Run
 
@@ -124,13 +128,14 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
 1. Adapter is fail-closed on malformed/invalid requests.
 2. Unknown upstream status is fail-closed (`upstream_invalid_status`).
 3. Upstream HTTP `429/5xx` is treated as retryable.
-4. All endpoint diagnostics are redacted to `scheme://host[:port]` labels in logs.
-5. Secret rotation pattern (atomic):
+4. Adapter failover policy: retryable upstream transport errors (`send`, `429`, `5xx`) try fallback endpoint when configured; terminal upstream rejects (`4xx`, invalid contract response) do not fail over.
+5. All endpoint diagnostics are redacted to `scheme://host[:port]` labels in logs.
+6. Secret rotation pattern (atomic):
    1. write new secret to a temp file in the same directory,
    2. set owner-only permissions (`chmod 600` or `chmod 400`),
    3. replace target file via atomic rename (`mv temp target`),
    4. restart adapter service and verify `/healthz`.
-6. Rotation readiness/evidence helper:
+7. Rotation readiness/evidence helper:
    1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env OUTPUT_DIR=state/adapter-rotation ./tools/adapter_secret_rotation_report.sh`
    2. expected `rotation_readiness_verdict: PASS` (or `WARN` only for non-blocking permission hardening),
    3. attach emitted `artifact_report` file to ops evidence package.
