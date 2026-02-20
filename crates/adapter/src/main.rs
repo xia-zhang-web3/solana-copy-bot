@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const TIP_MAX_LAMPORTS: u64 = 100_000_000;
@@ -1293,11 +1293,40 @@ fn resolve_secret_source(
 fn read_trimmed_secret_file(path: &str) -> Result<String> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("secret file not found/readable path={}", path))?;
+    match secret_file_has_restrictive_permissions(path) {
+        Ok(false) => {
+            warn!(
+                path = %path,
+                "secret file permissions are broader than recommended; expected owner-only access (e.g. 0600/0400)"
+            );
+        }
+        Ok(true) => {}
+        Err(error) => {
+            warn!(
+                path = %path,
+                error = %error,
+                "unable to inspect secret file permissions"
+            );
+        }
+    }
     let secret = raw.trim().to_string();
     if secret.is_empty() {
         return Err(anyhow!("secret file is empty path={}", path));
     }
     Ok(secret)
+}
+
+#[cfg(unix)]
+fn secret_file_has_restrictive_permissions(path: &str) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata =
+        fs::metadata(path).with_context(|| format!("secret file stat failed path={}", path))?;
+    Ok((metadata.permissions().mode() & 0o077) == 0)
+}
+
+#[cfg(not(unix))]
+fn secret_file_has_restrictive_permissions(_path: &str) -> Result<bool> {
+    Ok(true)
 }
 
 fn parse_u64_env(name: &str, default: u64) -> Result<u64> {
@@ -1493,9 +1522,12 @@ mod tests {
         io::{Read, Write},
         net::TcpListener,
         path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
         thread,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    static TEMP_SECRET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn contract_version_token_validation() {
@@ -1621,6 +1653,37 @@ mod tests {
         let message = format!("{:#}", error);
         assert!(message.contains("COPYBOT_ADAPTER_HMAC_SECRET_FILE"));
         assert!(message.contains("secret file not found/readable"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_file_permissions_check_detects_relaxed_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = write_temp_secret_file("secret");
+        let mut perms = stdfs::metadata(&path)
+            .expect("stat temp secret")
+            .permissions();
+        perms.set_mode(0o644);
+        stdfs::set_permissions(&path, perms).expect("set relaxed mode");
+        assert!(
+            !secret_file_has_restrictive_permissions(path.to_str().expect("utf8 path"))
+                .expect("permission check"),
+            "0644 should be flagged as broad permissions"
+        );
+
+        let mut perms = stdfs::metadata(&path)
+            .expect("stat temp secret")
+            .permissions();
+        perms.set_mode(0o600);
+        stdfs::set_permissions(&path, perms).expect("set strict mode");
+        assert!(
+            secret_file_has_restrictive_permissions(path.to_str().expect("utf8 path"))
+                .expect("permission check"),
+            "0600 should pass restrictive permission check"
+        );
+
+        cleanup_temp_secret_file(path);
     }
 
     #[test]
@@ -1780,11 +1843,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("monotonic time")
             .as_nanos();
+        let seq = TEMP_SECRET_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "copybot_adapter_secret_{}_{}_{}.tmp",
+            "copybot_adapter_secret_{}_{}_{}_{}.tmp",
             prefix,
             std::process::id(),
-            nanos
+            nanos,
+            seq
         ))
     }
 

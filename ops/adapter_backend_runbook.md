@@ -125,3 +125,8 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
 2. Unknown upstream status is fail-closed (`upstream_invalid_status`).
 3. Upstream HTTP `429/5xx` is treated as retryable.
 4. All endpoint diagnostics are redacted to `scheme://host[:port]` labels in logs.
+5. Secret rotation pattern (atomic):
+   1. write new secret to a temp file in the same directory,
+   2. set owner-only permissions (`chmod 600` or `chmod 400`),
+   3. replace target file via atomic rename (`mv temp target`),
+   4. restart adapter service and verify `/healthz`.
