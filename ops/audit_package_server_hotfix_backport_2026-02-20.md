@@ -13,10 +13,11 @@ Primary goal:
 ## Suggested Backport Units
 
 Required:
-1. `f2c71f2` — stale-close reliable price hardening (`storage/app` + tests).
+1. `8e46dfb` — stale-close reliable price hardening (`storage/app` + tests, minimal surface).
 
 If missing on server history:
 1. `92dab6b` — rug-rate window-based hard-stop logic + regression test.
+2. `f2c71f2` — fallback option only when isolated `8e46dfb` cannot be applied cleanly on server history.
 
 Note:
 1. If commit hashes drift on server history, verify behavior using code checks below and apply equivalent patch manually.
@@ -43,8 +44,8 @@ Note:
 grep -n "reliable_token_sol_price_for_stale_close" crates/app/src/main.rs crates/storage/src/lib.rs
 grep -n "shadow_stale_close_price_unavailable" crates/app/src/main.rs
 grep -n "rug_window_start" crates/app/src/main.rs
-grep -n "fn shadow_rug_loss_rate_recent" crates/storage/src/lib.rs
-grep -n "closed_ts >= ?1" crates/storage/src/lib.rs
+grep -nA40 "fn shadow_rug_loss_rate_recent" crates/storage/src/lib.rs
+grep -nA40 "fn shadow_rug_loss_rate_recent" crates/storage/src/lib.rs | grep -n "closed_ts >="
 ```
 
 ## Targeted Test Commands
@@ -69,8 +70,14 @@ WHERE type = 'shadow_stale_close_price_unavailable';
 -- rug-rate stop/clear events should both be observable over time
 SELECT type, COUNT(*) AS cnt
 FROM risk_events
-WHERE type IN ('shadow_risk_rug_rate_stop', 'shadow_risk_rug_rate_cleared')
+WHERE type IN ('shadow_risk_hard_stop', 'shadow_risk_hard_stop_cleared')
 GROUP BY type;
+
+-- optional: isolate rug-loss hard-stop activations only
+SELECT COUNT(*) AS rug_hard_stop_cnt
+FROM risk_events
+WHERE type = 'shadow_risk_hard_stop'
+  AND json_extract(details_json, '$.stop_type') = 'rug_loss';
 ```
 
 ## Minimal Backport Procedure (example)
@@ -82,7 +89,7 @@ git fetch origin feat/yellowstone-grpc-migration
 git cherry-pick -x 92dab6b
 
 # required: stale-close price hardening
-git cherry-pick -x f2c71f2
+git cherry-pick -x 8e46dfb
 
 cargo test -p copybot-app -q stale_lot_cleanup_ignores_micro_swap_outlier_price
 cargo test -p copybot-app -q stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing
