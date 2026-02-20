@@ -13,7 +13,9 @@ use copybot_shadow::{
 };
 use copybot_storage::{
     is_retryable_sqlite_anyhow_error, note_sqlite_busy_error, note_sqlite_write_retry,
-    sqlite_contention_snapshot, SqliteStore,
+    sqlite_contention_snapshot, SqliteStore, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
+    STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+    STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
@@ -2698,8 +2700,35 @@ fn close_stale_shadow_lots(
             continue;
         }
 
-        let Some(exit_price_sol) = store.latest_token_sol_price(&lot.token, now)? else {
+        let Some(exit_price_sol) =
+            store.reliable_token_sol_price_for_stale_close(&lot.token, now)?
+        else {
             skipped_unpriced = skipped_unpriced.saturating_add(1);
+            let details_json = format!(
+                "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"window_minutes\":{},\"min_notional_sol\":{},\"min_samples\":{},\"max_samples\":{}}}",
+                sanitize_json_value(&lot.wallet_id),
+                sanitize_json_value(&lot.token),
+                lot.id,
+                sanitize_json_value(&now.to_rfc3339()),
+                STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
+                STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+                STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES,
+                STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES
+            );
+            if let Err(error) = store.insert_risk_event(
+                "shadow_stale_close_price_unavailable",
+                "warn",
+                now,
+                Some(&details_json),
+            ) {
+                warn!(
+                    error = %error,
+                    wallet_id = %lot.wallet_id,
+                    token = %lot.token,
+                    lot_id = lot.id,
+                    "failed to record stale-close price unavailable risk event"
+                );
+            }
             continue;
         };
         if exit_price_sol <= EPS {
@@ -4329,7 +4358,7 @@ mod app_tests {
     }
 
     #[test]
-    fn stale_lot_cleanup_closes_old_lots_using_latest_price() -> Result<()> {
+    fn stale_lot_cleanup_ignores_micro_swap_outlier_price() -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-cleanup")?;
         let now = Utc::now();
         let opened_ts = now - chrono::Duration::hours(10);
@@ -4339,11 +4368,44 @@ mod app_tests {
             dex: "pumpswap".to_string(),
             token_in: "So11111111111111111111111111111111111111112".to_string(),
             token_out: "token-a".to_string(),
+            amount_in: 0.9,
+            amount_out: 900.0,
+            signature: "sig-price-1".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(20),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
             amount_in: 1.0,
             amount_out: 1000.0,
-            signature: "sig-price".to_string(),
-            slot: 1,
-            ts_utc: now - chrono::Duration::minutes(5),
+            signature: "sig-price-2".to_string(),
+            slot: 2,
+            ts_utc: now - chrono::Duration::minutes(12),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.1,
+            amount_out: 1100.0,
+            signature: "sig-price-3".to_string(),
+            slot: 3,
+            ts_utc: now - chrono::Duration::minutes(7),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 0.001,
+            amount_out: 0.000001,
+            signature: "sig-price-outlier".to_string(),
+            slot: 4,
+            ts_utc: now - chrono::Duration::minutes(1),
         })?;
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
@@ -4358,6 +4420,46 @@ mod app_tests {
         let (trades, pnl) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
         assert_eq!(trades, 1);
         assert!(pnl > 0.0, "expected positive pnl after stale cleanup close");
+        assert!(
+            pnl < 2.0,
+            "stale-close pnl must stay in realistic band and ignore micro-swap outlier (got {})",
+            pnl
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing() -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-unpriced")?;
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::hours(10);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+        })?;
+        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let (closed, skipped) = close_stale_shadow_lots(&store, &mut open_pairs, 8, now)?;
+
+        assert_eq!(closed, 0);
+        assert_eq!(skipped, 1);
+        assert!(store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_price_unavailable")?,
+            1
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
