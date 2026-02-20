@@ -346,6 +346,7 @@ run_ops_scripts_for_db() {
   assert_contains "$calibration_output" "=== confirmed fee breakdown by route ==="
   assert_contains "$calibration_output" "=== fee hint coverage by route (confirmed orders) ==="
   assert_contains "$calibration_output" "=== fee decomposition readiness by route (confirmed orders) ==="
+  assert_contains "$calibration_output" "=== fee accounting consistency vs hints (confirmed orders) ==="
   assert_contains "$calibration_output" "=== strict policy rejects (submit_adapter_policy_echo_missing) ==="
   assert_contains "$calibration_output" "=== fee decomposition readiness verdict (24h confirmed window) ==="
   assert_contains "$calibration_output" "fee_decomposition_verdict: SKIP"

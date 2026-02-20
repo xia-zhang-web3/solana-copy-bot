@@ -329,6 +329,7 @@ if [[ -z "$EXECUTION_MODE" ]]; then
   EXECUTION_MODE="paper"
 fi
 SUBMIT_REQUIRE_POLICY_ECHO="$(normalize_bool_token "$(cfg_value execution submit_adapter_require_policy_echo)")"
+FEE_CONSISTENCY_TOLERANCE_SOL="0.000000001"
 
 echo "=== execution fee calibration (${WINDOW_HOURS}h) ==="
 echo "config: $CONFIG_PATH"
@@ -460,6 +461,85 @@ SELECT
     2
   ) AS priority_hint_coverage_pct
 FROM confirmed_orders
+GROUP BY route
+ORDER BY confirmed_orders DESC, route ASC;
+SQL
+
+echo
+echo "=== fee accounting consistency vs hints (confirmed orders) ==="
+sqlite3 "$DB_PATH" <<SQL
+.headers on
+.mode column
+WITH confirmed_orders AS (
+  SELECT
+    o.order_id,
+    COALESCE(o.route, '') AS route,
+    ${NETWORK_FEE_HINT_RAW_EXPR} AS network_fee_lamports_hint_raw,
+    ${APPLIED_TIP_RAW_EXPR} AS applied_tip_lamports_raw,
+    ${ATA_RENT_RAW_EXPR} AS ata_create_rent_lamports_raw
+  FROM orders o
+  WHERE o.status = 'execution_confirmed'
+    AND o.confirm_ts IS NOT NULL
+    AND datetime(o.confirm_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+),
+order_fee_consistency AS (
+  SELECT
+    c.route,
+    c.order_id,
+    f.fee AS fee_sol,
+    CASE
+      WHEN c.network_fee_lamports_hint_raw IS NOT NULL
+       AND c.applied_tip_lamports_raw IS NOT NULL
+       AND c.ata_create_rent_lamports_raw IS NOT NULL
+      THEN (c.network_fee_lamports_hint_raw + c.applied_tip_lamports_raw + c.ata_create_rent_lamports_raw) / 1000000000.0
+      ELSE NULL
+    END AS hinted_fee_sol
+  FROM confirmed_orders c
+  LEFT JOIN fills f ON f.order_id = c.order_id
+)
+SELECT
+  route,
+  COUNT(*) AS confirmed_orders,
+  SUM(CASE WHEN hinted_fee_sol IS NOT NULL THEN 1 ELSE 0 END) AS rows_with_full_fee_hints,
+  SUM(
+    CASE
+      WHEN hinted_fee_sol IS NOT NULL
+       AND fee_sol IS NOT NULL
+       AND ABS(fee_sol - hinted_fee_sol) <= ${FEE_CONSISTENCY_TOLERANCE_SOL}
+      THEN 1
+      ELSE 0
+    END
+  ) AS rows_fee_consistent,
+  SUM(
+    CASE
+      WHEN hinted_fee_sol IS NOT NULL
+       AND fee_sol IS NOT NULL
+       AND ABS(fee_sol - hinted_fee_sol) > ${FEE_CONSISTENCY_TOLERANCE_SOL}
+      THEN 1
+      ELSE 0
+    END
+  ) AS rows_fee_mismatch,
+  ROUND(
+    AVG(
+      CASE
+        WHEN hinted_fee_sol IS NOT NULL
+         AND fee_sol IS NOT NULL
+        THEN ABS(fee_sol - hinted_fee_sol)
+      END
+    ),
+    12
+  ) AS avg_abs_diff_sol,
+  ROUND(
+    MAX(
+      CASE
+        WHEN hinted_fee_sol IS NOT NULL
+         AND fee_sol IS NOT NULL
+        THEN ABS(fee_sol - hinted_fee_sol)
+      END
+    ),
+    12
+  ) AS max_abs_diff_sol
+FROM order_fee_consistency
 GROUP BY route
 ORDER BY confirmed_orders DESC, route ASC;
 SQL
@@ -621,6 +701,54 @@ SQL
   fallback_used_events="${fallback_used_events:-0}"
   hint_mismatch_events="${hint_mismatch_events:-0}"
 
+  fee_consistency_totals_csv="$(
+    sqlite3 -csv -noheader "$DB_PATH" <<SQL
+WITH confirmed_orders AS (
+  SELECT
+    o.order_id,
+    ${NETWORK_FEE_HINT_RAW_EXPR} AS network_fee_lamports_hint_raw,
+    ${APPLIED_TIP_RAW_EXPR} AS applied_tip_lamports_raw,
+    ${ATA_RENT_RAW_EXPR} AS ata_create_rent_lamports_raw
+  FROM orders o
+  WHERE o.status = 'execution_confirmed'
+    AND o.confirm_ts IS NOT NULL
+    AND datetime(o.confirm_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+),
+order_fee_consistency AS (
+  SELECT
+    c.order_id,
+    f.fee AS fee_sol,
+    CASE
+      WHEN c.network_fee_lamports_hint_raw IS NOT NULL
+       AND c.applied_tip_lamports_raw IS NOT NULL
+       AND c.ata_create_rent_lamports_raw IS NOT NULL
+      THEN (c.network_fee_lamports_hint_raw + c.applied_tip_lamports_raw + c.ata_create_rent_lamports_raw) / 1000000000.0
+      ELSE NULL
+    END AS hinted_fee_sol
+  FROM confirmed_orders c
+  LEFT JOIN fills f ON f.order_id = c.order_id
+)
+SELECT
+  SUM(CASE WHEN hinted_fee_sol IS NOT NULL THEN 1 ELSE 0 END) AS full_hint_rows,
+  SUM(
+    CASE
+      WHEN hinted_fee_sol IS NOT NULL
+       AND fee_sol IS NOT NULL
+       AND ABS(fee_sol - hinted_fee_sol) > ${FEE_CONSISTENCY_TOLERANCE_SOL}
+      THEN 1
+      ELSE 0
+    END
+  ) AS fee_hint_consistency_mismatch_rows
+FROM order_fee_consistency;
+SQL
+  )"
+  if [[ -z "$fee_consistency_totals_csv" ]]; then
+    fee_consistency_totals_csv="0,0"
+  fi
+  IFS=',' read -r fee_consistency_full_hint_rows fee_consistency_mismatch_rows <<<"$fee_consistency_totals_csv"
+  fee_consistency_full_hint_rows="${fee_consistency_full_hint_rows:-0}"
+  fee_consistency_mismatch_rows="${fee_consistency_mismatch_rows:-0}"
+
   missing_network_fee_hint_rows=$((confirmed_orders_total - network_fee_hint_rows_total))
   missing_base_fee_hint_rows=$((confirmed_orders_total - base_fee_hint_rows_total))
   missing_priority_fee_hint_rows=$((confirmed_orders_total - priority_fee_hint_rows_total))
@@ -638,6 +766,9 @@ SQL
   echo "submit_hint_used_events: $submit_hint_used_events"
   echo "fallback_used_events: $fallback_used_events"
   echo "hint_mismatch_events: $hint_mismatch_events"
+  echo "fee_consistency_tolerance_sol: $FEE_CONSISTENCY_TOLERANCE_SOL"
+  echo "fee_consistency_full_hint_rows: $fee_consistency_full_hint_rows"
+  echo "fee_consistency_mismatch_rows: $fee_consistency_mismatch_rows"
 
   fee_decomposition_verdict="PASS"
   fee_decomposition_reason="all required hint-coverage and consistency checks are green"
@@ -648,6 +779,7 @@ SQL
     || missing_base_fee_hint_rows > 0 \
     || missing_priority_fee_hint_rows > 0 \
     || fee_hint_mismatch_rows_total > 0 \
+    || fee_consistency_mismatch_rows > 0 \
     || fallback_used_events > 0 \
     || hint_mismatch_events > 0 )); then
     fee_decomposition_verdict="WARN"
