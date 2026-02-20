@@ -8,6 +8,8 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
+declare -a errors=()
+
 cfg_value() {
   local section="$1"
   local key="$2"
@@ -171,6 +173,23 @@ normalize_bool_token() {
   esac
 }
 
+parse_env_bool_token() {
+  local raw="$1"
+  raw="$(trim_string "$raw")"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    0|false|no|off)
+      printf 'false'
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
 normalize_route_token() {
   local raw="$1"
   raw="${raw#"${raw%%[![:space:]]*}"}"
@@ -250,6 +269,191 @@ csv_first_duplicate_normalized() {
     seen_routes+="${normalized}"$'\n'
   done
   return 1
+}
+
+cfg_or_env_string() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  if [[ -n "${!env_name+x}" ]]; then
+    printf "%s" "${!env_name}"
+    return
+  fi
+  cfg_value "$section" "$key"
+}
+
+cfg_or_env_trimmed_nonempty_string() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  if [[ -n "${!env_name+x}" ]]; then
+    local trimmed_env
+    trimmed_env="$(trim_string "${!env_name}")"
+    if [[ -n "$trimmed_env" ]]; then
+      printf "%s" "$trimmed_env"
+      return
+    fi
+  fi
+  cfg_value "$section" "$key"
+}
+
+cfg_or_env_bool() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local file_value parsed_env
+  file_value="$(normalize_bool_token "$(cfg_value "$section" "$key")")"
+  if [[ -n "${!env_name+x}" ]]; then
+    parsed_env="$(parse_env_bool_token "${!env_name}")"
+    if [[ -n "$parsed_env" ]]; then
+      printf "%s" "$parsed_env"
+      return
+    fi
+  fi
+  printf "%s" "$file_value"
+}
+
+cfg_or_env_u64_string() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  if [[ -n "${!env_name+x}" ]]; then
+    local raw_env
+    raw_env="$(trim_string "${!env_name}")"
+    if [[ "$raw_env" =~ ^[0-9]+$ ]]; then
+      printf "%s" "$raw_env"
+      return
+    fi
+  fi
+  cfg_value "$section" "$key"
+}
+
+parse_execution_route_list_env_csv() {
+  local csv="$1"
+  local env_name="$2"
+  python3 - "$csv" "$env_name" <<'PY'
+import sys
+
+csv = sys.argv[1]
+env_name = sys.argv[2]
+seen = set()
+values = []
+
+for token in csv.split(","):
+    route = token.strip()
+    if not route:
+        continue
+    normalized = route.lower()
+    if normalized in seen:
+        print(
+            f"{env_name} contains duplicate route after normalization: {normalized}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    seen.add(normalized)
+    values.append(route)
+
+print(",".join(values))
+PY
+}
+
+parse_execution_route_map_env_keys_csv() {
+  local csv="$1"
+  local env_name="$2"
+  local value_type="$3"
+  python3 - "$csv" "$env_name" "$value_type" <<'PY'
+import sys
+
+csv = sys.argv[1]
+env_name = sys.argv[2]
+value_type = sys.argv[3]
+seen = set()
+keys = []
+
+for token in csv.split(","):
+    token = token.strip()
+    if not token:
+        continue
+    if ":" not in token:
+        continue
+    route, raw_value = token.split(":", 1)
+    route = route.strip().lower()
+    if not route:
+        continue
+    raw_value = raw_value.strip()
+    try:
+        if value_type == "f64":
+            float(raw_value)
+        elif value_type == "u64":
+            parsed = int(raw_value, 10)
+            if parsed < 0 or parsed > (2**64 - 1):
+                raise ValueError("out of range")
+        elif value_type == "u32":
+            parsed = int(raw_value, 10)
+            if parsed < 0 or parsed > (2**32 - 1):
+                raise ValueError("out of range")
+        else:
+            raise ValueError("unsupported value type")
+    except Exception:
+        continue
+    if route in seen:
+        print(
+            f"{env_name} contains duplicate route after normalization: {route}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    seen.add(route)
+    keys.append(route)
+
+print(",".join(keys))
+PY
+}
+
+cfg_or_env_route_list_csv() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local file_csv env_csv parsed_csv
+  file_csv="$(cfg_list_csv "$section" "$key")"
+  if [[ -z "${!env_name+x}" ]]; then
+    printf "%s" "$file_csv"
+    return
+  fi
+  env_csv="${!env_name}"
+  if ! parsed_csv="$(parse_execution_route_list_env_csv "$env_csv" "$env_name" 2>&1)"; then
+    errors+=("$parsed_csv")
+    printf "%s" "$file_csv"
+    return
+  fi
+  if [[ -n "${parsed_csv//[[:space:]]/}" ]]; then
+    printf "%s" "$parsed_csv"
+  else
+    printf "%s" "$file_csv"
+  fi
+}
+
+cfg_or_env_route_map_keys_csv() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local value_type="$4"
+  local file_csv env_csv parsed_csv
+  file_csv="$(cfg_map_keys_csv "$section" "$key")"
+  if [[ -z "${!env_name+x}" ]]; then
+    printf "%s" "$file_csv"
+    return
+  fi
+  env_csv="${!env_name}"
+  if ! parsed_csv="$(parse_execution_route_map_env_keys_csv "$env_csv" "$env_name" "$value_type" 2>&1)"; then
+    errors+=("$parsed_csv")
+    printf "%s" "$file_csv"
+    return
+  fi
+  if [[ -n "${parsed_csv//[[:space:]]/}" ]]; then
+    printf "%s" "$parsed_csv"
+  else
+    printf "%s" "$file_csv"
+  fi
 }
 
 validate_adapter_endpoint_url() {
@@ -340,8 +544,6 @@ read_non_empty_secret() {
   printf "%s" "$trimmed"
 }
 
-declare -a errors=()
-
 system_env="$(cfg_value system env)"
 if [[ -z "$system_env" ]]; then
   system_env="paper"
@@ -351,8 +553,8 @@ if is_production_env_profile "$system_env"; then
   prod_like="true"
 fi
 
-execution_enabled="$(normalize_bool_token "$(cfg_value execution enabled)")"
-execution_mode="$(normalize_route_token "$(cfg_value execution mode)")"
+execution_enabled="$(cfg_or_env_bool execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED)"
+execution_mode="$(normalize_route_token "$(cfg_or_env_trimmed_nonempty_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE)")"
 
 if [[ "$execution_enabled" != "true" ]]; then
   cat <<EOF
@@ -380,28 +582,28 @@ EOF
   exit 0
 fi
 
-signer_pubkey="$(trim_string "$(cfg_value execution execution_signer_pubkey)")"
-submit_primary="$(trim_string "$(cfg_value execution submit_adapter_http_url)")"
-submit_fallback="$(trim_string "$(cfg_value execution submit_adapter_fallback_http_url)")"
-contract_version="$(trim_string "$(cfg_value execution submit_adapter_contract_version)")"
-strict_policy_echo="$(normalize_bool_token "$(cfg_value execution submit_adapter_require_policy_echo)")"
-submit_allowed_routes_csv="$(cfg_list_csv execution submit_allowed_routes)"
-submit_route_order_csv="$(cfg_list_csv execution submit_route_order)"
-default_route="$(normalize_route_token "$(cfg_value execution default_route)")"
+signer_pubkey="$(trim_string "$(cfg_or_env_string execution execution_signer_pubkey SOLANA_COPY_BOT_EXECUTION_SIGNER_PUBKEY)")"
+submit_primary="$(trim_string "$(cfg_or_env_string execution submit_adapter_http_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HTTP_URL)")"
+submit_fallback="$(trim_string "$(cfg_or_env_string execution submit_adapter_fallback_http_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_FALLBACK_HTTP_URL)")"
+contract_version="$(trim_string "$(cfg_or_env_trimmed_nonempty_string execution submit_adapter_contract_version SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_CONTRACT_VERSION)")"
+strict_policy_echo="$(cfg_or_env_bool execution submit_adapter_require_policy_echo SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO)"
+submit_allowed_routes_csv="$(cfg_or_env_route_list_csv execution submit_allowed_routes SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES)"
+submit_route_order_csv="$(cfg_or_env_route_list_csv execution submit_route_order SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER)"
+default_route="$(normalize_route_token "$(cfg_or_env_trimmed_nonempty_string execution default_route SOLANA_COPY_BOT_EXECUTION_DEFAULT_ROUTE)")"
 if [[ -z "$default_route" ]]; then
   default_route="paper"
 fi
 
-auth_token_inline="$(trim_string "$(cfg_value execution submit_adapter_auth_token)")"
-auth_token_file_raw="$(trim_string "$(cfg_value execution submit_adapter_auth_token_file)")"
-hmac_key_id="$(trim_string "$(cfg_value execution submit_adapter_hmac_key_id)")"
-hmac_secret_inline="$(trim_string "$(cfg_value execution submit_adapter_hmac_secret)")"
-hmac_secret_file_raw="$(trim_string "$(cfg_value execution submit_adapter_hmac_secret_file)")"
-hmac_ttl_sec_raw="$(trim_string "$(cfg_value execution submit_adapter_hmac_ttl_sec)")"
-submit_route_max_slippage_bps_keys_csv="$(cfg_map_keys_csv execution submit_route_max_slippage_bps)"
-submit_route_tip_lamports_keys_csv="$(cfg_map_keys_csv execution submit_route_tip_lamports)"
-submit_route_compute_unit_limit_keys_csv="$(cfg_map_keys_csv execution submit_route_compute_unit_limit)"
-submit_route_compute_unit_price_keys_csv="$(cfg_map_keys_csv execution submit_route_compute_unit_price_micro_lamports)"
+auth_token_inline="$(trim_string "$(cfg_or_env_string execution submit_adapter_auth_token SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_AUTH_TOKEN)")"
+auth_token_file_raw="$(trim_string "$(cfg_or_env_string execution submit_adapter_auth_token_file SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_AUTH_TOKEN_FILE)")"
+hmac_key_id="$(trim_string "$(cfg_or_env_string execution submit_adapter_hmac_key_id SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_KEY_ID)")"
+hmac_secret_inline="$(trim_string "$(cfg_or_env_string execution submit_adapter_hmac_secret SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET)")"
+hmac_secret_file_raw="$(trim_string "$(cfg_or_env_string execution submit_adapter_hmac_secret_file SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET_FILE)")"
+hmac_ttl_sec_raw="$(trim_string "$(cfg_or_env_u64_string execution submit_adapter_hmac_ttl_sec SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_TTL_SEC)")"
+submit_route_max_slippage_bps_keys_csv="$(cfg_or_env_route_map_keys_csv execution submit_route_max_slippage_bps SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS f64)"
+submit_route_tip_lamports_keys_csv="$(cfg_or_env_route_map_keys_csv execution submit_route_tip_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS u64)"
+submit_route_compute_unit_limit_keys_csv="$(cfg_or_env_route_map_keys_csv execution submit_route_compute_unit_limit SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT u32)"
+submit_route_compute_unit_price_keys_csv="$(cfg_or_env_route_map_keys_csv execution submit_route_compute_unit_price_micro_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS u64)"
 
 if [[ -z "$signer_pubkey" ]]; then
   errors+=("execution.execution_signer_pubkey must be non-empty in adapter_submit_confirm mode")

@@ -715,6 +715,7 @@ run_adapter_preflight_case() {
   local missing_map_output
   local invalid_route_order_output
   local missing_secret_output
+  local env_override_output
   mkdir -p "$secrets_dir"
   printf 'token-pass\n' >"$secrets_dir/auth.token"
   printf 'hmac-pass\n' >"$secrets_dir/hmac.secret"
@@ -727,6 +728,18 @@ run_adapter_preflight_case() {
   )"
   assert_contains "$pass_output" "=== Execution Adapter Preflight ==="
   assert_contains "$pass_output" "preflight_verdict: PASS"
+
+  if env_override_output="$(
+    CONFIG_PATH="$pass_cfg" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO="false" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for strict echo env override in prod-like profile" >&2
+    exit 1
+  fi
+  assert_contains "$env_override_output" "strict_policy_echo: false"
+  assert_contains "$env_override_output" "preflight_verdict: FAIL"
+  assert_contains "$env_override_output" "submit_adapter_require_policy_echo must be true in production-like env profiles"
 
   write_config_adapter_preflight_fail "$fail_cfg" "$db_path"
   local fail_output
