@@ -563,12 +563,13 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 42. adapter endpoint redundancy guard: when both `submit_adapter_http_url` and `submit_adapter_fallback_http_url` are set, runtime now normalizes endpoint identity (`scheme+host+port+path`) and fail-closes if they resolve to the same endpoint.
 43. route policy normalization guard: config ENV parsing now fail-closes on case-insensitive duplicate route entries/keys (`rpc` vs `RPC`) for both route lists (`submit_allowed_routes`, `submit_route_order`) and route-policy maps (`submit_route_max_slippage_bps`, `submit_route_tip_lamports`, `submit_route_compute_unit_limit`, `submit_route_compute_unit_price_micro_lamports`) before config load, and runtime keeps the same fail-close checks as a second layer.
 44. execution BUY-risk enforcement extended to live loss controls: runtime now applies `risk.daily_loss_limit_pct` (24h realized + current unrealized PnL guard) and `risk.max_drawdown_pct` (rolling 24h drawdown with terminal unrealized open-position mark-to-market) as `risk_blocked` BUY gates, backed by storage queries (`live_realized_pnl_since`, `live_unrealized_pnl_sol`, `live_max_drawdown_with_unrealized_since`) and runtime risk contract validation for both percent fields (`[0, 100]` bounds); missing open-position price quotes now fail-closed (`unrealized_price_unavailable`) and unrealized mark-to-market is computed once per BUY risk check.
+45. fee decomposition calibration helpers now include explicit readiness evidence for live-path rollout: `tools/execution_fee_calibration_report.sh` prints per-route decomposition completeness (`network/base/priority/tip/ata` coverage + hint consistency checks), emits adapter-mode verdict (`PASS/WARN/NO_DATA/SKIP`) with fallback/mismatch counters, and smoke coverage (`tools/ops_scripts_smoke_test.sh`) validates the new output path.
 
 Остается в next-code-queue:
 
 1. wire production adapter backend for real signed tx send path (using `adapter_submit_confirm` contract) and complete production secret distribution/rotation rollout for auth headers.
 2. complete operational calibration for route profiles (Jito-primary/RPC-fallback) using existing slippage/tip/CU policy knobs and explicit `submit_route_order` policy.
-3. complete exact fee decomposition validation/calibration for live path: runtime now persists adapter `network/base/priority` hints and uses `network_fee_lamports_hint` fallback, but unrestricted rollout still requires strict adapter contract + ops evidence that executed `base/priority/tip/rent` telemetry is complete and reconciled against chain truth.
+3. finish live fee decomposition sign-off package: run adapter-mode calibration windows and attach evidence that `base/priority/tip/rent` telemetry is complete, mismatch/fallback counters are green, and totals reconcile against chain truth for go/no-go.
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 

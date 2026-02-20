@@ -92,6 +92,21 @@ normalize_route_token() {
   printf '%s' "$route" | tr '[:upper:]' '[:lower:]'
 }
 
+normalize_bool_token() {
+  local raw="$1"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    *)
+      printf 'false'
+      ;;
+  esac
+}
+
 csv_contains_route() {
   local csv="$1"
   local needle="$2"
@@ -189,6 +204,11 @@ DEFAULT_ROUTE="$(normalize_route_token "$(cfg_value execution default_route)")"
 if [[ -z "$DEFAULT_ROUTE" ]]; then
   DEFAULT_ROUTE="paper"
 fi
+EXECUTION_MODE="$(normalize_route_token "$(cfg_value execution mode)")"
+if [[ -z "$EXECUTION_MODE" ]]; then
+  EXECUTION_MODE="paper"
+fi
+SUBMIT_REQUIRE_POLICY_ECHO="$(normalize_bool_token "$(cfg_value execution submit_adapter_require_policy_echo)")"
 
 echo "=== execution fee calibration (${WINDOW_HOURS}h) ==="
 echo "config: $CONFIG_PATH"
@@ -256,6 +276,69 @@ SELECT
   SUM(CASE WHEN priority_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS priority_fee_hint_rows,
   SUM(CASE WHEN applied_tip_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS applied_tip_rows,
   SUM(CASE WHEN ata_create_rent_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS ata_rent_rows
+FROM confirmed_orders
+GROUP BY route
+ORDER BY confirmed_orders DESC, route ASC;
+SQL
+
+echo
+echo "=== fee decomposition readiness by route (confirmed orders) ==="
+sqlite3 "$DB_PATH" <<SQL
+.headers on
+.mode column
+WITH confirmed_orders AS (
+  SELECT
+    COALESCE(o.route, '') AS route,
+    ${NETWORK_FEE_HINT_RAW_EXPR} AS network_fee_lamports_hint_raw,
+    ${BASE_FEE_HINT_RAW_EXPR} AS base_fee_lamports_hint_raw,
+    ${PRIORITY_FEE_HINT_RAW_EXPR} AS priority_fee_lamports_hint_raw,
+    ${APPLIED_TIP_RAW_EXPR} AS applied_tip_lamports_raw,
+    ${ATA_RENT_RAW_EXPR} AS ata_create_rent_lamports_raw
+  FROM orders o
+  WHERE o.status = 'execution_confirmed'
+    AND o.confirm_ts IS NOT NULL
+    AND datetime(o.confirm_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+)
+SELECT
+  route,
+  COUNT(*) AS confirmed_orders,
+  SUM(CASE WHEN network_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS network_fee_hint_rows,
+  SUM(CASE WHEN base_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS base_fee_hint_rows,
+  SUM(CASE WHEN priority_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS priority_fee_hint_rows,
+  SUM(CASE WHEN applied_tip_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS tip_rows,
+  SUM(CASE WHEN ata_create_rent_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS ata_rent_rows,
+  SUM(
+    CASE
+      WHEN network_fee_lamports_hint_raw IS NOT NULL
+       AND base_fee_lamports_hint_raw IS NOT NULL
+       AND priority_fee_lamports_hint_raw IS NOT NULL
+       AND network_fee_lamports_hint_raw = (base_fee_lamports_hint_raw + priority_fee_lamports_hint_raw)
+      THEN 1
+      ELSE 0
+    END
+  ) AS fee_hint_consistent_rows,
+  SUM(
+    CASE
+      WHEN network_fee_lamports_hint_raw IS NOT NULL
+       AND base_fee_lamports_hint_raw IS NOT NULL
+       AND priority_fee_lamports_hint_raw IS NOT NULL
+       AND network_fee_lamports_hint_raw <> (base_fee_lamports_hint_raw + priority_fee_lamports_hint_raw)
+      THEN 1
+      ELSE 0
+    END
+  ) AS fee_hint_mismatch_rows,
+  ROUND(
+    100.0 * SUM(CASE WHEN network_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS network_hint_coverage_pct,
+  ROUND(
+    100.0 * SUM(CASE WHEN base_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS base_hint_coverage_pct,
+  ROUND(
+    100.0 * SUM(CASE WHEN priority_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS priority_hint_coverage_pct
 FROM confirmed_orders
 GROUP BY route
 ORDER BY confirmed_orders DESC, route ASC;
@@ -350,6 +433,110 @@ FROM strict_rejects
 GROUP BY route
 ORDER BY cnt DESC, route ASC;
 SQL
+
+echo
+echo "=== fee decomposition readiness verdict (${WINDOW_HOURS}h confirmed window) ==="
+if [[ "$EXECUTION_MODE" != "adapter_submit_confirm" ]]; then
+  echo "fee_decomposition_verdict: SKIP"
+  echo "fee_decomposition_reason: execution.mode=$EXECUTION_MODE (gate applies to adapter_submit_confirm)"
+else
+  coverage_totals_csv="$(
+    sqlite3 -csv -noheader "$DB_PATH" <<SQL
+WITH confirmed_orders AS (
+  SELECT
+    ${NETWORK_FEE_HINT_RAW_EXPR} AS network_fee_lamports_hint_raw,
+    ${BASE_FEE_HINT_RAW_EXPR} AS base_fee_lamports_hint_raw,
+    ${PRIORITY_FEE_HINT_RAW_EXPR} AS priority_fee_lamports_hint_raw,
+    ${APPLIED_TIP_RAW_EXPR} AS applied_tip_lamports_raw
+  FROM orders o
+  WHERE o.status = 'execution_confirmed'
+    AND o.confirm_ts IS NOT NULL
+    AND datetime(o.confirm_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+)
+SELECT
+  COUNT(*) AS confirmed_orders,
+  SUM(CASE WHEN network_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS network_fee_hint_rows,
+  SUM(CASE WHEN base_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS base_fee_hint_rows,
+  SUM(CASE WHEN priority_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS priority_fee_hint_rows,
+  SUM(CASE WHEN applied_tip_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS tip_rows,
+  SUM(
+    CASE
+      WHEN network_fee_lamports_hint_raw IS NOT NULL
+       AND base_fee_lamports_hint_raw IS NOT NULL
+       AND priority_fee_lamports_hint_raw IS NOT NULL
+       AND network_fee_lamports_hint_raw <> (base_fee_lamports_hint_raw + priority_fee_lamports_hint_raw)
+      THEN 1
+      ELSE 0
+    END
+  ) AS fee_hint_mismatch_rows
+FROM confirmed_orders;
+SQL
+  )"
+  if [[ -z "$coverage_totals_csv" ]]; then
+    coverage_totals_csv="0,0,0,0,0,0"
+  fi
+  IFS=',' read -r confirmed_orders_total network_fee_hint_rows_total base_fee_hint_rows_total priority_fee_hint_rows_total tip_rows_total fee_hint_mismatch_rows_total <<<"$coverage_totals_csv"
+  confirmed_orders_total="${confirmed_orders_total:-0}"
+  network_fee_hint_rows_total="${network_fee_hint_rows_total:-0}"
+  base_fee_hint_rows_total="${base_fee_hint_rows_total:-0}"
+  priority_fee_hint_rows_total="${priority_fee_hint_rows_total:-0}"
+  tip_rows_total="${tip_rows_total:-0}"
+  fee_hint_mismatch_rows_total="${fee_hint_mismatch_rows_total:-0}"
+
+  events_totals_csv="$(
+    sqlite3 -csv -noheader "$DB_PATH" <<SQL
+SELECT
+  SUM(CASE WHEN type = 'execution_network_fee_unavailable_submit_hint_used' THEN 1 ELSE 0 END) AS submit_hint_used_events,
+  SUM(CASE WHEN type = 'execution_network_fee_unavailable_fallback_used' THEN 1 ELSE 0 END) AS fallback_used_events,
+  SUM(CASE WHEN type = 'execution_network_fee_hint_mismatch' THEN 1 ELSE 0 END) AS hint_mismatch_events
+FROM risk_events
+WHERE datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours');
+SQL
+  )"
+  if [[ -z "$events_totals_csv" ]]; then
+    events_totals_csv="0,0,0"
+  fi
+  IFS=',' read -r submit_hint_used_events fallback_used_events hint_mismatch_events <<<"$events_totals_csv"
+  submit_hint_used_events="${submit_hint_used_events:-0}"
+  fallback_used_events="${fallback_used_events:-0}"
+  hint_mismatch_events="${hint_mismatch_events:-0}"
+
+  missing_network_fee_hint_rows=$((confirmed_orders_total - network_fee_hint_rows_total))
+  missing_base_fee_hint_rows=$((confirmed_orders_total - base_fee_hint_rows_total))
+  missing_priority_fee_hint_rows=$((confirmed_orders_total - priority_fee_hint_rows_total))
+
+  echo "adapter_mode_strict_policy_echo: $SUBMIT_REQUIRE_POLICY_ECHO"
+  echo "confirmed_orders_total: $confirmed_orders_total"
+  echo "network_fee_hint_rows_total: $network_fee_hint_rows_total"
+  echo "base_fee_hint_rows_total: $base_fee_hint_rows_total"
+  echo "priority_fee_hint_rows_total: $priority_fee_hint_rows_total"
+  echo "tip_rows_total: $tip_rows_total"
+  echo "fee_hint_mismatch_rows_total: $fee_hint_mismatch_rows_total"
+  echo "missing_network_fee_hint_rows: $missing_network_fee_hint_rows"
+  echo "missing_base_fee_hint_rows: $missing_base_fee_hint_rows"
+  echo "missing_priority_fee_hint_rows: $missing_priority_fee_hint_rows"
+  echo "submit_hint_used_events: $submit_hint_used_events"
+  echo "fallback_used_events: $fallback_used_events"
+  echo "hint_mismatch_events: $hint_mismatch_events"
+
+  fee_decomposition_verdict="PASS"
+  fee_decomposition_reason="all required hint-coverage and consistency checks are green"
+  if (( confirmed_orders_total == 0 )); then
+    fee_decomposition_verdict="NO_DATA"
+    fee_decomposition_reason="no confirmed orders in time window"
+  elif (( missing_network_fee_hint_rows > 0 \
+    || missing_base_fee_hint_rows > 0 \
+    || missing_priority_fee_hint_rows > 0 \
+    || fee_hint_mismatch_rows_total > 0 \
+    || fallback_used_events > 0 \
+    || hint_mismatch_events > 0 )); then
+    fee_decomposition_verdict="WARN"
+    fee_decomposition_reason="incomplete or inconsistent network/base/priority fee decomposition detected"
+  fi
+
+  echo "fee_decomposition_verdict: $fee_decomposition_verdict"
+  echo "fee_decomposition_reason: $fee_decomposition_reason"
+fi
 
 echo
 echo "=== route outcome KPI (${WINDOW_HOURS}h submit window) ==="
