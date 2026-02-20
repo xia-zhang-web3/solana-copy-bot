@@ -249,8 +249,9 @@ impl IntentSimulator for AdapterIntentSimulator {
 
         let mut last_error: Option<anyhow::Error> = None;
         for endpoint in &self.endpoints {
+            let endpoint_label = redacted_endpoint_label(endpoint);
             debug!(
-                endpoint = %endpoint,
+                endpoint = %endpoint_label,
                 route = %route,
                 signal_id = %intent.signal_id,
                 "adapter simulator attempt"
@@ -259,7 +260,7 @@ impl IntentSimulator for AdapterIntentSimulator {
                 Ok(result) => {
                     if !result.accepted {
                         warn!(
-                            endpoint = %endpoint,
+                            endpoint = %endpoint_label,
                             route = %route,
                             signal_id = %intent.signal_id,
                             detail = %result.detail,
@@ -270,7 +271,7 @@ impl IntentSimulator for AdapterIntentSimulator {
                 }
                 Err(error) => {
                     warn!(
-                        endpoint = %endpoint,
+                        endpoint = %endpoint_label,
                         route = %route,
                         signal_id = %intent.signal_id,
                         error = %error,
