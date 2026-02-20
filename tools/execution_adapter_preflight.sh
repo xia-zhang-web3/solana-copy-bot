@@ -451,14 +451,26 @@ for token in csv.split(","):
     if not token:
         continue
     if ":" not in token:
-        continue
+        print(
+            f"{env_name} contains malformed token (expected route:value): {token}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     route, raw_value = token.split(":", 1)
     route = route.strip().lower()
     if not route:
-        continue
+        print(
+            f"{env_name} contains empty route key in token: {token}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     raw_value = raw_value.strip()
     if env_name.startswith("SOLANA_COPY_BOT_") and "_" in raw_value:
-        continue
+        print(
+            f"{env_name} contains invalid numeric value for route={route}: {raw_value}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     try:
         if value_type == "f64":
             float(raw_value)
@@ -473,7 +485,11 @@ for token in csv.split(","):
         else:
             raise ValueError("unsupported value type")
     except Exception:
-        continue
+        print(
+            f"{env_name} contains invalid numeric value for route={route}: {raw_value}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     if route in seen:
         print(
             f"{env_name} contains duplicate route after normalization: {route}",
@@ -505,14 +521,26 @@ for token in csv.split(","):
     if not token:
         continue
     if ":" not in token:
-        continue
+        print(
+            f"{env_name} contains malformed token (expected route:value): {token}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     route, raw_value = token.split(":", 1)
     route = route.strip().lower()
     if not route:
-        continue
+        print(
+            f"{env_name} contains empty route key in token: {token}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     raw_value = raw_value.strip()
     if env_name.startswith("SOLANA_COPY_BOT_") and "_" in raw_value:
-        continue
+        print(
+            f"{env_name} contains invalid numeric value for route={route}: {raw_value}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     try:
         if value_type == "f64":
             parsed_value = float(raw_value)
@@ -530,7 +558,11 @@ for token in csv.split(","):
         else:
             raise ValueError("unsupported value type")
     except Exception:
-        continue
+        print(
+            f"{env_name} contains invalid numeric value for route={route}: {raw_value}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     if route in seen:
         print(
             f"{env_name} contains duplicate route after normalization: {route}",
@@ -556,9 +588,8 @@ cfg_or_env_route_list_csv() {
   fi
   env_csv="${!env_name}"
   if ! parsed_csv="$(parse_execution_route_list_env_csv "$env_csv" "$env_name" 2>&1)"; then
-    errors+=("$parsed_csv")
-    printf "%s" "$file_csv"
-    return
+    printf "%s" "$parsed_csv" >&2
+    return 1
   fi
   if [[ -n "${parsed_csv//[[:space:]]/}" ]]; then
     printf "%s" "$parsed_csv"
@@ -580,9 +611,8 @@ cfg_or_env_route_map_keys_csv() {
   fi
   env_csv="${!env_name}"
   if ! parsed_csv="$(parse_execution_route_map_env_keys_csv "$env_csv" "$env_name" "$value_type" 2>&1)"; then
-    errors+=("$parsed_csv")
-    printf "%s" "$file_csv"
-    return
+    printf "%s" "$parsed_csv" >&2
+    return 1
   fi
   if [[ -n "${parsed_csv//[[:space:]]/}" ]]; then
     printf "%s" "$parsed_csv"
@@ -603,8 +633,8 @@ cfg_or_env_route_map_pairs_csv() {
     file_raw_csv="$default_pairs_csv"
   fi
   if ! file_pairs_csv="$(parse_execution_route_map_env_pairs_csv "$file_raw_csv" "execution.$key" "$value_type" 2>&1)"; then
-    errors+=("$file_pairs_csv")
-    file_pairs_csv=""
+    printf "%s" "$file_pairs_csv" >&2
+    return 1
   fi
   if [[ -z "${!env_name+x}" ]]; then
     printf "%s" "$file_pairs_csv"
@@ -612,9 +642,8 @@ cfg_or_env_route_map_pairs_csv() {
   fi
   env_csv="${!env_name}"
   if ! parsed_env_pairs="$(parse_execution_route_map_env_pairs_csv "$env_csv" "$env_name" "$value_type" 2>&1)"; then
-    errors+=("$parsed_env_pairs")
-    printf "%s" "$file_pairs_csv"
-    return
+    printf "%s" "$parsed_env_pairs" >&2
+    return 1
   fi
   if [[ -n "${parsed_env_pairs//[[:space:]]/}" ]]; then
     printf "%s" "$parsed_env_pairs"
@@ -958,8 +987,14 @@ submit_primary="$(trim_string "$(cfg_or_env_string execution submit_adapter_http
 submit_fallback="$(trim_string "$(cfg_or_env_string execution submit_adapter_fallback_http_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_FALLBACK_HTTP_URL)")"
 contract_version="$(trim_string "$(cfg_or_env_trimmed_nonempty_string execution submit_adapter_contract_version SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_CONTRACT_VERSION)")"
 strict_policy_echo="$(cfg_or_env_bool execution submit_adapter_require_policy_echo SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO)"
-submit_allowed_routes_csv="$(cfg_or_env_route_list_csv execution submit_allowed_routes SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES)"
-submit_route_order_csv="$(cfg_or_env_route_list_csv execution submit_route_order SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER)"
+if ! submit_allowed_routes_csv="$(cfg_or_env_route_list_csv execution submit_allowed_routes SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES 2>&1)"; then
+  errors+=("$submit_allowed_routes_csv")
+  submit_allowed_routes_csv=""
+fi
+if ! submit_route_order_csv="$(cfg_or_env_route_list_csv execution submit_route_order SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER 2>&1)"; then
+  errors+=("$submit_route_order_csv")
+  submit_route_order_csv=""
+fi
 default_route="$(normalize_route_token "$(cfg_or_env_trimmed_nonempty_string execution default_route SOLANA_COPY_BOT_EXECUTION_DEFAULT_ROUTE)")"
 if [[ -z "$default_route" ]]; then
   default_route="paper"
@@ -976,10 +1011,22 @@ pretrade_max_priority_fee_lamports_raw="$(trim_string "$(cfg_or_env_u64_string e
 if [[ -z "$pretrade_max_priority_fee_lamports_raw" ]]; then
   pretrade_max_priority_fee_lamports_raw="0"
 fi
-submit_route_max_slippage_bps_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_max_slippage_bps SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS f64 "paper:50.0")"
-submit_route_tip_lamports_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_tip_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS u64 "paper:0")"
-submit_route_compute_unit_limit_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_compute_unit_limit SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT u32 "paper:300000")"
-submit_route_compute_unit_price_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_compute_unit_price_micro_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS u64 "paper:1000")"
+if ! submit_route_max_slippage_bps_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_max_slippage_bps SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS f64 "paper:50.0" 2>&1)"; then
+  errors+=("$submit_route_max_slippage_bps_pairs_csv")
+  submit_route_max_slippage_bps_pairs_csv=""
+fi
+if ! submit_route_tip_lamports_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_tip_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS u64 "paper:0" 2>&1)"; then
+  errors+=("$submit_route_tip_lamports_pairs_csv")
+  submit_route_tip_lamports_pairs_csv=""
+fi
+if ! submit_route_compute_unit_limit_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_compute_unit_limit SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT u32 "paper:300000" 2>&1)"; then
+  errors+=("$submit_route_compute_unit_limit_pairs_csv")
+  submit_route_compute_unit_limit_pairs_csv=""
+fi
+if ! submit_route_compute_unit_price_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_compute_unit_price_micro_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS u64 "paper:1000" 2>&1)"; then
+  errors+=("$submit_route_compute_unit_price_pairs_csv")
+  submit_route_compute_unit_price_pairs_csv=""
+fi
 submit_route_max_slippage_bps_keys_csv="$(route_pairs_to_keys_csv "$submit_route_max_slippage_bps_pairs_csv")"
 submit_route_tip_lamports_keys_csv="$(route_pairs_to_keys_csv "$submit_route_tip_lamports_pairs_csv")"
 submit_route_compute_unit_limit_keys_csv="$(route_pairs_to_keys_csv "$submit_route_compute_unit_limit_pairs_csv")"

@@ -20,7 +20,7 @@ Operational mode (as of 2026-02-19):
 Repository/runtime alignment:
 
 1. `configs/paper.toml` is currently set to `source = "yellowstone_grpc"` to mirror current primary runtime profile.
-2. `configs/prod.toml` still keeps `helius_ws` and serves as conservative rollback profile template.
+2. `configs/prod.toml` is now aligned to `source = "yellowstone_grpc"`; rollback remains controlled by runtime override/env and watchdog profile switch to `helius_ws`.
 3. Runtime source selection can still be overridden by env/failover override file; failover override file has highest priority on startup and overrides config/env source selection when present.
 4. Migration remains in observation mode until section 16 DoD is fully satisfied.
 5. Cross-plan update (2026-02-19):
@@ -95,8 +95,8 @@ No implementation work in `crates/ingestion` starts until all gates below are co
    - behavior for partial/empty meta is fixed (`drop` + reason counter, never panic).
    - mapping template in section 8.1 contains **no `TBD` values** before Phase B.
 2. **Telemetry contract decision is frozen**:
-   - For migration v1, `IngestionRuntimeSnapshot` stays backward-compatible with current app risk guard contract (`ts_utc`, `ws_notifications_enqueued`, `ws_notifications_replaced_oldest`, `rpc_429`, `rpc_5xx`, `ingestion_lag_ms_p95`).
-   - Additional p50/p99 and gRPC-specific metrics are emitted via structured logs/counters, not required in snapshot struct for v1.
+   - For migration v1, `IngestionRuntimeSnapshot` stays backward-compatible with current app risk guard contract and includes both `grpc_message_total` (all stream updates) and `grpc_transaction_updates_total` (transaction updates only) for no-progress detection (`ts_utc`, `ws_notifications_enqueued`, `ws_notifications_replaced_oldest`, `grpc_message_total`, `grpc_transaction_updates_total`, `rpc_429`, `rpc_5xx`, `ingestion_lag_ms_p95`).
+   - Additional p50/p99 distribution metrics are emitted via structured logs/counters.
 3. **Comparison methodology is frozen**:
    - KPI validation must include same-input replay comparison (not only separate live DB canary).
    - Exception: replay may be waived only with explicit written waiver due cost/operational constraints and replacement evidence from live telemetry.
@@ -549,9 +549,11 @@ Nuances from current runtime:
 1. `ts_utc`
 2. `ws_notifications_enqueued`
 3. `ws_notifications_replaced_oldest`
-4. `rpc_429`
-5. `rpc_5xx`
-6. `ingestion_lag_ms_p95`
+4. `grpc_message_total`
+5. `grpc_transaction_updates_total`
+6. `rpc_429`
+7. `rpc_5xx`
+8. `ingestion_lag_ms_p95`
 
 Additional distribution metrics stay in structured logs/counters unless Phase A reopens this decision.
 
@@ -563,11 +565,15 @@ Semantic mapping in `yellowstone_grpc` mode must be explicitly equivalent:
    - count of source notifications accepted into the pre-parse queue (field name preserved for compatibility; semantics are transport-agnostic).
 3. `ws_notifications_replaced_oldest`:
    - count of queue-overflow replacements under `drop_oldest` policy in the source queue.
-4. `rpc_429` / `rpc_5xx`:
+4. `grpc_message_total`:
+   - count of inbound gRPC stream updates accepted by the Yellowstone source loop (includes ping/control updates).
+5. `grpc_transaction_updates_total`:
+   - count of inbound transaction updates; used by outage no-progress gate to avoid ping-only false negatives.
+6. `rpc_429` / `rpc_5xx`:
    - stay zero in pure gRPC path; increment only if auxiliary HTTP fallback calls are actually executed.
-5. `ingestion_lag_ms_p95`:
+7. `ingestion_lag_ms_p95`:
    - computed from emitted validated swaps as `now_utc - swap.ts_utc`, same as current path.
-6. replaced-ratio interpretation:
+8. replaced-ratio interpretation:
    - if `queue_overflow_policy=drop_oldest`, `replaced_oldest / enqueued` remains a valid infra pressure signal.
    - if `queue_overflow_policy=block`, ratio is expected near zero; lag thresholds remain the primary guard signal and decode-reject ratio is tracked as rollout telemetry.
 
@@ -705,7 +711,7 @@ Trigger conditions (evaluated by watchdog from telemetry/log stream):
 2. `replaced_ratio > 0.93` for 5 consecutive checks, where `replaced_ratio = delta(ws_notifications_replaced_oldest) / max(delta(ws_notifications_enqueued), 1)`, or
 3. reconnect storm (`>= 6 reconnects in 5 minutes`), or
 4. decode/parse reject rate > 20% over 5-minute window with denominator >= 500 inbound updates, or
-5. no processed swaps for 120 seconds with non-trivial inbound flow (`delta(grpc_message_total) >= 200` over the same 120-second window).
+5. no processed swaps for 120 seconds with non-trivial inbound transaction flow (`delta(grpc_transaction_updates_total) >= 200` over the same 120-second window).
 
 Failover behavior:
 

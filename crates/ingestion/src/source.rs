@@ -43,6 +43,10 @@ pub struct IngestionRuntimeSnapshot {
     pub ts_utc: DateTime<Utc>,
     pub ws_notifications_enqueued: u64,
     pub ws_notifications_replaced_oldest: u64,
+    pub grpc_message_total: u64,
+    pub grpc_transaction_updates_total: u64,
+    pub parse_rejected_total: u64,
+    pub grpc_decode_errors: u64,
     pub rpc_429: u64,
     pub rpc_5xx: u64,
     pub ingestion_lag_ms_p95: u64,
@@ -361,6 +365,7 @@ struct IngestionTelemetry {
     parse_rejected_by_reason: Mutex<BTreeMap<&'static str, u64>>,
     parse_fallback_by_reason: Mutex<BTreeMap<&'static str, u64>>,
     grpc_message_total: AtomicU64,
+    grpc_transaction_updates_total: AtomicU64,
     grpc_decode_errors: AtomicU64,
     fetch_inflight: AtomicU64,
     fetch_success: AtomicU64,
@@ -394,6 +399,7 @@ impl Default for IngestionTelemetry {
             parse_rejected_by_reason: Mutex::new(BTreeMap::new()),
             parse_fallback_by_reason: Mutex::new(BTreeMap::new()),
             grpc_message_total: AtomicU64::new(0),
+            grpc_transaction_updates_total: AtomicU64::new(0),
             grpc_decode_errors: AtomicU64::new(0),
             fetch_inflight: AtomicU64::new(0),
             fetch_success: AtomicU64::new(0),
@@ -530,6 +536,7 @@ impl IngestionTelemetry {
             parse_rejected_by_reason = ?parse_rejected_by_reason,
             parse_fallback_by_reason = ?parse_fallback_by_reason,
             grpc_message_total = self.grpc_message_total.load(Ordering::Relaxed),
+            grpc_transaction_updates_total = self.grpc_transaction_updates_total.load(Ordering::Relaxed),
             grpc_decode_errors = self.grpc_decode_errors.load(Ordering::Relaxed),
             ws_to_fetch_queue_depth,
             fetch_to_output_queue_depth,
@@ -567,6 +574,12 @@ impl IngestionTelemetry {
             ws_notifications_replaced_oldest: self
                 .ws_notifications_replaced_oldest
                 .load(Ordering::Relaxed),
+            grpc_message_total: self.grpc_message_total.load(Ordering::Relaxed),
+            grpc_transaction_updates_total: self
+                .grpc_transaction_updates_total
+                .load(Ordering::Relaxed),
+            parse_rejected_total: self.parse_rejected_total.load(Ordering::Relaxed),
+            grpc_decode_errors: self.grpc_decode_errors.load(Ordering::Relaxed),
             rpc_429: self.rpc_429.load(Ordering::Relaxed),
             rpc_5xx: self.rpc_5xx.load(Ordering::Relaxed),
             ingestion_lag_ms_p95,
@@ -1841,10 +1854,20 @@ async fn yellowstone_stream_loop(
                 time::timeout(Duration::from_secs(WS_IDLE_TIMEOUT_SECS), stream.next()).await;
             match next_message {
                 Ok(Some(Ok(update))) => {
+                    let is_transaction_update = matches!(
+                        update.update_oneof.as_ref(),
+                        Some(subscribe_update::UpdateOneof::Transaction(_))
+                    );
                     runtime_config
                         .telemetry
                         .grpc_message_total
                         .fetch_add(1, Ordering::Relaxed);
+                    if is_transaction_update {
+                        runtime_config
+                            .telemetry
+                            .grpc_transaction_updates_total
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
 
                     match parse_yellowstone_update(update, runtime_config.as_ref()) {
                         Ok(Some(YellowstoneParsedUpdate::Observation(raw))) => {

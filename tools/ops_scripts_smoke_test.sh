@@ -966,7 +966,18 @@ run_adapter_preflight_case() {
     exit 1
   fi
   assert_contains "$env_underscore_numeric_output" "preflight_verdict: FAIL"
-  assert_contains "$env_underscore_numeric_output" "execution.submit_route_max_slippage_bps is missing entry for allowed route=rpc"
+  assert_contains "$env_underscore_numeric_output" "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS contains invalid numeric value for route=rpc: 4_0"
+
+  if env_malformed_route_map_output="$(
+    CONFIG_PATH="$pass_cfg" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS="paper:50,rpc" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for malformed env route-map token" >&2
+    exit 1
+  fi
+  assert_contains "$env_malformed_route_map_output" "preflight_verdict: FAIL"
+  assert_contains "$env_malformed_route_map_output" "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS contains malformed token (expected route:value): rpc"
 
   echo "[ok] adapter preflight pass/fail + route-policy + route-order + secret diagnostics + numeric parity guards"
 }

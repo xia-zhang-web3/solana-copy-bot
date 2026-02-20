@@ -13,6 +13,10 @@ use std::time::Duration as StdDuration;
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
 const SQLITE_WRITE_RETRY_BACKOFF_MS: [u64; SQLITE_WRITE_MAX_RETRIES] = [100, 300, 700];
 const DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS: i64 = 3;
+pub const STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
+pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL: f64 = 0.05;
+pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES: usize = 3;
+pub const STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
 static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
@@ -271,6 +275,18 @@ impl SqliteStore {
         })
         .context("failed to insert risk event")?;
         Ok(())
+    }
+
+    pub fn risk_event_count_by_type(&self, event_type: &str) -> Result<u64> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM risk_events WHERE type = ?1",
+                params![event_type],
+                |row| row.get(0),
+            )
+            .context("failed to count risk events by type")?;
+        Ok(count.max(0) as u64)
     }
 
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
@@ -1900,6 +1916,89 @@ impl SqliteStore {
             .context("failed querying latest token/sol price")?;
 
         Ok(price.filter(|value| value.is_finite() && *value > 0.0))
+    }
+
+    pub fn reliable_token_sol_price_for_stale_close(
+        &self,
+        token: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<f64>> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let as_of_raw = as_of.to_rfc3339();
+        let since_raw =
+            (as_of - Duration::minutes(STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES)).to_rfc3339();
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT price_sol, sol_notional
+                 FROM (
+                    SELECT qty_in / qty_out AS price_sol, qty_in AS sol_notional, ts
+                    FROM observed_swaps
+                    WHERE token_in = ?1
+                      AND token_out = ?2
+                      AND qty_in > 0
+                      AND qty_out > 0
+                      AND ts >= ?3
+                      AND ts <= ?4
+                    UNION ALL
+                    SELECT qty_out / qty_in AS price_sol, qty_out AS sol_notional, ts
+                    FROM observed_swaps
+                    WHERE token_in = ?2
+                      AND token_out = ?1
+                      AND qty_in > 0
+                      AND qty_out > 0
+                      AND ts >= ?3
+                      AND ts <= ?4
+                 )
+                 WHERE sol_notional >= ?5
+                 ORDER BY ts DESC
+                 LIMIT ?6",
+            )
+            .context("failed to prepare reliable stale-close price query")?;
+        let mut rows = stmt
+            .query(params![
+                SOL_MINT,
+                token,
+                since_raw,
+                as_of_raw,
+                STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+                STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES as i64,
+            ])
+            .context("failed querying reliable stale-close price samples")?;
+
+        let mut prices = Vec::with_capacity(STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES);
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating reliable stale-close price samples")?
+        {
+            let price_sol: f64 = row.get(0).context("failed reading price_sol sample")?;
+            let sol_notional: f64 = row.get(1).context("failed reading sol_notional sample")?;
+            if !price_sol.is_finite() || price_sol <= 0.0 {
+                continue;
+            }
+            if !sol_notional.is_finite()
+                || sol_notional < STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL
+            {
+                continue;
+            }
+            prices.push(price_sol);
+        }
+
+        if prices.len() < STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES {
+            return Ok(None);
+        }
+        prices.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+
+        let median = if prices.len() % 2 == 1 {
+            prices[prices.len() / 2]
+        } else {
+            let upper = prices.len() / 2;
+            (prices[upper - 1] + prices[upper]) / 2.0
+        };
+        if !median.is_finite() || median <= 0.0 {
+            return Ok(None);
+        }
+        Ok(Some(median))
     }
 
     pub fn close_shadow_lots_fifo_atomic(

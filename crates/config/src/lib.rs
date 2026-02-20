@@ -1083,6 +1083,8 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         }
     }
 
+    validate_adapter_route_policy_completeness(&config.execution)?;
+
     Ok((config, configured))
 }
 
@@ -1092,6 +1094,104 @@ fn parse_env_bool(value: String) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn validate_adapter_route_policy_completeness(config: &ExecutionConfig) -> Result<()> {
+    if !config.enabled
+        || !config
+            .mode
+            .trim()
+            .eq_ignore_ascii_case("adapter_submit_confirm")
+    {
+        return Ok(());
+    }
+
+    let default_route = {
+        let value = config.default_route.trim().to_ascii_lowercase();
+        if value.is_empty() {
+            "paper".to_string()
+        } else {
+            value
+        }
+    };
+
+    let allowed_routes: Vec<String> = config
+        .submit_allowed_routes
+        .iter()
+        .map(|route| route.trim().to_ascii_lowercase())
+        .filter(|route| !route.is_empty())
+        .collect();
+
+    for route in &allowed_routes {
+        if !map_contains_route(&config.submit_route_max_slippage_bps, route) {
+            return Err(anyhow!(
+                "execution.submit_route_max_slippage_bps is missing cap for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS format route:cap)",
+                route
+            ));
+        }
+        if !map_contains_route(&config.submit_route_tip_lamports, route) {
+            return Err(anyhow!(
+                "execution.submit_route_tip_lamports is missing tip for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS format route:tip)",
+                route
+            ));
+        }
+        if !map_contains_route(&config.submit_route_compute_unit_limit, route) {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_limit is missing limit for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT format route:limit)",
+                route
+            ));
+        }
+        if !map_contains_route(
+            &config.submit_route_compute_unit_price_micro_lamports,
+            route,
+        ) {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_price_micro_lamports is missing price for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS format route:price)",
+                route
+            ));
+        }
+    }
+
+    if !map_contains_route(
+        &config.submit_route_max_slippage_bps,
+        default_route.as_str(),
+    ) {
+        return Err(anyhow!(
+            "execution.submit_route_max_slippage_bps is missing cap for default route={}",
+            default_route
+        ));
+    }
+    if !map_contains_route(&config.submit_route_tip_lamports, default_route.as_str()) {
+        return Err(anyhow!(
+            "execution.submit_route_tip_lamports is missing tip for default route={}",
+            default_route
+        ));
+    }
+    if !map_contains_route(
+        &config.submit_route_compute_unit_limit,
+        default_route.as_str(),
+    ) {
+        return Err(anyhow!(
+            "execution.submit_route_compute_unit_limit is missing limit for default route={}",
+            default_route
+        ));
+    }
+    if !map_contains_route(
+        &config.submit_route_compute_unit_price_micro_lamports,
+        default_route.as_str(),
+    ) {
+        return Err(anyhow!(
+            "execution.submit_route_compute_unit_price_micro_lamports is missing price for default route={}",
+            default_route
+        ));
+    }
+
+    Ok(())
+}
+
+fn map_contains_route<T>(map: &BTreeMap<String, T>, route: &str) -> bool {
+    map.keys()
+        .any(|candidate| candidate.trim().eq_ignore_ascii_case(route))
 }
 
 fn parse_execution_route_map_env<T, F>(
@@ -1248,6 +1348,39 @@ mod tests {
             "rpc:not-a-number",
             "invalid numeric value",
         );
+    }
+
+    #[test]
+    fn load_from_env_rejects_incomplete_route_policy_for_allowed_routes() {
+        with_temp_config_file("", |config_path| {
+            with_clean_copybot_env(|| {
+                with_env_var("SOLANA_COPY_BOT_EXECUTION_ENABLED", "true", || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_EXECUTION_MODE",
+                        "adapter_submit_confirm",
+                        || {
+                            with_env_var(
+                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES",
+                                "paper,rpc",
+                                || {
+                                    let err = load_from_env_or_default(config_path)
+                                    .expect_err(
+                                        "missing route policy for allowed route must fail at config load",
+                                    )
+                                    .to_string();
+                                    assert!(
+                                    err.contains(
+                                        "execution.submit_route_max_slippage_bps is missing cap for allowed route=rpc",
+                                    ),
+                                    "unexpected error: {err}"
+                                );
+                                },
+                            );
+                        },
+                    );
+                });
+            });
+        });
     }
 
     #[test]

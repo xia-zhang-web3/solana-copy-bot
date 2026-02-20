@@ -13,7 +13,9 @@ use copybot_shadow::{
 };
 use copybot_storage::{
     is_retryable_sqlite_anyhow_error, note_sqlite_busy_error, note_sqlite_write_retry,
-    sqlite_contention_snapshot, SqliteStore,
+    sqlite_contention_snapshot, SqliteStore, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
+    STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+    STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
@@ -1782,12 +1784,25 @@ impl ShadowRiskGuard {
         let delta_replaced = latest
             .ws_notifications_replaced_oldest
             .saturating_sub(baseline.ws_notifications_replaced_oldest);
+        let delta_grpc_transaction_updates_total = latest
+            .grpc_transaction_updates_total
+            .saturating_sub(baseline.grpc_transaction_updates_total);
+        let delta_parse_rejected_total = latest
+            .parse_rejected_total
+            .saturating_sub(baseline.parse_rejected_total);
+        let delta_grpc_decode_errors = latest
+            .grpc_decode_errors
+            .saturating_sub(baseline.grpc_decode_errors);
         let delta_rpc_429 = latest.rpc_429.saturating_sub(baseline.rpc_429);
         let delta_rpc_5xx = latest.rpc_5xx.saturating_sub(baseline.rpc_5xx);
+
+        const INFRA_PARSER_STALL_MIN_TX_UPDATES: u64 = 25;
+        const INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD: f64 = 0.95;
 
         if has_full_window_coverage
             && delta_enqueued == 0
             && delta_replaced == 0
+            && delta_grpc_transaction_updates_total == 0
             && delta_rpc_429 == 0
             && delta_rpc_5xx == 0
         {
@@ -1795,6 +1810,27 @@ impl ShadowRiskGuard {
                 "no_ingestion_progress_for={}m",
                 self.config.shadow_infra_window_minutes.max(1)
             ));
+        }
+
+        if has_full_window_coverage
+            && delta_enqueued == 0
+            && delta_grpc_transaction_updates_total >= INFRA_PARSER_STALL_MIN_TX_UPDATES
+        {
+            let parser_errors_delta =
+                delta_parse_rejected_total.saturating_add(delta_grpc_decode_errors);
+            if parser_errors_delta > 0 {
+                let parser_error_ratio =
+                    parser_errors_delta as f64 / delta_grpc_transaction_updates_total as f64;
+                if parser_error_ratio >= INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD {
+                    return Some(format!(
+                        "parser_stall_for={}m tx_updates_delta={} parser_errors_delta={} error_ratio={:.4}",
+                        self.config.shadow_infra_window_minutes.max(1),
+                        delta_grpc_transaction_updates_total,
+                        parser_errors_delta,
+                        parser_error_ratio
+                    ));
+                }
+            }
         }
 
         if delta_enqueued > 0 {
@@ -2698,8 +2734,35 @@ fn close_stale_shadow_lots(
             continue;
         }
 
-        let Some(exit_price_sol) = store.latest_token_sol_price(&lot.token, now)? else {
+        let Some(exit_price_sol) =
+            store.reliable_token_sol_price_for_stale_close(&lot.token, now)?
+        else {
             skipped_unpriced = skipped_unpriced.saturating_add(1);
+            let details_json = format!(
+                "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"window_minutes\":{},\"min_notional_sol\":{},\"min_samples\":{},\"max_samples\":{}}}",
+                sanitize_json_value(&lot.wallet_id),
+                sanitize_json_value(&lot.token),
+                lot.id,
+                sanitize_json_value(&now.to_rfc3339()),
+                STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
+                STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+                STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES,
+                STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES
+            );
+            if let Err(error) = store.insert_risk_event(
+                "shadow_stale_close_price_unavailable",
+                "warn",
+                now,
+                Some(&details_json),
+            ) {
+                warn!(
+                    error = %error,
+                    wallet_id = %lot.wallet_id,
+                    token = %lot.token,
+                    lot_id = lot.id,
+                    "failed to record stale-close price unavailable risk event"
+                );
+            }
             continue;
         };
         if exit_price_sol <= EPS {
@@ -4177,6 +4240,10 @@ mod app_tests {
                 ts_utc: now - chrono::Duration::minutes(30),
                 ws_notifications_enqueued: 10_000,
                 ws_notifications_replaced_oldest: 9_000,
+                grpc_message_total: 1_200_000,
+                grpc_transaction_updates_total: 12_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -4185,6 +4252,10 @@ mod app_tests {
                 ts_utc: now - chrono::Duration::minutes(10),
                 ws_notifications_enqueued: 16_500_000,
                 ws_notifications_replaced_oldest: 14_400_000,
+                grpc_message_total: 2_400_000,
+                grpc_transaction_updates_total: 24_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -4193,6 +4264,10 @@ mod app_tests {
                 ts_utc: now,
                 ws_notifications_enqueued: 16_500_176,
                 ws_notifications_replaced_oldest: 14_400_134,
+                grpc_message_total: 2_400_176,
+                grpc_transaction_updates_total: 24_176,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -4210,6 +4285,10 @@ mod app_tests {
                 ts_utc: now + chrono::Duration::seconds(20),
                 ws_notifications_enqueued: 16_500_300,
                 ws_notifications_replaced_oldest: 14_400_270,
+                grpc_message_total: 2_400_300,
+                grpc_transaction_updates_total: 24_300,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -4235,6 +4314,10 @@ mod app_tests {
                 ts_utc: now - chrono::Duration::minutes(21),
                 ws_notifications_enqueued: 10_000,
                 ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -4243,6 +4326,10 @@ mod app_tests {
                 ts_utc: now - chrono::Duration::minutes(10),
                 ws_notifications_enqueued: 10_000,
                 ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -4251,6 +4338,10 @@ mod app_tests {
                 ts_utc: now,
                 ws_notifications_enqueued: 10_000,
                 ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -4262,6 +4353,167 @@ mod app_tests {
             .expect("no progress over full infra window must trigger block");
         assert!(
             reason.contains("no_ingestion_progress_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_no_progress_does_not_block_when_grpc_transaction_updates_advance() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 910_000, // could include pings
+                grpc_transaction_updates_total: 910_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 920_000, // could include pings
+                grpc_transaction_updates_total: 920_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        assert!(
+            guard.compute_infra_block_reason(now).is_none(),
+            "no-ingestion-progress gate must not trigger while grpc_transaction_updates_total is advancing"
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_no_progress_still_blocks_when_only_grpc_ping_total_advances() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 910_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 920_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        let reason = guard.compute_infra_block_reason(now).expect(
+            "no-ingestion-progress gate must trigger when only ping-level grpc traffic advances",
+        );
+        assert!(
+            reason.contains("no_ingestion_progress_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_blocks_when_parser_stall_detected() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 950_000,
+                grpc_transaction_updates_total: 1_000,
+                parse_rejected_total: 50,
+                grpc_decode_errors: 5,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 960_000,
+                grpc_transaction_updates_total: 1_200,
+                parse_rejected_total: 240,
+                grpc_decode_errors: 10,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 970_000,
+                grpc_transaction_updates_total: 1_400,
+                parse_rejected_total: 430,
+                grpc_decode_errors: 15,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        let reason = guard
+            .compute_infra_block_reason(now)
+            .expect("parser-stall pattern over full window must trigger block");
+        assert!(
+            reason.contains("parser_stall_for=20m"),
             "unexpected reason: {}",
             reason
         );
@@ -4329,7 +4581,7 @@ mod app_tests {
     }
 
     #[test]
-    fn stale_lot_cleanup_closes_old_lots_using_latest_price() -> Result<()> {
+    fn stale_lot_cleanup_ignores_micro_swap_outlier_price() -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-cleanup")?;
         let now = Utc::now();
         let opened_ts = now - chrono::Duration::hours(10);
@@ -4339,11 +4591,44 @@ mod app_tests {
             dex: "pumpswap".to_string(),
             token_in: "So11111111111111111111111111111111111111112".to_string(),
             token_out: "token-a".to_string(),
+            amount_in: 0.9,
+            amount_out: 900.0,
+            signature: "sig-price-1".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(20),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
             amount_in: 1.0,
             amount_out: 1000.0,
-            signature: "sig-price".to_string(),
-            slot: 1,
-            ts_utc: now - chrono::Duration::minutes(5),
+            signature: "sig-price-2".to_string(),
+            slot: 2,
+            ts_utc: now - chrono::Duration::minutes(12),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.1,
+            amount_out: 1100.0,
+            signature: "sig-price-3".to_string(),
+            slot: 3,
+            ts_utc: now - chrono::Duration::minutes(7),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 0.001,
+            amount_out: 0.000001,
+            signature: "sig-price-outlier".to_string(),
+            slot: 4,
+            ts_utc: now - chrono::Duration::minutes(1),
         })?;
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
@@ -4358,6 +4643,46 @@ mod app_tests {
         let (trades, pnl) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
         assert_eq!(trades, 1);
         assert!(pnl > 0.0, "expected positive pnl after stale cleanup close");
+        assert!(
+            pnl < 2.0,
+            "stale-close pnl must stay in realistic band and ignore micro-swap outlier (got {})",
+            pnl
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing() -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-unpriced")?;
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::hours(10);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+        })?;
+        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let (closed, skipped) = close_stale_shadow_lots(&store, &mut open_pairs, 8, now)?;
+
+        assert_eq!(closed, 0);
+        assert_eq!(skipped, 1);
+        assert!(store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_price_unavailable")?,
+            1
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

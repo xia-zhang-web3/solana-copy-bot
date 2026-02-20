@@ -285,10 +285,14 @@ fn parse_transaction_fee_lamports_from_rpc_body(
     if result.is_null() {
         return Ok(None);
     }
-    Ok(result
+    let fee = result
         .get("meta")
         .and_then(|meta| meta.get("fee"))
-        .and_then(Value::as_u64))
+        .and_then(Value::as_u64);
+    if fee.map(|value| value > i64::MAX as u64).unwrap_or(false) {
+        return Err(FeeLookupErrorClass::OutOfRange);
+    }
+    Ok(fee)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +301,7 @@ enum FeeLookupErrorClass {
     Connect,
     InvalidJson,
     RpcErrorPayload,
+    OutOfRange,
     Other,
 }
 
@@ -307,6 +312,7 @@ impl FeeLookupErrorClass {
             Self::Connect => "connect",
             Self::InvalidJson => "invalid_json",
             Self::RpcErrorPayload => "rpc_error_payload",
+            Self::OutOfRange => "out_of_range",
             Self::Other => "other",
         }
     }
@@ -437,6 +443,22 @@ mod tests {
         let error = parse_transaction_fee_lamports_from_rpc_body(&body)
             .expect_err("rpc error payload should return classified error");
         assert_eq!(error, FeeLookupErrorClass::RpcErrorPayload);
+    }
+
+    #[test]
+    fn parse_transaction_fee_lamports_from_rpc_body_rejects_fee_above_i64_max() {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "meta": {
+                    "fee": (i64::MAX as u64).saturating_add(1)
+                }
+            },
+            "id": 1
+        });
+        let error = parse_transaction_fee_lamports_from_rpc_body(&body)
+            .expect_err("fee above i64::MAX should return classified error");
+        assert_eq!(error, FeeLookupErrorClass::OutOfRange);
     }
 
     #[test]

@@ -10,6 +10,10 @@ use crate::auth::compute_hmac_signature_hex;
 use crate::intent::ExecutionIntent;
 use copybot_config::EXECUTION_ROUTE_TIP_LAMPORTS_MAX;
 
+const ROUTE_COMPUTE_UNIT_LIMIT_MAX: u32 = 1_400_000;
+const ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX: u64 = 10_000_000;
+const POLICY_FLOAT_EPSILON: f64 = 1e-6;
+
 #[derive(Debug, Clone)]
 pub struct SubmitResult {
     pub route: String,
@@ -883,7 +887,7 @@ fn parse_optional_non_negative_u64_field(
 }
 
 fn approx_f64_eq(left: f64, right: f64) -> bool {
-    (left - right).abs() <= 1e-9
+    (left - right).abs() <= POLICY_FLOAT_EPSILON
 }
 
 fn normalize_route(route: &str) -> Option<String> {
@@ -939,7 +943,7 @@ fn normalize_route_cu_limit(route_caps: &BTreeMap<String, u32>) -> HashMap<Strin
         .iter()
         .filter_map(|(route, value)| {
             let route = normalize_route(route)?;
-            if *value == 0 || *value > 1_400_000 {
+            if *value == 0 || *value > ROUTE_COMPUTE_UNIT_LIMIT_MAX {
                 return None;
             }
             Some((route, *value))
@@ -952,7 +956,7 @@ fn normalize_route_cu_price(route_caps: &BTreeMap<String, u64>) -> HashMap<Strin
         .iter()
         .filter_map(|(route, value)| {
             let route = normalize_route(route)?;
-            if *value == 0 || *value > 10_000_000 {
+            if *value == 0 || *value > ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX {
                 return None;
             }
             Some((route, *value))
@@ -1528,6 +1532,30 @@ mod tests {
         .expect_err("compute budget mismatch must fail");
         assert_eq!(error.kind, SubmitErrorKind::Terminal);
         assert_eq!(error.code, "submit_adapter_policy_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_accepts_small_slippage_rounding_delta() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0000004,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            },
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000
+        });
+        let result = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect("small floating point noise in slippage_bps should be tolerated");
+        assert_eq!(result.route, "rpc");
     }
 
     #[test]
