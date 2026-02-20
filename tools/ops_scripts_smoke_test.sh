@@ -831,6 +831,7 @@ run_adapter_preflight_case() {
   local tip_above_max_output
   local default_cu_limit_too_low_output
   local route_price_exceeds_pretrade_output
+  local env_underscore_numeric_output
   mkdir -p "$secrets_dir"
   printf 'token-pass\n' >"$secrets_dir/auth.token"
   printf 'hmac-pass\n' >"$secrets_dir/hmac.secret"
@@ -933,6 +934,17 @@ run_adapter_preflight_case() {
   fi
   assert_contains "$route_price_exceeds_pretrade_output" "preflight_verdict: FAIL"
   assert_contains "$route_price_exceeds_pretrade_output" "execution.submit_route_compute_unit_price_micro_lamports route rpc price (2000) cannot exceed execution.pretrade_max_priority_fee_lamports (1500) (unit: micro-lamports per CU for both fields)"
+
+  if env_underscore_numeric_output="$(
+    CONFIG_PATH="$pass_cfg" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS="paper:50,rpc:4_0" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for underscore numeric in env route-map value" >&2
+    exit 1
+  fi
+  assert_contains "$env_underscore_numeric_output" "preflight_verdict: FAIL"
+  assert_contains "$env_underscore_numeric_output" "execution.submit_route_max_slippage_bps is missing entry for allowed route=rpc"
 
   echo "[ok] adapter preflight pass/fail + route-policy + route-order + secret diagnostics + numeric parity guards"
 }

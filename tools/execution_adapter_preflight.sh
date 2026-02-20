@@ -457,6 +457,8 @@ for token in csv.split(","):
     if not route:
         continue
     raw_value = raw_value.strip()
+    if env_name.startswith("SOLANA_COPY_BOT_") and "_" in raw_value:
+        continue
     try:
         if value_type == "f64":
             float(raw_value)
@@ -509,6 +511,8 @@ for token in csv.split(","):
     if not route:
         continue
     raw_value = raw_value.strip()
+    if env_name.startswith("SOLANA_COPY_BOT_") and "_" in raw_value:
+        continue
     try:
         if value_type == "f64":
             parsed_value = float(raw_value)
