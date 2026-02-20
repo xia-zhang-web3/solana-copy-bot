@@ -2,6 +2,7 @@
 set -euo pipefail
 
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
+EXECUTION_ROUTE_TIP_LAMPORTS_MAX=100000000
 
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "config file not found: $CONFIG_PATH" >&2
@@ -150,6 +151,81 @@ cfg_map_keys_csv() {
             out = out ","
           }
           out = out map_key
+        }
+        print out
+        exit
+      }
+    }
+  ' "$CONFIG_PATH"
+}
+
+cfg_map_entries_csv() {
+  local section="$1"
+  local key="$2"
+  awk -v section="[$section]" -v key="$key" '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    /^\s*\[/ {
+      in_section = ($0 == section)
+      if ($0 != section) {
+        collecting = 0
+        value = ""
+      }
+    }
+    in_section {
+      line = $0
+      sub(/#.*/, "", line)
+      if (!collecting) {
+        left = line
+        sub(/=.*/, "", left)
+        gsub(/[[:space:]]/, "", left)
+        if (left != key) {
+          next
+        }
+        collecting = 1
+        value = line
+      } else {
+        value = value " " line
+      }
+      if (index(value, "}") > 0) {
+        start = index(value, "{")
+        if (start == 0) {
+          print ""
+          exit
+        }
+        body = substr(value, start + 1)
+        end = index(body, "}")
+        if (end == 0) {
+          next
+        }
+        body = substr(body, 1, end - 1)
+        n = split(body, pairs, ",")
+        out = ""
+        for (i = 1; i <= n; i++) {
+          pair = trim(pairs[i])
+          if (pair == "") {
+            continue
+          }
+          eq = index(pair, "=")
+          if (eq == 0) {
+            continue
+          }
+          map_key = trim(substr(pair, 1, eq - 1))
+          map_value = trim(substr(pair, eq + 1))
+          gsub(/^"|"$/, "", map_key)
+          gsub(/^'\''|'\''$/, "", map_key)
+          gsub(/[[:space:]]/, "", map_key)
+          gsub(/^"|"$/, "", map_value)
+          gsub(/^'\''|'\''$/, "", map_value)
+          if (map_key == "" || map_value == "") {
+            continue
+          }
+          if (out != "") {
+            out = out ","
+          }
+          out = out map_key ":" map_value
         }
         print out
         exit
@@ -409,6 +485,61 @@ print(",".join(keys))
 PY
 }
 
+parse_execution_route_map_env_pairs_csv() {
+  local csv="$1"
+  local env_name="$2"
+  local value_type="$3"
+  python3 - "$csv" "$env_name" "$value_type" <<'PY'
+import sys
+
+csv = sys.argv[1]
+env_name = sys.argv[2]
+value_type = sys.argv[3]
+seen = set()
+pairs = []
+
+for token in csv.split(","):
+    token = token.strip()
+    if not token:
+        continue
+    if ":" not in token:
+        continue
+    route, raw_value = token.split(":", 1)
+    route = route.strip().lower()
+    if not route:
+        continue
+    raw_value = raw_value.strip()
+    try:
+        if value_type == "f64":
+            parsed_value = float(raw_value)
+            value_repr = repr(parsed_value)
+        elif value_type == "u64":
+            parsed_value = int(raw_value, 10)
+            if parsed_value < 0 or parsed_value > (2**64 - 1):
+                raise ValueError("out of range")
+            value_repr = str(parsed_value)
+        elif value_type == "u32":
+            parsed_value = int(raw_value, 10)
+            if parsed_value < 0 or parsed_value > (2**32 - 1):
+                raise ValueError("out of range")
+            value_repr = str(parsed_value)
+        else:
+            raise ValueError("unsupported value type")
+    except Exception:
+        continue
+    if route in seen:
+        print(
+            f"{env_name} contains duplicate route after normalization: {route}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    seen.add(route)
+    pairs.append(f"{route}:{value_repr}")
+
+print(",".join(pairs))
+PY
+}
+
 cfg_or_env_route_list_csv() {
   local section="$1"
   local key="$2"
@@ -454,6 +585,242 @@ cfg_or_env_route_map_keys_csv() {
   else
     printf "%s" "$file_csv"
   fi
+}
+
+cfg_or_env_route_map_pairs_csv() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local value_type="$4"
+  local default_pairs_csv="$5"
+  local file_raw_csv file_pairs_csv env_csv parsed_env_pairs
+  file_raw_csv="$(cfg_map_entries_csv "$section" "$key")"
+  if [[ -z "${file_raw_csv//[[:space:]]/}" ]]; then
+    file_raw_csv="$default_pairs_csv"
+  fi
+  if ! file_pairs_csv="$(parse_execution_route_map_env_pairs_csv "$file_raw_csv" "execution.$key" "$value_type" 2>&1)"; then
+    errors+=("$file_pairs_csv")
+    file_pairs_csv=""
+  fi
+  if [[ -z "${!env_name+x}" ]]; then
+    printf "%s" "$file_pairs_csv"
+    return
+  fi
+  env_csv="${!env_name}"
+  if ! parsed_env_pairs="$(parse_execution_route_map_env_pairs_csv "$env_csv" "$env_name" "$value_type" 2>&1)"; then
+    errors+=("$parsed_env_pairs")
+    printf "%s" "$file_pairs_csv"
+    return
+  fi
+  if [[ -n "${parsed_env_pairs//[[:space:]]/}" ]]; then
+    printf "%s" "$parsed_env_pairs"
+  else
+    printf "%s" "$file_pairs_csv"
+  fi
+}
+
+route_pairs_to_keys_csv() {
+  local pairs_csv="$1"
+  local -a pairs=()
+  local route out=""
+  if [[ -z "${pairs_csv//[[:space:]]/}" ]]; then
+    printf ""
+    return
+  fi
+  IFS=',' read -r -a pairs <<< "$pairs_csv"
+  for pair in "${pairs[@]}"; do
+    route="${pair%%:*}"
+    if [[ -z "$route" ]]; then
+      continue
+    fi
+    if [[ -n "$out" ]]; then
+      out+=","
+    fi
+    out+="$route"
+  done
+  printf "%s" "$out"
+}
+
+cfg_or_env_f64_string() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local default_value="$4"
+  local raw parsed
+  raw="$(cfg_value "$section" "$key")"
+  parsed="$(python3 - "$raw" <<'PY'
+import sys
+s = sys.argv[1].strip()
+if not s:
+    raise SystemExit(0)
+try:
+    print(repr(float(s)))
+except Exception:
+    pass
+PY
+)"
+  if [[ -z "$parsed" ]]; then
+    parsed="$default_value"
+  fi
+  if [[ -n "${!env_name+x}" ]]; then
+    local env_parsed
+    env_parsed="$(python3 - "${!env_name}" <<'PY'
+import sys
+s = sys.argv[1].strip()
+if not s:
+    raise SystemExit(0)
+try:
+    print(repr(float(s)))
+except Exception:
+    pass
+PY
+)"
+    if [[ -n "$env_parsed" ]]; then
+      printf "%s" "$env_parsed"
+      return
+    fi
+  fi
+  printf "%s" "$parsed"
+}
+
+append_multiline_errors() {
+  local block="$1"
+  local line
+  while IFS= read -r line; do
+    if [[ -n "${line//[[:space:]]/}" ]]; then
+      errors+=("$line")
+    fi
+  done <<< "$block"
+}
+
+validate_route_policy_numeric_parity() {
+  local default_route="$1"
+  local allowed_routes_csv="$2"
+  local slippage_bps_raw="$3"
+  local pretrade_max_priority_fee_raw="$4"
+  local cap_pairs_csv="$5"
+  local tip_pairs_csv="$6"
+  local limit_pairs_csv="$7"
+  local price_pairs_csv="$8"
+  local tip_max="$9"
+  python3 - "$default_route" "$allowed_routes_csv" "$slippage_bps_raw" "$pretrade_max_priority_fee_raw" "$cap_pairs_csv" "$tip_pairs_csv" "$limit_pairs_csv" "$price_pairs_csv" "$tip_max" <<'PY'
+import math
+import sys
+
+default_route = sys.argv[1].strip().lower()
+allowed_routes_csv = sys.argv[2]
+slippage_bps_raw = sys.argv[3]
+pretrade_max_priority_fee_raw = sys.argv[4]
+cap_pairs_csv = sys.argv[5]
+tip_pairs_csv = sys.argv[6]
+limit_pairs_csv = sys.argv[7]
+price_pairs_csv = sys.argv[8]
+tip_max = int(sys.argv[9])
+errors = []
+
+def parse_pairs(csv, type_name):
+    values = {}
+    if not csv.strip():
+        return values
+    for token in csv.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if ":" not in token:
+            continue
+        route, raw_value = token.split(":", 1)
+        route = route.strip().lower()
+        if not route:
+            continue
+        raw_value = raw_value.strip()
+        try:
+            if type_name == "f64":
+                value = float(raw_value)
+            else:
+                value = int(raw_value, 10)
+        except Exception:
+            continue
+        values[route] = value
+    return values
+
+route_caps = parse_pairs(cap_pairs_csv, "f64")
+route_tips = parse_pairs(tip_pairs_csv, "u64")
+route_limits = parse_pairs(limit_pairs_csv, "u32")
+route_prices = parse_pairs(price_pairs_csv, "u64")
+
+for route, cap in route_caps.items():
+    if not math.isfinite(cap) or cap <= 0.0:
+        errors.append(
+            f"execution.submit_route_max_slippage_bps route={route} must be finite and > 0, got {cap}"
+        )
+
+for route, tip in route_tips.items():
+    if tip < 0 or tip > tip_max:
+        errors.append(
+            f"execution.submit_route_tip_lamports route={route} must be in 0..={tip_max}, got {tip}"
+        )
+
+for route, limit in route_limits.items():
+    if limit <= 0 or limit > 1_400_000:
+        errors.append(
+            f"execution.submit_route_compute_unit_limit route={route} must be in 1..=1400000, got {limit}"
+        )
+
+for route, price in route_prices.items():
+    if price <= 0 or price > 10_000_000:
+        errors.append(
+            f"execution.submit_route_compute_unit_price_micro_lamports route={route} must be in 1..=10000000, got {price}"
+        )
+
+try:
+    slippage_bps = float(slippage_bps_raw)
+except Exception:
+    slippage_bps = 50.0
+if not math.isfinite(slippage_bps):
+    slippage_bps = 50.0
+
+try:
+    pretrade_max_priority_fee = int(pretrade_max_priority_fee_raw, 10)
+except Exception:
+    pretrade_max_priority_fee = 0
+if pretrade_max_priority_fee < 0:
+    pretrade_max_priority_fee = 0
+
+default_route_cap = route_caps.get(default_route)
+if default_route_cap is not None and slippage_bps > default_route_cap:
+    errors.append(
+        f"execution.slippage_bps ({slippage_bps}) cannot exceed cap ({default_route_cap}) for default route {default_route}"
+    )
+
+default_route_limit = route_limits.get(default_route)
+if default_route_limit is not None and default_route_limit < 100_000:
+    errors.append(
+        f"execution.submit_route_compute_unit_limit default route {default_route} limit ({default_route_limit}) is too low for reliable swaps; expected >= 100000"
+    )
+
+if pretrade_max_priority_fee > 0:
+    allowed_routes = []
+    seen_routes = set()
+    for token in allowed_routes_csv.split(","):
+        route = token.strip().lower()
+        if not route or route in seen_routes:
+            continue
+        seen_routes.add(route)
+        allowed_routes.append(route)
+    for route in allowed_routes:
+        route_price = route_prices.get(route)
+        if route_price is None:
+            continue
+        if route_price > pretrade_max_priority_fee:
+            errors.append(
+                f"execution.submit_route_compute_unit_price_micro_lamports route {route} price ({route_price}) cannot exceed execution.pretrade_max_priority_fee_lamports ({pretrade_max_priority_fee}) (unit: micro-lamports per CU for both fields)"
+            )
+
+if errors:
+    for err in errors:
+        print(err)
+    raise SystemExit(1)
+PY
 }
 
 validate_adapter_endpoint_url() {
@@ -600,10 +967,19 @@ hmac_key_id="$(trim_string "$(cfg_or_env_string execution submit_adapter_hmac_ke
 hmac_secret_inline="$(trim_string "$(cfg_or_env_string execution submit_adapter_hmac_secret SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET)")"
 hmac_secret_file_raw="$(trim_string "$(cfg_or_env_string execution submit_adapter_hmac_secret_file SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET_FILE)")"
 hmac_ttl_sec_raw="$(trim_string "$(cfg_or_env_u64_string execution submit_adapter_hmac_ttl_sec SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_TTL_SEC)")"
-submit_route_max_slippage_bps_keys_csv="$(cfg_or_env_route_map_keys_csv execution submit_route_max_slippage_bps SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS f64)"
-submit_route_tip_lamports_keys_csv="$(cfg_or_env_route_map_keys_csv execution submit_route_tip_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS u64)"
-submit_route_compute_unit_limit_keys_csv="$(cfg_or_env_route_map_keys_csv execution submit_route_compute_unit_limit SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT u32)"
-submit_route_compute_unit_price_keys_csv="$(cfg_or_env_route_map_keys_csv execution submit_route_compute_unit_price_micro_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS u64)"
+slippage_bps_raw="$(cfg_or_env_f64_string execution slippage_bps SOLANA_COPY_BOT_EXECUTION_SLIPPAGE_BPS 50.0)"
+pretrade_max_priority_fee_lamports_raw="$(trim_string "$(cfg_or_env_u64_string execution pretrade_max_priority_fee_lamports SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS)")"
+if [[ -z "$pretrade_max_priority_fee_lamports_raw" ]]; then
+  pretrade_max_priority_fee_lamports_raw="0"
+fi
+submit_route_max_slippage_bps_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_max_slippage_bps SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS f64 "paper:50.0")"
+submit_route_tip_lamports_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_tip_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS u64 "paper:0")"
+submit_route_compute_unit_limit_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_compute_unit_limit SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT u32 "paper:300000")"
+submit_route_compute_unit_price_pairs_csv="$(cfg_or_env_route_map_pairs_csv execution submit_route_compute_unit_price_micro_lamports SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS u64 "paper:1000")"
+submit_route_max_slippage_bps_keys_csv="$(route_pairs_to_keys_csv "$submit_route_max_slippage_bps_pairs_csv")"
+submit_route_tip_lamports_keys_csv="$(route_pairs_to_keys_csv "$submit_route_tip_lamports_pairs_csv")"
+submit_route_compute_unit_limit_keys_csv="$(route_pairs_to_keys_csv "$submit_route_compute_unit_limit_pairs_csv")"
+submit_route_compute_unit_price_keys_csv="$(route_pairs_to_keys_csv "$submit_route_compute_unit_price_pairs_csv")"
 
 if [[ -z "$signer_pubkey" ]]; then
   errors+=("execution.execution_signer_pubkey must be non-empty in adapter_submit_confirm mode")
@@ -711,6 +1087,19 @@ validate_route_policy_map_coverage "execution.submit_route_max_slippage_bps" "$s
 validate_route_policy_map_coverage "execution.submit_route_tip_lamports" "$submit_route_tip_lamports_keys_csv"
 validate_route_policy_map_coverage "execution.submit_route_compute_unit_limit" "$submit_route_compute_unit_limit_keys_csv"
 validate_route_policy_map_coverage "execution.submit_route_compute_unit_price_micro_lamports" "$submit_route_compute_unit_price_keys_csv"
+
+if ! numeric_parity_errors="$(validate_route_policy_numeric_parity \
+  "$default_route" \
+  "$submit_allowed_routes_csv" \
+  "$slippage_bps_raw" \
+  "$pretrade_max_priority_fee_lamports_raw" \
+  "$submit_route_max_slippage_bps_pairs_csv" \
+  "$submit_route_tip_lamports_pairs_csv" \
+  "$submit_route_compute_unit_limit_pairs_csv" \
+  "$submit_route_compute_unit_price_pairs_csv" \
+  "$EXECUTION_ROUTE_TIP_LAMPORTS_MAX" 2>&1)"; then
+  append_multiline_errors "$numeric_parity_errors"
+fi
 
 if [[ -n "$auth_token_inline" && -n "$auth_token_file_raw" ]]; then
   errors+=("execution.submit_adapter_auth_token and execution.submit_adapter_auth_token_file cannot both be set")
