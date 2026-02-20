@@ -3,8 +3,8 @@
 Branch: `feat/yellowstone-grpc-migration`
 
 Scope commit range:
-1. `f2c71f2` -> `347172d`
-2. Includes follow-up commits `a423f02`, `8e73564`, `9d554e9`, `3dabd14`, `b49cf3c`, `6d1ce27`
+1. `f2c71f2` -> `198c61c`
+2. Includes follow-up commits `a423f02`, `8e73564`, `9d554e9`, `3dabd14`, `b49cf3c`, `6d1ce27`, `347172d`
 
 Out of scope:
 1. External adapter backend behavior outside current repo
@@ -48,6 +48,12 @@ Out of scope:
    Highlights:
    1. added boundary test for `error_ratio == 0.95` blocking behavior
    2. updated audit package test matrix and wording parity notes
+9. `198c61c`: live-unrealized pricing hardening + simulator retryable-error redaction
+   Files: `crates/storage/src/lib.rs`, `crates/execution/src/simulator.rs`, `ops/audit_package_execution_hardening_2026-02-20.md`
+   Highlights:
+   1. `live_unrealized_pnl_sol` now uses reliable token/SOL pricing (windowed + min-notional filtering)
+   2. simulator retryable send-error details now log request error class instead of raw reqwest URL-bearing strings
+   3. added targeted regression tests for both paths
 
 ## Mandatory Verification Points
 
@@ -63,11 +69,15 @@ Out of scope:
 4. Endpoint redaction consistency (`crates/execution/src/simulator.rs`)
    1. detail strings do not expose raw URL path/query/fragment
    2. structured logs do not expose raw endpoint URL either
+   3. retryable send-error details use redacted endpoint label + error class only
 5. Idempotency collision resistance (`crates/execution/src/idempotency.rs`)
    1. non-colon delimiter variants produce different IDs
    2. colon-delimited legacy IDs stay stable
 6. CU bounds parity (`crates/config/src/lib.rs`, `crates/app/src/main.rs`, `crates/execution/src/submitter.rs`)
    1. config load performs type-parse; min/max bounds are enforced consistently in runtime validate and submitter normalization using the same constants
+7. Live risk-path outlier resistance (`crates/storage/src/lib.rs`)
+   1. live unrealized mark-to-market no longer trusts raw last swap
+   2. micro-notional outliers are ignored by reliable quote selection
 
 ## Targeted Test Commands
 
@@ -78,8 +88,13 @@ cargo test -p copybot-app -q risk_guard_infra_parser_stall_blocks_at_ratio_thres
 cargo test -p copybot-app -q stale_lot_cleanup_ignores_micro_swap_outlier_price
 cargo test -p copybot-app -q stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing
 
+cargo test -p copybot-storage -q live_unrealized_pnl_sol_uses_reliable_price_and_counts_missing_quotes
+cargo test -p copybot-storage -q live_unrealized_pnl_sol_ignores_micro_swap_outlier_price
+cargo test -p copybot-storage -q live_unrealized_pnl_sol_counts_missing_when_only_micro_quotes_exist
+
 cargo test -p copybot-execution -q adapter_intent_simulator_does_not_fallback_on_invalid_json_terminal_reject
 cargo test -p copybot-execution -q redacted_endpoint_label_drops_path_and_query
+cargo test -p copybot-execution -q adapter_intent_simulator_redacts_endpoint_on_retryable_send_error
 cargo test -p copybot-execution -q client_order_id_avoids_collision_for_non_colon_delimiters
 cargo test -p copybot-execution -q client_order_id_keeps_legacy_format_for_colon_delimited_signal
 
