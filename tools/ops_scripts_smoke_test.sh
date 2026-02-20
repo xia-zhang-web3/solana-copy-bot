@@ -372,6 +372,16 @@ run_ops_scripts_for_db() {
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
   assert_contains "$snapshot_output" "parse_fallback_by_reason: {\"missing_program_ids_fallback\": 1, \"missing_slot_fallback\": 2}"
 
+  local go_nogo_output
+  go_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$go_nogo_output" "=== Execution Go/No-Go Summary ==="
+  assert_contains "$go_nogo_output" "fee_decomposition_verdict: SKIP"
+  assert_contains "$go_nogo_output" "route_profile_verdict: SKIP"
+  assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
+
   echo "[ok] ${label}"
 }
 
@@ -440,6 +450,15 @@ run_calibration_adapter_mode_route_profile_case() {
   assert_contains "$output" "fee_consistency_missing_coverage_rows: 0"
   assert_contains "$output" "primary_route: paper"
   assert_contains "$output" "route_profile_verdict: WARN"
+
+  local go_nogo_output
+  go_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$go_nogo_output" "fee_decomposition_verdict: WARN"
+  assert_contains "$go_nogo_output" "route_profile_verdict: WARN"
+  assert_contains "$go_nogo_output" "overall_go_nogo_verdict: NO_GO"
   echo "[ok] calibration adapter-mode route profile verdict"
 }
 
@@ -457,6 +476,34 @@ run_runtime_snapshot_no_ingestion_case() {
   echo "[ok] runtime snapshot no-ingestion branch"
 }
 
+run_go_nogo_artifact_export_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local artifacts_dir="$TMP_DIR/go-nogo-artifacts"
+  local output
+  output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" OUTPUT_DIR="$artifacts_dir" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$output" "artifacts_written: true"
+  assert_contains "$output" "artifact_calibration:"
+  assert_contains "$output" "artifact_snapshot:"
+  assert_contains "$output" "artifact_summary:"
+  if ! ls "$artifacts_dir"/execution_go_nogo_summary_*.txt >/dev/null 2>&1; then
+    echo "expected go/no-go summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_fee_calibration_*.txt >/dev/null 2>&1; then
+    echo "expected calibration artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/runtime_snapshot_*.txt >/dev/null 2>&1; then
+    echo "expected runtime snapshot artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  echo "[ok] go-no-go artifact export"
+}
+
 main() {
   write_fake_journalctl
 
@@ -466,6 +513,7 @@ main() {
   write_config "$legacy_cfg" "$legacy_db"
   run_ops_scripts_for_db "legacy schema" "$legacy_db" "$legacy_cfg"
   run_runtime_snapshot_no_ingestion_case "$legacy_db" "$legacy_cfg"
+  run_go_nogo_artifact_export_case "$legacy_db" "$legacy_cfg"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"
