@@ -28,6 +28,11 @@ At minimum:
 6. `COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL=<executor simulate URL>`
 7. `COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL=<optional fallback submit URL>`
 8. `COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL=<optional fallback simulate URL>`
+9. `COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL=<optional RPC URL for post-submit signature visibility>`
+10. `COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_FALLBACK_URL=<optional fallback verify RPC URL>`
+11. `COPYBOT_ADAPTER_SUBMIT_VERIFY_ATTEMPTS=3` (optional, default `3`)
+12. `COPYBOT_ADAPTER_SUBMIT_VERIFY_INTERVAL_MS=250` (optional, default `250`)
+13. `COPYBOT_ADAPTER_SUBMIT_VERIFY_STRICT=false` (optional; if `true`, unseen signature causes retryable reject)
 
 Optional security:
 
@@ -130,12 +135,16 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
 3. Upstream HTTP `429/5xx` is treated as retryable.
 4. Adapter failover policy: retryable upstream transport errors (`send`, `429`, `5xx`) try fallback endpoint when configured; terminal upstream rejects (`4xx`, invalid contract response) do not fail over.
 5. All endpoint diagnostics are redacted to `scheme://host[:port]` labels in logs.
-6. Secret rotation pattern (atomic):
+6. Optional post-submit signature visibility check:
+   1. if `COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL` is set, adapter polls `getSignatureStatuses` after upstream submit,
+   2. `COPYBOT_ADAPTER_SUBMIT_VERIFY_STRICT=true` makes unseen signature fail-closed as retryable reject (`upstream_submit_signature_unseen`),
+   3. strict mode should be enabled only after baseline RPC visibility is stable.
+7. Secret rotation pattern (atomic):
    1. write new secret to a temp file in the same directory,
    2. set owner-only permissions (`chmod 600` or `chmod 400`),
    3. replace target file via atomic rename (`mv temp target`),
    4. restart adapter service and verify `/healthz`.
-7. Rotation readiness/evidence helper:
+8. Rotation readiness/evidence helper:
    1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env OUTPUT_DIR=state/adapter-rotation ./tools/adapter_secret_rotation_report.sh`
    2. expected `rotation_readiness_verdict: PASS` (or `WARN` only for non-blocking permission hardening),
    3. attach emitted `artifact_report` file to ops evidence package.

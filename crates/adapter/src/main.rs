@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::sleep};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -34,6 +34,8 @@ const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_TIMEOUT_MS: u64 = 8_000;
 const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
+const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
+const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
 
 #[derive(Clone)]
 struct AppState {
@@ -56,6 +58,7 @@ struct AdapterConfig {
     request_timeout_ms: u64,
     max_notional_sol: f64,
     allow_nonzero_tip: bool,
+    submit_signature_verify: Option<SubmitSignatureVerifyConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +68,14 @@ struct RouteBackend {
     simulate_url: String,
     simulate_fallback_url: Option<String>,
     auth_token: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SubmitSignatureVerifyConfig {
+    endpoints: Vec<String>,
+    attempts: u64,
+    interval_ms: u64,
+    strict: bool,
 }
 
 impl AdapterConfig {
@@ -247,6 +258,7 @@ impl AdapterConfig {
             ));
         }
         let allow_nonzero_tip = parse_bool_env("COPYBOT_ADAPTER_ALLOW_NONZERO_TIP", true);
+        let submit_signature_verify = parse_submit_signature_verify_config()?;
 
         Ok(Self {
             bind_addr,
@@ -261,6 +273,7 @@ impl AdapterConfig {
             request_timeout_ms,
             max_notional_sol,
             allow_nonzero_tip,
+            submit_signature_verify,
         })
     }
 }
@@ -517,6 +530,13 @@ async fn main() -> Result<()> {
         signer_pubkey = %state.config.signer_pubkey,
         contract_version = %state.config.contract_version,
         routes = ?state.config.route_allowlist,
+        submit_signature_verify_enabled = state.config.submit_signature_verify.is_some(),
+        submit_signature_verify_strict = state
+            .config
+            .submit_signature_verify
+            .as_ref()
+            .map(|value| value.strict)
+            .unwrap_or(false),
         "copybot adapter started"
     );
     let listener = tokio::net::TcpListener::bind(state.config.bind_addr)
@@ -869,6 +889,18 @@ async fn handle_submit(
             )
         })?
         .to_string();
+    validate_signature_like(tx_signature.as_str()).map_err(|error| {
+        Reject::retryable(
+            "submit_adapter_invalid_response",
+            format!(
+                "upstream tx_signature is not valid base58 signature: {}",
+                error
+            ),
+        )
+    })?;
+
+    let submit_signature_verify =
+        verify_submitted_signature_visibility(state, route.as_str(), tx_signature.as_str()).await?;
 
     if let Some(response_client_order_id) = backend_response
         .get("client_order_id")
@@ -976,7 +1008,7 @@ async fn handle_submit(
         }
     }
 
-    Ok(json!({
+    let mut response = json!({
         "status": "ok",
         "ok": true,
         "accepted": true,
@@ -996,7 +1028,153 @@ async fn handle_submit(
         "base_fee_lamports": base_fee_lamports,
         "priority_fee_lamports": priority_fee_lamports,
         "ata_create_rent_lamports": ata_create_rent_lamports,
-    }))
+    });
+    response["submit_signature_verify"] =
+        submit_signature_verification_to_json(&submit_signature_verify);
+    Ok(response)
+}
+
+#[derive(Debug, Clone)]
+enum SubmitSignatureVerification {
+    Skipped,
+    Seen { confirmation_status: String },
+    Unseen { reason: String },
+}
+
+async fn verify_submitted_signature_visibility(
+    state: &AppState,
+    route: &str,
+    tx_signature: &str,
+) -> std::result::Result<SubmitSignatureVerification, Reject> {
+    let Some(config) = state.config.submit_signature_verify.as_ref() else {
+        return Ok(SubmitSignatureVerification::Skipped);
+    };
+
+    let mut last_reason = String::from("signature status row is missing");
+    for attempt_idx in 0..config.attempts {
+        for endpoint in &config.endpoints {
+            let endpoint_label = redacted_endpoint_label(endpoint.as_str());
+            let payload = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getSignatureStatuses",
+                "params": [[tx_signature], {"searchTransactionHistory": true}]
+            });
+            let response = match state.http.post(endpoint).json(&payload).send().await {
+                Ok(value) => value,
+                Err(error) => {
+                    last_reason = format!(
+                        "rpc send failed endpoint={} class={}",
+                        endpoint_label,
+                        classify_request_error(&error)
+                    );
+                    continue;
+                }
+            };
+            if !response.status().is_success() {
+                last_reason = format!(
+                    "rpc status={} endpoint={}",
+                    response.status(),
+                    endpoint_label
+                );
+                continue;
+            }
+            let body: Value = match response.json().await {
+                Ok(value) => value,
+                Err(_) => {
+                    last_reason = format!("rpc invalid_json endpoint={}", endpoint_label);
+                    continue;
+                }
+            };
+            if body
+                .get("error")
+                .map(Value::is_null)
+                .map(|value| !value)
+                .unwrap_or(false)
+            {
+                last_reason = format!("rpc error payload endpoint={}", endpoint_label);
+                continue;
+            }
+
+            let status_row = body
+                .get("result")
+                .and_then(|result| result.get("value"))
+                .and_then(|value| value.get(0));
+            let Some(status_row) = status_row else {
+                last_reason = format!("signature status missing endpoint={}", endpoint_label);
+                continue;
+            };
+            if status_row.is_null() {
+                last_reason = format!("signature status pending endpoint={}", endpoint_label);
+                continue;
+            }
+            if let Some(err_payload) = status_row.get("err") {
+                if !err_payload.is_null() {
+                    return Err(Reject::terminal(
+                        "upstream_submit_failed_onchain",
+                        format!(
+                            "tx_signature={} has on-chain err={} endpoint={}",
+                            tx_signature, err_payload, endpoint_label
+                        ),
+                    ));
+                }
+            }
+            let confirmation_status = status_row
+                .get("confirmationStatus")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("present")
+                .to_string();
+            return Ok(SubmitSignatureVerification::Seen {
+                confirmation_status,
+            });
+        }
+        if attempt_idx + 1 < config.attempts {
+            sleep(Duration::from_millis(config.interval_ms)).await;
+        }
+    }
+
+    if config.strict {
+        return Err(Reject::retryable(
+            "upstream_submit_signature_unseen",
+            format!(
+                "tx_signature={} not visible via submit verify RPC after attempts={} route={} reason={}",
+                tx_signature, config.attempts, route, last_reason
+            ),
+        ));
+    }
+
+    warn!(
+        route = %route,
+        tx_signature,
+        attempts = config.attempts,
+        reason = %last_reason,
+        "submit signature verification could not observe tx signature; continuing because strict mode is disabled"
+    );
+    Ok(SubmitSignatureVerification::Unseen {
+        reason: last_reason,
+    })
+}
+
+fn submit_signature_verification_to_json(value: &SubmitSignatureVerification) -> Value {
+    match value {
+        SubmitSignatureVerification::Skipped => json!({
+            "enabled": false,
+        }),
+        SubmitSignatureVerification::Seen {
+            confirmation_status,
+        } => json!({
+            "enabled": true,
+            "seen": true,
+            "confirmation_status": confirmation_status,
+        }),
+        SubmitSignatureVerification::Unseen { reason } => json!({
+            "enabled": true,
+            "seen": false,
+            "reason": reason,
+        }),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1368,6 +1546,65 @@ fn optional_non_empty_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn parse_submit_signature_verify_config() -> Result<Option<SubmitSignatureVerifyConfig>> {
+    let primary = optional_non_empty_env("COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL");
+    let fallback = optional_non_empty_env("COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_FALLBACK_URL");
+    if primary.is_none() && fallback.is_none() {
+        return Ok(None);
+    }
+
+    let Some(primary_url) = primary else {
+        return Err(anyhow!(
+            "COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_FALLBACK_URL requires COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL"
+        ));
+    };
+    validate_endpoint_url(primary_url.as_str())
+        .map_err(|error| anyhow!("invalid COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL: {}", error))?;
+
+    let mut endpoints = vec![primary_url];
+    if let Some(fallback_url) = fallback {
+        validate_endpoint_url(fallback_url.as_str()).map_err(|error| {
+            anyhow!(
+                "invalid COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_FALLBACK_URL: {}",
+                error
+            )
+        })?;
+        if endpoint_identity(fallback_url.as_str())? == endpoint_identity(endpoints[0].as_str())? {
+            return Err(anyhow!(
+                "COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_FALLBACK_URL must resolve to distinct endpoint"
+            ));
+        }
+        endpoints.push(fallback_url);
+    }
+
+    let attempts = parse_u64_env(
+        "COPYBOT_ADAPTER_SUBMIT_VERIFY_ATTEMPTS",
+        DEFAULT_SUBMIT_VERIFY_ATTEMPTS,
+    )?;
+    if attempts == 0 || attempts > 20 {
+        return Err(anyhow!(
+            "COPYBOT_ADAPTER_SUBMIT_VERIFY_ATTEMPTS must be in 1..=20"
+        ));
+    }
+    let interval_ms = parse_u64_env(
+        "COPYBOT_ADAPTER_SUBMIT_VERIFY_INTERVAL_MS",
+        DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
+    )?;
+    if interval_ms == 0 || interval_ms > 60_000 {
+        return Err(anyhow!(
+            "COPYBOT_ADAPTER_SUBMIT_VERIFY_INTERVAL_MS must be in 1..=60000"
+        ));
+    }
+    let strict = parse_bool_env("COPYBOT_ADAPTER_SUBMIT_VERIFY_STRICT", false);
+
+    Ok(Some(SubmitSignatureVerifyConfig {
+        endpoints,
+        attempts,
+        interval_ms,
+        strict,
+    }))
+}
+
 fn resolve_secret_source(
     inline_name: &str,
     inline_value: Option<&str>,
@@ -1625,6 +1862,20 @@ fn validate_pubkey_like(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_signature_like(value: &str) -> Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("value is empty"));
+    }
+    let decoded = bs58::decode(trimmed)
+        .into_vec()
+        .map_err(|error| anyhow!("invalid base58: {}", error))?;
+    if decoded.len() != 64 {
+        return Err(anyhow!("decoded signature length must be 64 bytes"));
+    }
+    Ok(())
+}
+
 fn require_authenticated_mode(
     bearer_token: Option<&str>,
     hmac_key_id: Option<&str>,
@@ -1720,6 +1971,15 @@ mod tests {
         let ok = "11111111111111111111111111111111";
         assert!(validate_pubkey_like(ok).is_ok());
         assert!(validate_pubkey_like("not-base58").is_err());
+    }
+
+    #[test]
+    fn validate_signature_like_requires_64_bytes() {
+        let valid = bs58::encode([7u8; 64]).into_string();
+        assert!(validate_signature_like(valid.as_str()).is_ok());
+        assert!(validate_signature_like("not-base58").is_err());
+        let short = bs58::encode([7u8; 32]).into_string();
+        assert!(validate_signature_like(short.as_str()).is_err());
     }
 
     #[test]
@@ -1964,8 +2224,118 @@ mod tests {
         let _ = primary_handle.join();
     }
 
+    #[tokio::test]
+    async fn verify_submit_signature_seen_when_rpc_reports_confirmation() {
+        let signature = bs58::encode([9u8; 64]).into_string();
+        let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let result = verify_submitted_signature_visibility(&state, "rpc", signature.as_str()).await;
+        let Ok(SubmitSignatureVerification::Seen {
+            confirmation_status,
+        }) = result
+        else {
+            panic!("expected seen verification result");
+        };
+        assert_eq!(confirmation_status, "confirmed");
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_returns_unseen_when_not_strict() {
+        let signature = bs58::encode([10u8; 64]).into_string();
+        let body = r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#;
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            false,
+        );
+        let result = verify_submitted_signature_visibility(&state, "rpc", signature.as_str()).await;
+        let Ok(SubmitSignatureVerification::Unseen { reason }) = result else {
+            panic!("expected unseen verification result");
+        };
+        assert!(
+            reason.contains("pending") || reason.contains("missing"),
+            "reason={}",
+            reason
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_rejects_when_pending_and_strict() {
+        let signature = bs58::encode([11u8; 64]).into_string();
+        let body = r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#;
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str())
+            .await
+            .expect_err("strict mode must reject unseen signature");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        let _ = handle.join();
+    }
+
     fn test_state(endpoint: &str) -> AppState {
         test_state_with_backends(endpoint, None, endpoint, None)
+    }
+
+    fn test_state_with_backends_and_verify(
+        submit_primary: &str,
+        submit_fallback: Option<&str>,
+        simulate_primary: &str,
+        simulate_fallback: Option<&str>,
+        verify_endpoints: Vec<&str>,
+        verify_strict: bool,
+    ) -> AppState {
+        let mut state = test_state_with_backends(
+            submit_primary,
+            submit_fallback,
+            simulate_primary,
+            simulate_fallback,
+        );
+        if !verify_endpoints.is_empty() {
+            state.config.submit_signature_verify = Some(SubmitSignatureVerifyConfig {
+                endpoints: verify_endpoints
+                    .into_iter()
+                    .map(|value| value.to_string())
+                    .collect(),
+                attempts: 1,
+                interval_ms: 1,
+                strict: verify_strict,
+            });
+        }
+        state
     }
 
     fn test_state_with_backends(
@@ -2000,6 +2370,7 @@ mod tests {
             request_timeout_ms: 2_000,
             max_notional_sol: 10.0,
             allow_nonzero_tip: true,
+            submit_signature_verify: None,
         };
         let auth = Arc::new(AuthVerifier::new(&config));
         let http = Client::builder()
