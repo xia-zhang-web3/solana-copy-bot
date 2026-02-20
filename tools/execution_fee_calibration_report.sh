@@ -647,7 +647,8 @@ WITH confirmed_orders AS (
     ${NETWORK_FEE_HINT_RAW_EXPR} AS network_fee_lamports_hint_raw,
     ${BASE_FEE_HINT_RAW_EXPR} AS base_fee_lamports_hint_raw,
     ${PRIORITY_FEE_HINT_RAW_EXPR} AS priority_fee_lamports_hint_raw,
-    ${APPLIED_TIP_RAW_EXPR} AS applied_tip_lamports_raw
+    ${APPLIED_TIP_RAW_EXPR} AS applied_tip_lamports_raw,
+    ${ATA_RENT_RAW_EXPR} AS ata_create_rent_lamports_raw
   FROM orders o
   WHERE o.status = 'execution_confirmed'
     AND o.confirm_ts IS NOT NULL
@@ -659,6 +660,7 @@ SELECT
   SUM(CASE WHEN base_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS base_fee_hint_rows,
   SUM(CASE WHEN priority_fee_lamports_hint_raw IS NOT NULL THEN 1 ELSE 0 END) AS priority_fee_hint_rows,
   SUM(CASE WHEN applied_tip_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS tip_rows,
+  SUM(CASE WHEN ata_create_rent_lamports_raw IS NOT NULL THEN 1 ELSE 0 END) AS ata_rows,
   SUM(
     CASE
       WHEN network_fee_lamports_hint_raw IS NOT NULL
@@ -673,14 +675,15 @@ FROM confirmed_orders;
 SQL
   )"
   if [[ -z "$coverage_totals_csv" ]]; then
-    coverage_totals_csv="0,0,0,0,0,0"
+    coverage_totals_csv="0,0,0,0,0,0,0"
   fi
-  IFS=',' read -r confirmed_orders_total network_fee_hint_rows_total base_fee_hint_rows_total priority_fee_hint_rows_total tip_rows_total fee_hint_mismatch_rows_total <<<"$coverage_totals_csv"
+  IFS=',' read -r confirmed_orders_total network_fee_hint_rows_total base_fee_hint_rows_total priority_fee_hint_rows_total tip_rows_total ata_rows_total fee_hint_mismatch_rows_total <<<"$coverage_totals_csv"
   confirmed_orders_total="${confirmed_orders_total:-0}"
   network_fee_hint_rows_total="${network_fee_hint_rows_total:-0}"
   base_fee_hint_rows_total="${base_fee_hint_rows_total:-0}"
   priority_fee_hint_rows_total="${priority_fee_hint_rows_total:-0}"
   tip_rows_total="${tip_rows_total:-0}"
+  ata_rows_total="${ata_rows_total:-0}"
   fee_hint_mismatch_rows_total="${fee_hint_mismatch_rows_total:-0}"
 
   events_totals_csv="$(
@@ -752,6 +755,8 @@ SQL
   missing_network_fee_hint_rows=$((confirmed_orders_total - network_fee_hint_rows_total))
   missing_base_fee_hint_rows=$((confirmed_orders_total - base_fee_hint_rows_total))
   missing_priority_fee_hint_rows=$((confirmed_orders_total - priority_fee_hint_rows_total))
+  missing_ata_rows=$((confirmed_orders_total - ata_rows_total))
+  fee_consistency_missing_coverage_rows=$((confirmed_orders_total - fee_consistency_full_hint_rows))
 
   echo "adapter_mode_strict_policy_echo: $SUBMIT_REQUIRE_POLICY_ECHO"
   echo "confirmed_orders_total: $confirmed_orders_total"
@@ -759,15 +764,18 @@ SQL
   echo "base_fee_hint_rows_total: $base_fee_hint_rows_total"
   echo "priority_fee_hint_rows_total: $priority_fee_hint_rows_total"
   echo "tip_rows_total: $tip_rows_total"
+  echo "ata_rows_total: $ata_rows_total"
   echo "fee_hint_mismatch_rows_total: $fee_hint_mismatch_rows_total"
   echo "missing_network_fee_hint_rows: $missing_network_fee_hint_rows"
   echo "missing_base_fee_hint_rows: $missing_base_fee_hint_rows"
   echo "missing_priority_fee_hint_rows: $missing_priority_fee_hint_rows"
+  echo "missing_ata_rows: $missing_ata_rows"
   echo "submit_hint_used_events: $submit_hint_used_events"
   echo "fallback_used_events: $fallback_used_events"
   echo "hint_mismatch_events: $hint_mismatch_events"
   echo "fee_consistency_tolerance_sol: $FEE_CONSISTENCY_TOLERANCE_SOL"
   echo "fee_consistency_full_hint_rows: $fee_consistency_full_hint_rows"
+  echo "fee_consistency_missing_coverage_rows: $fee_consistency_missing_coverage_rows"
   echo "fee_consistency_mismatch_rows: $fee_consistency_mismatch_rows"
 
   fee_decomposition_verdict="PASS"
@@ -778,6 +786,8 @@ SQL
   elif (( missing_network_fee_hint_rows > 0 \
     || missing_base_fee_hint_rows > 0 \
     || missing_priority_fee_hint_rows > 0 \
+    || missing_ata_rows > 0 \
+    || fee_consistency_full_hint_rows < confirmed_orders_total \
     || fee_hint_mismatch_rows_total > 0 \
     || fee_consistency_mismatch_rows > 0 \
     || fallback_used_events > 0 \

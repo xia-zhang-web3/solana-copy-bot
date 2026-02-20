@@ -436,6 +436,8 @@ run_calibration_adapter_mode_route_profile_case() {
   )"
   assert_contains "$output" "=== route profile readiness verdict (24h submit window) ==="
   assert_contains "$output" "calibration_knobs: submit_route_order + submit_route_max_slippage_bps + submit_route_tip_lamports + submit_route_compute_unit_limit + submit_route_compute_unit_price_micro_lamports"
+  assert_contains "$output" "ata_rows_total: 1"
+  assert_contains "$output" "fee_consistency_missing_coverage_rows: 0"
   assert_contains "$output" "primary_route: paper"
   assert_contains "$output" "route_profile_verdict: WARN"
   echo "[ok] calibration adapter-mode route profile verdict"
