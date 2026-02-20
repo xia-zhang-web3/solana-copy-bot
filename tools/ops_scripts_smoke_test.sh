@@ -1072,6 +1072,19 @@ run_adapter_secret_rotation_report_case() {
   )"
   assert_contains "$duplicate_key_output" "rotation_readiness_verdict: PASS"
 
+  local quoted_hash_env_path="$TMP_DIR/adapter-rotation-quoted-hash.env"
+  cp "$env_path" "$quoted_hash_env_path"
+  printf 'bearer-hash-pass\n' >"$secrets_dir/adapter_bearer#quoted.token"
+  chmod 600 "$secrets_dir/adapter_bearer#quoted.token"
+  echo 'COPYBOT_ADAPTER_BEARER_TOKEN_FILE="secrets/adapter_bearer#quoted.token"' >>"$quoted_hash_env_path"
+  local quoted_hash_output
+  quoted_hash_output="$(
+    ADAPTER_ENV_PATH="$quoted_hash_env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh"
+  )"
+  assert_contains "$quoted_hash_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$quoted_hash_output" "adapter_bearer#quoted.token"
+
   local conflict_env_path="$TMP_DIR/adapter-rotation-conflict.env"
   cp "$env_path" "$conflict_env_path"
   echo 'COPYBOT_ADAPTER_BEARER_TOKEN="inline-conflict-token"' >>"$conflict_env_path"
@@ -1154,7 +1167,7 @@ run_adapter_secret_rotation_report_case() {
   fi
   assert_contains "$fail_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$fail_output" "COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE missing file"
-  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence + underscore route conflict"
+  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence + quoted-hash + underscore route conflict"
 }
 
 run_devnet_rehearsal_case() {
