@@ -52,7 +52,7 @@ mock_interval_ms = 1500
 [discovery]
 scoring_window_days = 7
 decay_window_days = 1
-follow_top_n = 20
+follow_top_n = 40
 min_leader_notional_sol = 0.35
 helius_http_url = ""
 refresh_seconds = 1800
@@ -140,7 +140,7 @@ shadow_rug_loss_return_threshold = -0.70
 shadow_rug_loss_window_minutes = 120
 shadow_rug_loss_count_threshold = 3
 shadow_rug_loss_rate_sample_size = 200
-shadow_rug_loss_rate_threshold = 0.04
+shadow_rug_loss_rate_threshold = 0.06
 shadow_infra_window_minutes = 20
 shadow_infra_lag_p95_threshold_ms = 10000
 shadow_infra_lag_breach_minutes = 10
