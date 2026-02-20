@@ -511,6 +511,18 @@ submit_allowed_routes = ["paper", "rpc"]
 EOF
 }
 
+write_adapter_env_rotation_report() {
+  local env_path="$1"
+  cat >"$env_path" <<'EOF'
+COPYBOT_ADAPTER_BEARER_TOKEN_FILE="secrets/adapter_bearer.token"
+COPYBOT_ADAPTER_HMAC_KEY_ID="key-rotation"
+COPYBOT_ADAPTER_HMAC_SECRET_FILE="secrets/adapter_hmac.secret"
+COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE="secrets/upstream_auth.token"
+COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE="secrets/route_rpc_auth.token"
+COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=false
+EOF
+}
+
 init_common_tables() {
   local db_path="$1"
   sqlite3 "$db_path" <<'SQL'
@@ -1020,6 +1032,72 @@ run_adapter_preflight_case() {
   echo "[ok] adapter preflight pass/fail + route-policy + route-order + secret diagnostics + numeric parity guards"
 }
 
+run_adapter_secret_rotation_report_case() {
+  local env_path="$TMP_DIR/adapter-rotation.env"
+  local secrets_dir="$TMP_DIR/secrets"
+  local artifacts_dir="$TMP_DIR/adapter-rotation-artifacts"
+  mkdir -p "$secrets_dir"
+  write_adapter_env_rotation_report "$env_path"
+
+  printf 'bearer-pass\n' >"$secrets_dir/adapter_bearer.token"
+  printf 'hmac-pass\n' >"$secrets_dir/adapter_hmac.secret"
+  printf 'upstream-pass\n' >"$secrets_dir/upstream_auth.token"
+  printf 'route-pass\n' >"$secrets_dir/route_rpc_auth.token"
+  chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
+
+  local pass_output
+  pass_output="$(
+    ADAPTER_ENV_PATH="$env_path" OUTPUT_DIR="$artifacts_dir" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh"
+  )"
+  assert_contains "$pass_output" "=== Adapter Secret Rotation Report ==="
+  assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$pass_output" "artifact_report:"
+  if ! ls "$artifacts_dir"/adapter_secret_rotation_report_*.txt >/dev/null 2>&1; then
+    echo "expected adapter secret rotation artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+
+  chmod 644 "$secrets_dir/adapter_bearer.token"
+  local warn_output=""
+  if warn_output="$(
+    ADAPTER_ENV_PATH="$env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected WARN exit for broad secret file permissions" >&2
+    exit 1
+  else
+    local warn_exit_code=$?
+    if [[ "$warn_exit_code" -ne 2 ]]; then
+      echo "expected WARN exit code 2, got $warn_exit_code" >&2
+      echo "$warn_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$warn_output" "rotation_readiness_verdict: WARN"
+  assert_contains "$warn_output" "broad permissions"
+
+  rm -f "$secrets_dir/route_rpc_auth.token"
+  local fail_output=""
+  if fail_output="$(
+    ADAPTER_ENV_PATH="$env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected FAIL exit for missing secret file" >&2
+    exit 1
+  else
+    local fail_exit_code=$?
+    if [[ "$fail_exit_code" -ne 1 ]]; then
+      echo "expected FAIL exit code 1, got $fail_exit_code" >&2
+      echo "$fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$fail_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$fail_output" "COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE missing file"
+  echo "[ok] adapter secret rotation report pass/warn/fail"
+}
+
 run_devnet_rehearsal_case() {
   local db_path="$1"
   local config_path="$2"
@@ -1075,6 +1153,7 @@ main() {
   run_go_nogo_artifact_export_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_unknown_precedence_case "$legacy_db" "$legacy_cfg"
   run_adapter_preflight_case "$legacy_db"
+  run_adapter_secret_rotation_report_case
   run_go_nogo_preflight_fail_case "$legacy_db"
   local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
   write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"

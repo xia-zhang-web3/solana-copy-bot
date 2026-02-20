@@ -130,3 +130,7 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
    2. set owner-only permissions (`chmod 600` or `chmod 400`),
    3. replace target file via atomic rename (`mv temp target`),
    4. restart adapter service and verify `/healthz`.
+6. Rotation readiness/evidence helper:
+   1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env OUTPUT_DIR=state/adapter-rotation ./tools/adapter_secret_rotation_report.sh`
+   2. expected `rotation_readiness_verdict: PASS` (or `WARN` only for non-blocking permission hardening),
+   3. attach emitted `artifact_report` file to ops evidence package.
