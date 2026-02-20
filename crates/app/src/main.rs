@@ -4520,6 +4520,57 @@ mod app_tests {
     }
 
     #[test]
+    fn risk_guard_infra_parser_stall_does_not_block_below_ratio_threshold() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 950_000,
+                grpc_transaction_updates_total: 1_000,
+                parse_rejected_total: 50,
+                grpc_decode_errors: 5,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 960_000,
+                grpc_transaction_updates_total: 1_200,
+                parse_rejected_total: 120,
+                grpc_decode_errors: 10,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 970_000,
+                grpc_transaction_updates_total: 1_400,
+                parse_rejected_total: 190,
+                grpc_decode_errors: 15,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        assert!(
+            guard.compute_infra_block_reason(now).is_none(),
+            "parser-stall gate must not trigger when error ratio is below threshold"
+        );
+    }
+
+    #[test]
     fn risk_guard_universe_stops_after_consecutive_breaches() -> Result<()> {
         let (store, db_path) = make_test_store("universe-stop")?;
         let mut cfg = RiskConfig::default();
