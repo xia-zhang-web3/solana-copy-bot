@@ -241,6 +241,11 @@ if go_nogo_output="$(
 else
   go_nogo_exit_code=$?
 fi
+go_nogo_nested_capture_path=""
+if [[ -n "$go_nogo_output_dir" ]]; then
+  go_nogo_nested_capture_path="$go_nogo_output_dir/execution_go_nogo_captured_${timestamp_compact}.txt"
+  printf '%s\n' "$go_nogo_output" > "$go_nogo_nested_capture_path"
+fi
 
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
 overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
@@ -356,6 +361,9 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   echo "artifact_preflight: $preflight_path"
   echo "artifact_go_nogo: $go_nogo_path"
   echo "artifact_tests: $tests_path"
+  if [[ -n "$go_nogo_nested_capture_path" ]]; then
+    echo "artifact_go_nogo_nested_capture: $go_nogo_nested_capture_path"
+  fi
 fi
 
 case "$devnet_rehearsal_verdict" in

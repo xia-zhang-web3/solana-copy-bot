@@ -41,7 +41,8 @@ Out of scope:
    2. skipped tests produce `HOLD` (unless `DEVNET_REHEARSAL_TEST_MODE=true` for smoke only)
 5. Artifact export is complete when `OUTPUT_DIR` is set
    1. rehearsal writes `summary/preflight/go_nogo/tests`
-   2. go/no-go nested artifacts are written under `OUTPUT_DIR/go_nogo/`
+   2. nested go/no-go capture is always written under `OUTPUT_DIR/go_nogo/` (`execution_go_nogo_captured_*`)
+   3. native go/no-go helper artifacts are best-effort and may be absent if `tools/execution_go_nogo_report.sh` fails before its own export block
 6. Smoke coverage exists for rehearsal helper
    1. test-mode case validates verdict and artifact paths
 
@@ -53,19 +54,14 @@ bash -n tools/ops_scripts_smoke_test.sh
 
 tools/ops_scripts_smoke_test.sh
 
-# default rehearsal path (runs tests)
-CONFIG_PATH=configs/paper.toml \
-RUN_TESTS=true \
-tools/execution_devnet_rehearsal.sh 24 60
+# deterministic fail-closed check on default paper config (expected NO_GO, exit 3)
+set +e
+CONFIG_PATH=configs/paper.toml RUN_TESTS=true tools/execution_devnet_rehearsal.sh 24 60
+test "$?" -eq 3
+set -e
 
-# smoke-like rehearsal path (test override)
-CONFIG_PATH=configs/paper.toml \
-RUN_TESTS=false \
-DEVNET_REHEARSAL_TEST_MODE=true \
-GO_NOGO_TEST_MODE=true \
-GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS \
-GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
-tools/execution_devnet_rehearsal.sh 24 60
+# smoke-like GO path with fixture config is covered by:
+tools/ops_scripts_smoke_test.sh
 
 cargo test --workspace -q
 ```

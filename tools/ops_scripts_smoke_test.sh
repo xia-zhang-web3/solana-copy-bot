@@ -1056,6 +1056,10 @@ run_devnet_rehearsal_case() {
     echo "expected devnet rehearsal tests artifact in $artifacts_dir" >&2
     exit 1
   fi
+  if ! ls "$artifacts_dir"/go_nogo/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
+    echo "expected nested go/no-go capture artifact in $artifacts_dir/go_nogo" >&2
+    exit 1
+  fi
   echo "[ok] execution devnet rehearsal helper"
 }
 
