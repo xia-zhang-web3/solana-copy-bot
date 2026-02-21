@@ -51,6 +51,7 @@ const SHADOW_MAX_CONCURRENT_WORKERS: usize =
 const SHADOW_PENDING_TASK_CAPACITY: usize = 256;
 const OBSERVED_SWAP_WRITE_MAX_RETRIES: usize = 3;
 const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [50, 125, 250];
+const INGESTION_ERROR_BACKOFF_MS: [u64; 6] = [100, 250, 500, 1_000, 2_000, 5_000];
 const RISK_DB_REFRESH_MIN_SECONDS: i64 = 5;
 const RISK_INFRA_SAMPLE_MIN_SECONDS: i64 = 10;
 const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
@@ -1383,6 +1384,8 @@ async fn run_app_loop(
     let mut execution_emergency_stop_active_logged = false;
     let mut execution_hard_stop_pause_logged = false;
     let mut execution_outage_pause_logged = false;
+    let mut ingestion_error_streak: u32 = 0;
+    let mut ingestion_backoff_until: Option<time::Instant> = None;
     operator_emergency_stop.refresh(&store, Utc::now());
     info!(
         path = %operator_emergency_stop.path().display(),
@@ -1643,7 +1646,10 @@ async fn run_app_loop(
                     buy_submit_pause_reason,
                 )));
             }
-            maybe_swap = ingestion.next_swap() => {
+            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until
+                .map(|until| time::Instant::now() >= until)
+                .unwrap_or(true) => {
+                ingestion_backoff_until = None;
                 let now = Utc::now();
                 shadow_risk_guard.observe_ingestion_snapshot(
                     &store,
@@ -1651,13 +1657,34 @@ async fn run_app_loop(
                     ingestion.runtime_snapshot(),
                 );
                 let swap = match maybe_swap {
-                    Ok(Some(swap)) => swap,
+                    Ok(Some(swap)) => {
+                        if ingestion_error_streak > 0 {
+                            info!(
+                                consecutive_errors = ingestion_error_streak,
+                                "ingestion stream recovered"
+                            );
+                        }
+                        ingestion_error_streak = 0;
+                        swap
+                    }
                     Ok(None) => {
+                        ingestion_error_streak = 0;
                         debug!("ingestion emitted no swap");
                         continue;
                     }
                     Err(error) => {
-                        warn!(error = %error, "ingestion error");
+                        ingestion_error_streak = ingestion_error_streak.saturating_add(1);
+                        let index = (ingestion_error_streak.saturating_sub(1) as usize)
+                            .min(INGESTION_ERROR_BACKOFF_MS.len() - 1);
+                        let backoff_ms = INGESTION_ERROR_BACKOFF_MS[index];
+                        ingestion_backoff_until =
+                            Some(time::Instant::now() + Duration::from_millis(backoff_ms));
+                        warn!(
+                            error = %error,
+                            consecutive_errors = ingestion_error_streak,
+                            backoff_ms,
+                            "ingestion error; applying backoff before next poll"
+                        );
                         continue;
                     }
                 };
@@ -1896,6 +1923,12 @@ async fn run_app_loop(
     }
 
     if let Some(handle) = execution_handle.take() {
+        handle.abort();
+    }
+    if let Some(handle) = discovery_handle.take() {
+        handle.abort();
+    }
+    if let Some(handle) = shadow_scheduler.shadow_snapshot_handle.take() {
         handle.abort();
     }
 
