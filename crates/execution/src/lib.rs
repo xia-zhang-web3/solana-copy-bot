@@ -181,7 +181,7 @@ impl ExecutionRuntime {
                     )),
                 };
                 let submitter: Box<dyn OrderSubmitter + Send + Sync> =
-                    match AdapterOrderSubmitter::new(
+                    match AdapterOrderSubmitter::new_with_dynamic(
                         &config.submit_adapter_http_url,
                         &config.submit_adapter_fallback_http_url,
                         &config.submit_adapter_auth_token,
@@ -195,6 +195,11 @@ impl ExecutionRuntime {
                         &config.submit_route_tip_lamports,
                         &config.submit_route_compute_unit_limit,
                         &config.submit_route_compute_unit_price_micro_lamports,
+                        &config.rpc_http_url,
+                        &config.rpc_fallback_http_url,
+                        config.submit_dynamic_cu_price_enabled,
+                        config.submit_dynamic_cu_price_percentile,
+                        config.pretrade_max_priority_fee_lamports,
                         config.submit_timeout_ms.max(500),
                         config.slippage_bps,
                     ) {

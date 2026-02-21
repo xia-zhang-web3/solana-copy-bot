@@ -40,6 +40,8 @@ pub(crate) fn validate_execution_runtime_contract(
             submit_route_tip_lamports = ?config.submit_route_tip_lamports,
             submit_route_compute_unit_limit = ?config.submit_route_compute_unit_limit,
             submit_route_compute_unit_price_micro_lamports = ?config.submit_route_compute_unit_price_micro_lamports,
+            submit_dynamic_cu_price_enabled = config.submit_dynamic_cu_price_enabled,
+            submit_dynamic_cu_price_percentile = config.submit_dynamic_cu_price_percentile,
             submit_adapter_contract_version = %config.submit_adapter_contract_version,
             submit_adapter_require_policy_echo = config.submit_adapter_require_policy_echo,
             pretrade_require_token_account = config.pretrade_require_token_account,
@@ -189,6 +191,13 @@ fn validate_routes_contract(config: &ExecutionConfig, mode: &str) -> Result<()> 
     if config.max_submit_attempts == 0 {
         return Err(anyhow!(
             "execution.max_submit_attempts must be >= 1 when execution is enabled"
+        ));
+    }
+    if config.submit_dynamic_cu_price_percentile == 0
+        || config.submit_dynamic_cu_price_percentile > 100
+    {
+        return Err(anyhow!(
+            "execution.submit_dynamic_cu_price_percentile must be in 1..=100 when execution is enabled"
         ));
     }
     if config.submit_timeout_ms < 100 {
@@ -486,6 +495,16 @@ fn validate_routes_contract(config: &ExecutionConfig, mode: &str) -> Result<()> 
                 EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN
             ));
         }
+        if config.submit_dynamic_cu_price_enabled && config.pretrade_max_priority_fee_lamports == 0
+        {
+            return Err(anyhow!(
+                "execution.submit_dynamic_cu_price_enabled=true requires execution.pretrade_max_priority_fee_lamports > 0 to cap dynamic compute unit price"
+            ));
+        }
+    } else if config.submit_dynamic_cu_price_enabled {
+        return Err(anyhow!(
+            "execution.submit_dynamic_cu_price_enabled is only supported in execution.mode=adapter_submit_confirm"
+        ));
     }
 
     Ok(())

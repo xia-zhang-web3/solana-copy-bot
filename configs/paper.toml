@@ -108,6 +108,8 @@ submit_route_max_slippage_bps = { paper = 50.0 }
 submit_route_tip_lamports = { paper = 0 }
 submit_route_compute_unit_limit = { paper = 300000 }
 submit_route_compute_unit_price_micro_lamports = { paper = 1000 }
+submit_dynamic_cu_price_enabled = false
+submit_dynamic_cu_price_percentile = 75
 submit_timeout_ms = 3000
 execution_signer_pubkey = ""
 pretrade_min_sol_reserve = 0.05

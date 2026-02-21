@@ -2185,6 +2185,63 @@ mod app_tests {
     }
 
     #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_cu_price_without_pretrade_cap() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+        execution.pretrade_max_priority_fee_lamports = 0;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic CU price without pretrade cap must fail-closed");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_cu_price_enabled=true"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_cu_price_outside_adapter_mode() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "paper".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic CU price must be restricted to adapter_submit_confirm");
+        assert!(
+            error
+                .to_string()
+                .contains("only supported in execution.mode=adapter_submit_confirm"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_dynamic_cu_price_percentile() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.submit_dynamic_cu_price_percentile = 0;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic cu price percentile below range must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_cu_price_percentile must be in 1..=100"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
     fn validate_execution_runtime_contract_rejects_invalid_contract_version_token() {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;

@@ -1,4 +1,3 @@
-
 use super::*;
 use std::ffi::OsString;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -134,14 +133,31 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
                                 "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS",
                                 "12345",
                                 || {
-                                    let (cfg, _) = load_from_env_or_default(config_path)
-                                        .expect("load config with env overrides");
-                                    assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
-                                    assert!(!cfg.risk.shadow_killswitch_enabled);
-                                    assert_eq!(cfg.shadow.min_holders, 42);
-                                    assert_eq!(
-                                        cfg.execution.pretrade_max_priority_fee_lamports,
-                                        12_345
+                                    with_env_var(
+                                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED",
+                                        "true",
+                                        || {
+                                            with_env_var(
+                                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_PERCENTILE",
+                                                "90",
+                                                || {
+                                                    let (cfg, _) = load_from_env_or_default(config_path)
+                                                        .expect("load config with env overrides");
+                                                    assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
+                                                    assert!(!cfg.risk.shadow_killswitch_enabled);
+                                                    assert_eq!(cfg.shadow.min_holders, 42);
+                                                    assert_eq!(
+                                                        cfg.execution.pretrade_max_priority_fee_lamports,
+                                                        12_345
+                                                    );
+                                                    assert!(cfg.execution.submit_dynamic_cu_price_enabled);
+                                                    assert_eq!(
+                                                        cfg.execution.submit_dynamic_cu_price_percentile,
+                                                        90
+                                                    );
+                                                },
+                                            );
+                                        },
                                     );
                                 },
                             );
