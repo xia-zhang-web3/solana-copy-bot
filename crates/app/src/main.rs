@@ -27,9 +27,11 @@ use tracing_subscriber::EnvFilter;
 
 mod config_contract;
 mod secrets;
+mod swap_classification;
 
 use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
 use crate::secrets::resolve_execution_adapter_secrets;
+use crate::swap_classification::{classify_swap_side, shadow_task_key_for_swap};
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
@@ -2297,30 +2299,6 @@ struct ShadowTaskKey {
 enum ShadowSwapSide {
     Buy,
     Sell,
-}
-
-fn classify_swap_side(swap: &SwapEvent) -> Option<ShadowSwapSide> {
-    const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-    if swap.token_in == SOL_MINT && swap.token_out != SOL_MINT {
-        return Some(ShadowSwapSide::Buy);
-    }
-    if swap.token_out == SOL_MINT && swap.token_in != SOL_MINT {
-        return Some(ShadowSwapSide::Sell);
-    }
-    None
-}
-
-fn shadow_task_key_for_swap(swap: &SwapEvent, side: ShadowSwapSide) -> ShadowTaskKey {
-    match side {
-        ShadowSwapSide::Buy => ShadowTaskKey {
-            wallet: swap.wallet.clone(),
-            token: swap.token_out.clone(),
-        },
-        ShadowSwapSide::Sell => ShadowTaskKey {
-            wallet: swap.wallet.clone(),
-            token: swap.token_in.clone(),
-        },
-    }
 }
 
 fn key_has_pending_or_inflight(
