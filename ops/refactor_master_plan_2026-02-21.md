@@ -102,6 +102,14 @@ For any changed shell script:
 2. `shellcheck -x <script>` for compatibility and `set -euo pipefail` hazards.
 3. Smoke pass must include the touched path.
 
+Shellcheck execution policy:
+
+1. CI is the source of truth and must run `shellcheck -x`.
+2. Local execution must run either:
+   1. native `shellcheck`, or
+   2. dockerized shellcheck fallback.
+3. Missing local shellcheck is not a reason to skip CI shellcheck gate.
+
 ### 4.4 Module size budgets
 
 Budgets apply to runtime code only, excluding `#[cfg(test)]` blocks.
@@ -120,6 +128,17 @@ Use behavior parity:
 1. Query result parity on deterministic fixture DB.
 2. Invariant parity for critical paths (pricing, drawdown, finalize).
 3. Query-plan/perf sanity only where relevant.
+
+### 4.6 LOC measurement protocol
+
+Single method for auditor repeatability:
+
+1. Phase evidence must report:
+   1. raw file LOC (`wc -l`)
+   2. runtime LOC excluding `#[cfg(test)]` blocks
+2. Runtime LOC measurement command must come from one shared helper script:
+   1. `tools/refactor_loc_report.sh`
+3. If helper script changes, include before/after sample output in phase evidence.
 
 ---
 
@@ -140,8 +159,21 @@ Mandatory baseline content:
 1. Git commit SHA.
 2. Exact commands executed.
 3. Exit codes.
-4. Raw artifacts and checksums.
+4. Artifact checksum manifest.
 5. Normalized outputs for deterministic comparison.
+6. Storage location for raw artifacts.
+
+Artifact storage policy:
+
+1. Commit to git:
+   1. summary evidence markdown
+   2. checksum manifest
+   3. normalized text snippets needed for audit traceability
+2. Do not commit large raw captures by default.
+3. Store raw captures in:
+   1. `ops/evidence/refactor/...` if small and reviewable, or
+   2. CI artifact storage with retention policy
+4. Evidence markdown must include stable pointers to raw artifact location.
 
 Mandatory baseline commands:
 
@@ -154,21 +186,52 @@ bash -n tools/execution_devnet_rehearsal.sh
 bash -n tools/adapter_rollout_evidence_report.sh
 bash -n tools/execution_go_nogo_report.sh
 
-# Optional but recommended if shellcheck is available
+# shellcheck policy:
+# - CI: mandatory
+# - Local: mandatory via native shellcheck or docker fallback
 shellcheck -x tools/adapter_secret_rotation_report.sh
 shellcheck -x tools/execution_devnet_rehearsal.sh
 shellcheck -x tools/adapter_rollout_evidence_report.sh
 shellcheck -x tools/execution_go_nogo_report.sh
+# docker fallback example when local shellcheck is unavailable:
+# docker run --rm -v "$PWD:/work" -w /work koalaman/shellcheck:stable \
+#   shellcheck -x tools/adapter_secret_rotation_report.sh tools/execution_devnet_rehearsal.sh \
+#   tools/adapter_rollout_evidence_report.sh tools/execution_go_nogo_report.sh
+
+# deterministic orchestrator captures (required):
+# Preconditions:
+# - fixture config/env are prepared under tmp/refactor-baseline/
+# - deterministic test-mode flags are set
+GO_NOGO_TEST_MODE=true GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
+  CONFIG_PATH=tmp/refactor-baseline/devnet_rehearsal.toml OUTPUT_DIR=tmp/refactor-baseline/go_nogo \
+  bash tools/execution_go_nogo_report.sh 24 60 > tmp/refactor-baseline/go_nogo_stdout.txt
+
+RUN_TESTS=false DEVNET_REHEARSAL_TEST_MODE=true GO_NOGO_TEST_MODE=true \
+  GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
+  CONFIG_PATH=tmp/refactor-baseline/devnet_rehearsal.toml OUTPUT_DIR=tmp/refactor-baseline/rehearsal \
+  bash tools/execution_devnet_rehearsal.sh 24 60 > tmp/refactor-baseline/rehearsal_stdout.txt
+
+ADAPTER_ENV_PATH=tmp/refactor-baseline/adapter.env CONFIG_PATH=tmp/refactor-baseline/devnet_rehearsal.toml \
+  RUN_TESTS=false DEVNET_REHEARSAL_TEST_MODE=true GO_NOGO_TEST_MODE=true \
+  GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
+  OUTPUT_DIR=tmp/refactor-baseline/rollout \
+  bash tools/adapter_rollout_evidence_report.sh 24 60 > tmp/refactor-baseline/rollout_stdout.txt
+
+sha256sum tmp/refactor-baseline/go_nogo_stdout.txt \
+  tmp/refactor-baseline/rehearsal_stdout.txt \
+  tmp/refactor-baseline/rollout_stdout.txt > tmp/refactor-baseline/orchestrators.sha256
 ```
 
 Deterministic output strategy:
 
 1. Use fixture-driven smoke outputs as golden source.
 2. Do not use production live outputs as baseline canon.
-3. Normalize volatile fields in generated artifacts:
+3. Orchestrator canonical baseline must include the three direct script captures above.
+4. Normalize volatile fields in generated artifacts:
    1. timestamps
    2. absolute temp paths
    3. durations
+5. Fixture preparation is part of Phase 0 and must be documented step-by-step in baseline evidence.
 
 ---
 
@@ -381,8 +444,9 @@ tools/ops_scripts_smoke_test.sh
 Exit criteria:
 
 1. Baseline evidence file committed.
-2. Raw artifacts and checksums committed.
-3. Auditor acknowledgment of baseline completeness.
+2. Checksum manifest committed.
+3. Raw artifact storage location documented and reachable.
+4. Auditor acknowledgment of baseline completeness.
 
 ## Phase 1: Adapter modularization
 
@@ -643,11 +707,28 @@ Exit criteria:
 
 ## 10) Rollback Matrix (Per Phase)
 
+### 10.1 Phase branch and merge protocol (mandatory)
+
+To make rollback predictable for multi-commit phases:
+
+1. Each phase executes on dedicated branch:
+   1. `refactor/phase-<id>-<topic>`
+2. Create tags:
+   1. `phase-<id>-start`
+   2. `phase-<id>-end`
+3. Merge to main branch as single `--no-ff` merge commit.
+4. Default rollback path for a completed phase:
+   1. revert the phase merge commit
+5. If emergency hotfix lands mid-phase:
+   1. rebase phase branch on hotfix
+   2. regenerate phase evidence before merge
+
 Rollback command model:
 
 1. Never use destructive reset.
-2. Use `git revert <phase_commit_or_range>`.
-3. Re-run phase regression pack post-revert.
+2. Preferred: `git revert <phase_merge_commit>`.
+3. Fallback (unmerged phase): `git revert <phase_commit_or_range>`.
+4. Re-run phase regression pack post-revert.
 
 | Phase | Rollback trigger | Rollback path | Max rollback window | Owner |
 |---|---|---|---|---|
