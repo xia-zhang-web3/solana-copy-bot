@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod config_contract;
+mod execution_pause_helpers;
 mod execution_runtime_helpers;
 mod secrets;
 mod shadow_runtime_helpers;
@@ -29,6 +30,7 @@ mod task_spawns;
 mod telemetry;
 
 use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
+use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
@@ -1619,60 +1621,14 @@ async fn run_app_loop(
                 }
             }
             _ = execution_interval.tick(), if execution_runtime.is_enabled() => {
-                let mut buy_submit_pause_reason: Option<String> = None;
-                if operator_emergency_stop.is_active() {
-                    if !execution_emergency_stop_active_logged {
-                        warn!(
-                            detail = %operator_emergency_stop.detail(),
-                            "execution BUY submission paused by operator emergency stop"
-                        );
-                        execution_emergency_stop_active_logged = true;
-                    }
-                    buy_submit_pause_reason = Some(format!(
-                        "operator_emergency_stop: {}",
-                        operator_emergency_stop.detail()
-                    ));
-                } else if execution_emergency_stop_active_logged {
-                    info!("execution BUY submission resumed after operator emergency stop clear");
-                    execution_emergency_stop_active_logged = false;
-                }
-
-                if let Some(reason) = shadow_risk_guard.hard_stop_reason.as_deref() {
-                    if !execution_hard_stop_pause_logged {
-                        warn!(
-                            reason = %reason,
-                            "execution BUY submission paused by risk hard stop"
-                        );
-                        execution_hard_stop_pause_logged = true;
-                    }
-                    if buy_submit_pause_reason.is_none() {
-                        buy_submit_pause_reason = Some(format!("risk_hard_stop: {}", reason));
-                    }
-                } else if execution_hard_stop_pause_logged {
-                    info!("execution BUY submission resumed after risk hard stop clear");
-                    execution_hard_stop_pause_logged = false;
-                }
-
-                if pause_new_trades_on_outage {
-                    if let Some(reason) = shadow_risk_guard.infra_block_reason.as_deref() {
-                        if !execution_outage_pause_logged {
-                            warn!(
-                                reason = %reason,
-                                "execution BUY submission paused due to infra outage gate"
-                            );
-                            execution_outage_pause_logged = true;
-                        }
-                        if buy_submit_pause_reason.is_none() {
-                            buy_submit_pause_reason = Some(format!("risk_infra_stop: {}", reason));
-                        }
-                    } else if execution_outage_pause_logged {
-                        info!("execution BUY submission resumed after infra outage gate cleared");
-                        execution_outage_pause_logged = false;
-                    }
-                } else if execution_outage_pause_logged {
-                    info!("execution BUY submission resumed after infra outage gate disabled");
-                    execution_outage_pause_logged = false;
-                }
+                let buy_submit_pause_reason = resolve_buy_submit_pause_reason(
+                    &operator_emergency_stop,
+                    &shadow_risk_guard,
+                    pause_new_trades_on_outage,
+                    &mut execution_emergency_stop_active_logged,
+                    &mut execution_hard_stop_pause_logged,
+                    &mut execution_outage_pause_logged,
+                );
 
                 if execution_handle.is_some() {
                     warn!("execution batch still running, skipping scheduled trigger");
@@ -1684,7 +1640,7 @@ async fn run_app_loop(
                     sqlite_path.clone(),
                     Arc::clone(&execution_runtime),
                     now,
-                    buy_submit_pause_reason.clone(),
+                    buy_submit_pause_reason,
                 )));
             }
             maybe_swap = ingestion.next_swap() => {
