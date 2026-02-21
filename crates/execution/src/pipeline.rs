@@ -267,6 +267,46 @@ impl ExecutionRuntime {
                 return Ok(SignalResult::Failed);
             }
         };
+        if submit.dynamic_cu_price_policy_enabled {
+            bump_route_counter(
+                &mut report.submit_dynamic_cu_policy_enabled_by_route,
+                submit.route.as_str(),
+            );
+            if submit.dynamic_cu_price_hint_used {
+                bump_route_counter(
+                    &mut report.submit_dynamic_cu_hint_used_by_route,
+                    submit.route.as_str(),
+                );
+            }
+            if submit.dynamic_cu_price_applied {
+                bump_route_counter(
+                    &mut report.submit_dynamic_cu_price_applied_by_route,
+                    submit.route.as_str(),
+                );
+            } else {
+                bump_route_counter(
+                    &mut report.submit_dynamic_cu_static_fallback_by_route,
+                    submit.route.as_str(),
+                );
+            }
+        }
+        if submit.dynamic_tip_policy_enabled {
+            bump_route_counter(
+                &mut report.submit_dynamic_tip_policy_enabled_by_route,
+                submit.route.as_str(),
+            );
+            if submit.dynamic_tip_applied {
+                bump_route_counter(
+                    &mut report.submit_dynamic_tip_applied_by_route,
+                    submit.route.as_str(),
+                );
+            } else {
+                bump_route_counter(
+                    &mut report.submit_dynamic_tip_static_floor_by_route,
+                    submit.route.as_str(),
+                );
+            }
+        }
         store.mark_order_submitted(
             &order.order_id,
             submit.route.as_str(),

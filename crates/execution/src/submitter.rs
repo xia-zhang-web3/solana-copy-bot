@@ -25,6 +25,11 @@ pub struct SubmitResult {
     pub network_fee_lamports_hint: Option<u64>,
     pub base_fee_lamports_hint: Option<u64>,
     pub priority_fee_lamports_hint: Option<u64>,
+    pub dynamic_cu_price_policy_enabled: bool,
+    pub dynamic_cu_price_hint_used: bool,
+    pub dynamic_cu_price_applied: bool,
+    pub dynamic_tip_policy_enabled: bool,
+    pub dynamic_tip_applied: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +109,11 @@ impl OrderSubmitter for PaperOrderSubmitter {
             network_fee_lamports_hint: None,
             base_fee_lamports_hint: None,
             priority_fee_lamports_hint: None,
+            dynamic_cu_price_policy_enabled: false,
+            dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_applied: false,
+            dynamic_tip_policy_enabled: false,
+            dynamic_tip_applied: false,
         })
     }
 }
@@ -469,20 +479,31 @@ impl AdapterOrderSubmitter {
         })
     }
 
-    fn resolve_route_cu_price_micro_lamports(&self, static_route_cu_price: u64) -> u64 {
+    fn resolve_route_cu_price_micro_lamports(
+        &self,
+        static_route_cu_price: u64,
+    ) -> (u64, bool, bool) {
         let Some(policy) = self.dynamic_cu_price_policy.as_ref() else {
-            return static_route_cu_price;
+            return (static_route_cu_price, false, false);
         };
-        let dynamic = self
+        let hinted = self
             .query_recent_priority_fee_micro_lamports(policy)
-            .unwrap_or(static_route_cu_price);
-        dynamic
+            .map(|dynamic| {
+                dynamic
+                    .max(static_route_cu_price)
+                    .min(policy.max_micro_lamports)
+                    .clamp(
+                        EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+                        EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+                    )
+            });
+        let resolved = hinted
+            .unwrap_or(static_route_cu_price)
             .max(static_route_cu_price)
-            .min(policy.max_micro_lamports)
-            .clamp(
-                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
-                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
-            )
+            .min(policy.max_micro_lamports);
+        let hint_used = hinted.is_some();
+        let applied = resolved > static_route_cu_price;
+        (resolved, hint_used, applied)
     }
 
     fn resolve_route_tip_lamports(
@@ -490,18 +511,20 @@ impl AdapterOrderSubmitter {
         static_route_tip_lamports: u64,
         route_cu_limit: u32,
         route_cu_price_micro_lamports: u64,
-    ) -> u64 {
+    ) -> (u64, bool) {
         let Some(policy) = self.dynamic_tip_lamports_policy.as_ref() else {
-            return static_route_tip_lamports;
+            return (static_route_tip_lamports, false);
         };
         let dynamic_tip = dynamic_tip_lamports_from_compute_budget(
             route_cu_limit,
             route_cu_price_micro_lamports,
             policy.multiplier_bps,
         );
-        static_route_tip_lamports
+        let resolved = static_route_tip_lamports
             .max(dynamic_tip)
-            .min(EXECUTION_ROUTE_TIP_LAMPORTS_MAX)
+            .min(EXECUTION_ROUTE_TIP_LAMPORTS_MAX);
+        let applied = resolved > static_route_tip_lamports;
+        (resolved, applied)
     }
 
     fn query_recent_priority_fee_micro_lamports(
@@ -723,9 +746,11 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                     ),
                 )
             })?;
-        let route_cu_price_micro_lamports =
+        let dynamic_cu_price_policy_enabled = self.dynamic_cu_price_policy.is_some();
+        let (route_cu_price_micro_lamports, dynamic_cu_price_hint_used, dynamic_cu_price_applied) =
             self.resolve_route_cu_price_micro_lamports(static_route_cu_price_micro_lamports);
-        let route_tip_lamports = self.resolve_route_tip_lamports(
+        let dynamic_tip_policy_enabled = self.dynamic_tip_lamports_policy.is_some();
+        let (route_tip_lamports, dynamic_tip_applied) = self.resolve_route_tip_lamports(
             static_route_tip_lamports,
             route_cu_limit,
             route_cu_price_micro_lamports,
@@ -764,7 +789,14 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 route_cu_limit,
                 route_cu_price_micro_lamports,
             ) {
-                Ok(result) => return Ok(result),
+                Ok(mut result) => {
+                    result.dynamic_cu_price_policy_enabled = dynamic_cu_price_policy_enabled;
+                    result.dynamic_cu_price_hint_used = dynamic_cu_price_hint_used;
+                    result.dynamic_cu_price_applied = dynamic_cu_price_applied;
+                    result.dynamic_tip_policy_enabled = dynamic_tip_policy_enabled;
+                    result.dynamic_tip_applied = dynamic_tip_applied;
+                    return Ok(result);
+                }
                 Err(error) if matches!(error.kind, SubmitErrorKind::Terminal) => {
                     return Err(error);
                 }
@@ -2319,6 +2351,11 @@ mod tests {
             .submit(&make_intent(), "cid-dynamic-1", "rpc")
             .expect("submit call should succeed");
         assert_eq!(result.tx_signature, "sig-dynamic-1");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+        assert!(!result.dynamic_tip_policy_enabled);
+        assert!(!result.dynamic_tip_applied);
 
         let rpc_captured = rpc_handle.join().expect("join rpc server thread");
         let rpc_payload: Value =
@@ -2389,9 +2426,14 @@ mod tests {
             50.0,
         )
         .expect("submitter should initialize");
-        submitter
+        let result = submitter
             .submit(&make_intent(), "cid-dynamic-2", "rpc")
             .expect("submit call should succeed with static fallback");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(!result.dynamic_cu_price_hint_used);
+        assert!(!result.dynamic_cu_price_applied);
+        assert!(!result.dynamic_tip_policy_enabled);
+        assert!(!result.dynamic_tip_applied);
 
         let adapter_captured = adapter_handle.join().expect("join adapter server thread");
         let adapter_payload: Value =
@@ -2566,9 +2608,14 @@ mod tests {
             50.0,
         )
         .expect("submitter should initialize");
-        submitter
+        let result = submitter
             .submit(&make_intent(), "cid-dynamic-tip", "rpc")
             .expect("submit call should succeed");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+        assert!(result.dynamic_tip_policy_enabled);
+        assert!(result.dynamic_tip_applied);
 
         let adapter_captured = adapter_handle.join().expect("join adapter server thread");
         let adapter_payload: Value =
@@ -2640,9 +2687,14 @@ mod tests {
             50.0,
         )
         .expect("submitter should initialize");
-        submitter
+        let result = submitter
             .submit(&make_intent(), "cid-dynamic-tip-floor", "rpc")
             .expect("submit call should succeed");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+        assert!(result.dynamic_tip_policy_enabled);
+        assert!(!result.dynamic_tip_applied);
 
         let adapter_captured = adapter_handle.join().expect("join adapter server thread");
         let adapter_payload: Value =
