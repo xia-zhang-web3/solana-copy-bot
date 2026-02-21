@@ -7,12 +7,16 @@ use tokio::time::{self, Duration};
 use tracing::{debug, info, warn};
 
 use super::{
-    classify_swap_side, is_retryable_sqlite_anyhow_error, note_sqlite_busy_error,
-    note_sqlite_write_retry, reason_to_key, reason_to_stage, FollowSnapshot, ShadowService,
-    ShadowSwapSide, ShadowTaskInput, ShadowTaskOutput, SqliteStore, SwapEvent,
-    OBSERVED_SWAP_RETRY_BACKOFF_MS, OBSERVED_SWAP_WRITE_MAX_RETRIES,
+    FollowSnapshot, ShadowService, SqliteStore, SwapEvent, OBSERVED_SWAP_RETRY_BACKOFF_MS,
+    OBSERVED_SWAP_WRITE_MAX_RETRIES,
 };
+use crate::shadow_scheduler::{ShadowSwapSide, ShadowTaskInput, ShadowTaskOutput};
+use crate::swap_classification::classify_swap_side;
+use crate::telemetry::{reason_to_key, reason_to_stage};
 use copybot_shadow::ShadowProcessOutcome;
+use copybot_storage::{
+    is_retryable_sqlite_anyhow_error, note_sqlite_busy_error, note_sqlite_write_retry,
+};
 
 pub(crate) async fn insert_observed_swap_with_retry(
     store: &SqliteStore,
