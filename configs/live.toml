@@ -111,6 +111,8 @@ submit_route_compute_unit_limit = { jito = 300000, rpc = 300000 }
 submit_route_compute_unit_price_micro_lamports = { jito = 1500, rpc = 1000 }
 submit_dynamic_cu_price_enabled = false
 submit_dynamic_cu_price_percentile = 75
+submit_dynamic_tip_lamports_enabled = false
+submit_dynamic_tip_lamports_multiplier_bps = 10000
 submit_timeout_ms = 3000
 execution_signer_pubkey = ""
 pretrade_min_sol_reserve = 0.05

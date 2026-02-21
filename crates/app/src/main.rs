@@ -2242,6 +2242,70 @@ mod app_tests {
     }
 
     #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_tip_without_dynamic_cu_price() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_tip_lamports_enabled = true;
+        execution.submit_dynamic_cu_price_enabled = false;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic tip requires dynamic cu price");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_tip_lamports_enabled=true requires execution.submit_dynamic_cu_price_enabled=true"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_tip_outside_adapter_mode() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "paper".to_string();
+        execution.submit_dynamic_tip_lamports_enabled = true;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic tip must be restricted to adapter_submit_confirm");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_tip_lamports_enabled is only supported"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_dynamic_tip_multiplier_bps() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+        execution.submit_dynamic_tip_lamports_enabled = true;
+        execution.submit_dynamic_tip_lamports_multiplier_bps = 0;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic tip multiplier outside range must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_tip_lamports_multiplier_bps must be in 1..=100000"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
     fn validate_execution_runtime_contract_rejects_invalid_contract_version_token() {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;

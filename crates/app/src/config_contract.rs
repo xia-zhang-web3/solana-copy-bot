@@ -42,6 +42,8 @@ pub(crate) fn validate_execution_runtime_contract(
             submit_route_compute_unit_price_micro_lamports = ?config.submit_route_compute_unit_price_micro_lamports,
             submit_dynamic_cu_price_enabled = config.submit_dynamic_cu_price_enabled,
             submit_dynamic_cu_price_percentile = config.submit_dynamic_cu_price_percentile,
+            submit_dynamic_tip_lamports_enabled = config.submit_dynamic_tip_lamports_enabled,
+            submit_dynamic_tip_lamports_multiplier_bps = config.submit_dynamic_tip_lamports_multiplier_bps,
             submit_adapter_contract_version = %config.submit_adapter_contract_version,
             submit_adapter_require_policy_echo = config.submit_adapter_require_policy_echo,
             pretrade_require_token_account = config.pretrade_require_token_account,
@@ -501,9 +503,27 @@ fn validate_routes_contract(config: &ExecutionConfig, mode: &str) -> Result<()> 
                 "execution.submit_dynamic_cu_price_enabled=true requires execution.pretrade_max_priority_fee_lamports > 0 to cap dynamic compute unit price"
             ));
         }
+        if config.submit_dynamic_tip_lamports_enabled {
+            if !config.submit_dynamic_cu_price_enabled {
+                return Err(anyhow!(
+                    "execution.submit_dynamic_tip_lamports_enabled=true requires execution.submit_dynamic_cu_price_enabled=true"
+                ));
+            }
+            if config.submit_dynamic_tip_lamports_multiplier_bps == 0
+                || config.submit_dynamic_tip_lamports_multiplier_bps > 100_000
+            {
+                return Err(anyhow!(
+                    "execution.submit_dynamic_tip_lamports_multiplier_bps must be in 1..=100000 when dynamic tip policy is enabled"
+                ));
+            }
+        }
     } else if config.submit_dynamic_cu_price_enabled {
         return Err(anyhow!(
             "execution.submit_dynamic_cu_price_enabled is only supported in execution.mode=adapter_submit_confirm"
+        ));
+    } else if config.submit_dynamic_tip_lamports_enabled {
+        return Err(anyhow!(
+            "execution.submit_dynamic_tip_lamports_enabled is only supported in execution.mode=adapter_submit_confirm"
         ));
     }
 

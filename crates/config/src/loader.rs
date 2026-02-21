@@ -388,6 +388,21 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_dynamic_cu_price_percentile = submit_dynamic_cu_price_percentile;
     }
+    if let Some(submit_dynamic_tip_lamports_enabled) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.submit_dynamic_tip_lamports_enabled = submit_dynamic_tip_lamports_enabled;
+    }
+    if let Some(submit_dynamic_tip_lamports_multiplier_bps) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_MULTIPLIER_BPS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.execution.submit_dynamic_tip_lamports_multiplier_bps =
+            submit_dynamic_tip_lamports_multiplier_bps;
+    }
     if let Some(submit_timeout_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
