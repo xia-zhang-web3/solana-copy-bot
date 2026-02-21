@@ -11,13 +11,15 @@ use tokio::time;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
-use super::{
+use super::core::{
     compute_retry_delay, decrement_atomic_usize, increment_atomic_usize, is_seen_signature,
     mark_seen_signature, normalize_program_ids_or_fallback, parse_retry_after,
-    prune_seen_signatures, sleep_with_backoff, FetchedObservation, HeliusEndpoint,
-    HeliusRuntimeConfig, HeliusWsSource, HeliusWsStream, LogsNotification, NotificationQueue,
-    QueueOverflowPolicy, QueuePushResult, RawSwapObservation, SeenSignatureEntry,
-    WS_IDLE_TIMEOUT_SECS,
+    prune_seen_signatures, sleep_with_backoff,
+};
+use super::{
+    FetchedObservation, HeliusEndpoint, HeliusRuntimeConfig, HeliusWsSource, HeliusWsStream,
+    LogsNotification, NotificationQueue, QueueOverflowPolicy, QueuePushResult, RawSwapObservation,
+    SeenSignatureEntry, WS_IDLE_TIMEOUT_SECS,
 };
 
 pub(super) async fn ws_reader_loop(
