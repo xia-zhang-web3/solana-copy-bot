@@ -500,7 +500,11 @@ impl AdapterOrderSubmitter {
         let resolved = hinted
             .unwrap_or(static_route_cu_price)
             .max(static_route_cu_price)
-            .min(policy.max_micro_lamports);
+            .min(policy.max_micro_lamports)
+            .clamp(
+                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+            );
         let hint_used = hinted.is_some();
         let applied = resolved > static_route_cu_price;
         (resolved, hint_used, applied)
@@ -2446,6 +2450,82 @@ mod tests {
                 .unwrap_or_default(),
             1_500
         );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_marks_hint_used_when_hint_below_static_floor() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 1200 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-floor",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-floor", "rpc")
+            .expect("submit call should succeed with static floor");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(!result.dynamic_cu_price_applied);
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            1_500
+        );
+        let _ = rpc_handle.join();
     }
 
     #[test]
