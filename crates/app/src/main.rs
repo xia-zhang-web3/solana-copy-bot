@@ -1438,20 +1438,18 @@ async fn run_app_loop(
         if shadow_scheduler.shadow_scheduler_needs_reset {
             if shadow_scheduler.shadow_workers.is_empty() {
                 shadow_scheduler.inflight_shadow_keys.clear();
-                rebuild_shadow_ready_queue(&mut shadow_scheduler);
+                shadow_scheduler.rebuild_ready_queue();
                 shadow_scheduler.shadow_scheduler_needs_reset = false;
                 warn!("shadow scheduler recovered after worker join error");
             }
         } else {
-            spawn_shadow_tasks_up_to_limit(
-                &mut shadow_scheduler,
+            shadow_scheduler.spawn_shadow_tasks_up_to_limit(
                 &sqlite_path,
                 &shadow,
                 SHADOW_WORKER_POOL_SIZE,
             );
         }
-        release_held_shadow_sells(
-            &mut shadow_scheduler,
+        shadow_scheduler.release_held_shadow_sells(
             &open_shadow_lots,
             &mut shadow_drop_reason_counts,
             &mut shadow_drop_stage_counts,
@@ -1530,7 +1528,7 @@ async fn run_app_loop(
             shadow_result = shadow_scheduler.shadow_workers.join_next(), if !shadow_scheduler.shadow_workers.is_empty() => {
                 match shadow_result {
                     Some(Ok(task_output)) => {
-                        mark_shadow_task_complete(&task_output.key, &mut shadow_scheduler);
+                        shadow_scheduler.mark_task_complete(&task_output.key);
                         handle_shadow_task_output(
                             task_output,
                             &mut open_shadow_lots,
@@ -1837,7 +1835,7 @@ async fn run_app_loop(
                             let sell_key = shadow_task_key_for_swap(&swap, side);
                             let key_tuple = (sell_key.wallet.clone(), sell_key.token.clone());
                             let has_pending_or_inflight =
-                                key_has_pending_or_inflight(&sell_key, &shadow_scheduler);
+                                shadow_scheduler.key_has_pending_or_inflight(&sell_key);
                             if !wallet_has_recent_follow_history
                                 && !has_pending_or_inflight
                                 && !open_shadow_lots.contains(&key_tuple)
@@ -1904,29 +1902,27 @@ async fn run_app_loop(
                             follow_snapshot: Arc::clone(&follow_snapshot),
                             key: task_key,
                         };
-                        if should_hold_sell_for_causality(
+                        if shadow_scheduler.should_hold_sell_for_causality(
                             shadow_causal_holdback_enabled,
                             shadow_causal_holdback_ms,
                             side,
                             &task_input.key,
-                            &shadow_scheduler,
                             &open_shadow_lots,
                         ) {
-                            hold_sell_for_causality(
-                                &mut shadow_scheduler,
+                            shadow_scheduler.hold_sell_for_causality(
                                 task_input,
                                 shadow_causal_holdback_ms,
                                 Utc::now(),
                             );
                             continue;
                         }
-                        if should_process_shadow_inline(
+                        if shadow_scheduler.should_process_shadow_inline(
                             shadow_queue_full,
                             shadow_scheduler.shadow_scheduler_needs_reset,
                             shadow_scheduler.shadow_workers.len(),
                             &task_input.key,
-                            &shadow_scheduler,
-                        ) {
+                        )
+                        {
                             if shadow_scheduler.inflight_shadow_keys.insert(task_input.key.clone()) {
                                 spawn_shadow_worker_task(
                                     &mut shadow_scheduler.shadow_workers,
@@ -1935,17 +1931,14 @@ async fn run_app_loop(
                                     task_input,
                                 );
                             } else {
-                                if let Err(dropped_task) =
-                                    enqueue_shadow_task(
-                                        &mut shadow_scheduler,
-                                        SHADOW_PENDING_TASK_CAPACITY,
-                                        task_input,
-                                    )
+                                if let Err(dropped_task) = shadow_scheduler.enqueue_shadow_task(
+                                    SHADOW_PENDING_TASK_CAPACITY,
+                                    task_input,
+                                )
                                 {
-                                    handle_shadow_enqueue_overflow(
+                                    shadow_scheduler.handle_shadow_enqueue_overflow(
                                         side,
                                         dropped_task,
-                                        &mut shadow_scheduler,
                                         SHADOW_PENDING_TASK_CAPACITY,
                                         &mut shadow_drop_reason_counts,
                                         &mut shadow_drop_stage_counts,
@@ -1954,15 +1947,13 @@ async fn run_app_loop(
                                 }
                             }
                         } else {
-                            if let Err(dropped_task) = enqueue_shadow_task(
-                                &mut shadow_scheduler,
+                            if let Err(dropped_task) = shadow_scheduler.enqueue_shadow_task(
                                 SHADOW_PENDING_TASK_CAPACITY,
                                 task_input,
                             ) {
-                                handle_shadow_enqueue_overflow(
+                                shadow_scheduler.handle_shadow_enqueue_overflow(
                                     side,
                                     dropped_task,
-                                    &mut shadow_scheduler,
                                     SHADOW_PENDING_TASK_CAPACITY,
                                     &mut shadow_drop_reason_counts,
                                     &mut shadow_drop_stage_counts,
@@ -2110,146 +2101,142 @@ enum ShadowSwapSide {
     Sell,
 }
 
-fn key_has_pending_or_inflight(key: &ShadowTaskKey, shadow_scheduler: &ShadowScheduler) -> bool {
-    shadow_scheduler.inflight_shadow_keys.contains(key)
-        || shadow_scheduler
-            .pending_shadow_tasks
-            .get(key)
-            .is_some_and(|pending| !pending.is_empty())
-}
-
-fn should_hold_sell_for_causality(
-    holdback_enabled: bool,
-    holdback_ms: u64,
-    side: ShadowSwapSide,
-    key: &ShadowTaskKey,
-    shadow_scheduler: &ShadowScheduler,
-    open_shadow_lots: &HashSet<(String, String)>,
-) -> bool {
-    if !holdback_enabled || holdback_ms == 0 || !matches!(side, ShadowSwapSide::Sell) {
-        return false;
+impl ShadowScheduler {
+    fn key_has_pending_or_inflight(&self, key: &ShadowTaskKey) -> bool {
+        self.inflight_shadow_keys.contains(key)
+            || self
+                .pending_shadow_tasks
+                .get(key)
+                .is_some_and(|pending| !pending.is_empty())
     }
-    if key_has_pending_or_inflight(key, shadow_scheduler) {
-        return false;
+
+    fn should_hold_sell_for_causality(
+        &self,
+        holdback_enabled: bool,
+        holdback_ms: u64,
+        side: ShadowSwapSide,
+        key: &ShadowTaskKey,
+        open_shadow_lots: &HashSet<(String, String)>,
+    ) -> bool {
+        if !holdback_enabled || holdback_ms == 0 || !matches!(side, ShadowSwapSide::Sell) {
+            return false;
+        }
+        if self.key_has_pending_or_inflight(key) {
+            return false;
+        }
+        let key_tuple = (key.wallet.clone(), key.token.clone());
+        !open_shadow_lots.contains(&key_tuple)
     }
-    let key_tuple = (key.wallet.clone(), key.token.clone());
-    !open_shadow_lots.contains(&key_tuple)
-}
 
-fn hold_sell_for_causality(
-    shadow_scheduler: &mut ShadowScheduler,
-    task_input: ShadowTaskInput,
-    holdback_ms: u64,
-    now: DateTime<Utc>,
-) {
-    let hold_until = now + chrono::Duration::milliseconds(holdback_ms.max(1) as i64);
-    shadow_scheduler
-        .held_shadow_sells
-        .entry(task_input.key.clone())
-        .or_default()
-        .push_back(HeldShadowSell {
-            task_input,
-            hold_until,
-        });
-    *shadow_scheduler
-        .shadow_holdback_counts
-        .entry("queued")
-        .or_insert(0) += 1;
-}
+    fn hold_sell_for_causality(
+        &mut self,
+        task_input: ShadowTaskInput,
+        holdback_ms: u64,
+        now: DateTime<Utc>,
+    ) {
+        let hold_until = now + chrono::Duration::milliseconds(holdback_ms.max(1) as i64);
+        self.held_shadow_sells
+            .entry(task_input.key.clone())
+            .or_default()
+            .push_back(HeldShadowSell {
+                task_input,
+                hold_until,
+            });
+        *self.shadow_holdback_counts.entry("queued").or_insert(0) += 1;
+    }
 
-fn release_held_shadow_sells(
-    shadow_scheduler: &mut ShadowScheduler,
-    open_shadow_lots: &HashSet<(String, String)>,
-    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
-    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
-    shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
-    capacity: usize,
-    now: DateTime<Utc>,
-) {
-    let keys: Vec<ShadowTaskKey> = shadow_scheduler.held_shadow_sells.keys().cloned().collect();
-    for key in keys {
-        loop {
-            let release_reason = match shadow_scheduler
-                .held_shadow_sells
-                .get(&key)
-                .and_then(|queue| queue.front())
-            {
-                Some(front) => {
-                    let key_tuple = (key.wallet.clone(), key.token.clone());
-                    if open_shadow_lots.contains(&key_tuple) {
-                        Some("released_open_lot")
-                    } else if key_has_pending_or_inflight(&key, shadow_scheduler) {
-                        Some("released_key_busy")
-                    } else if now >= front.hold_until {
-                        Some("released_expired")
-                    } else {
-                        Some("hold")
+    fn release_held_shadow_sells(
+        &mut self,
+        open_shadow_lots: &HashSet<(String, String)>,
+        shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
+        shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+        shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
+        capacity: usize,
+        now: DateTime<Utc>,
+    ) {
+        let keys: Vec<ShadowTaskKey> = self.held_shadow_sells.keys().cloned().collect();
+        for key in keys {
+            loop {
+                let release_reason = match self
+                    .held_shadow_sells
+                    .get(&key)
+                    .and_then(|queue| queue.front())
+                {
+                    Some(front) => {
+                        let key_tuple = (key.wallet.clone(), key.token.clone());
+                        if open_shadow_lots.contains(&key_tuple) {
+                            Some("released_open_lot")
+                        } else if self.key_has_pending_or_inflight(&key) {
+                            Some("released_key_busy")
+                        } else if now >= front.hold_until {
+                            Some("released_expired")
+                        } else {
+                            Some("hold")
+                        }
                     }
-                }
-                None => None,
-            };
+                    None => None,
+                };
 
-            let Some(release_reason) = release_reason else {
-                break;
-            };
-            if release_reason == "hold" {
-                break;
-            }
-
-            let held_task = {
-                let Some(queue) = shadow_scheduler.held_shadow_sells.get_mut(&key) else {
+                let Some(release_reason) = release_reason else {
                     break;
                 };
-                queue.pop_front()
-            };
-            let Some(held_task) = held_task else {
-                break;
-            };
-            *shadow_scheduler
-                .shadow_holdback_counts
-                .entry(release_reason)
-                .or_insert(0) += 1;
+                if release_reason == "hold" {
+                    break;
+                }
 
-            if let Err(dropped_task) =
-                enqueue_shadow_task(shadow_scheduler, capacity, held_task.task_input)
-            {
-                *shadow_scheduler
+                let held_task = {
+                    let Some(queue) = self.held_shadow_sells.get_mut(&key) else {
+                        break;
+                    };
+                    queue.pop_front()
+                };
+                let Some(held_task) = held_task else {
+                    break;
+                };
+                *self
                     .shadow_holdback_counts
-                    .entry("release_enqueue_overflow")
+                    .entry(release_reason)
                     .or_insert(0) += 1;
-                handle_shadow_enqueue_overflow(
-                    ShadowSwapSide::Sell,
-                    dropped_task,
-                    shadow_scheduler,
-                    capacity,
-                    shadow_drop_reason_counts,
-                    shadow_drop_stage_counts,
-                    shadow_queue_full_outcome_counts,
-                );
+
+                if let Err(dropped_task) = self.enqueue_shadow_task(capacity, held_task.task_input)
+                {
+                    *self
+                        .shadow_holdback_counts
+                        .entry("release_enqueue_overflow")
+                        .or_insert(0) += 1;
+                    self.handle_shadow_enqueue_overflow(
+                        ShadowSwapSide::Sell,
+                        dropped_task,
+                        capacity,
+                        shadow_drop_reason_counts,
+                        shadow_drop_stage_counts,
+                        shadow_queue_full_outcome_counts,
+                    );
+                }
+            }
+
+            let remove_key = self
+                .held_shadow_sells
+                .get(&key)
+                .is_some_and(|queue| queue.is_empty());
+            if remove_key {
+                self.held_shadow_sells.remove(&key);
             }
         }
-
-        let remove_key = shadow_scheduler
-            .held_shadow_sells
-            .get(&key)
-            .is_some_and(|queue| queue.is_empty());
-        if remove_key {
-            shadow_scheduler.held_shadow_sells.remove(&key);
-        }
     }
-}
 
-fn should_process_shadow_inline(
-    shadow_queue_full: bool,
-    shadow_scheduler_needs_reset: bool,
-    shadow_worker_count: usize,
-    key: &ShadowTaskKey,
-    shadow_scheduler: &ShadowScheduler,
-) -> bool {
-    shadow_queue_full
-        && !shadow_scheduler_needs_reset
-        && shadow_worker_count < SHADOW_MAX_CONCURRENT_WORKERS
-        && !key_has_pending_or_inflight(key, shadow_scheduler)
+    fn should_process_shadow_inline(
+        &self,
+        shadow_queue_full: bool,
+        shadow_scheduler_needs_reset: bool,
+        shadow_worker_count: usize,
+        key: &ShadowTaskKey,
+    ) -> bool {
+        shadow_queue_full
+            && !shadow_scheduler_needs_reset
+            && shadow_worker_count < SHADOW_MAX_CONCURRENT_WORKERS
+            && !self.key_has_pending_or_inflight(key)
+    }
 }
 
 fn apply_follow_snapshot_update(
@@ -2309,167 +2296,6 @@ fn spawn_shadow_worker_task(
     });
 }
 
-fn spawn_shadow_tasks_up_to_limit(
-    shadow_scheduler: &mut ShadowScheduler,
-    sqlite_path: &str,
-    shadow: &ShadowService,
-    max_workers: usize,
-) {
-    while shadow_scheduler.shadow_workers.len() < max_workers {
-        let Some(next) = dequeue_next_shadow_task(shadow_scheduler) else {
-            return;
-        };
-        spawn_shadow_worker_task(
-            &mut shadow_scheduler.shadow_workers,
-            shadow,
-            sqlite_path,
-            next,
-        );
-    }
-}
-
-fn enqueue_shadow_task(
-    shadow_scheduler: &mut ShadowScheduler,
-    capacity: usize,
-    task_input: ShadowTaskInput,
-) -> std::result::Result<(), ShadowTaskInput> {
-    if shadow_scheduler.pending_shadow_task_count >= capacity {
-        return Err(task_input);
-    }
-    let key = task_input.key.clone();
-    shadow_scheduler
-        .pending_shadow_tasks
-        .entry(key.clone())
-        .or_default()
-        .push_back(task_input);
-    shadow_scheduler.pending_shadow_task_count =
-        shadow_scheduler.pending_shadow_task_count.saturating_add(1);
-    if !shadow_scheduler.inflight_shadow_keys.contains(&key)
-        && shadow_scheduler.ready_shadow_key_set.insert(key.clone())
-    {
-        shadow_scheduler.ready_shadow_keys.push_back(key);
-    }
-    Ok(())
-}
-
-fn handle_shadow_enqueue_overflow(
-    overflow_side: ShadowSwapSide,
-    overflow_task: ShadowTaskInput,
-    shadow_scheduler: &mut ShadowScheduler,
-    capacity: usize,
-    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
-    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
-    shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
-) {
-    match overflow_side {
-        ShadowSwapSide::Buy => {
-            record_shadow_queue_full_buy_drop(
-                &overflow_task.swap,
-                shadow_drop_reason_counts,
-                shadow_drop_stage_counts,
-                shadow_queue_full_outcome_counts,
-            );
-        }
-        ShadowSwapSide::Sell => {
-            if let Some(evicted_buy_task) = evict_one_pending_buy_task(shadow_scheduler) {
-                let sell_swap_for_log = overflow_task.swap.clone();
-                match enqueue_shadow_task(shadow_scheduler, capacity, overflow_task) {
-                    Ok(()) => {
-                        record_shadow_queue_full_buy_drop(
-                            &evicted_buy_task.swap,
-                            shadow_drop_reason_counts,
-                            shadow_drop_stage_counts,
-                            shadow_queue_full_outcome_counts,
-                        );
-                        record_shadow_queue_full_sell_outcome(
-                            &sell_swap_for_log,
-                            true,
-                            shadow_drop_reason_counts,
-                            shadow_drop_stage_counts,
-                            shadow_queue_full_outcome_counts,
-                        );
-                    }
-                    Err(dropped_sell_task) => {
-                        if let Err(still_evicted_buy_task) =
-                            enqueue_shadow_task(shadow_scheduler, capacity, evicted_buy_task)
-                        {
-                            record_shadow_queue_full_buy_drop(
-                                &still_evicted_buy_task.swap,
-                                shadow_drop_reason_counts,
-                                shadow_drop_stage_counts,
-                                shadow_queue_full_outcome_counts,
-                            );
-                        }
-                        record_shadow_queue_full_sell_outcome(
-                            &dropped_sell_task.swap,
-                            false,
-                            shadow_drop_reason_counts,
-                            shadow_drop_stage_counts,
-                            shadow_queue_full_outcome_counts,
-                        );
-                    }
-                }
-            } else {
-                record_shadow_queue_full_sell_outcome(
-                    &overflow_task.swap,
-                    false,
-                    shadow_drop_reason_counts,
-                    shadow_drop_stage_counts,
-                    shadow_queue_full_outcome_counts,
-                );
-            }
-        }
-    }
-}
-
-fn evict_one_pending_buy_task(shadow_scheduler: &mut ShadowScheduler) -> Option<ShadowTaskInput> {
-    let ready_candidate = shadow_scheduler.ready_shadow_keys.iter().find_map(|key| {
-        shadow_scheduler
-            .pending_shadow_tasks
-            .get(key)
-            .and_then(find_last_pending_buy_index)
-            .map(|index| (key.clone(), index))
-    });
-    let candidate = ready_candidate.or_else(|| {
-        let keys: Vec<ShadowTaskKey> = shadow_scheduler
-            .pending_shadow_tasks
-            .keys()
-            .cloned()
-            .collect();
-        keys.into_iter().find_map(|key| {
-            shadow_scheduler
-                .pending_shadow_tasks
-                .get(&key)
-                .and_then(find_last_pending_buy_index)
-                .map(|index| (key, index))
-        })
-    })?;
-
-    let (key, index) = candidate;
-    let mut remove_key = false;
-    let removed = if let Some(queue) = shadow_scheduler.pending_shadow_tasks.get_mut(&key) {
-        let task = queue.remove(index);
-        remove_key = queue.is_empty();
-        task
-    } else {
-        None
-    };
-
-    if remove_key {
-        shadow_scheduler.pending_shadow_tasks.remove(&key);
-        shadow_scheduler.ready_shadow_key_set.remove(&key);
-        shadow_scheduler
-            .ready_shadow_keys
-            .retain(|ready_key| ready_key != &key);
-    }
-
-    if removed.is_some() {
-        shadow_scheduler.pending_shadow_task_count =
-            shadow_scheduler.pending_shadow_task_count.saturating_sub(1);
-    }
-    removed
-}
-
 fn find_last_pending_buy_index(queue: &VecDeque<ShadowTaskInput>) -> Option<usize> {
     (0..queue.len()).rev().find(|index| {
         queue
@@ -2477,49 +2303,6 @@ fn find_last_pending_buy_index(queue: &VecDeque<ShadowTaskInput>) -> Option<usiz
             .and_then(|task| classify_swap_side(&task.swap))
             .is_some_and(|side| matches!(side, ShadowSwapSide::Buy))
     })
-}
-
-fn dequeue_next_shadow_task(shadow_scheduler: &mut ShadowScheduler) -> Option<ShadowTaskInput> {
-    while let Some(key) = shadow_scheduler.ready_shadow_keys.pop_front() {
-        shadow_scheduler.ready_shadow_key_set.remove(&key);
-        if shadow_scheduler.inflight_shadow_keys.contains(&key) {
-            continue;
-        }
-
-        let mut remove_key = false;
-        let next_task = if let Some(queue) = shadow_scheduler.pending_shadow_tasks.get_mut(&key) {
-            let task = queue.pop_front();
-            remove_key = queue.is_empty();
-            task
-        } else {
-            None
-        };
-
-        if remove_key {
-            shadow_scheduler.pending_shadow_tasks.remove(&key);
-        }
-
-        if let Some(task) = next_task {
-            shadow_scheduler.inflight_shadow_keys.insert(key);
-            shadow_scheduler.pending_shadow_task_count =
-                shadow_scheduler.pending_shadow_task_count.saturating_sub(1);
-            return Some(task);
-        }
-    }
-    None
-}
-
-fn rebuild_shadow_ready_queue(shadow_scheduler: &mut ShadowScheduler) {
-    shadow_scheduler.ready_shadow_keys.clear();
-    shadow_scheduler.ready_shadow_key_set.clear();
-    for (key, pending) in &shadow_scheduler.pending_shadow_tasks {
-        if pending.is_empty() || shadow_scheduler.inflight_shadow_keys.contains(key) {
-            continue;
-        }
-        if shadow_scheduler.ready_shadow_key_set.insert(key.clone()) {
-            shadow_scheduler.ready_shadow_keys.push_back(key.clone());
-        }
-    }
 }
 
 fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
@@ -2532,15 +2315,204 @@ fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
     "unknown panic payload".to_string()
 }
 
-fn mark_shadow_task_complete(key: &ShadowTaskKey, shadow_scheduler: &mut ShadowScheduler) {
-    shadow_scheduler.inflight_shadow_keys.remove(key);
-    if shadow_scheduler
-        .pending_shadow_tasks
-        .get(key)
-        .is_some_and(|pending| !pending.is_empty())
-        && shadow_scheduler.ready_shadow_key_set.insert(key.clone())
-    {
-        shadow_scheduler.ready_shadow_keys.push_back(key.clone());
+impl ShadowScheduler {
+    fn spawn_shadow_tasks_up_to_limit(
+        &mut self,
+        sqlite_path: &str,
+        shadow: &ShadowService,
+        max_workers: usize,
+    ) {
+        while self.shadow_workers.len() < max_workers {
+            let Some(next) = self.dequeue_next_shadow_task() else {
+                return;
+            };
+            spawn_shadow_worker_task(&mut self.shadow_workers, shadow, sqlite_path, next);
+        }
+    }
+
+    fn enqueue_shadow_task(
+        &mut self,
+        capacity: usize,
+        task_input: ShadowTaskInput,
+    ) -> std::result::Result<(), ShadowTaskInput> {
+        if self.pending_shadow_task_count >= capacity {
+            return Err(task_input);
+        }
+        let key = task_input.key.clone();
+        self.pending_shadow_tasks
+            .entry(key.clone())
+            .or_default()
+            .push_back(task_input);
+        self.pending_shadow_task_count = self.pending_shadow_task_count.saturating_add(1);
+        if !self.inflight_shadow_keys.contains(&key)
+            && self.ready_shadow_key_set.insert(key.clone())
+        {
+            self.ready_shadow_keys.push_back(key);
+        }
+        Ok(())
+    }
+
+    fn handle_shadow_enqueue_overflow(
+        &mut self,
+        overflow_side: ShadowSwapSide,
+        overflow_task: ShadowTaskInput,
+        capacity: usize,
+        shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
+        shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
+        shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
+    ) {
+        match overflow_side {
+            ShadowSwapSide::Buy => {
+                record_shadow_queue_full_buy_drop(
+                    &overflow_task.swap,
+                    shadow_drop_reason_counts,
+                    shadow_drop_stage_counts,
+                    shadow_queue_full_outcome_counts,
+                );
+            }
+            ShadowSwapSide::Sell => {
+                if let Some(evicted_buy_task) = self.evict_one_pending_buy_task() {
+                    let sell_swap_for_log = overflow_task.swap.clone();
+                    match self.enqueue_shadow_task(capacity, overflow_task) {
+                        Ok(()) => {
+                            record_shadow_queue_full_buy_drop(
+                                &evicted_buy_task.swap,
+                                shadow_drop_reason_counts,
+                                shadow_drop_stage_counts,
+                                shadow_queue_full_outcome_counts,
+                            );
+                            record_shadow_queue_full_sell_outcome(
+                                &sell_swap_for_log,
+                                true,
+                                shadow_drop_reason_counts,
+                                shadow_drop_stage_counts,
+                                shadow_queue_full_outcome_counts,
+                            );
+                        }
+                        Err(dropped_sell_task) => {
+                            if let Err(still_evicted_buy_task) =
+                                self.enqueue_shadow_task(capacity, evicted_buy_task)
+                            {
+                                record_shadow_queue_full_buy_drop(
+                                    &still_evicted_buy_task.swap,
+                                    shadow_drop_reason_counts,
+                                    shadow_drop_stage_counts,
+                                    shadow_queue_full_outcome_counts,
+                                );
+                            }
+                            record_shadow_queue_full_sell_outcome(
+                                &dropped_sell_task.swap,
+                                false,
+                                shadow_drop_reason_counts,
+                                shadow_drop_stage_counts,
+                                shadow_queue_full_outcome_counts,
+                            );
+                        }
+                    }
+                } else {
+                    record_shadow_queue_full_sell_outcome(
+                        &overflow_task.swap,
+                        false,
+                        shadow_drop_reason_counts,
+                        shadow_drop_stage_counts,
+                        shadow_queue_full_outcome_counts,
+                    );
+                }
+            }
+        }
+    }
+
+    fn evict_one_pending_buy_task(&mut self) -> Option<ShadowTaskInput> {
+        let ready_candidate = self.ready_shadow_keys.iter().find_map(|key| {
+            self.pending_shadow_tasks
+                .get(key)
+                .and_then(find_last_pending_buy_index)
+                .map(|index| (key.clone(), index))
+        });
+        let candidate = ready_candidate.or_else(|| {
+            let keys: Vec<ShadowTaskKey> = self.pending_shadow_tasks.keys().cloned().collect();
+            keys.into_iter().find_map(|key| {
+                self.pending_shadow_tasks
+                    .get(&key)
+                    .and_then(find_last_pending_buy_index)
+                    .map(|index| (key, index))
+            })
+        })?;
+
+        let (key, index) = candidate;
+        let mut remove_key = false;
+        let removed = if let Some(queue) = self.pending_shadow_tasks.get_mut(&key) {
+            let task = queue.remove(index);
+            remove_key = queue.is_empty();
+            task
+        } else {
+            None
+        };
+
+        if remove_key {
+            self.pending_shadow_tasks.remove(&key);
+            self.ready_shadow_key_set.remove(&key);
+            self.ready_shadow_keys.retain(|ready_key| ready_key != &key);
+        }
+
+        if removed.is_some() {
+            self.pending_shadow_task_count = self.pending_shadow_task_count.saturating_sub(1);
+        }
+        removed
+    }
+
+    fn dequeue_next_shadow_task(&mut self) -> Option<ShadowTaskInput> {
+        while let Some(key) = self.ready_shadow_keys.pop_front() {
+            self.ready_shadow_key_set.remove(&key);
+            if self.inflight_shadow_keys.contains(&key) {
+                continue;
+            }
+
+            let mut remove_key = false;
+            let next_task = if let Some(queue) = self.pending_shadow_tasks.get_mut(&key) {
+                let task = queue.pop_front();
+                remove_key = queue.is_empty();
+                task
+            } else {
+                None
+            };
+
+            if remove_key {
+                self.pending_shadow_tasks.remove(&key);
+            }
+
+            if let Some(task) = next_task {
+                self.inflight_shadow_keys.insert(key);
+                self.pending_shadow_task_count = self.pending_shadow_task_count.saturating_sub(1);
+                return Some(task);
+            }
+        }
+        None
+    }
+
+    fn rebuild_ready_queue(&mut self) {
+        self.ready_shadow_keys.clear();
+        self.ready_shadow_key_set.clear();
+        for (key, pending) in &self.pending_shadow_tasks {
+            if pending.is_empty() || self.inflight_shadow_keys.contains(key) {
+                continue;
+            }
+            if self.ready_shadow_key_set.insert(key.clone()) {
+                self.ready_shadow_keys.push_back(key.clone());
+            }
+        }
+    }
+
+    fn mark_task_complete(&mut self, key: &ShadowTaskKey) {
+        self.inflight_shadow_keys.remove(key);
+        if self
+            .pending_shadow_tasks
+            .get(key)
+            .is_some_and(|pending| !pending.is_empty())
+            && self.ready_shadow_key_set.insert(key.clone())
+        {
+            self.ready_shadow_keys.push_back(key.clone());
+        }
     }
 }
 
@@ -4140,35 +4112,41 @@ mod app_tests {
 
         let mut shadow_scheduler = ShadowScheduler::new();
 
-        assert!(enqueue_shadow_task(
-            &mut shadow_scheduler,
-            SHADOW_PENDING_TASK_CAPACITY,
-            make_task("A1", "wallet-a", "token-x"),
-        )
-        .is_ok());
-        assert!(enqueue_shadow_task(
-            &mut shadow_scheduler,
-            SHADOW_PENDING_TASK_CAPACITY,
-            make_task("A2", "wallet-a", "token-x"),
-        )
-        .is_ok());
-        assert!(enqueue_shadow_task(
-            &mut shadow_scheduler,
-            SHADOW_PENDING_TASK_CAPACITY,
-            make_task("B1", "wallet-b", "token-y"),
-        )
-        .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(
+                SHADOW_PENDING_TASK_CAPACITY,
+                make_task("A1", "wallet-a", "token-x"),
+            )
+            .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(
+                SHADOW_PENDING_TASK_CAPACITY,
+                make_task("A2", "wallet-a", "token-x"),
+            )
+            .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(
+                SHADOW_PENDING_TASK_CAPACITY,
+                make_task("B1", "wallet-b", "token-y"),
+            )
+            .is_ok());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 3);
 
-        let first = dequeue_next_shadow_task(&mut shadow_scheduler).expect("first task");
-        let second = dequeue_next_shadow_task(&mut shadow_scheduler).expect("second task");
+        let first = shadow_scheduler
+            .dequeue_next_shadow_task()
+            .expect("first task");
+        let second = shadow_scheduler
+            .dequeue_next_shadow_task()
+            .expect("second task");
 
         assert_eq!(first.swap.signature, "A1");
         assert_eq!(second.swap.signature, "B1");
 
-        mark_shadow_task_complete(&first.key, &mut shadow_scheduler);
+        shadow_scheduler.mark_task_complete(&first.key);
 
-        let third = dequeue_next_shadow_task(&mut shadow_scheduler).expect("third task");
+        let third = shadow_scheduler
+            .dequeue_next_shadow_task()
+            .expect("third task");
 
         assert_eq!(third.swap.signature, "A2");
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
@@ -4200,24 +4178,15 @@ mod app_tests {
         let mut shadow_scheduler = ShadowScheduler::new();
         let cap = 2usize;
 
-        assert!(enqueue_shadow_task(
-            &mut shadow_scheduler,
-            cap,
-            make_task("A1", "wallet-a", "token-x"),
-        )
-        .is_ok());
-        assert!(enqueue_shadow_task(
-            &mut shadow_scheduler,
-            cap,
-            make_task("A2", "wallet-a", "token-x"),
-        )
-        .is_ok());
-        assert!(enqueue_shadow_task(
-            &mut shadow_scheduler,
-            cap,
-            make_task("B1", "wallet-b", "token-y"),
-        )
-        .is_err());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_task("A1", "wallet-a", "token-x"),)
+            .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_task("A2", "wallet-a", "token-x"),)
+            .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_task("B1", "wallet-b", "token-y"),)
+            .is_err());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, cap);
     }
 
@@ -4271,24 +4240,17 @@ mod app_tests {
         let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
         let cap = 1usize;
 
-        assert!(enqueue_shadow_task(
-            &mut shadow_scheduler,
-            cap,
-            make_buy_task("B0", "wallet-buy", "token-buy"),
-        )
-        .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"),)
+            .is_ok());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 1);
 
-        let overflow_buy = enqueue_shadow_task(
-            &mut shadow_scheduler,
-            cap,
-            make_buy_task("B1", "wallet-buy-2", "token-buy-2"),
-        )
-        .expect_err("buy should overflow at cap");
-        handle_shadow_enqueue_overflow(
+        let overflow_buy = shadow_scheduler
+            .enqueue_shadow_task(cap, make_buy_task("B1", "wallet-buy-2", "token-buy-2"))
+            .expect_err("buy should overflow at cap");
+        shadow_scheduler.handle_shadow_enqueue_overflow(
             ShadowSwapSide::Buy,
             overflow_buy,
-            &mut shadow_scheduler,
             cap,
             &mut shadow_drop_reason_counts,
             &mut shadow_drop_stage_counts,
@@ -4306,13 +4268,13 @@ mod app_tests {
         shadow_scheduler
             .inflight_shadow_keys
             .insert(sell_key.clone());
-        let overflow_sell = enqueue_shadow_task(&mut shadow_scheduler, cap, sell_task)
+        let overflow_sell = shadow_scheduler
+            .enqueue_shadow_task(cap, sell_task)
             .expect_err("sell should overflow at cap before policy handling");
 
-        handle_shadow_enqueue_overflow(
+        shadow_scheduler.handle_shadow_enqueue_overflow(
             ShadowSwapSide::Sell,
             overflow_sell,
-            &mut shadow_scheduler,
             cap,
             &mut shadow_drop_reason_counts,
             &mut shadow_drop_stage_counts,
@@ -4351,21 +4313,19 @@ mod app_tests {
         };
         let mut shadow_scheduler = ShadowScheduler::new();
 
-        assert!(should_process_shadow_inline(
+        assert!(shadow_scheduler.should_process_shadow_inline(
             true,
             false,
             SHADOW_WORKER_POOL_SIZE,
             &key,
-            &shadow_scheduler,
         ));
 
         shadow_scheduler.inflight_shadow_keys.insert(key.clone());
-        assert!(!should_process_shadow_inline(
+        assert!(!shadow_scheduler.should_process_shadow_inline(
             true,
             false,
             SHADOW_WORKER_POOL_SIZE,
             &key,
-            &shadow_scheduler,
         ));
 
         shadow_scheduler.inflight_shadow_keys.clear();
@@ -4387,33 +4347,29 @@ mod app_tests {
                 key: key.clone(),
             }]),
         );
-        assert!(!should_process_shadow_inline(
+        assert!(!shadow_scheduler.should_process_shadow_inline(
             true,
             false,
             SHADOW_WORKER_POOL_SIZE,
             &key,
-            &shadow_scheduler,
         ));
-        assert!(!should_process_shadow_inline(
+        assert!(!shadow_scheduler.should_process_shadow_inline(
             true,
             true,
             SHADOW_WORKER_POOL_SIZE,
             &key,
-            &shadow_scheduler,
         ));
-        assert!(!should_process_shadow_inline(
+        assert!(!shadow_scheduler.should_process_shadow_inline(
             false,
             false,
             SHADOW_WORKER_POOL_SIZE,
             &key,
-            &shadow_scheduler,
         ));
-        assert!(!should_process_shadow_inline(
+        assert!(!shadow_scheduler.should_process_shadow_inline(
             true,
             false,
             SHADOW_MAX_CONCURRENT_WORKERS,
             &key,
-            &shadow_scheduler,
         ));
     }
 
@@ -4600,12 +4556,11 @@ manual override by operator
         let shadow_scheduler = ShadowScheduler::new();
         let open_lots: HashSet<(String, String)> = HashSet::new();
 
-        assert!(should_hold_sell_for_causality(
+        assert!(shadow_scheduler.should_hold_sell_for_causality(
             true,
             2500,
             ShadowSwapSide::Sell,
             &key,
-            &shadow_scheduler,
             &open_lots,
         ));
     }
@@ -4637,23 +4592,21 @@ manual override by operator
             .insert(key.clone(), VecDeque::from([pending_task]));
         let open_lots: HashSet<(String, String)> = HashSet::new();
 
-        assert!(!should_hold_sell_for_causality(
+        assert!(!shadow_scheduler.should_hold_sell_for_causality(
             true,
             2500,
             ShadowSwapSide::Sell,
             &key,
-            &shadow_scheduler,
             &open_lots,
         ));
 
         shadow_scheduler.pending_shadow_tasks.clear();
         let open_lots_yes = HashSet::from([(key.wallet.clone(), key.token.clone())]);
-        assert!(!should_hold_sell_for_causality(
+        assert!(!shadow_scheduler.should_hold_sell_for_causality(
             true,
             2500,
             ShadowSwapSide::Sell,
             &key,
-            &shadow_scheduler,
             &open_lots_yes,
         ));
     }
