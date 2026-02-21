@@ -7,9 +7,11 @@ use std::collections::{HashMap, HashSet};
 use tracing::info;
 
 mod candidate;
-use self::candidate::{to_shadow_candidate, ShadowCandidate};
+use self::candidate::to_shadow_candidate;
 mod quality_gates;
+mod signals;
 mod snapshots;
+use self::signals::log_gate_drop;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const EPS: f64 = 1e-12;
@@ -206,7 +208,7 @@ impl ShadowService {
         if !is_unfollowed_sell_exit
             && candidate.leader_notional_sol < self.config.min_leader_notional_sol
         {
-            Self::log_gate_drop(
+            log_gate_drop(
                 "notional",
                 ShadowDropReason::BelowNotional,
                 swap,
@@ -224,7 +226,7 @@ impl ShadowService {
         if !is_unfollowed_sell_exit
             && latency_ms > (self.config.max_signal_lag_seconds as i64 * 1_000)
         {
-            Self::log_gate_drop(
+            log_gate_drop(
                 "lag",
                 ShadowDropReason::LagExceeded,
                 swap,
@@ -240,7 +242,7 @@ impl ShadowService {
             if let Some(reason) =
                 self.drop_reason_for_buy_quality_gate(store, &candidate.token, swap.ts_utc, now)?
             {
-                Self::log_gate_drop(
+                log_gate_drop(
                     "quality",
                     reason,
                     swap,
@@ -259,7 +261,7 @@ impl ShadowService {
             .copy_notional_sol
             .min(candidate.leader_notional_sol);
         if copy_notional_sol <= EPS || candidate.price_sol_per_token <= EPS {
-            Self::log_gate_drop(
+            log_gate_drop(
                 "sizing",
                 ShadowDropReason::InvalidSizing,
                 swap,
@@ -287,7 +289,7 @@ impl ShadowService {
             status: "shadow_recorded".to_string(),
         };
         if !store.insert_copy_signal(&signal)? {
-            Self::log_gate_drop(
+            log_gate_drop(
                 "dedupe",
                 ShadowDropReason::DuplicateSignal,
                 swap,
@@ -329,7 +331,7 @@ impl ShadowService {
                 (close, Some(close.has_open_lots_after))
             }
             _ => {
-                Self::log_gate_drop(
+                log_gate_drop(
                     "side",
                     ShadowDropReason::UnsupportedSide,
                     swap,
@@ -356,35 +358,6 @@ impl ShadowService {
             realized_pnl_sol: close.realized_pnl_sol,
             has_open_lots_after_signal,
         }))
-    }
-
-    fn log_gate_drop(
-        stage: &str,
-        reason: ShadowDropReason,
-        swap: &SwapEvent,
-        candidate: &ShadowCandidate,
-        latency_ms: i64,
-        runtime_followed: bool,
-        temporal_followed: bool,
-        is_unfollowed_sell_exit: bool,
-    ) {
-        if !runtime_followed && !temporal_followed && !is_unfollowed_sell_exit {
-            return;
-        }
-        info!(
-            stage,
-            reason = reason.as_str(),
-            wallet = %swap.wallet,
-            token = %candidate.token,
-            side = %candidate.side,
-            signature = %swap.signature,
-            leader_notional_sol = candidate.leader_notional_sol,
-            latency_ms,
-            runtime_followed,
-            temporal_followed,
-            is_unfollowed_sell_exit,
-            "shadow gate dropped"
-        );
     }
 }
 
