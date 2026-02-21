@@ -10,6 +10,7 @@ pub struct ExecutionBatchReport {
     pub submit_attempted_by_route: BTreeMap<String, u64>,
     pub submit_retry_scheduled_by_route: BTreeMap<String, u64>,
     pub submit_failed_by_route: BTreeMap<String, u64>,
+    pub submit_fallback_blocked_by_route: BTreeMap<String, u64>,
     pub pretrade_retry_scheduled_by_route: BTreeMap<String, u64>,
     pub pretrade_terminal_rejected_by_route: BTreeMap<String, u64>,
     pub pretrade_failed_by_route: BTreeMap<String, u64>,

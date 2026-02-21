@@ -184,6 +184,10 @@ impl ExecutionRuntime {
                             error.detail
                         );
                         bump_route_counter(&mut report.submit_failed_by_route, selected_route);
+                        bump_route_counter(
+                            &mut report.submit_fallback_blocked_by_route,
+                            selected_route,
+                        );
                         store.mark_order_failed(
                             &order.order_id,
                             "submit_fallback_blocked",

@@ -1320,6 +1320,11 @@ mod tests {
             "jito route should fail closed when retryable code is not fallback-allowlisted"
         );
         assert_eq!(
+            first.submit_fallback_blocked_by_route.get("jito"),
+            Some(&1),
+            "fallback-blocked path should emit dedicated per-route counter"
+        );
+        assert_eq!(
             first.submit_retry_scheduled_by_route.get("jito"),
             None,
             "retry should not be scheduled when jito->rpc fallback is blocked by policy"
