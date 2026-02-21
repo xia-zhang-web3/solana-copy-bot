@@ -9,9 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::info;
 
+mod followlist;
 mod quality_cache;
 mod scoring;
 mod windows;
+use self::followlist::{desired_wallets, rank_follow_candidates, top_wallet_labels};
 use self::scoring::{hold_time_quality_score, median_i64, tanh01};
 use self::windows::{cmp_swap_order, DiscoveryWindowState};
 
@@ -233,17 +235,8 @@ impl DiscoveryService {
             });
         }
 
-        let mut ranked: Vec<&WalletSnapshot> = snapshots
-            .iter()
-            .filter(|item| item.eligible && item.score >= self.config.min_score)
-            .collect();
-        ranked.sort_by(|a, b| cmp_score_then_trades(a, b));
-
-        let desired_wallets: Vec<String> = ranked
-            .iter()
-            .take(self.config.follow_top_n as usize)
-            .map(|item| item.wallet_id.clone())
-            .collect();
+        let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
+        let desired_wallets = desired_wallets(&ranked, self.config.follow_top_n);
         let follow_delta = store.persist_discovery_cycle(
             &wallet_rows,
             &metric_rows,
@@ -252,16 +245,7 @@ impl DiscoveryService {
             "discovery_score_refresh",
         )?;
         let active_follow_wallets = store.list_active_follow_wallets()?.len();
-        let top_wallets = ranked
-            .iter()
-            .take(5)
-            .map(|item| {
-                format!(
-                    "{}:{:.3}:t{:.2}:r{:.2}:b{}",
-                    item.wallet_id, item.score, item.tradable_ratio, item.rug_ratio, item.buy_total
-                )
-            })
-            .collect::<Vec<_>>();
+        let top_wallets = top_wallet_labels(&ranked, 5);
 
         let summary = DiscoverySummary {
             window_start,
@@ -618,14 +602,6 @@ fn is_sol_buy(swap: &SwapEvent) -> bool {
 
 fn is_sol_sell(swap: &SwapEvent) -> bool {
     swap.token_out == SOL_MINT && swap.token_in != SOL_MINT
-}
-
-fn cmp_score_then_trades(a: &WalletSnapshot, b: &WalletSnapshot) -> Ordering {
-    b.score
-        .partial_cmp(&a.score)
-        .unwrap_or(Ordering::Equal)
-        .then_with(|| b.trades.cmp(&a.trades))
-        .then_with(|| a.wallet_id.cmp(&b.wallet_id))
 }
 
 #[cfg(test)]
