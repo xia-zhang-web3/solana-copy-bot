@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::SwapEvent;
 use reqwest::blocking::Client;
-use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -31,7 +31,11 @@ static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 mod migrations;
+mod sqlite_retry;
 mod system_events;
+
+use crate::sqlite_retry::is_retryable_sqlite_error;
+pub use sqlite_retry::is_retryable_sqlite_anyhow_error;
 
 pub struct SqliteStore {
     conn: Connection,
@@ -148,32 +152,6 @@ impl SqliteStore {
             )
             .context("failed to insert observed swap")?;
         Ok(written > 0)
-    }
-
-    fn execute_with_retry<F>(&self, mut operation: F) -> rusqlite::Result<usize>
-    where
-        F: FnMut(&Connection) -> rusqlite::Result<usize>,
-    {
-        for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
-            match operation(&self.conn) {
-                Ok(changed) => return Ok(changed),
-                Err(error) => {
-                    let retryable = is_retryable_sqlite_error(&error);
-                    if retryable {
-                        note_sqlite_busy_error();
-                    }
-                    if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
-                        note_sqlite_write_retry();
-                        std::thread::sleep(StdDuration::from_millis(
-                            SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
-                        ));
-                        continue;
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        unreachable!("retry loop must return on success or terminal error");
     }
 
     pub fn load_observed_swaps_since(&self, since: DateTime<Utc>) -> Result<Vec<SwapEvent>> {
@@ -3459,37 +3437,6 @@ fn parse_non_negative_i64(field: &str, order_id: &str, value: Option<i64>) -> Re
         Some(value) => Ok(Some(value as u64)),
         None => Ok(None),
     }
-}
-
-fn is_retryable_sqlite_message(message: &str) -> bool {
-    let lowered = message.to_ascii_lowercase();
-    lowered.contains("database is locked")
-        || lowered.contains("database is busy")
-        || lowered.contains("database table is locked")
-}
-
-fn is_retryable_sqlite_error(error: &rusqlite::Error) -> bool {
-    match error {
-        rusqlite::Error::SqliteFailure(code, message) => {
-            matches!(
-                code.code,
-                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
-            ) || message
-                .as_deref()
-                .map(is_retryable_sqlite_message)
-                .unwrap_or(false)
-        }
-        _ => is_retryable_sqlite_message(&error.to_string()),
-    }
-}
-
-pub fn is_retryable_sqlite_anyhow_error(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        if let Some(sqlite_error) = cause.downcast_ref::<rusqlite::Error>() {
-            return is_retryable_sqlite_error(sqlite_error);
-        }
-        is_retryable_sqlite_message(&cause.to_string())
-    })
 }
 
 fn post_helius_json(client: &Client, helius_http_url: &str, payload: &Value) -> Result<Value> {
