@@ -85,8 +85,19 @@ for file in "$@"; do
             next
           }
 
-          if (line ~ /^[[:space:]]*#\[cfg\(test\)\]/) {
+          if (line ~ /#\[cfg\(test\)\]/) {
             pending_cfg_test = 1
+            inline_item = line
+            sub(/^.*#\[cfg\(test\)\][[:space:]]*/, "", inline_item)
+            if (inline_item !~ /^[[:space:]]*$/ &&
+                inline_item !~ /^[[:space:]]*\/\// &&
+                inline_item !~ /^[[:space:]]*\/\*/) {
+              pending_cfg_test = 0
+              in_cfg_test_item = 1
+              cfg_item_depth = 0
+              cfg_item_saw_brace = 0
+              process_cfg_item_line(inline_item)
+            }
             next
           }
 
