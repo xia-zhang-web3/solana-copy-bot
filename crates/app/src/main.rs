@@ -27,11 +27,13 @@ mod config_contract;
 mod secrets;
 mod stale_close;
 mod swap_classification;
+mod task_spawns;
 
 use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::stale_close::close_stale_shadow_lots;
 use crate::swap_classification::{classify_swap_side, shadow_task_key_for_swap};
+use crate::task_spawns::{spawn_discovery_task, spawn_execution_task, spawn_shadow_snapshot_task};
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
@@ -2120,53 +2122,6 @@ fn format_error_chain(error: &anyhow::Error) -> String {
         chain.push_str(&cause.to_string());
     }
     chain
-}
-
-fn spawn_discovery_task(
-    sqlite_path: String,
-    discovery: DiscoveryService,
-    now: chrono::DateTime<Utc>,
-) -> impl FnOnce() -> Result<DiscoveryTaskOutput> {
-    move || {
-        let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
-            format!("failed to open sqlite db for discovery task: {sqlite_path}")
-        })?;
-        let summary = discovery.run_cycle(&store, now)?;
-        let active_wallets = store.list_active_follow_wallets()?;
-        Ok(DiscoveryTaskOutput {
-            active_wallets,
-            cycle_ts: now,
-            eligible_wallets: summary.eligible_wallets,
-            active_follow_wallets: summary.active_follow_wallets,
-        })
-    }
-}
-
-fn spawn_shadow_snapshot_task(
-    sqlite_path: String,
-    shadow: ShadowService,
-    now: chrono::DateTime<Utc>,
-) -> impl FnOnce() -> Result<ShadowSnapshot> {
-    move || {
-        let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
-            format!("failed to open sqlite db for shadow snapshot task: {sqlite_path}")
-        })?;
-        shadow.snapshot_24h(&store, now)
-    }
-}
-
-fn spawn_execution_task(
-    sqlite_path: String,
-    execution_runtime: Arc<ExecutionRuntime>,
-    now: chrono::DateTime<Utc>,
-    buy_submit_pause_reason: Option<String>,
-) -> impl FnOnce() -> Result<ExecutionBatchReport> {
-    move || {
-        let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
-            format!("failed to open sqlite db for execution task: {sqlite_path}")
-        })?;
-        execution_runtime.process_batch(&store, now, buy_submit_pause_reason.as_deref())
-    }
 }
 
 struct ShadowTaskOutput {
