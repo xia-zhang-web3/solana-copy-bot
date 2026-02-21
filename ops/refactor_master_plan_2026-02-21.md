@@ -1,6 +1,6 @@
 # Master Plan: Runtime and Ops Refactor Program (2026-02-21)
 
-Version: `rev-4`  
+Version: `rev-5`  
 Branch: `feat/yellowstone-grpc-migration`  
 Status: Ready for auditor review and execution
 
@@ -228,6 +228,10 @@ shellcheck -x tools/execution_go_nogo_report.sh
 # docker run --rm -v "$PWD:/work" -w /work koalaman/shellcheck:stable \
 #   shellcheck -x tools/adapter_secret_rotation_report.sh tools/execution_devnet_rehearsal.sh \
 #   tools/adapter_rollout_evidence_report.sh tools/execution_go_nogo_report.sh
+
+# hash tool portability:
+# - prefers sha256sum
+# - falls back to shasum -a 256
 
 # deterministic orchestrator captures + normalization, run #1
 tools/refactor_phase_gate.sh baseline --output-dir tmp/refactor-baseline/run1
@@ -770,8 +774,15 @@ bash -n tools/refactor_perf_report.sh
 bash -n tools/refactor_phase_gate.sh
 
 # lint all touched shell scripts in the phase range
-git diff --name-only phase-7-start-<short_sha>-<utc_date>..phase-7-end-<short_sha>-<utc_date> | rg '^tools/.*\\.sh$' | xargs -I{} bash -n {}
-git diff --name-only phase-7-start-<short_sha>-<utc_date>..phase-7-end-<short_sha>-<utc_date> | rg '^tools/.*\\.sh$' | xargs -I{} shellcheck -x {}
+PHASE7_START_TAG="phase-7-start-<short_sha>-<utc_date>"
+PHASE7_END_TAG="phase-7-end-<short_sha>-<utc_date>"
+phase7_scripts="$(git diff --name-only "${PHASE7_START_TAG}..${PHASE7_END_TAG}" | grep -E '^tools/.*\\.sh$' || true)"
+if [[ -n "$phase7_scripts" ]]; then
+  while IFS= read -r script; do
+    bash -n "$script"
+    shellcheck -x "$script"
+  done <<< "$phase7_scripts"
+fi
 
 shellcheck -x tools/adapter_secret_rotation_report.sh
 shellcheck -x tools/execution_devnet_rehearsal.sh
@@ -904,12 +915,13 @@ LOC outcome target:
 
 First executable slice after plan approval:
 
-1. Phase 0 baseline evidence (mandatory).
-2. Phase 1 adapter move-only micro-slice #1:
+1. Phase -1 tooling hardening and phase gate validation (mandatory).
+2. Phase 0 baseline evidence freeze (mandatory).
+3. Phase 1 adapter move-only micro-slice #1:
    1. Extract `http_utils` only.
-3. Phase 1 adapter move-only micro-slice #2:
+4. Phase 1 adapter move-only micro-slice #2:
    1. Extract `send_rpc` only.
-4. Phase 1 adapter move-only micro-slice #3:
+5. Phase 1 adapter move-only micro-slice #3:
    1. Extract `submit_verify` only.
 
 Each micro-slice must run full mandatory pack before next slice.

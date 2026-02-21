@@ -140,22 +140,22 @@ CREATE TABLE orders (
 );
 
 INSERT INTO shadow_lots(wallet_id, token, cost_sol, opened_ts)
-VALUES ('wallet-a', 'token-a', 0.25, datetime('now', '-1 hour'));
+VALUES ('wallet-a', 'token-a', 0.25, '2026-02-19 11:00:00');
 
 INSERT INTO shadow_closed_trades(pnl_sol, closed_ts)
-VALUES (0.02, datetime('now', '-30 minutes'));
+VALUES (0.02, '2026-02-19 11:30:00');
 
 INSERT INTO copy_signals(ts, status, side)
 VALUES
-  (datetime('now', '-10 minutes'), 'shadow_recorded', 'buy'),
-  (datetime('now', '-8 minutes'), 'execution_confirmed', 'sell');
+  ('2026-02-19 11:50:00', 'shadow_recorded', 'buy'),
+  ('2026-02-19 11:52:00', 'execution_confirmed', 'sell');
 
 INSERT INTO risk_events(ts, type, severity, details_json)
 VALUES
-  (datetime('now', '-5 minutes'), 'execution_submit_failed', 'error', '{"order_id":"order-strict","route":"paper","error_code":"submit_adapter_policy_echo_missing"}'),
-  (datetime('now', '-4 minutes'), 'execution_network_fee_unavailable_submit_hint_used', 'warn', '{"route":"paper"}'),
-  (datetime('now', '-3 minutes'), 'execution_network_fee_unavailable_fallback_used', 'warn', '{"route":"paper"}'),
-  (datetime('now', '-2 minutes'), 'execution_network_fee_hint_mismatch', 'warn', '{"route":"paper"}');
+  ('2026-02-19 11:55:00', 'execution_submit_failed', 'error', '{"order_id":"order-strict","route":"paper","error_code":"submit_adapter_policy_echo_missing"}'),
+  ('2026-02-19 11:56:00', 'execution_network_fee_unavailable_submit_hint_used', 'warn', '{"route":"paper"}'),
+  ('2026-02-19 11:57:00', 'execution_network_fee_unavailable_fallback_used', 'warn', '{"route":"paper"}'),
+  ('2026-02-19 11:58:00', 'execution_network_fee_hint_mismatch', 'warn', '{"route":"paper"}');
 
 INSERT INTO orders(
   order_id, route, status, err_code, simulation_error, submit_ts, confirm_ts,
@@ -163,8 +163,8 @@ INSERT INTO orders(
   base_fee_lamports_hint, priority_fee_lamports_hint
 )
 VALUES
-  ('order-confirmed-modern', 'paper', 'execution_confirmed', NULL, NULL, datetime('now', '-20 minutes'), datetime('now', '-15 minutes'), 3000, 2039280, 7000, 5000, 2000),
-  ('order-strict', 'paper', 'execution_failed', 'submit_terminal_rejected', 'submit_adapter_policy_echo_missing', datetime('now', '-10 minutes'), NULL, NULL, NULL, NULL, NULL, NULL);
+  ('order-confirmed-modern', 'paper', 'execution_confirmed', NULL, NULL, '2026-02-19 11:40:00', '2026-02-19 11:45:00', 3000, 2039280, 7000, 5000, 2000),
+  ('order-strict', 'paper', 'execution_failed', 'submit_terminal_rejected', 'submit_adapter_policy_echo_missing', '2026-02-19 11:50:00', NULL, NULL, NULL, NULL, NULL, NULL);
 
 INSERT INTO fills(order_id, fee)
 VALUES ('order-confirmed-modern', 0.00204928);
