@@ -17,6 +17,7 @@ pub mod pretrade;
 pub mod reconcile;
 pub mod simulator;
 pub mod submitter;
+mod submitter_response;
 
 use confirm::{
     ConfirmationStatus, FailClosedOrderConfirmer, OrderConfirmer, PaperOrderConfirmer,
