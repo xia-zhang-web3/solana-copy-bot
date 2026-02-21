@@ -1,8 +1,8 @@
 # Master Plan: Runtime and Ops Refactor Program (2026-02-21)
 
-Version: `rev-5`  
-Branch: `feat/yellowstone-grpc-migration`  
-Status: Ready for auditor review and execution
+Version: `rev-6`  
+Branch: `refactor/phase-2a-app-safe`  
+Status: Completed (all planned phases closed)
 
 ---
 

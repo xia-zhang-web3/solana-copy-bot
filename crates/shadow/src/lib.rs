@@ -1,10 +1,17 @@
 use anyhow::Result;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use copybot_config::ShadowConfig;
 use copybot_core_types::SwapEvent;
-use copybot_storage::{CopySignalRow, SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow};
+use copybot_storage::{CopySignalRow, SqliteStore};
 use std::collections::{HashMap, HashSet};
-use tracing::{info, warn};
+use tracing::info;
+
+mod candidate;
+use self::candidate::to_shadow_candidate;
+mod quality_gates;
+mod signals;
+mod snapshots;
+use self::signals::log_gate_drop;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const EPS: f64 = 1e-12;
@@ -116,14 +123,6 @@ impl FollowSnapshot {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ShadowCandidate {
-    side: String,
-    token: String,
-    leader_notional_sol: f64,
-    price_sol_per_token: f64,
-}
-
 impl ShadowService {
     pub fn new(config: ShadowConfig) -> Self {
         Self {
@@ -152,7 +151,7 @@ impl ShadowService {
         if !self.config.enabled {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::Disabled));
         }
-        let Some(candidate) = Self::to_shadow_candidate(swap) else {
+        let Some(candidate) = to_shadow_candidate(swap) else {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotSolLeg));
         };
         let latency_ms = (now - swap.ts_utc).num_milliseconds();
@@ -209,7 +208,7 @@ impl ShadowService {
         if !is_unfollowed_sell_exit
             && candidate.leader_notional_sol < self.config.min_leader_notional_sol
         {
-            Self::log_gate_drop(
+            log_gate_drop(
                 "notional",
                 ShadowDropReason::BelowNotional,
                 swap,
@@ -227,7 +226,7 @@ impl ShadowService {
         if !is_unfollowed_sell_exit
             && latency_ms > (self.config.max_signal_lag_seconds as i64 * 1_000)
         {
-            Self::log_gate_drop(
+            log_gate_drop(
                 "lag",
                 ShadowDropReason::LagExceeded,
                 swap,
@@ -243,7 +242,7 @@ impl ShadowService {
             if let Some(reason) =
                 self.drop_reason_for_buy_quality_gate(store, &candidate.token, swap.ts_utc, now)?
             {
-                Self::log_gate_drop(
+                log_gate_drop(
                     "quality",
                     reason,
                     swap,
@@ -262,7 +261,7 @@ impl ShadowService {
             .copy_notional_sol
             .min(candidate.leader_notional_sol);
         if copy_notional_sol <= EPS || candidate.price_sol_per_token <= EPS {
-            Self::log_gate_drop(
+            log_gate_drop(
                 "sizing",
                 ShadowDropReason::InvalidSizing,
                 swap,
@@ -290,7 +289,7 @@ impl ShadowService {
             status: "shadow_recorded".to_string(),
         };
         if !store.insert_copy_signal(&signal)? {
-            Self::log_gate_drop(
+            log_gate_drop(
                 "dedupe",
                 ShadowDropReason::DuplicateSignal,
                 swap,
@@ -332,7 +331,7 @@ impl ShadowService {
                 (close, Some(close.has_open_lots_after))
             }
             _ => {
-                Self::log_gate_drop(
+                log_gate_drop(
                     "side",
                     ShadowDropReason::UnsupportedSide,
                     swap,
@@ -360,219 +359,13 @@ impl ShadowService {
             has_open_lots_after_signal,
         }))
     }
-
-    pub fn snapshot_24h(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<ShadowSnapshot> {
-        let since = now - Duration::hours(24);
-        let (closed_trades_24h, realized_pnl_sol_24h) = store.shadow_realized_pnl_since(since)?;
-        let open_lots = store.shadow_open_lots_count()?;
-        Ok(ShadowSnapshot {
-            closed_trades_24h,
-            realized_pnl_sol_24h,
-            open_lots,
-        })
-    }
-
-    fn drop_reason_for_buy_quality_gate(
-        &self,
-        store: &SqliteStore,
-        token: &str,
-        signal_ts: DateTime<Utc>,
-        now: DateTime<Utc>,
-    ) -> Result<Option<ShadowDropReason>> {
-        if !self.config.quality_gates_enabled {
-            return Ok(None);
-        }
-
-        let stats = store.token_market_stats(token, signal_ts)?;
-        let rpc_quality = self.resolve_token_quality(store, token, now)?;
-        let proxy_age_seconds = stats
-            .first_seen
-            .map(|first_seen| (signal_ts - first_seen).num_seconds().max(0))
-            .unwrap_or(0) as u64;
-        let token_age_seconds = rpc_quality
-            .as_ref()
-            .and_then(|row| row.token_age_seconds)
-            .unwrap_or(proxy_age_seconds);
-        let holders = rpc_quality
-            .as_ref()
-            .and_then(|row| row.holders)
-            .unwrap_or(stats.holders_proxy);
-        let liquidity_sol = rpc_quality
-            .as_ref()
-            .and_then(|row| row.liquidity_sol)
-            .unwrap_or(stats.liquidity_sol_proxy);
-        let quality_source = if let Some(row) = rpc_quality.as_ref() {
-            if now - row.fetched_at <= Duration::seconds(QUALITY_CACHE_TTL_SECONDS) {
-                "rpc_cache"
-            } else {
-                "rpc_cache_stale"
-            }
-        } else {
-            "db_proxy"
-        };
-        info!(
-            token = %token,
-            quality_source,
-            token_age_seconds,
-            holders,
-            liquidity_sol,
-            "shadow quality metrics evaluated"
-        );
-
-        if self.config.min_token_age_seconds > 0 {
-            if token_age_seconds < self.config.min_token_age_seconds {
-                return Ok(Some(ShadowDropReason::TooNew));
-            }
-        }
-
-        if self.config.min_holders > 0 && holders < self.config.min_holders {
-            return Ok(Some(ShadowDropReason::LowHolders));
-        }
-
-        if self.config.min_liquidity_sol > 0.0
-            && liquidity_sol + EPS < self.config.min_liquidity_sol
-        {
-            return Ok(Some(ShadowDropReason::LowLiquidity));
-        }
-
-        if self.config.min_volume_5m_sol > 0.0
-            && stats.volume_5m_sol + EPS < self.config.min_volume_5m_sol
-        {
-            return Ok(Some(ShadowDropReason::LowVolume));
-        }
-
-        if self.config.min_unique_traders_5m > 0
-            && stats.unique_traders_5m < self.config.min_unique_traders_5m
-        {
-            return Ok(Some(ShadowDropReason::ThinMarket));
-        }
-
-        Ok(None)
-    }
-
-    fn log_gate_drop(
-        stage: &str,
-        reason: ShadowDropReason,
-        swap: &SwapEvent,
-        candidate: &ShadowCandidate,
-        latency_ms: i64,
-        runtime_followed: bool,
-        temporal_followed: bool,
-        is_unfollowed_sell_exit: bool,
-    ) {
-        if !runtime_followed && !temporal_followed && !is_unfollowed_sell_exit {
-            return;
-        }
-        info!(
-            stage,
-            reason = reason.as_str(),
-            wallet = %swap.wallet,
-            token = %candidate.token,
-            side = %candidate.side,
-            signature = %swap.signature,
-            leader_notional_sol = candidate.leader_notional_sol,
-            latency_ms,
-            runtime_followed,
-            temporal_followed,
-            is_unfollowed_sell_exit,
-            "shadow gate dropped"
-        );
-    }
-
-    fn resolve_token_quality(
-        &self,
-        store: &SqliteStore,
-        token: &str,
-        now: DateTime<Utc>,
-    ) -> Result<Option<TokenQualityCacheRow>> {
-        let cached = store.get_token_quality_cache(token)?;
-        let is_fresh = cached
-            .as_ref()
-            .map(|row| now - row.fetched_at <= Duration::seconds(QUALITY_CACHE_TTL_SECONDS))
-            .unwrap_or(false);
-        if is_fresh {
-            return Ok(cached);
-        }
-
-        let Some(helius_http_url) = self.helius_http_url.as_deref() else {
-            return Ok(cached);
-        };
-
-        match Self::fetch_token_quality_from_helius_guarded(
-            helius_http_url,
-            token,
-            QUALITY_RPC_TIMEOUT_MS,
-            QUALITY_MAX_SIGNATURE_PAGES,
-            Some(self.config.min_token_age_seconds),
-        ) {
-            Ok(fetched) => {
-                store.upsert_token_quality_cache(
-                    token,
-                    fetched.holders,
-                    fetched.liquidity_sol,
-                    fetched.token_age_seconds,
-                    now,
-                )?;
-                store.get_token_quality_cache(token)
-            }
-            Err(error) => {
-                warn!(
-                    error = %error,
-                    token = %token,
-                    "failed to refresh token quality via helius, falling back"
-                );
-                Ok(cached)
-            }
-        }
-    }
-
-    fn fetch_token_quality_from_helius_guarded(
-        helius_http_url: &str,
-        token: &str,
-        timeout_ms: u64,
-        max_signature_pages: u32,
-        min_age_hint_seconds: Option<u64>,
-    ) -> Result<TokenQualityRpcRow> {
-        SqliteStore::fetch_token_quality_from_helius(
-            helius_http_url,
-            token,
-            timeout_ms,
-            max_signature_pages,
-            min_age_hint_seconds,
-        )
-    }
-
-    fn to_shadow_candidate(swap: &SwapEvent) -> Option<ShadowCandidate> {
-        if swap.amount_in <= EPS || swap.amount_out <= EPS {
-            return None;
-        }
-
-        if swap.token_in == SOL_MINT && swap.token_out != SOL_MINT {
-            return Some(ShadowCandidate {
-                side: "buy".to_string(),
-                token: swap.token_out.clone(),
-                leader_notional_sol: swap.amount_in,
-                price_sol_per_token: swap.amount_in / swap.amount_out,
-            });
-        }
-
-        if swap.token_out == SOL_MINT && swap.token_in != SOL_MINT {
-            return Some(ShadowCandidate {
-                side: "sell".to_string(),
-                token: swap.token_in.clone(),
-                leader_notional_sol: swap.amount_out,
-                price_sol_per_token: swap.amount_out / swap.amount_in,
-            });
-        }
-
-        None
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::Context;
+    use chrono::Duration;
     use copybot_core_types::SwapEvent;
     use copybot_storage::SqliteStore;
     use std::path::Path;
