@@ -1326,6 +1326,38 @@ fn sanitize_json_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+struct ShadowScheduler {
+    shadow_workers: JoinSet<ShadowTaskOutput>,
+    shadow_snapshot_handle: Option<JoinHandle<Result<ShadowSnapshot>>>,
+    pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
+    pending_shadow_task_count: usize,
+    ready_shadow_keys: VecDeque<ShadowTaskKey>,
+    ready_shadow_key_set: HashSet<ShadowTaskKey>,
+    inflight_shadow_keys: HashSet<ShadowTaskKey>,
+    shadow_queue_backpressure_active: bool,
+    shadow_scheduler_needs_reset: bool,
+    held_shadow_sells: HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>>,
+    shadow_holdback_counts: BTreeMap<&'static str, u64>,
+}
+
+impl ShadowScheduler {
+    fn new() -> Self {
+        Self {
+            shadow_workers: JoinSet::new(),
+            shadow_snapshot_handle: None,
+            pending_shadow_tasks: HashMap::new(),
+            pending_shadow_task_count: 0,
+            ready_shadow_keys: VecDeque::new(),
+            ready_shadow_key_set: HashSet::new(),
+            inflight_shadow_keys: HashSet::new(),
+            shadow_queue_backpressure_active: false,
+            shadow_scheduler_needs_reset: false,
+            held_shadow_sells: HashMap::new(),
+            shadow_holdback_counts: BTreeMap::new(),
+        }
+    }
+}
+
 async fn run_app_loop(
     store: SqliteStore,
     mut ingestion: IngestionService,
@@ -1372,18 +1404,7 @@ async fn run_app_loop(
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
-    let mut shadow_workers: JoinSet<ShadowTaskOutput> = JoinSet::new();
-    let mut shadow_snapshot_handle: Option<JoinHandle<Result<ShadowSnapshot>>> = None;
-    let mut pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>> =
-        HashMap::new();
-    let mut pending_shadow_task_count: usize = 0;
-    let mut ready_shadow_keys: VecDeque<ShadowTaskKey> = VecDeque::new();
-    let mut ready_shadow_key_set: HashSet<ShadowTaskKey> = HashSet::new();
-    let mut inflight_shadow_keys: HashSet<ShadowTaskKey> = HashSet::new();
-    let mut shadow_queue_backpressure_active = false;
-    let mut shadow_scheduler_needs_reset = false;
-    let mut held_shadow_sells: HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>> = HashMap::new();
-    let mut shadow_holdback_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
     let mut operator_emergency_stop = OperatorEmergencyStop::from_env();
     let mut execution_emergency_stop_active_logged = false;
@@ -1414,58 +1435,59 @@ async fn run_app_loop(
     loop {
         operator_emergency_stop.refresh(&store, Utc::now());
 
-        if shadow_scheduler_needs_reset {
-            if shadow_workers.is_empty() {
-                inflight_shadow_keys.clear();
+        if shadow_scheduler.shadow_scheduler_needs_reset {
+            if shadow_scheduler.shadow_workers.is_empty() {
+                shadow_scheduler.inflight_shadow_keys.clear();
                 rebuild_shadow_ready_queue(
-                    &pending_shadow_tasks,
-                    &mut ready_shadow_keys,
-                    &mut ready_shadow_key_set,
-                    &inflight_shadow_keys,
+                    &shadow_scheduler.pending_shadow_tasks,
+                    &mut shadow_scheduler.ready_shadow_keys,
+                    &mut shadow_scheduler.ready_shadow_key_set,
+                    &shadow_scheduler.inflight_shadow_keys,
                 );
-                shadow_scheduler_needs_reset = false;
+                shadow_scheduler.shadow_scheduler_needs_reset = false;
                 warn!("shadow scheduler recovered after worker join error");
             }
         } else {
             spawn_shadow_tasks_up_to_limit(
-                &mut shadow_workers,
-                &mut pending_shadow_tasks,
-                &mut pending_shadow_task_count,
-                &mut ready_shadow_keys,
-                &mut ready_shadow_key_set,
-                &mut inflight_shadow_keys,
+                &mut shadow_scheduler.shadow_workers,
+                &mut shadow_scheduler.pending_shadow_tasks,
+                &mut shadow_scheduler.pending_shadow_task_count,
+                &mut shadow_scheduler.ready_shadow_keys,
+                &mut shadow_scheduler.ready_shadow_key_set,
+                &mut shadow_scheduler.inflight_shadow_keys,
                 &sqlite_path,
                 &shadow,
                 SHADOW_WORKER_POOL_SIZE,
             );
         }
         release_held_shadow_sells(
-            &mut held_shadow_sells,
-            &mut pending_shadow_tasks,
-            &mut pending_shadow_task_count,
-            &mut ready_shadow_keys,
-            &mut ready_shadow_key_set,
-            &inflight_shadow_keys,
+            &mut shadow_scheduler.held_shadow_sells,
+            &mut shadow_scheduler.pending_shadow_tasks,
+            &mut shadow_scheduler.pending_shadow_task_count,
+            &mut shadow_scheduler.ready_shadow_keys,
+            &mut shadow_scheduler.ready_shadow_key_set,
+            &shadow_scheduler.inflight_shadow_keys,
             &open_shadow_lots,
             &mut shadow_drop_reason_counts,
             &mut shadow_drop_stage_counts,
             &mut shadow_queue_full_outcome_counts,
-            &mut shadow_holdback_counts,
+            &mut shadow_scheduler.shadow_holdback_counts,
             SHADOW_PENDING_TASK_CAPACITY,
             Utc::now(),
         );
 
-        let shadow_queue_full = pending_shadow_task_count >= SHADOW_PENDING_TASK_CAPACITY;
-        if shadow_queue_full && !shadow_queue_backpressure_active {
-            shadow_queue_backpressure_active = true;
+        let shadow_queue_full =
+            shadow_scheduler.pending_shadow_task_count >= SHADOW_PENDING_TASK_CAPACITY;
+        if shadow_queue_full && !shadow_scheduler.shadow_queue_backpressure_active {
+            shadow_scheduler.shadow_queue_backpressure_active = true;
             warn!(
-                pending_shadow_task_count,
+                shadow_scheduler.pending_shadow_task_count,
                 shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
                 "shadow queue backpressure active; switching to inline shadow processing"
             );
             let details_json = format!(
                 "{{\"reason\":\"queue_backpressure\",\"pending\":{},\"capacity\":{}}}",
-                pending_shadow_task_count, SHADOW_PENDING_TASK_CAPACITY
+                shadow_scheduler.pending_shadow_task_count, SHADOW_PENDING_TASK_CAPACITY
             );
             if let Err(error) = store.insert_risk_event(
                 "shadow_queue_saturated",
@@ -1478,10 +1500,10 @@ async fn run_app_loop(
                     "failed to persist shadow queue backpressure risk event"
                 );
             }
-        } else if !shadow_queue_full && shadow_queue_backpressure_active {
-            shadow_queue_backpressure_active = false;
+        } else if !shadow_queue_full && shadow_scheduler.shadow_queue_backpressure_active {
+            shadow_scheduler.shadow_queue_backpressure_active = false;
             info!(
-                pending_shadow_task_count,
+                shadow_scheduler.pending_shadow_task_count,
                 shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
                 "shadow queue backpressure cleared"
             );
@@ -1521,15 +1543,15 @@ async fn run_app_loop(
                     }
                 }
             }
-            shadow_result = shadow_workers.join_next(), if !shadow_workers.is_empty() => {
+            shadow_result = shadow_scheduler.shadow_workers.join_next(), if !shadow_scheduler.shadow_workers.is_empty() => {
                 match shadow_result {
                     Some(Ok(task_output)) => {
                         mark_shadow_task_complete(
                             &task_output.key,
-                            &pending_shadow_tasks,
-                            &mut ready_shadow_keys,
-                            &mut ready_shadow_key_set,
-                            &mut inflight_shadow_keys,
+                            &shadow_scheduler.pending_shadow_tasks,
+                            &mut shadow_scheduler.ready_shadow_keys,
+                            &mut shadow_scheduler.ready_shadow_key_set,
+                            &mut shadow_scheduler.inflight_shadow_keys,
                         );
                         handle_shadow_task_output(
                             task_output,
@@ -1540,19 +1562,19 @@ async fn run_app_loop(
                     }
                     Some(Err(error)) => {
                         warn!(error = %error, "shadow task join failed");
-                        shadow_scheduler_needs_reset = true;
+                        shadow_scheduler.shadow_scheduler_needs_reset = true;
                     }
                     None => {}
                 }
             }
             snapshot_result = async {
-                if let Some(handle) = &mut shadow_snapshot_handle {
+                if let Some(handle) = &mut shadow_scheduler.shadow_snapshot_handle {
                     Some(handle.await)
                 } else {
                     None
                 }
-            }, if shadow_snapshot_handle.is_some() => {
-                shadow_snapshot_handle = None;
+            }, if shadow_scheduler.shadow_snapshot_handle.is_some() => {
+                shadow_scheduler.shadow_snapshot_handle = None;
                 match snapshot_result.expect("guard ensures shadow snapshot task exists") {
                     Ok(Ok(snapshot)) => {
                         match store.list_shadow_open_pairs() {
@@ -1586,12 +1608,12 @@ async fn run_app_loop(
                             );
                             shadow_queue_full_outcome_counts.clear();
                         }
-                        if !shadow_holdback_counts.is_empty() {
+                        if !shadow_scheduler.shadow_holdback_counts.is_empty() {
                             info!(
-                                holdback_outcomes = ?shadow_holdback_counts,
+                                holdback_outcomes = ?shadow_scheduler.shadow_holdback_counts,
                                 "shadow causal holdback outcomes"
                             );
-                            shadow_holdback_counts.clear();
+                            shadow_scheduler.shadow_holdback_counts.clear();
                         }
                     }
                     Ok(Err(error)) => {
@@ -1838,8 +1860,8 @@ async fn run_app_loop(
                             let key_tuple = (sell_key.wallet.clone(), sell_key.token.clone());
                             let has_pending_or_inflight = key_has_pending_or_inflight(
                                 &sell_key,
-                                &pending_shadow_tasks,
-                                &inflight_shadow_keys,
+                                &shadow_scheduler.pending_shadow_tasks,
+                                &shadow_scheduler.inflight_shadow_keys,
                             );
                             if !wallet_has_recent_follow_history
                                 && !has_pending_or_inflight
@@ -1912,52 +1934,52 @@ async fn run_app_loop(
                             shadow_causal_holdback_ms,
                             side,
                             &task_input.key,
-                            &pending_shadow_tasks,
-                            &inflight_shadow_keys,
+                            &shadow_scheduler.pending_shadow_tasks,
+                            &shadow_scheduler.inflight_shadow_keys,
                             &open_shadow_lots,
                         ) {
                             hold_sell_for_causality(
-                                &mut held_shadow_sells,
+                                &mut shadow_scheduler.held_shadow_sells,
                                 task_input,
                                 shadow_causal_holdback_ms,
                                 Utc::now(),
-                                &mut shadow_holdback_counts,
+                                &mut shadow_scheduler.shadow_holdback_counts,
                             );
                             continue;
                         }
                         if should_process_shadow_inline(
                             shadow_queue_full,
-                            shadow_scheduler_needs_reset,
-                            shadow_workers.len(),
+                            shadow_scheduler.shadow_scheduler_needs_reset,
+                            shadow_scheduler.shadow_workers.len(),
                             &task_input.key,
-                            &pending_shadow_tasks,
-                            &inflight_shadow_keys,
+                            &shadow_scheduler.pending_shadow_tasks,
+                            &shadow_scheduler.inflight_shadow_keys,
                         ) {
-                            if inflight_shadow_keys.insert(task_input.key.clone()) {
+                            if shadow_scheduler.inflight_shadow_keys.insert(task_input.key.clone()) {
                                 spawn_shadow_worker_task(
-                                    &mut shadow_workers,
+                                    &mut shadow_scheduler.shadow_workers,
                                     &shadow,
                                     &sqlite_path,
                                     task_input,
                                 );
                             } else {
                                 if let Err(dropped_task) = enqueue_shadow_task(
-                                    &mut pending_shadow_tasks,
-                                    &mut pending_shadow_task_count,
-                                    &mut ready_shadow_keys,
-                                    &mut ready_shadow_key_set,
-                                    &inflight_shadow_keys,
+                                    &mut shadow_scheduler.pending_shadow_tasks,
+                                    &mut shadow_scheduler.pending_shadow_task_count,
+                                    &mut shadow_scheduler.ready_shadow_keys,
+                                    &mut shadow_scheduler.ready_shadow_key_set,
+                                    &shadow_scheduler.inflight_shadow_keys,
                                     SHADOW_PENDING_TASK_CAPACITY,
                                     task_input,
                                 ) {
                                     handle_shadow_enqueue_overflow(
                                         side,
                                         dropped_task,
-                                        &mut pending_shadow_tasks,
-                                        &mut pending_shadow_task_count,
-                                        &mut ready_shadow_keys,
-                                        &mut ready_shadow_key_set,
-                                        &inflight_shadow_keys,
+                                        &mut shadow_scheduler.pending_shadow_tasks,
+                                        &mut shadow_scheduler.pending_shadow_task_count,
+                                        &mut shadow_scheduler.ready_shadow_keys,
+                                        &mut shadow_scheduler.ready_shadow_key_set,
+                                        &shadow_scheduler.inflight_shadow_keys,
                                         SHADOW_PENDING_TASK_CAPACITY,
                                         &mut shadow_drop_reason_counts,
                                         &mut shadow_drop_stage_counts,
@@ -1967,22 +1989,22 @@ async fn run_app_loop(
                             }
                         } else {
                             if let Err(dropped_task) = enqueue_shadow_task(
-                                &mut pending_shadow_tasks,
-                                &mut pending_shadow_task_count,
-                                &mut ready_shadow_keys,
-                                &mut ready_shadow_key_set,
-                                &inflight_shadow_keys,
+                                &mut shadow_scheduler.pending_shadow_tasks,
+                                &mut shadow_scheduler.pending_shadow_task_count,
+                                &mut shadow_scheduler.ready_shadow_keys,
+                                &mut shadow_scheduler.ready_shadow_key_set,
+                                &shadow_scheduler.inflight_shadow_keys,
                                 SHADOW_PENDING_TASK_CAPACITY,
                                 task_input,
                             ) {
                                 handle_shadow_enqueue_overflow(
                                     side,
                                     dropped_task,
-                                    &mut pending_shadow_tasks,
-                                    &mut pending_shadow_task_count,
-                                    &mut ready_shadow_keys,
-                                    &mut ready_shadow_key_set,
-                                    &inflight_shadow_keys,
+                                    &mut shadow_scheduler.pending_shadow_tasks,
+                                    &mut shadow_scheduler.pending_shadow_task_count,
+                                    &mut shadow_scheduler.ready_shadow_keys,
+                                    &mut shadow_scheduler.ready_shadow_key_set,
+                                    &shadow_scheduler.inflight_shadow_keys,
                                     SHADOW_PENDING_TASK_CAPACITY,
                                     &mut shadow_drop_reason_counts,
                                     &mut shadow_drop_stage_counts,
@@ -2037,11 +2059,11 @@ async fn run_app_loop(
                         warn!(error = %error, "stale lot cleanup failed");
                     }
                 }
-                if shadow_snapshot_handle.is_some() {
+                if shadow_scheduler.shadow_snapshot_handle.is_some() {
                     warn!("shadow snapshot still running, skipping scheduled trigger");
                     continue;
                 }
-                shadow_snapshot_handle = Some(tokio::task::spawn_blocking(spawn_shadow_snapshot_task(
+                shadow_scheduler.shadow_snapshot_handle = Some(tokio::task::spawn_blocking(spawn_shadow_snapshot_task(
                     sqlite_path.clone(),
                     shadow.clone(),
                     Utc::now(),
