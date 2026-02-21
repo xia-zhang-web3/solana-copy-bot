@@ -7,7 +7,7 @@ Usage: tools/refactor_loc_report.sh <file> [file...]
 
 Reports:
   - raw_loc
-  - runtime_loc_excluding_cfg_test (Rust only)
+  - runtime_loc_excluding_cfg_test (Rust only, excludes items annotated with #[cfg(test)])
   - cfg_test_loc
 EOF
 }
@@ -40,38 +40,49 @@ for file in "$@"; do
         BEGIN {
           runtime = 0
           pending_cfg_test = 0
-          in_test_module = 0
-          test_depth = 0
+          in_cfg_test_item = 0
+          cfg_item_depth = 0
+          cfg_item_saw_brace = 0
+        }
+
+        function process_cfg_item_line(line, delta) {
+          if (line ~ /\{/) {
+            cfg_item_saw_brace = 1
+          }
+          delta = brace_delta(line)
+          cfg_item_depth += delta
+
+          if (cfg_item_saw_brace == 1) {
+            if (cfg_item_depth <= 0) {
+              in_cfg_test_item = 0
+              cfg_item_depth = 0
+              cfg_item_saw_brace = 0
+            }
+          } else if (line ~ /;[[:space:]]*$/) {
+            in_cfg_test_item = 0
+            cfg_item_depth = 0
+            cfg_item_saw_brace = 0
+          }
         }
 
         {
           line = $0
 
-          if (in_test_module == 1) {
-            test_depth += brace_delta(line)
-            if (test_depth <= 0) {
-              in_test_module = 0
-              test_depth = 0
-            }
+          if (in_cfg_test_item == 1) {
+            process_cfg_item_line(line)
             next
           }
 
           if (pending_cfg_test == 1) {
-            if (line ~ /^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\{/) {
-              pending_cfg_test = 0
-              test_depth = brace_delta(line)
-              if (test_depth > 0) {
-                in_test_module = 1
-              } else {
-                in_test_module = 0
-                test_depth = 0
-              }
-              next
-            }
-            if (line ~ /^[[:space:]]*#\[/ || line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*\/\//) {
+            if (line ~ /^[[:space:]]*#\[/ || line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*\/\// || line ~ /^[[:space:]]*\/\*/) {
               next
             }
             pending_cfg_test = 0
+            in_cfg_test_item = 1
+            cfg_item_depth = 0
+            cfg_item_saw_brace = 0
+            process_cfg_item_line(line)
+            next
           }
 
           if (line ~ /^[[:space:]]*#\[cfg\(test\)\]/) {

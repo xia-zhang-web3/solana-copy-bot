@@ -1,6 +1,6 @@
 # Master Plan: Runtime and Ops Refactor Program (2026-02-21)
 
-Version: `rev-2`  
+Version: `rev-3`  
 Branch: `feat/yellowstone-grpc-migration`  
 Status: Ready for auditor review and execution
 
@@ -528,7 +528,8 @@ Targeted checks:
 
 ```bash
 cargo test -p copybot-storage -q live_unrealized
-cargo test -p copybot-storage -q reliable_token_sol_price_for_stale_close
+cargo test -p copybot-storage -q live_unrealized_pnl_sol_ignores_micro_swap_outlier_price
+cargo test -p copybot-storage -q live_unrealized_pnl_sol_counts_missing_when_only_micro_quotes_exist
 ```
 
 Exit criteria:
@@ -733,15 +734,15 @@ Rollback command model:
 | Phase | Rollback trigger | Rollback path | Max rollback window | Owner |
 |---|---|---|---|---|
 | 0 | Baseline missing/incomplete | Revert baseline commit, regenerate evidence | Same day | Refactor owner |
-| 1 | Any contract drift in adapter responses/error codes | Revert latest adapter slice commit(s) only | 24h | Runtime owner |
-| 2a | Risk gate or stale-close drift | Revert app slice commit(s), keep adapter intact | 24h | Runtime owner |
-| 3 | Pricing/finalize/migration parity drift | Revert storage slice commit(s) | 24h | Runtime owner |
-| 4 | Retryable/terminal taxonomy drift | Revert execution slice commit(s) | 24h | Runtime owner |
-| 5A | Snapshot/ingestion counter drift | Revert ingestion slice commit(s) | 24h | Runtime owner |
-| 5B | Env precedence or parse drift | Revert config slice commit(s) | 24h | Runtime owner |
-| 6 | Queue/scheduler behavior drift | Revert app state-consolidation commit(s) | 24h | Runtime owner |
-| 7 | Script output contract drift | Revert script helper extraction commit(s) | 24h | Ops owner |
-| 8 | Discovery/shadow behavior drift | Revert discovery/shadow slice commit(s) | 24h | Runtime owner |
+| 1 | Any contract drift in adapter responses/error codes | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Runtime owner |
+| 2a | Risk gate or stale-close drift | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Runtime owner |
+| 3 | Pricing/finalize/migration parity drift | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Runtime owner |
+| 4 | Retryable/terminal taxonomy drift | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Runtime owner |
+| 5A | Snapshot/ingestion counter drift | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Runtime owner |
+| 5B | Env precedence or parse drift | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Runtime owner |
+| 6 | Queue/scheduler behavior drift | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Runtime owner |
+| 7 | Script output contract drift | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Ops owner |
+| 8 | Discovery/shadow behavior drift | Revert phase merge commit (or latest slice commits if unmerged) | 24h | Runtime owner |
 | 9 | Any event-loop orchestration drift | Revert full phase branch merge | 12h | Runtime owner |
 
 ---
