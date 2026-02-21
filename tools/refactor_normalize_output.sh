@@ -21,6 +21,6 @@ sed -E \
   -e 's#^timestamp_utc: .*#timestamp_utc: <normalized>#' \
   -e 's#^(artifact_[^:]+): .*#\1: <normalized>#' \
   -e 's#^go_nogo_nested_capture_path: .*#go_nogo_nested_capture_path: <normalized>#' \
-  -e 's#tmp/refactor-baseline/[^/[:space:]]+#tmp/refactor-baseline/<run>#g' \
-  -e 's#/tmp/refactor-baseline/[^/[:space:]]+#/tmp/refactor-baseline/<run>#g' \
+  -e 's#tmp/refactor-baseline[^/[:space:]]*/[^/[:space:]]+#tmp/refactor-baseline/<run>#g' \
+  -e 's#/tmp/refactor-baseline[^/[:space:]]*/[^/[:space:]]+#/tmp/refactor-baseline/<run>#g' \
   "$input" >"$output"

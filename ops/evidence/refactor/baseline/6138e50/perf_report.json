@@ -1,0 +1,12 @@
+{
+  "command": [
+    "tools/ops_scripts_smoke_test.sh"
+  ],
+  "runs": 3,
+  "durations_ms": [
+    20950.986959040165,
+    19905.269833048806,
+    19578.59899988398
+  ],
+  "median_ms": 19905.269833048806
+}

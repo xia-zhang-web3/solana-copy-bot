@@ -1,0 +1,32 @@
+=== Execution Go/No-Go Summary ===
+utc_now: <normalized>
+config: tmp/refactor-baseline/<run>/fixture/devnet_rehearsal.toml
+db: tmp/refactor-baseline/<run>/fixture/legacy.db
+service: solana-copy-bot
+window_hours: 24
+risk_events_minutes: 60
+
+fee_decomposition_verdict: PASS
+fee_decomposition_reason: no confirmed orders in time window
+route_profile_verdict: PASS
+route_profile_reason: primary route sample is below minimum attempted threshold
+recommended_route_order_csv: paper
+preflight_verdict: PASS
+preflight_reason: adapter runtime contract checks passed
+preflight_error_count: 0
+
+ingestion_lag_ms_p95: 1700
+ingestion_lag_ms_p99: 2600
+parse_rejected_total: 5
+parse_rejected_by_reason: {"missing_signer": 3, "other": 2}}
+parse_fallback_by_reason: {"missing_program_ids_fallback": 1, "missing_slot_fallback": 2}}
+replaced_ratio_last_interval: n/a
+
+overall_go_nogo_verdict: GO
+overall_go_nogo_reason: adapter preflight, fee decomposition and route profile readiness gates are PASS
+
+artifacts_written: true
+artifact_calibration: <normalized>
+artifact_snapshot: <normalized>
+artifact_preflight: <normalized>
+artifact_summary: <normalized>

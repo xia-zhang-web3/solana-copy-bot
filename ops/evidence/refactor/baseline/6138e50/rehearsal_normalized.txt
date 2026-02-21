@@ -1,0 +1,27 @@
+=== Execution Devnet Rehearsal ===
+utc_now: <normalized>
+config: tmp/refactor-baseline/<run>/fixture/devnet_rehearsal.toml
+service: solana-copy-bot
+window_hours: 24
+risk_events_minutes: 60
+
+execution_enabled: true
+execution_mode: adapter_submit_confirm
+rpc_devnet_http_url: https://api.devnet.solana.com
+config_error_count: 0
+preflight_verdict: PASS
+preflight_reason: adapter runtime contract checks passed
+overall_go_nogo_verdict: GO
+overall_go_nogo_reason: adapter preflight, fee decomposition and route profile readiness gates are PASS
+tests_run: false
+tests_total: 0
+tests_failed: 0
+devnet_rehearsal_verdict: GO
+devnet_rehearsal_reason: test mode override active (RUN_TESTS=false, DEVNET_REHEARSAL_TEST_MODE=true)
+
+artifacts_written: true
+artifact_summary: <normalized>
+artifact_preflight: <normalized>
+artifact_go_nogo: <normalized>
+artifact_tests: <normalized>
+artifact_go_nogo_nested_capture: <normalized>

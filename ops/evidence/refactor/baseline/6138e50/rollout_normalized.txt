@@ -1,0 +1,28 @@
+=== Adapter Rollout Evidence Summary ===
+utc_now: <normalized>
+adapter_env: tmp/refactor-baseline/<run>/fixture/adapter.env
+config: tmp/refactor-baseline/<run>/fixture/devnet_rehearsal.toml
+service: solana-copy-bot
+window_hours: 24
+risk_events_minutes: 60
+
+rotation_readiness_verdict: PASS
+rotation_readiness_reason: secret files are readable, non-empty, and auth contract is satisfied
+rotation_exit_code: 0
+
+devnet_rehearsal_verdict: GO
+devnet_rehearsal_reason: test mode override active (RUN_TESTS=false, DEVNET_REHEARSAL_TEST_MODE=true)
+devnet_rehearsal_exit_code: 0
+preflight_verdict: PASS
+overall_go_nogo_verdict: GO
+tests_run: false
+tests_failed: 0
+input_error_count: 0
+
+adapter_rollout_verdict: GO
+adapter_rollout_reason: rotation readiness and devnet rehearsal gates passed
+
+artifacts_written: true
+artifact_summary: <normalized>
+artifact_rotation_capture: <normalized>
+artifact_rehearsal_capture: <normalized>
