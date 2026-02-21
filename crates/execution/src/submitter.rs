@@ -3,7 +3,7 @@ use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use uuid::Uuid;
 
 use crate::auth::compute_hmac_signature_hex;
@@ -149,6 +149,7 @@ struct DynamicCuPricePolicy {
     rpc_endpoints: Vec<String>,
     percentile: u8,
     max_micro_lamports: u64,
+    timeout_ms: u64,
 }
 
 const PRIORITY_FEE_HINT_TIMEOUT_MS_CAP: u64 = 1_000;
@@ -301,6 +302,7 @@ impl AdapterOrderSubmitter {
             if pretrade_max_priority_fee_micro_lamports == 0 {
                 return None;
             }
+            let hint_timeout_ms = priority_fee_hint_timeout_ms(timeout_ms);
             if route_compute_unit_price_micro_lamports
                 .values()
                 .any(|value| *value > pretrade_max_priority_fee_micro_lamports)
@@ -316,6 +318,7 @@ impl AdapterOrderSubmitter {
                 rpc_endpoints,
                 percentile: submit_dynamic_cu_price_percentile,
                 max_micro_lamports: pretrade_max_priority_fee_micro_lamports,
+                timeout_ms: hint_timeout_ms,
             })
         } else {
             None
@@ -329,7 +332,10 @@ impl AdapterOrderSubmitter {
             Err(_) => return None,
         };
         let dynamic_cu_price_client = if dynamic_cu_price_policy.is_some() {
-            let hint_timeout_ms = priority_fee_hint_timeout_ms(timeout_ms);
+            let hint_timeout_ms = dynamic_cu_price_policy
+                .as_ref()
+                .map(|policy| policy.timeout_ms)
+                .unwrap_or_else(|| priority_fee_hint_timeout_ms(timeout_ms));
             match Client::builder()
                 .timeout(StdDuration::from_millis(hint_timeout_ms))
                 .build()
@@ -410,10 +416,18 @@ impl AdapterOrderSubmitter {
         policy: &DynamicCuPricePolicy,
     ) -> Option<u64> {
         let client = self.dynamic_cu_price_client.as_ref()?;
+        let started = Instant::now();
+        let total_timeout = StdDuration::from_millis(policy.timeout_ms);
         for endpoint in &policy.rpc_endpoints {
+            let elapsed = started.elapsed();
+            if elapsed >= total_timeout {
+                break;
+            }
+            let remaining_timeout = total_timeout.saturating_sub(elapsed);
             let response = match client
                 .post(endpoint)
                 .header("content-type", "application/json")
+                .timeout(remaining_timeout)
                 .json(&json!({
                     "jsonrpc": "2.0",
                     "id": "copybot-priority-fee",
@@ -1690,6 +1704,40 @@ mod tests {
             50.0,
         );
         assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_uses_capped_hint_timeout_budget() {
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            "http://rpc.primary",
+            "http://rpc.fallback",
+            true,
+            75,
+            5_000,
+            3_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        assert_eq!(
+            submitter
+                .dynamic_cu_price_policy
+                .as_ref()
+                .map(|value| value.timeout_ms),
+            Some(1_000)
+        );
     }
 
     #[test]
