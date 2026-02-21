@@ -6,6 +6,9 @@ use copybot_storage::{CopySignalRow, SqliteStore, TokenQualityCacheRow, TokenQua
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
+mod candidate;
+use self::candidate::{to_shadow_candidate, ShadowCandidate};
+
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const EPS: f64 = 1e-12;
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
@@ -116,14 +119,6 @@ impl FollowSnapshot {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ShadowCandidate {
-    side: String,
-    token: String,
-    leader_notional_sol: f64,
-    price_sol_per_token: f64,
-}
-
 impl ShadowService {
     pub fn new(config: ShadowConfig) -> Self {
         Self {
@@ -152,7 +147,7 @@ impl ShadowService {
         if !self.config.enabled {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::Disabled));
         }
-        let Some(candidate) = Self::to_shadow_candidate(swap) else {
+        let Some(candidate) = to_shadow_candidate(swap) else {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotSolLeg));
         };
         let latency_ms = (now - swap.ts_utc).num_milliseconds();
@@ -540,32 +535,6 @@ impl ShadowService {
             max_signature_pages,
             min_age_hint_seconds,
         )
-    }
-
-    fn to_shadow_candidate(swap: &SwapEvent) -> Option<ShadowCandidate> {
-        if swap.amount_in <= EPS || swap.amount_out <= EPS {
-            return None;
-        }
-
-        if swap.token_in == SOL_MINT && swap.token_out != SOL_MINT {
-            return Some(ShadowCandidate {
-                side: "buy".to_string(),
-                token: swap.token_out.clone(),
-                leader_notional_sol: swap.amount_in,
-                price_sol_per_token: swap.amount_in / swap.amount_out,
-            });
-        }
-
-        if swap.token_out == SOL_MINT && swap.token_in != SOL_MINT {
-            return Some(ShadowCandidate {
-                side: "sell".to_string(),
-                token: swap.token_in.clone(),
-                leader_notional_sol: swap.amount_out,
-                price_sol_per_token: swap.amount_out / swap.amount_in,
-            });
-        }
-
-        None
     }
 }
 
