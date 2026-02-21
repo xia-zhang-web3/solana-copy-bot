@@ -151,12 +151,16 @@ struct DynamicCuPricePolicy {
     max_micro_lamports: u64,
 }
 
+const PRIORITY_FEE_HINT_TIMEOUT_MS_CAP: u64 = 1_000;
+const PRIORITY_FEE_HINT_TIMEOUT_MS_FLOOR: u64 = 250;
+
 #[derive(Debug, Clone)]
 pub struct AdapterOrderSubmitter {
     endpoints: Vec<String>,
     auth_token: Option<String>,
     hmac_auth: Option<AdapterHmacAuth>,
     dynamic_cu_price_policy: Option<DynamicCuPricePolicy>,
+    dynamic_cu_price_client: Option<Client>,
     contract_version: String,
     require_policy_echo: bool,
     allowed_routes: HashSet<String>,
@@ -324,6 +328,18 @@ impl AdapterOrderSubmitter {
             Ok(value) => value,
             Err(_) => return None,
         };
+        let dynamic_cu_price_client = if dynamic_cu_price_policy.is_some() {
+            let hint_timeout_ms = priority_fee_hint_timeout_ms(timeout_ms);
+            match Client::builder()
+                .timeout(StdDuration::from_millis(hint_timeout_ms))
+                .build()
+            {
+                Ok(value) => Some(value),
+                Err(_) => return None,
+            }
+        } else {
+            None
+        };
 
         let token = auth_token.trim();
         let auth_token = if token.is_empty() {
@@ -360,6 +376,7 @@ impl AdapterOrderSubmitter {
             auth_token,
             hmac_auth,
             dynamic_cu_price_policy,
+            dynamic_cu_price_client,
             contract_version: contract_version.to_string(),
             require_policy_echo,
             allowed_routes,
@@ -392,9 +409,9 @@ impl AdapterOrderSubmitter {
         &self,
         policy: &DynamicCuPricePolicy,
     ) -> Option<u64> {
+        let client = self.dynamic_cu_price_client.as_ref()?;
         for endpoint in &policy.rpc_endpoints {
-            let response = match self
-                .client
+            let response = match client
                 .post(endpoint)
                 .header("content-type", "application/json")
                 .json(&json!({
@@ -752,6 +769,12 @@ fn normalize_distinct_non_empty_endpoints(primary_url: &str, fallback_url: &str)
         endpoints.push(fallback.to_string());
     }
     endpoints
+}
+
+fn priority_fee_hint_timeout_ms(submit_timeout_ms: u64) -> u64 {
+    submit_timeout_ms
+        .min(PRIORITY_FEE_HINT_TIMEOUT_MS_CAP)
+        .max(PRIORITY_FEE_HINT_TIMEOUT_MS_FLOOR)
 }
 
 #[cfg(test)]
@@ -1403,6 +1426,16 @@ mod tests {
             parse_recent_priority_fee_percentile_from_rpc_body(&body, 80),
             Some(2000)
         );
+    }
+
+    #[test]
+    fn priority_fee_hint_timeout_ms_caps_high_submit_timeout() {
+        assert_eq!(priority_fee_hint_timeout_ms(3_000), 1_000);
+    }
+
+    #[test]
+    fn priority_fee_hint_timeout_ms_applies_floor_for_small_submit_timeout() {
+        assert_eq!(priority_fee_hint_timeout_ms(100), 250);
     }
 
     #[test]
