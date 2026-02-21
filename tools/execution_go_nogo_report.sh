@@ -27,45 +27,6 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
-first_non_empty() {
-  local value
-  for value in "$@"; do
-    if [[ -n "${value:-}" ]]; then
-      printf "%s" "$value"
-      return
-    fi
-  done
-  printf ""
-}
-
-normalize_gate_verdict() {
-  local raw="$1"
-  raw="$(trim_string "$raw")"
-  raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
-  case "$raw" in
-    PASS|WARN|NO_DATA|SKIP)
-      printf "%s" "$raw"
-      ;;
-    *)
-      printf "UNKNOWN"
-      ;;
-  esac
-}
-
-normalize_preflight_verdict() {
-  local raw="$1"
-  raw="$(trim_string "$raw")"
-  raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
-  case "$raw" in
-    PASS|SKIP|FAIL)
-      printf "%s" "$raw"
-      ;;
-    *)
-      printf "UNKNOWN"
-      ;;
-  esac
-}
-
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 

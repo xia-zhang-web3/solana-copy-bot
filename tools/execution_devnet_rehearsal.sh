@@ -66,20 +66,6 @@ cfg_or_env_string() {
   cfg_value "$section" "$key"
 }
 
-normalize_go_nogo_verdict() {
-  local raw
-  raw="$(trim_string "$1")"
-  raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
-  case "$raw" in
-    GO|HOLD|NO_GO)
-      printf "%s" "$raw"
-      ;;
-    *)
-      printf "UNKNOWN"
-      ;;
-  esac
-}
-
 redacted_endpoint_label() {
   local endpoint="$1"
   endpoint="$(trim_string "$endpoint")"

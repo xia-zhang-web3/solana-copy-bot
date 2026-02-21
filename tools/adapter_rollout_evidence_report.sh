@@ -15,34 +15,6 @@ OUTPUT_DIR="${OUTPUT_DIR:-}"
 RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
 
-normalize_rotation_verdict() {
-  local raw
-  raw="$(trim_string "$1")"
-  raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
-  case "$raw" in
-  PASS | WARN | FAIL)
-    printf '%s' "$raw"
-    ;;
-  *)
-    printf 'UNKNOWN'
-    ;;
-  esac
-}
-
-normalize_rehearsal_verdict() {
-  local raw
-  raw="$(trim_string "$1")"
-  raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
-  case "$raw" in
-  GO | HOLD | NO_GO)
-    printf '%s' "$raw"
-    ;;
-  *)
-    printf 'UNKNOWN'
-    ;;
-  esac
-}
-
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
