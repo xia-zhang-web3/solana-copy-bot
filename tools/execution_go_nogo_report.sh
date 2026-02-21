@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=tools/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 
 WINDOW_HOURS="${1:-24}"
 RISK_EVENTS_MINUTES="${2:-60}"
@@ -24,17 +27,6 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
-extract_field() {
-  local key="$1"
-  local text="$2"
-  printf '%s\n' "$text" | awk -F': ' -v key="$key" '
-    $1 == key {
-      print substr($0, index($0, ": ") + 2)
-      exit
-    }
-  '
-}
-
 first_non_empty() {
   local value
   for value in "$@"; do
@@ -48,8 +40,7 @@ first_non_empty() {
 
 normalize_gate_verdict() {
   local raw="$1"
-  raw="${raw#"${raw%%[![:space:]]*}"}"
-  raw="${raw%"${raw##*[![:space:]]}"}"
+  raw="$(trim_string "$raw")"
   raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
   case "$raw" in
     PASS|WARN|NO_DATA|SKIP)
@@ -63,8 +54,7 @@ normalize_gate_verdict() {
 
 normalize_preflight_verdict() {
   local raw="$1"
-  raw="${raw#"${raw%%[![:space:]]*}"}"
-  raw="${raw%"${raw##*[![:space:]]}"}"
+  raw="$(trim_string "$raw")"
   raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
   case "$raw" in
     PASS|SKIP|FAIL)
@@ -72,21 +62,6 @@ normalize_preflight_verdict() {
       ;;
     *)
       printf "UNKNOWN"
-      ;;
-  esac
-}
-
-normalize_bool_token() {
-  local raw="$1"
-  raw="${raw#"${raw%%[![:space:]]*}"}"
-  raw="${raw%"${raw##*[![:space:]]}"}"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    *)
-      printf 'false'
       ;;
   esac
 }

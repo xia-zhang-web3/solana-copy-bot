@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
 ADAPTER_ENV_PATH="${ADAPTER_ENV_PATH:-/etc/solana-copy-bot/adapter.env}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 
@@ -8,28 +12,6 @@ if [[ ! -f "$ADAPTER_ENV_PATH" ]]; then
   echo "adapter env file not found: $ADAPTER_ENV_PATH" >&2
   exit 1
 fi
-
-trim_string() {
-  local value="$1"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  printf '%s' "$value"
-}
-
-normalize_bool_token() {
-  local value
-  local lower
-  value="$(trim_string "$1")"
-  lower="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-  case "$lower" in
-  1 | true | yes | on)
-    echo "true"
-    ;;
-  *)
-    echo "false"
-    ;;
-  esac
-}
 
 resolve_path() {
   local raw="$1"

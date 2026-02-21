@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=tools/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 
 WINDOW_HOURS="${1:-24}"
 RISK_EVENTS_MINUTES="${2:-60}"
@@ -11,24 +14,6 @@ SERVICE="${SERVICE:-solana-copy-bot}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
-
-extract_field() {
-  local key="$1"
-  local text="$2"
-  printf '%s\n' "$text" | awk -F': ' -v key="$key" '
-    $1 == key {
-      print substr($0, index($0, ": ") + 2)
-      exit
-    }
-  '
-}
-
-trim_string() {
-  local value="$1"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  printf '%s' "$value"
-}
 
 normalize_rotation_verdict() {
   local raw

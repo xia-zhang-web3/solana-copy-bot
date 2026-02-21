@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=tools/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 
 WINDOW_HOURS="${1:-24}"
 RISK_EVENTS_MINUTES="${2:-60}"
@@ -26,38 +29,6 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "config file not found: $CONFIG_PATH" >&2
   exit 1
 fi
-
-extract_field() {
-  local key="$1"
-  local text="$2"
-  printf '%s\n' "$text" | awk -F': ' -v key="$key" '
-    $1 == key {
-      print substr($0, index($0, ": ") + 2)
-      exit
-    }
-  '
-}
-
-trim_string() {
-  local value="$1"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  printf "%s" "$value"
-}
-
-normalize_bool_token() {
-  local raw
-  raw="$(trim_string "$1")"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    *)
-      printf 'false'
-      ;;
-  esac
-}
 
 cfg_value() {
   local section="$1"
