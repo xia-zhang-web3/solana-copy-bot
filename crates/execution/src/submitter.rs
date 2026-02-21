@@ -1715,6 +1715,12 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_tip_lamports_from_compute_budget_saturates_at_global_tip_cap() {
+        let tip = dynamic_tip_lamports_from_compute_budget(u32::MAX, u64::MAX, u32::MAX);
+        assert_eq!(tip, EXECUTION_ROUTE_TIP_LAMPORTS_MAX);
+    }
+
+    #[test]
     fn priority_fee_hint_timeout_ms_caps_high_submit_timeout() {
         assert_eq!(priority_fee_hint_timeout_ms(3_000), 1_000);
     }
