@@ -24,6 +24,10 @@ use yellowstone_grpc_proto::prelude::{
     SubscribeUpdateTransactionInfo, TransactionStatusMeta, UiTokenAmount,
 };
 
+mod reorder;
+
+use self::reorder::{ReorderBuffer, ReorderRelease};
+
 #[derive(Debug, Clone)]
 pub struct RawSwapObservation {
     pub signature: String,
@@ -147,12 +151,6 @@ struct FetchedObservation {
     raw: RawSwapObservation,
     arrival_seq: u64,
     fetch_latency_ms: u64,
-}
-
-#[derive(Debug)]
-struct ReorderEntry {
-    raw: RawSwapObservation,
-    enqueued_at: Instant,
 }
 
 type HeliusWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -668,11 +666,9 @@ pub struct HeliusWsSource {
     ws_queue_capacity: usize,
     queue_overflow_policy: QueueOverflowPolicy,
     output_queue_capacity: usize,
-    reorder_hold_ms: u64,
-    reorder_max_buffer: usize,
+    reorder: ReorderBuffer,
     telemetry_report_seconds: u64,
     pipeline: Option<HeliusPipeline>,
-    reorder_buffer: BTreeMap<(u64, u64, String), ReorderEntry>,
 }
 
 enum OutputRecvOutcome {
@@ -840,11 +836,12 @@ impl HeliusWsSource {
             ws_queue_capacity: config.ws_queue_capacity.max(128),
             queue_overflow_policy,
             output_queue_capacity: config.output_queue_capacity.max(64),
-            reorder_hold_ms: config.reorder_hold_ms.max(1),
-            reorder_max_buffer: config.reorder_max_buffer.max(16),
+            reorder: ReorderBuffer::new(
+                config.reorder_hold_ms.max(1),
+                config.reorder_max_buffer.max(16),
+            ),
             telemetry_report_seconds: config.telemetry_report_seconds.max(5),
             pipeline: None,
-            reorder_buffer: BTreeMap::new(),
         })
     }
 
@@ -993,70 +990,36 @@ impl HeliusWsSource {
         self.runtime_config
             .telemetry
             .push_fetch_latency(fetched.fetch_latency_ms);
-
-        let key = (
-            fetched.raw.slot,
-            fetched.arrival_seq,
-            fetched.raw.signature.clone(),
-        );
-        self.reorder_buffer.entry(key).or_insert(ReorderEntry {
-            raw: fetched.raw,
-            enqueued_at: Instant::now(),
-        });
+        self.reorder.push(fetched);
         self.runtime_config
             .telemetry
-            .note_reorder_buffer_size(self.reorder_buffer.len());
+            .note_reorder_buffer_size(self.reorder.len());
     }
 
     fn pop_ready_observation(&mut self) -> Option<RawSwapObservation> {
-        if self.reorder_buffer.is_empty() {
-            return None;
-        }
-
-        let first_key = self.reorder_buffer.keys().next()?.clone();
-        let first_entry = self.reorder_buffer.get(&first_key)?;
-        let hold_elapsed = first_entry.enqueued_at.elapsed();
-        let hold_target = Duration::from_millis(self.reorder_hold_ms.max(1));
-
-        let should_release =
-            self.reorder_buffer.len() > self.reorder_max_buffer || hold_elapsed >= hold_target;
-        if !should_release {
-            return None;
-        }
-
-        let entry = self.reorder_buffer.remove(&first_key)?;
-        let hold_ms = entry.enqueued_at.elapsed().as_millis() as u64;
-        self.runtime_config.telemetry.push_reorder_hold(hold_ms);
-
-        let lag_ms = (Utc::now() - entry.raw.ts_utc).num_milliseconds().max(0) as u64;
-        self.runtime_config.telemetry.push_ingestion_lag(lag_ms);
-        Some(entry.raw)
+        self.reorder
+            .pop_ready()
+            .map(|release| self.apply_reorder_release(release))
     }
 
     fn pop_earliest_observation(&mut self) -> Option<RawSwapObservation> {
-        let first_key = self.reorder_buffer.keys().next()?.clone();
-        let entry = self.reorder_buffer.remove(&first_key)?;
-        let hold_ms = entry.enqueued_at.elapsed().as_millis() as u64;
-        self.runtime_config.telemetry.push_reorder_hold(hold_ms);
-
-        let lag_ms = (Utc::now() - entry.raw.ts_utc).num_milliseconds().max(0) as u64;
-        self.runtime_config.telemetry.push_ingestion_lag(lag_ms);
-        Some(entry.raw)
+        self.reorder
+            .pop_earliest()
+            .map(|release| self.apply_reorder_release(release))
     }
 
     fn reorder_wait_duration(&self) -> Option<Duration> {
-        let first_entry = self.reorder_buffer.values().next()?;
-        if self.reorder_buffer.len() > self.reorder_max_buffer {
-            return Some(Duration::from_millis(0));
-        }
+        self.reorder.wait_duration()
+    }
 
-        let hold_target = Duration::from_millis(self.reorder_hold_ms.max(1));
-        let elapsed = first_entry.enqueued_at.elapsed();
-        if elapsed >= hold_target {
-            Some(Duration::from_millis(0))
-        } else {
-            Some(hold_target - elapsed)
-        }
+    fn apply_reorder_release(&self, release: ReorderRelease) -> RawSwapObservation {
+        self.runtime_config
+            .telemetry
+            .push_reorder_hold(release.hold_ms);
+        self.runtime_config
+            .telemetry
+            .push_ingestion_lag(release.lag_ms);
+        release.raw
     }
 
     fn maybe_report_pipeline_metrics(&self) {
@@ -1074,7 +1037,7 @@ impl HeliusWsSource {
             self.telemetry_report_seconds,
             ws_depth,
             output_depth,
-            self.reorder_buffer.len(),
+            self.reorder.len(),
         );
     }
 
@@ -1428,11 +1391,9 @@ struct YellowstoneRuntimeConfig {
 pub struct YellowstoneGrpcSource {
     runtime_config: Arc<YellowstoneRuntimeConfig>,
     queue_overflow_policy: QueueOverflowPolicy,
-    reorder_hold_ms: u64,
-    reorder_max_buffer: usize,
+    reorder: ReorderBuffer,
     telemetry_report_seconds: u64,
     pipeline: Option<YellowstonePipeline>,
-    reorder_buffer: BTreeMap<(u64, u64, String), ReorderEntry>,
 }
 
 enum YellowstoneRecvOutcome {
@@ -1516,11 +1477,12 @@ impl YellowstoneGrpcSource {
         Ok(Self {
             runtime_config: Arc::new(runtime_config),
             queue_overflow_policy,
-            reorder_hold_ms: config.reorder_hold_ms.max(1),
-            reorder_max_buffer: config.reorder_max_buffer.max(16),
+            reorder: ReorderBuffer::new(
+                config.reorder_hold_ms.max(1),
+                config.reorder_max_buffer.max(16),
+            ),
             telemetry_report_seconds: config.telemetry_report_seconds.max(5),
             pipeline: None,
-            reorder_buffer: BTreeMap::new(),
         })
     }
 
@@ -1635,67 +1597,36 @@ impl YellowstoneGrpcSource {
     }
 
     fn push_reorder_entry(&mut self, fetched: FetchedObservation) {
-        let key = (
-            fetched.raw.slot,
-            fetched.arrival_seq,
-            fetched.raw.signature.clone(),
-        );
-        self.reorder_buffer.entry(key).or_insert(ReorderEntry {
-            raw: fetched.raw,
-            enqueued_at: Instant::now(),
-        });
+        self.reorder.push(fetched);
         self.runtime_config
             .telemetry
-            .note_reorder_buffer_size(self.reorder_buffer.len());
+            .note_reorder_buffer_size(self.reorder.len());
     }
 
     fn pop_ready_observation(&mut self) -> Option<RawSwapObservation> {
-        if self.reorder_buffer.is_empty() {
-            return None;
-        }
-
-        let first_key = self.reorder_buffer.keys().next()?.clone();
-        let first_entry = self.reorder_buffer.get(&first_key)?;
-        let hold_elapsed = first_entry.enqueued_at.elapsed();
-        let hold_target = Duration::from_millis(self.reorder_hold_ms.max(1));
-
-        let should_release =
-            self.reorder_buffer.len() > self.reorder_max_buffer || hold_elapsed >= hold_target;
-        if !should_release {
-            return None;
-        }
-
-        let entry = self.reorder_buffer.remove(&first_key)?;
-        let hold_ms = entry.enqueued_at.elapsed().as_millis() as u64;
-        self.runtime_config.telemetry.push_reorder_hold(hold_ms);
-        let lag_ms = (Utc::now() - entry.raw.ts_utc).num_milliseconds().max(0) as u64;
-        self.runtime_config.telemetry.push_ingestion_lag(lag_ms);
-        Some(entry.raw)
+        self.reorder
+            .pop_ready()
+            .map(|release| self.apply_reorder_release(release))
     }
 
     fn pop_earliest_observation(&mut self) -> Option<RawSwapObservation> {
-        let first_key = self.reorder_buffer.keys().next()?.clone();
-        let entry = self.reorder_buffer.remove(&first_key)?;
-        let hold_ms = entry.enqueued_at.elapsed().as_millis() as u64;
-        self.runtime_config.telemetry.push_reorder_hold(hold_ms);
-        let lag_ms = (Utc::now() - entry.raw.ts_utc).num_milliseconds().max(0) as u64;
-        self.runtime_config.telemetry.push_ingestion_lag(lag_ms);
-        Some(entry.raw)
+        self.reorder
+            .pop_earliest()
+            .map(|release| self.apply_reorder_release(release))
     }
 
     fn reorder_wait_duration(&self) -> Option<Duration> {
-        let first_entry = self.reorder_buffer.values().next()?;
-        if self.reorder_buffer.len() > self.reorder_max_buffer {
-            return Some(Duration::from_millis(0));
-        }
+        self.reorder.wait_duration()
+    }
 
-        let hold_target = Duration::from_millis(self.reorder_hold_ms.max(1));
-        let elapsed = first_entry.enqueued_at.elapsed();
-        if elapsed >= hold_target {
-            Some(Duration::from_millis(0))
-        } else {
-            Some(hold_target - elapsed)
-        }
+    fn apply_reorder_release(&self, release: ReorderRelease) -> RawSwapObservation {
+        self.runtime_config
+            .telemetry
+            .push_reorder_hold(release.hold_ms);
+        self.runtime_config
+            .telemetry
+            .push_ingestion_lag(release.lag_ms);
+        release.raw
     }
 
     fn maybe_report_pipeline_metrics(&self) {
@@ -1708,7 +1639,7 @@ impl YellowstoneGrpcSource {
             self.telemetry_report_seconds,
             queue_depth,
             0,
-            self.reorder_buffer.len(),
+            self.reorder.len(),
         );
     }
 
@@ -3313,11 +3244,9 @@ mod tests {
             ws_queue_capacity: 16,
             queue_overflow_policy: QueueOverflowPolicy::Block,
             output_queue_capacity: 16,
-            reorder_hold_ms: 1,
-            reorder_max_buffer: 8,
+            reorder: ReorderBuffer::new(1, 8),
             telemetry_report_seconds: 30,
             pipeline: None,
-            reorder_buffer: BTreeMap::new(),
         };
 
         source.push_reorder_entry(FetchedObservation {
@@ -3354,7 +3283,7 @@ mod tests {
         });
 
         // Force early release via buffer cap branch.
-        source.reorder_max_buffer = 1;
+        source.reorder.set_max_buffer(1);
         let first = source
             .pop_ready_observation()
             .expect("first observation should be released");
@@ -3373,11 +3302,9 @@ mod tests {
             ws_queue_capacity: 16,
             queue_overflow_policy: QueueOverflowPolicy::Block,
             output_queue_capacity: 16,
-            reorder_hold_ms: 1,
-            reorder_max_buffer: 8,
+            reorder: ReorderBuffer::new(1, 8),
             telemetry_report_seconds: 30,
             pipeline: None,
-            reorder_buffer: BTreeMap::new(),
         };
 
         source.push_reorder_entry(FetchedObservation {
@@ -3414,7 +3341,7 @@ mod tests {
             fetch_latency_ms: 5,
         });
 
-        source.reorder_max_buffer = 1;
+        source.reorder.set_max_buffer(1);
         let first = source.pop_ready_observation().expect("first observation");
         assert_eq!(first.signature, "Z-signature");
     }
