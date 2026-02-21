@@ -1646,10 +1646,14 @@ async fn run_app_loop(
                     buy_submit_pause_reason,
                 )));
             }
-            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until
-                .map(|until| time::Instant::now() >= until)
-                .unwrap_or(true) => {
+            _ = async {
+                if let Some(until) = ingestion_backoff_until {
+                    time::sleep_until(until).await;
+                }
+            }, if ingestion_backoff_until.is_some() => {
                 ingestion_backoff_until = None;
+            }
+            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() => {
                 let now = Utc::now();
                 shadow_risk_guard.observe_ingestion_snapshot(
                     &store,
