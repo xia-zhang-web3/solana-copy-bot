@@ -92,6 +92,11 @@ for file in "$@"; do
             if (inline_item !~ /^[[:space:]]*$/ &&
                 inline_item !~ /^[[:space:]]*\/\// &&
                 inline_item !~ /^[[:space:]]*\/\*/) {
+              # Keep parity with "attribute line is runtime metadata" expectation
+              # for inline test modules like `#[cfg(test)] mod tests { ... }`.
+              if (inline_item ~ /^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\{/) {
+                runtime += 1
+              }
               pending_cfg_test = 0
               in_cfg_test_item = 1
               cfg_item_depth = 0
