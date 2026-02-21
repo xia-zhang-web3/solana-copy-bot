@@ -206,6 +206,12 @@ fn parse_ingestion_source_override(content: &str) -> Option<String> {
     None
 }
 
+fn ingestion_error_backoff_ms(consecutive_errors: u32) -> u64 {
+    let index =
+        (consecutive_errors.saturating_sub(1) as usize).min(INGESTION_ERROR_BACKOFF_MS.len() - 1);
+    INGESTION_ERROR_BACKOFF_MS[index]
+}
+
 fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
@@ -1678,9 +1684,7 @@ async fn run_app_loop(
                     }
                     Err(error) => {
                         ingestion_error_streak = ingestion_error_streak.saturating_add(1);
-                        let index = (ingestion_error_streak.saturating_sub(1) as usize)
-                            .min(INGESTION_ERROR_BACKOFF_MS.len() - 1);
-                        let backoff_ms = INGESTION_ERROR_BACKOFF_MS[index];
+                        let backoff_ms = ingestion_error_backoff_ms(ingestion_error_streak);
                         ingestion_backoff_until =
                             Some(time::Instant::now() + Duration::from_millis(backoff_ms));
                         warn!(
@@ -3862,6 +3866,24 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=
 this-is-not-a-valid-line
 "#;
         assert!(parse_ingestion_source_override(content).is_none());
+    }
+
+    #[test]
+    fn ingestion_error_backoff_ms_uses_progressive_schedule() {
+        assert_eq!(ingestion_error_backoff_ms(0), 100);
+        assert_eq!(ingestion_error_backoff_ms(1), 100);
+        assert_eq!(ingestion_error_backoff_ms(2), 250);
+        assert_eq!(ingestion_error_backoff_ms(3), 500);
+        assert_eq!(ingestion_error_backoff_ms(4), 1_000);
+        assert_eq!(ingestion_error_backoff_ms(5), 2_000);
+        assert_eq!(ingestion_error_backoff_ms(6), 5_000);
+    }
+
+    #[test]
+    fn ingestion_error_backoff_ms_saturates_at_max_step() {
+        assert_eq!(ingestion_error_backoff_ms(7), 5_000);
+        assert_eq!(ingestion_error_backoff_ms(100), 5_000);
+        assert_eq!(ingestion_error_backoff_ms(u32::MAX), 5_000);
     }
 
     #[test]

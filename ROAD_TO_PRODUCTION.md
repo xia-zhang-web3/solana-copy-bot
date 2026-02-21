@@ -480,6 +480,7 @@ Depends on: R2P-11, R2P-12
 Files: `crates/execution/*`, config/env docs
 
 `R2P-14` — Live risk enforcement + `configs/live.toml`  
+Status: 🟡 In progress (`configs/live.toml` scaffold added; rollout evidence pending)  
 Depends on: R2P-11  
 Files: `crates/app/src/main.rs`, `crates/execution/*`, `configs/live.toml`
 
@@ -581,6 +582,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 58. adapter failover auth policy expanded: fallback upstream can use dedicated auth secret (`COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN[_FILE]` and `COPYBOT_ADAPTER_ROUTE_<ROUTE>_FALLBACK_AUTH_TOKEN[_FILE]`) while preserving backward-compatible inheritance from primary auth when fallback secret is not configured.
 59. adapter signed-transaction send wiring added: adapter submit path now accepts upstream `signed_tx_base64` (when `tx_signature` is absent), broadcasts via route-configured send RPC endpoint set (`COPYBOT_ADAPTER_SEND_RPC_URL` / per-route `..._SEND_RPC_URL` with optional fallback/auth), and returns validated on-chain signature; legacy upstream `tx_signature` path remains backward-compatible.
 60. adapter rollout evidence orchestrator added: `tools/adapter_rollout_evidence_report.sh` now composes adapter secret-rotation readiness (`tools/adapter_secret_rotation_report.sh`) and Stage C.5 devnet rehearsal (`tools/execution_devnet_rehearsal.sh`) into one fail-closed summary (`adapter_rollout_verdict=GO|HOLD|NO_GO`) with captured raw artifacts and smoke coverage for all verdict branches.
+61. live runtime baseline config added: `configs/live.toml` now provides a dedicated Stage D/E profile scaffold (`adapter_submit_confirm` + `jito/rpc` route policy + Stage E tiny-live risk limits), kept fail-safe with `execution.enabled=false` by default until rollout gates are closed.
 
 Остается в next-code-queue:
 

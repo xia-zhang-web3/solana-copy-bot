@@ -31,6 +31,12 @@ cd solana-copy-bot
 SOLANA_COPY_BOT_CONFIG=configs/paper.toml cargo run -p copybot-app
 ```
 
+Config profiles:
+- `configs/dev.toml` — local development defaults.
+- `configs/paper.toml` — paper/runtime-ops profile.
+- `configs/prod.toml` — production scaffold with execution disabled.
+- `configs/live.toml` — Stage D/E live-path baseline (`adapter_submit_confirm`, `jito/rpc`, tiny-live limits), execution disabled by default.
+
 Run adapter backend (contract gateway for `adapter_submit_confirm` mode):
 
 ```bash

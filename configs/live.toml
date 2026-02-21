@@ -1,0 +1,151 @@
+[system]
+env = "prod-live"
+log_level = "info"
+log_json = true
+heartbeat_seconds = 30
+migrations_dir = "migrations"
+pause_new_trades_on_outage = true
+
+[sqlite]
+path = "state/live_copybot.db"
+
+[ingestion]
+source = "yellowstone_grpc"
+helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
+helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
+helius_http_urls = []
+yellowstone_grpc_url = "REPLACE_ME"
+yellowstone_x_token = "REPLACE_ME"
+yellowstone_connect_timeout_ms = 5000
+yellowstone_subscribe_timeout_ms = 15000
+yellowstone_stream_buffer_capacity = 2048
+yellowstone_reconnect_initial_ms = 500
+yellowstone_reconnect_max_ms = 8000
+yellowstone_program_ids = []
+fetch_concurrency = 4
+ws_queue_capacity = 512
+output_queue_capacity = 2048
+prefetch_stale_drop_ms = 30000
+seen_signatures_ttl_ms = 600000
+queue_overflow_policy = "drop_oldest"
+reorder_hold_ms = 1200
+reorder_max_buffer = 1024
+telemetry_report_seconds = 30
+subscribe_program_ids = []
+raydium_program_ids = [
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+  "CPMMoo8L3F4NbTegBCKVN6DKuQh8fYfY4yR4j3uP9s5",
+]
+pumpswap_program_ids = ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"]
+reconnect_initial_ms = 500
+reconnect_max_ms = 8000
+tx_fetch_retries = 1
+tx_fetch_retry_delay_ms = 500
+tx_fetch_retry_max_ms = 2000
+tx_fetch_retry_jitter_ms = 150
+tx_request_timeout_ms = 5000
+global_rpc_rps_limit = 45
+per_endpoint_rpc_rps_limit = 16
+seen_signatures_limit = 5000
+mock_interval_ms = 2000
+
+[discovery]
+scoring_window_days = 30
+decay_window_days = 7
+follow_top_n = 10
+min_leader_notional_sol = 1.0
+helius_http_url = ""
+refresh_seconds = 180
+min_trades = 10
+min_active_days = 4
+min_score = 0.6
+max_tx_per_minute = 50
+min_buy_count = 10
+min_tradable_ratio = 0.25
+max_rug_ratio = 0.60
+
+[shadow]
+enabled = true
+helius_http_url = ""
+causal_holdback_enabled = true
+causal_holdback_ms = 2500
+refresh_seconds = 60
+copy_notional_sol = 0.20
+min_leader_notional_sol = 0.75
+max_signal_lag_seconds = 30
+quality_gates_enabled = true
+min_token_age_seconds = 30
+min_holders = 1
+min_liquidity_sol = 1.0
+min_volume_5m_sol = 0.5
+min_unique_traders_5m = 1
+
+[execution]
+# Keep disabled by default until all rollout gates in ROAD_TO_PRODUCTION.md are closed.
+enabled = false
+mode = "adapter_submit_confirm"
+poll_interval_ms = 750
+batch_size = 32
+default_route = "jito"
+rpc_http_url = "https://api.mainnet-beta.solana.com"
+rpc_fallback_http_url = ""
+rpc_devnet_http_url = ""
+submit_adapter_http_url = "https://REPLACE_ME"
+submit_adapter_fallback_http_url = ""
+submit_adapter_auth_token = ""
+submit_adapter_auth_token_file = ""
+submit_adapter_hmac_key_id = ""
+submit_adapter_hmac_secret = ""
+submit_adapter_hmac_secret_file = ""
+submit_adapter_hmac_ttl_sec = 30
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = true
+submit_allowed_routes = ["jito", "rpc"]
+submit_route_order = ["jito", "rpc"]
+submit_route_max_slippage_bps = { jito = 50.0, rpc = 50.0 }
+submit_route_tip_lamports = { jito = 10000, rpc = 0 }
+submit_route_compute_unit_limit = { jito = 300000, rpc = 300000 }
+submit_route_compute_unit_price_micro_lamports = { jito = 1500, rpc = 1000 }
+submit_timeout_ms = 3000
+execution_signer_pubkey = ""
+pretrade_min_sol_reserve = 0.05
+pretrade_require_token_account = false
+pretrade_max_priority_fee_lamports = 0
+slippage_bps = 50.0
+max_confirm_seconds = 15
+max_submit_attempts = 3
+simulate_before_submit = true
+
+[risk]
+# Tiny-live defaults from Stage E (ROAD_TO_PRODUCTION.md).
+max_position_sol = 0.10
+max_total_exposure_sol = 0.30
+max_exposure_per_token_sol = 0.10
+max_concurrent_positions = 3
+daily_loss_limit_pct = 1.0
+max_drawdown_pct = 5.0
+max_hold_hours = 6
+max_copy_delay_sec = 4
+shadow_killswitch_enabled = true
+shadow_soft_exposure_cap_sol = 10.0
+shadow_soft_pause_minutes = 15
+shadow_hard_exposure_cap_sol = 12.0
+shadow_drawdown_1h_stop_sol = -0.7
+shadow_drawdown_1h_pause_minutes = 30
+shadow_drawdown_6h_stop_sol = -2.5
+shadow_drawdown_6h_pause_minutes = 240
+shadow_drawdown_24h_stop_sol = -5.0
+shadow_rug_loss_return_threshold = -0.70
+shadow_rug_loss_window_minutes = 120
+shadow_rug_loss_count_threshold = 3
+shadow_rug_loss_rate_sample_size = 200
+shadow_rug_loss_rate_threshold = 0.04
+shadow_infra_window_minutes = 20
+shadow_infra_lag_p95_threshold_ms = 10000
+shadow_infra_lag_breach_minutes = 10
+shadow_infra_replaced_ratio_threshold = 0.85
+shadow_infra_rpc429_delta_threshold = 5
+shadow_infra_rpc5xx_delta_threshold = 20
+shadow_universe_min_active_follow_wallets = 15
+shadow_universe_min_eligible_wallets = 80
+shadow_universe_breach_cycles = 3
