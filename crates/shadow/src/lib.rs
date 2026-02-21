@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use copybot_config::ShadowConfig;
 use copybot_core_types::SwapEvent;
 use copybot_storage::{CopySignalRow, SqliteStore};
@@ -9,6 +9,7 @@ use tracing::info;
 mod candidate;
 use self::candidate::{to_shadow_candidate, ShadowCandidate};
 mod quality_gates;
+mod snapshots;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const EPS: f64 = 1e-12;
@@ -357,17 +358,6 @@ impl ShadowService {
         }))
     }
 
-    pub fn snapshot_24h(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<ShadowSnapshot> {
-        let since = now - Duration::hours(24);
-        let (closed_trades_24h, realized_pnl_sol_24h) = store.shadow_realized_pnl_since(since)?;
-        let open_lots = store.shadow_open_lots_count()?;
-        Ok(ShadowSnapshot {
-            closed_trades_24h,
-            realized_pnl_sol_24h,
-            open_lots,
-        })
-    }
-
     fn log_gate_drop(
         stage: &str,
         reason: ShadowDropReason,
@@ -402,6 +392,7 @@ impl ShadowService {
 mod tests {
     use super::*;
     use anyhow::Context;
+    use chrono::Duration;
     use copybot_core_types::SwapEvent;
     use copybot_storage::SqliteStore;
     use std::path::Path;
