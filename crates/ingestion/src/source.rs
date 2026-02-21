@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Interval};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
@@ -24,6 +24,7 @@ use yellowstone_grpc_proto::prelude::{
 };
 
 mod core;
+mod queue;
 mod reorder;
 
 use self::core::{
@@ -32,6 +33,7 @@ use self::core::{
     normalize_program_ids_or_fallback, parse_retry_after, percentile, prune_seen_signatures,
     push_sample, sleep_with_backoff,
 };
+use self::queue::{OverflowQueue, QueueOverflowPolicy, QueuePushResult};
 use self::reorder::{ReorderBuffer, ReorderRelease};
 
 #[derive(Debug, Clone)]
@@ -164,124 +166,6 @@ type HeliusWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const WS_IDLE_TIMEOUT_SECS: u64 = 45;
 const TELEMETRY_SAMPLE_CAPACITY: usize = 4096;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QueueOverflowPolicy {
-    Block,
-    DropOldest,
-}
-
-impl QueueOverflowPolicy {
-    fn parse(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "drop_oldest" | "drop-oldest" => Self::DropOldest,
-            _ => Self::Block,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Block => "block",
-            Self::DropOldest => "drop_oldest",
-        }
-    }
-}
-
-#[derive(Debug)]
-enum QueuePushResult {
-    Enqueued { backpressured: bool },
-    ReplacedOldest,
-}
-
-#[derive(Debug)]
-struct OverflowQueueState<T> {
-    deque: VecDeque<T>,
-    closed: bool,
-}
-
-#[derive(Debug)]
-struct OverflowQueue<T> {
-    state: AsyncMutex<OverflowQueueState<T>>,
-    capacity: usize,
-    not_empty: Notify,
-    not_full: Notify,
-}
-
-impl<T> OverflowQueue<T> {
-    fn new(capacity: usize) -> Self {
-        Self {
-            state: AsyncMutex::new(OverflowQueueState {
-                deque: VecDeque::with_capacity(capacity),
-                closed: false,
-            }),
-            capacity: capacity.max(1),
-            not_empty: Notify::new(),
-            not_full: Notify::new(),
-        }
-    }
-
-    async fn push(&self, item: T, policy: QueueOverflowPolicy) -> Option<QueuePushResult> {
-        let mut pending = Some(item);
-        let mut was_backpressured = false;
-        loop {
-            let mut guard = self.state.lock().await;
-            if guard.closed {
-                return None;
-            }
-            if guard.deque.len() < self.capacity {
-                guard
-                    .deque
-                    .push_back(pending.take().expect("pending item exists before enqueue"));
-                drop(guard);
-                self.not_empty.notify_one();
-                return Some(QueuePushResult::Enqueued {
-                    backpressured: was_backpressured,
-                });
-            }
-
-            if matches!(policy, QueueOverflowPolicy::DropOldest) {
-                let _ = guard.deque.pop_front();
-                guard.deque.push_back(
-                    pending
-                        .take()
-                        .expect("pending item exists before replacement"),
-                );
-                drop(guard);
-                self.not_empty.notify_one();
-                self.not_full.notify_one();
-                return Some(QueuePushResult::ReplacedOldest);
-            }
-
-            was_backpressured = true;
-            drop(guard);
-            self.not_full.notified().await;
-        }
-    }
-
-    async fn pop(&self) -> Option<T> {
-        loop {
-            let mut guard = self.state.lock().await;
-            if let Some(item) = guard.deque.pop_front() {
-                drop(guard);
-                self.not_full.notify_one();
-                return Some(item);
-            }
-            if guard.closed {
-                return None;
-            }
-            drop(guard);
-            self.not_empty.notified().await;
-        }
-    }
-
-    async fn close(&self) {
-        let mut guard = self.state.lock().await;
-        guard.closed = true;
-        drop(guard);
-        self.not_empty.notify_waiters();
-        self.not_full.notify_waiters();
-    }
-}
 
 type NotificationQueue = OverflowQueue<LogsNotification>;
 type RawObservationQueue = OverflowQueue<FetchedObservation>;
