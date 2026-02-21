@@ -5,9 +5,7 @@ use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
-use copybot_shadow::{
-    FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
-};
+use copybot_shadow::{FollowSnapshot, ShadowProcessOutcome, ShadowService, ShadowSnapshot};
 use copybot_storage::{
     is_retryable_sqlite_anyhow_error, note_sqlite_busy_error, note_sqlite_write_retry,
     sqlite_contention_snapshot, SqliteStore,
@@ -28,12 +26,17 @@ mod secrets;
 mod stale_close;
 mod swap_classification;
 mod task_spawns;
+mod telemetry;
 
 use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::stale_close::close_stale_shadow_lots;
 use crate::swap_classification::{classify_swap_side, shadow_task_key_for_swap};
 use crate::task_spawns::{spawn_discovery_task, spawn_execution_task, spawn_shadow_snapshot_task};
+use crate::telemetry::{
+    format_error_chain, reason_to_key, reason_to_stage, record_shadow_queue_full_buy_drop,
+    record_shadow_queue_full_sell_outcome,
+};
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
@@ -2061,28 +2064,6 @@ async fn run_app_loop(
     Ok(())
 }
 
-fn reason_to_key(reason: ShadowDropReason) -> &'static str {
-    reason.as_str()
-}
-
-fn reason_to_stage(reason: ShadowDropReason) -> &'static str {
-    match reason {
-        ShadowDropReason::Disabled => "disabled",
-        ShadowDropReason::NotFollowed => "follow",
-        ShadowDropReason::NotSolLeg => "pair",
-        ShadowDropReason::BelowNotional => "notional",
-        ShadowDropReason::LagExceeded => "lag",
-        ShadowDropReason::TooNew
-        | ShadowDropReason::LowHolders
-        | ShadowDropReason::LowLiquidity
-        | ShadowDropReason::LowVolume
-        | ShadowDropReason::ThinMarket => "quality",
-        ShadowDropReason::InvalidSizing => "sizing",
-        ShadowDropReason::DuplicateSignal => "dedupe",
-        ShadowDropReason::UnsupportedSide => "side",
-    }
-}
-
 async fn insert_observed_swap_with_retry(store: &SqliteStore, swap: &SwapEvent) -> Result<bool> {
     for attempt in 0..=OBSERVED_SWAP_WRITE_MAX_RETRIES {
         match store.insert_observed_swap(swap) {
@@ -2111,17 +2092,6 @@ async fn insert_observed_swap_with_retry(store: &SqliteStore, swap: &SwapEvent) 
         }
     }
     unreachable!("retry loop must return on success or terminal error");
-}
-
-fn format_error_chain(error: &anyhow::Error) -> String {
-    let mut chain = String::new();
-    for (idx, cause) in error.chain().enumerate() {
-        if idx > 0 {
-            chain.push_str(" | ");
-        }
-        chain.push_str(&cause.to_string());
-    }
-    chain
 }
 
 struct ShadowTaskOutput {
@@ -2565,72 +2535,6 @@ fn find_last_pending_buy_index(queue: &VecDeque<ShadowTaskInput>) -> Option<usiz
             .and_then(|task| classify_swap_side(&task.swap))
             .is_some_and(|side| matches!(side, ShadowSwapSide::Buy))
     })
-}
-
-fn record_shadow_queue_full_buy_drop(
-    swap: &SwapEvent,
-    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
-    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
-    shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
-) {
-    let reason = "queue_full_buy_drop";
-    *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
-    *shadow_drop_stage_counts.entry("scheduler").or_insert(0) += 1;
-    *shadow_queue_full_outcome_counts.entry(reason).or_insert(0) += 1;
-    warn!(
-        stage = "scheduler",
-        reason,
-        side = "buy",
-        wallet = %swap.wallet,
-        token = %swap.token_out,
-        signature = %swap.signature,
-        "shadow gate dropped"
-    );
-}
-
-fn record_shadow_queue_full_sell_outcome(
-    swap: &SwapEvent,
-    kept: bool,
-    shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
-    shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
-    shadow_queue_full_outcome_counts: &mut BTreeMap<&'static str, u64>,
-) {
-    let reason = "queue_full_sell_kept_or_dropped";
-    let outcome_key = if kept {
-        "queue_full_sell_kept"
-    } else {
-        "queue_full_sell_dropped"
-    };
-    *shadow_queue_full_outcome_counts
-        .entry(outcome_key)
-        .or_insert(0) += 1;
-    if kept {
-        info!(
-            stage = "scheduler",
-            reason,
-            outcome = "kept",
-            side = "sell",
-            wallet = %swap.wallet,
-            token = %swap.token_in,
-            signature = %swap.signature,
-            "shadow queue_full sell outcome"
-        );
-    } else {
-        *shadow_drop_reason_counts
-            .entry("queue_full_sell_dropped")
-            .or_insert(0) += 1;
-        *shadow_drop_stage_counts.entry("scheduler").or_insert(0) += 1;
-        warn!(
-            stage = "scheduler",
-            reason,
-            outcome = "dropped",
-            side = "sell",
-            wallet = %swap.wallet,
-            token = %swap.token_in,
-            signature = %swap.signature,
-            "shadow gate dropped"
-        );
-    }
 }
 
 fn dequeue_next_shadow_task(
