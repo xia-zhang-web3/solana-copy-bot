@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
+mod scoring;
 mod windows;
+use self::scoring::{hold_time_quality_score, median_i64, tanh01};
 use self::windows::{cmp_swap_order, DiscoveryWindowState};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -944,40 +946,6 @@ fn is_sol_buy(swap: &SwapEvent) -> bool {
 
 fn is_sol_sell(swap: &SwapEvent) -> bool {
     swap.token_out == SOL_MINT && swap.token_in != SOL_MINT
-}
-
-fn tanh01(value: f64) -> f64 {
-    ((value.tanh() + 1.0) * 0.5).clamp(0.0, 1.0)
-}
-
-fn hold_time_quality_score(median_seconds: i64) -> f64 {
-    if median_seconds <= 0 {
-        0.0
-    } else if median_seconds < 45 {
-        0.2
-    } else if median_seconds < 120 {
-        0.5
-    } else if median_seconds <= 6 * 60 * 60 {
-        1.0
-    } else if median_seconds <= 24 * 60 * 60 {
-        0.75
-    } else {
-        0.4
-    }
-}
-
-fn median_i64(values: &[i64]) -> Option<i64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut sorted = values.to_vec();
-    sorted.sort_unstable();
-    let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 1 {
-        Some(sorted[mid])
-    } else {
-        Some((sorted[mid - 1] + sorted[mid]) / 2)
-    }
 }
 
 fn cmp_score_then_trades(a: &WalletSnapshot, b: &WalletSnapshot) -> Ordering {
