@@ -583,6 +583,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 59. adapter signed-transaction send wiring added: adapter submit path now accepts upstream `signed_tx_base64` (when `tx_signature` is absent), broadcasts via route-configured send RPC endpoint set (`COPYBOT_ADAPTER_SEND_RPC_URL` / per-route `..._SEND_RPC_URL` with optional fallback/auth), and returns validated on-chain signature; legacy upstream `tx_signature` path remains backward-compatible.
 60. adapter rollout evidence orchestrator added: `tools/adapter_rollout_evidence_report.sh` now composes adapter secret-rotation readiness (`tools/adapter_secret_rotation_report.sh`) and Stage C.5 devnet rehearsal (`tools/execution_devnet_rehearsal.sh`) into one fail-closed summary (`adapter_rollout_verdict=GO|HOLD|NO_GO`) with captured raw artifacts and smoke coverage for all verdict branches.
 61. live runtime baseline config added: `configs/live.toml` now provides a dedicated Stage D/E profile scaffold (`adapter_submit_confirm` + `jito/rpc` route policy + Stage E tiny-live risk limits), kept fail-safe with `execution.enabled=false` by default until rollout gates are closed.
+62. Stage D fallback policy tightened in runtime: `jito -> rpc` submit-route fallback is now allowed only for explicit availability-class retryable submit errors (adapter/upstream/send-rpc transport and HTTP-unavailable classes); non-allowlisted retryable codes fail-closed as `submit_fallback_blocked` with risk-event evidence instead of silently switching route.
 
 Остается в next-code-queue:
 

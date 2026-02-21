@@ -168,6 +168,49 @@ impl ExecutionRuntime {
                 );
                 if retryable && attempt < self.max_submit_attempts {
                     let next_attempt = attempt.saturating_add(1);
+                    let next_route = self.submit_route_for_attempt(next_attempt);
+                    if !self.submit_fallback_route_allowed(
+                        selected_route,
+                        next_route,
+                        error.code.as_str(),
+                    ) {
+                        let blocked_detail = format!(
+                            "submit_fallback_blocked attempt={} next_attempt={} route={} next_route={} code={} detail={}",
+                            attempt,
+                            next_attempt,
+                            selected_route,
+                            next_route,
+                            error.code,
+                            error.detail
+                        );
+                        bump_route_counter(&mut report.submit_failed_by_route, selected_route);
+                        store.mark_order_failed(
+                            &order.order_id,
+                            "submit_fallback_blocked",
+                            Some(&blocked_detail),
+                        )?;
+                        store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                        let details = json!({
+                            "signal_id": intent.signal_id,
+                            "order_id": order.order_id,
+                            "attempt": attempt,
+                            "next_attempt": next_attempt,
+                            "max_submit_attempts": self.max_submit_attempts,
+                            "route": selected_route,
+                            "next_route": next_route,
+                            "error_code": error.code,
+                            "retryable": true,
+                            "error": error.detail
+                        })
+                        .to_string();
+                        let _ = store.insert_risk_event(
+                            "execution_submit_fallback_blocked",
+                            "error",
+                            now,
+                            Some(&details),
+                        );
+                        return Ok(SignalResult::Failed);
+                    }
                     store.set_order_attempt(&order.order_id, next_attempt, Some(&detail))?;
                     store.update_copy_signal_status(&intent.signal_id, "execution_simulated")?;
                     bump_route_counter(&mut report.submit_retry_scheduled_by_route, selected_route);

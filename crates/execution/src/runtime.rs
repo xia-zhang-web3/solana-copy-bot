@@ -16,6 +16,27 @@ impl ExecutionRuntime {
             .and_then(|value| self.route_tip_lamports.get(value.as_str()).copied())
             .unwrap_or(0)
     }
+
+    pub(crate) fn submit_fallback_route_allowed(
+        &self,
+        current_route: &str,
+        next_route: &str,
+        retryable_error_code: &str,
+    ) -> bool {
+        let Some(current_route) = normalize_route(current_route) else {
+            return true;
+        };
+        let Some(next_route) = normalize_route(next_route) else {
+            return true;
+        };
+        if current_route == next_route {
+            return true;
+        }
+        if current_route == "jito" && next_route == "rpc" {
+            return is_allowed_jito_rpc_fallback_error(retryable_error_code);
+        }
+        true
+    }
 }
 
 pub(crate) fn build_submit_route_order(
@@ -64,6 +85,24 @@ fn normalize_route(value: &str) -> Option<String> {
     } else {
         Some(route)
     }
+}
+
+fn is_allowed_jito_rpc_fallback_error(code: &str) -> bool {
+    let normalized = code.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "submit_adapter_unavailable"
+            | "submit_adapter_http_unavailable"
+            | "submit_adapter_invalid_json"
+            | "upstream_unavailable"
+            | "upstream_request_failed"
+            | "upstream_http_unavailable"
+            | "upstream_submit_signature_unseen"
+            | "send_rpc_unavailable"
+            | "send_rpc_request_failed"
+            | "send_rpc_http_unavailable"
+            | "send_rpc_error_payload_retryable"
+    )
 }
 
 pub(crate) fn normalize_route_tip_lamports(
