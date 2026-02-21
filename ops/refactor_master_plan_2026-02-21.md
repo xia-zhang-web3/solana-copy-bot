@@ -1,412 +1,715 @@
-# Master Plan: Full-Repo Refactor (2026-02-21)
+# Master Plan: Runtime and Ops Refactor Program (2026-02-21)
 
+Version: `rev-2`  
 Branch: `feat/yellowstone-grpc-migration`  
-Status: Draft for auditor review/corrections  
-Goal: Reduce risk and maintenance cost from oversized files (`3k-6k LOC`) without changing runtime behavior.
+Status: Ready for auditor review and execution
 
 ---
 
-## 1) Why Do This Now
+## 1) Scope and Intent
 
-Current codebase has multiple oversized "god files" that already passed functional hardening, but remain expensive to maintain and audit.
+This plan is for **structural refactoring** of runtime-critical and ops-critical code paths.
 
-Largest files (current snapshot):
+Primary objective:
 
-1. `crates/app/src/main.rs` — ~5748 LOC
-2. `crates/storage/src/lib.rs` — ~3789 LOC
-3. `crates/ingestion/src/source.rs` — ~3598 LOC
-4. `crates/execution/src/lib.rs` — ~3550 LOC
-5. `crates/adapter/src/main.rs` — ~3380 LOC
-6. `crates/execution/src/submitter.rs` — ~2028 LOC
-7. `crates/config/src/lib.rs` — ~1527 LOC
-8. `tools/ops_scripts_smoke_test.sh` — ~1511 LOC
-9. `tools/execution_adapter_preflight.sh` — ~1221 LOC
-10. `tools/execution_fee_calibration_report.sh` — ~1196 LOC
+1. Improve change safety, auditability, and maintenance speed.
 
-Main risk today is **change safety and auditability**, not missing functionality.
+Hard constraints:
 
----
+1. No intentional behavior changes in refactor phases.
+2. Preserve fail-closed semantics across runtime and ops gates.
+3. Keep production rollout/backport safety for server heads.
 
-## 2) Refactor Objectives
+In-scope domains:
 
-1. Keep behavior 1:1 (no intentional contract changes in refactor phases).
-2. Split large files into coherent modules by domain responsibility.
-3. Make audit points explicit and local (smaller files, fewer cross-cutting branches).
-4. Reduce blast radius of future changes.
-5. Preserve all fail-closed guarantees already implemented.
+1. `copybot-adapter`
+2. `copybot-app`
+3. `copybot-execution`
+4. `copybot-storage`
+5. `copybot-ingestion`
+6. `copybot-config`
+7. `copybot-discovery`
+8. `copybot-shadow`
+9. Ops scripts in `tools/`
 
-Non-goals for this plan:
+Out-of-scope for this program:
 
-1. No broad feature rewrite.
-2. No schema redesign (except when separately approved as performance hardening).
-3. No runtime policy changes disguised as "refactor".
+1. Feature redesign.
+2. Schema redesign unless explicitly approved in a separate hardening task.
+3. Policy/contract changes disguised as refactor.
 
 ---
 
-## 3) Global Guardrails
+## 2) Current Monolith Inventory (Verified)
 
-Each refactor slice must satisfy all:
+Current snapshot:
+
+1. `crates/app/src/main.rs` — `5748` LOC
+2. `crates/storage/src/lib.rs` — `3789` LOC
+3. `crates/ingestion/src/source.rs` — `3598` LOC
+4. `crates/execution/src/lib.rs` — `3550` LOC
+5. `crates/adapter/src/main.rs` — `3380` LOC
+6. `crates/execution/src/submitter.rs` — `2028` LOC
+7. `crates/config/src/lib.rs` — `1527` LOC
+8. `tools/ops_scripts_smoke_test.sh` — `1511` LOC
+9. `tools/execution_adapter_preflight.sh` — `1221` LOC
+10. `tools/execution_fee_calibration_report.sh` — `1196` LOC
+11. `tools/ingestion_ab_report.sh` — `785` LOC
+
+---
+
+## 3) Program Governance
+
+Roles:
+
+1. Refactor owner: developer implementing slices.
+2. Runtime sign-off owner: maintainer responsible for production behavior parity.
+3. Ops sign-off owner: maintainer responsible for script/report contract parity.
+4. Audit sign-off authority: two independent auditors per major phase.
+
+SLA and sign-off:
+
+1. Every phase requires:
+   1. Internal green verification.
+   2. Two-auditor review package.
+   3. Explicit sign-off before next phase starts.
+2. Critical findings (`High`) block phase closure.
+3. `Medium` may pass only with documented follow-up owner and deadline.
+
+---
+
+## 4) Global Guardrails (Mandatory)
+
+### 4.1 Commit discipline
+
+1. One domain slice per commit.
+2. `Move + wire` first.
+3. Cleanup and local polish only in follow-up commit.
+4. No mixed semantic refactor plus behavior change.
+
+### 4.2 Mandatory checks for every slice
 
 1. `cargo fmt --all`
 2. `cargo test --workspace -q`
 3. `tools/ops_scripts_smoke_test.sh`
-4. No behavior change in scripted outputs unless explicitly declared.
-5. No silent config/contract drift.
+4. Phase-specific targeted regression pack (defined in phase cards).
 
-Process guardrails:
+### 4.3 Script safety gates
 
-1. Max scope per commit: one domain slice.
-2. Prefer move+wire first, then tiny cleanup in follow-up commits.
-3. Keep backportability to older server heads in mind (avoid unnecessary coupling).
+For any changed shell script:
 
----
+1. `bash -n <script>` for syntax.
+2. `shellcheck -x <script>` for compatibility and `set -euo pipefail` hazards.
+3. Smoke pass must include the touched path.
 
-## 4) Target Architecture (By Crate)
+### 4.4 Module size budgets
 
-## 4.1 `copybot-adapter` (`crates/adapter/src/main.rs`)
+Budgets apply to runtime code only, excluding `#[cfg(test)]` blocks.
 
-Current issue: HTTP handlers, config parsing, auth, upstream failover, send-RPC, verify-RPC, and helpers in one file.
+1. Soft target: `<= 800` LOC per module.
+2. Hard cap: `<= 1200` LOC per module.
+3. Exception policy:
+   1. Explicitly documented in phase evidence.
+   2. Must include reduction plan and deadline.
 
-Target split:
+### 4.5 SQL parity policy
 
-1. `crates/adapter/src/main.rs` — bootstrap + router wiring only.
-2. `crates/adapter/src/config.rs` — `AdapterConfig::from_env`, env parsing/validation.
-3. `crates/adapter/src/auth.rs` — bearer/hmac verify, nonce/ttl logic.
-4. `crates/adapter/src/handlers.rs` — `simulate`, `submit`, JSON response shaping.
-5. `crates/adapter/src/upstream.rs` — upstream forwarding + outcome normalization.
-6. `crates/adapter/src/send_rpc.rs` — sendTransaction path + signature checks/classification.
-7. `crates/adapter/src/submit_verify.rs` — post-submit visibility checks.
-8. `crates/adapter/src/contract.rs` — contract validators (`validate_*`, common invariants).
-9. `crates/adapter/src/http_utils.rs` — endpoint identity/redaction/error classification.
+Do not require byte-identical SQL text.
+Use behavior parity:
 
-Acceptance:
-
-1. Existing adapter tests unchanged in semantics.
-2. Same error codes and retryability classifications.
-3. Same response contract fields.
+1. Query result parity on deterministic fixture DB.
+2. Invariant parity for critical paths (pricing, drawdown, finalize).
+3. Query-plan/perf sanity only where relevant.
 
 ---
 
-## 4.2 `copybot-app` (`crates/app/src/main.rs`)
+## 5) Baseline Evidence (Phase 0, Mandatory)
 
-Current issue: startup, runtime contracts, task orchestration, risk logic, queueing, stale close, telemetry in one file.
+This baseline is **required**, not optional.
 
-Target split:
+Deliverable file:
 
-1. `crates/app/src/main.rs` — startup/bootstrap only.
-2. `crates/app/src/config_contract.rs` — execution/risk/shadow contract validators.
-3. `crates/app/src/secrets.rs` — adapter secret file resolution/loading.
-4. `crates/app/src/app_loop.rs` — main event loop orchestration.
-5. `crates/app/src/infra_risk_gate.rs` — outage/parser-stall/no-progress logic.
-6. `crates/app/src/shadow_queue.rs` — shadow task queue/overflow/scheduling.
-7. `crates/app/src/stale_close.rs` — stale lot close + risk event writing.
-8. `crates/app/src/task_spawns.rs` — worker/discovery/shadow/execution spawn helpers.
-9. `crates/app/src/telemetry.rs` — formatting/aggregation helpers.
+1. `ops/refactor_baseline_evidence_YYYY-MM-DD.md`
 
-Acceptance:
+Evidence folder convention:
 
-1. Existing risk-gate tests remain green.
-2. Stale-close behavior unchanged.
-3. Runtime startup validation errors text-compatible where feasible.
+1. `ops/evidence/refactor/baseline/<short_sha>/`
 
----
+Mandatory baseline content:
 
-## 4.3 `copybot-execution`
+1. Git commit SHA.
+2. Exact commands executed.
+3. Exit codes.
+4. Raw artifacts and checksums.
+5. Normalized outputs for deterministic comparison.
 
-Files in scope:
-
-1. `crates/execution/src/lib.rs` (~3550)
-2. `crates/execution/src/submitter.rs` (~2028)
-3. `crates/execution/src/simulator.rs` (~991)
-
-Target split:
-
-1. `crates/execution/src/lib.rs` -> facade + minimal `ExecutionRuntime`.
-2. New modules:
-   1. `runtime_init.rs` (mode wiring)
-   2. `batch_processor.rs` (process_batch orchestration)
-   3. `risk_gates.rs` (daily loss / drawdown / infra interactions)
-   4. `route_policy.rs` (route order + tip/counters helpers)
-   5. `telemetry.rs` (batch report counters/sums)
-3. `submitter.rs` split:
-   1. `submitter/http.rs`
-   2. `submitter/policy_echo.rs`
-   3. `submitter/fee_hints.rs`
-   4. `submitter/parsing.rs`
-4. `simulator.rs` split:
-   1. request/response parser
-   2. endpoint retry/fallback loop
-   3. redaction/log helpers
-
-Acceptance:
-
-1. Existing unit tests in execution crate all pass unchanged.
-2. No change in submit/simulate fail-open/fail-closed behavior.
-3. Same error code taxonomy.
-
----
-
-## 4.4 `copybot-storage` (`crates/storage/src/lib.rs`)
-
-Current issue: migrations, lifecycle writes, analytics queries, pricing helpers, drawdown/unrealized logic all in one file.
-
-Target split:
-
-1. `crates/storage/src/lib.rs` — public exports + `SqliteStore` struct + open/migration entry.
-2. `crates/storage/src/migrations.rs` — migration discovery/apply.
-3. `crates/storage/src/execution_orders.rs` — order lifecycle CRUD.
-4. `crates/storage/src/fills_positions.rs` — fill/position finalize paths.
-5. `crates/storage/src/shadow.rs` — shadow lots/trades/snapshots.
-6. `crates/storage/src/pricing.rs` — reliable price helpers.
-7. `crates/storage/src/risk_metrics.rs` — pnl/drawdown/unrealized calculations.
-8. `crates/storage/src/discovery.rs` — discovery wallets/metrics paths.
-9. `crates/storage/src/risk_events.rs` — risk event insert/query helpers.
-10. `crates/storage/src/sqlite_retry.rs` — contention retry utilities/counters.
-
-Acceptance:
-
-1. No SQL semantic drift (same SQL text unless intentional and reviewed).
-2. Migration behavior unchanged.
-3. Existing storage tests plus workspace tests pass.
-
----
-
-## 4.5 `copybot-ingestion` (`crates/ingestion/src/source.rs`)
-
-Current issue: source abstraction + Helius + Yellowstone + queues + telemetry in one huge file.
-
-Target split:
-
-1. `crates/ingestion/src/source/mod.rs` — public source API.
-2. `crates/ingestion/src/source/mock.rs`
-3. `crates/ingestion/src/source/helius_ws.rs`
-4. `crates/ingestion/src/source/yellowstone_grpc.rs`
-5. `crates/ingestion/src/source/overflow_queue.rs`
-6. `crates/ingestion/src/source/telemetry.rs`
-7. `crates/ingestion/src/source/reorder.rs`
-
-Acceptance:
-
-1. Runtime snapshot fields unchanged.
-2. Fallback counters and parse counters unchanged.
-3. No throughput regression in smoke/local runs.
-
----
-
-## 4.6 `copybot-config` (`crates/config/src/lib.rs`)
-
-Current issue: schema definitions + defaulting + env parsing + validation helpers all in one file.
-
-Target split:
-
-1. `crates/config/src/lib.rs` — public API exports.
-2. `crates/config/src/schema.rs` — config structs/defaults.
-3. `crates/config/src/load.rs` — file load + merge entrypoints.
-4. `crates/config/src/env_parsers.rs` — typed env parsing helpers.
-5. `crates/config/src/env_overrides.rs` — override application per section.
-6. `crates/config/src/validation.rs` — shared validation constants/helpers.
-
-Acceptance:
-
-1. Same env precedence semantics.
-2. Same fail-closed parsing behavior.
-3. Existing env tests preserved.
-
----
-
-## 4.7 `copybot-discovery` and `copybot-shadow`
-
-Files:
-
-1. `crates/discovery/src/lib.rs` (~1141)
-2. `crates/shadow/src/lib.rs` (~895)
-
-Target split:
-
-1. `discovery`: window state, scoring, quality/rpc cache, followlist sync.
-2. `shadow`: candidate conversion, quality gates, signal recording, snapshot extraction.
-
-Acceptance:
-
-1. Same drop reasons and follow semantics.
-2. Same quality gate enforcement.
-
----
-
-## 4.8 Ops Scripts (`tools/*.sh`)
-
-Largest script risk is readability and duplicated parsing helpers.
-
-Target split (incremental, safe):
-
-1. Add `tools/lib/common.sh` for shared helpers (`trim`, `extract_field`, bool normalization, artifact write).
-2. Add `tools/lib/toml_env.sh` for shared key/value parsing utilities.
-3. Keep behavior identical; only de-duplicate helper logic.
-4. Keep `tools/ops_scripts_smoke_test.sh` as integration harness, but move fixture writers into sourced helper file when stable.
-
-Acceptance:
-
-1. `tools/ops_scripts_smoke_test.sh` PASS before/after.
-2. Script outputs stable for key fields used by automation.
-
----
-
-## 5) Phased Execution Plan
-
-## Phase 0 — Baseline Freeze (1-2 days)
-
-1. Snapshot current behavior:
-   1. store canonical outputs from:
-      1. `tools/execution_go_nogo_report.sh`
-      2. `tools/execution_devnet_rehearsal.sh`
-      3. `tools/adapter_rollout_evidence_report.sh`
-2. Lock golden tests and smoke in CI expectations.
-3. Define refactor "no-behavior-change" checklist template for auditors.
-
-Deliverable:
-
-1. `ops/refactor_baseline_evidence_YYYY-MM-DD.md` (optional but recommended).
-
-## Phase 1 — Adapter Modularization (high ROI, low cross-crate blast)
-
-1. Split `crates/adapter/src/main.rs` into modules listed in 4.1.
-2. Preserve public HTTP behavior exactly.
-3. Keep `main.rs` as thin bootstrap (router + state init).
-
-Exit criteria:
-
-1. Adapter crate tests pass unchanged.
-2. Workspace + smoke pass.
-3. Audit check on error code parity.
-
-## Phase 2 — App Runtime Decomposition
-
-1. Split `crates/app/src/main.rs` per 4.2.
-2. Move risk/outage/parser-stall logic into dedicated module.
-3. Move queue mechanics out of top-level file.
-
-Exit criteria:
-
-1. Existing risk tests green.
-2. No telemetry key regressions.
-3. Audit on gate precedence.
-
-## Phase 3 — Execution Runtime Decomposition
-
-1. Split `crates/execution/src/lib.rs` and `submitter.rs`.
-2. Isolate policy echo + fee hint parsing.
-3. Keep retry/terminal taxonomy stable.
-
-Exit criteria:
-
-1. Existing submitter/simulator tests green.
-2. No contract drift against adapter.
-3. Audit on fail-closed paths.
-
-## Phase 4 — Storage Decomposition
-
-1. Split `crates/storage/src/lib.rs` by domain modules.
-2. Keep SQL constants and statements intact where possible.
-3. Add light SQL string snapshot tests for critical queries (optional but valuable).
-
-Exit criteria:
-
-1. Workspace green.
-2. No migration changes.
-3. Audit on pricing/risk query parity.
-
-## Phase 5 — Ingestion + Config Decomposition
-
-1. Split ingestion source monolith per 4.5.
-2. Split config monolith per 4.6.
-3. Ensure env override behavior unchanged.
-
-Exit criteria:
-
-1. Smoke + workspace pass.
-2. Ingestion runtime snapshot contract unchanged.
-3. Audit on parser/fallback counters.
-
-## Phase 6 — Script Library Extraction
-
-1. Deduplicate shell helper logic into `tools/lib/*`.
-2. Keep top-level script interfaces stable.
-3. Re-run full smoke after each helper extraction step.
-
-Exit criteria:
-
-1. Smoke PASS.
-2. No changed output fields used by automation.
-
----
-
-## 6) Priority Order (Recommended)
-
-1. Adapter
-2. App
-3. Execution
-4. Storage
-5. Ingestion
-6. Config
-7. Scripts
-8. Discovery/Shadow polish
-
-Reason: highest-risk runtime paths first, but with already strong test coverage.
-
----
-
-## 7) Risk Register
-
-1. Silent contract drift in fail-closed paths
-   1. Mitigation: golden tests + explicit audit checklist per phase.
-2. Regression from move-only commits mixed with logic changes
-   1. Mitigation: strict two-step pattern:
-      1. move/wire
-      2. cleanup
-3. Cross-crate coupling breakage
-   1. Mitigation: phase boundaries by crate + workspace test after each slice.
-4. Script output drift breaking ops automation
-   1. Mitigation: smoke assertions on exact key lines.
-
----
-
-## 8) Definition of Done (Whole Plan)
-
-1. No file > 2000 LOC in runtime-critical crates (`app`, `execution`, `adapter`, `storage`, `ingestion`, `config`).
-2. All existing tests + smoke remain green.
-3. All rollout/audit helper outputs stable and documented.
-4. Refactor packages reviewed by auditors in phase batches.
-5. No unresolved behavior-drift findings.
-
----
-
-## 9) Auditor Review Checklist (For This Plan)
-
-Please validate:
-
-1. Phase order minimizes production risk.
-2. Proposed module boundaries are practical for Rust visibility/ownership.
-3. No hidden behavior changes are implied by structure moves.
-4. Missing critical refactor targets (if any).
-5. Whether to add strict LOC budget thresholds per phase.
-
----
-
-## 10) Immediate Next Step (If Approved)
-
-Start Phase 1 with a strict "move-only" slice:
-
-1. Extract `send_rpc.rs` from `crates/adapter/src/main.rs`.
-2. Extract `submit_verify.rs`.
-3. Keep `main.rs` routing + handler dispatch.
-
-Then run:
+Mandatory baseline commands:
 
 ```bash
-cargo fmt --all
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+
+bash -n tools/adapter_secret_rotation_report.sh
+bash -n tools/execution_devnet_rehearsal.sh
+bash -n tools/adapter_rollout_evidence_report.sh
+bash -n tools/execution_go_nogo_report.sh
+
+# Optional but recommended if shellcheck is available
+shellcheck -x tools/adapter_secret_rotation_report.sh
+shellcheck -x tools/execution_devnet_rehearsal.sh
+shellcheck -x tools/adapter_rollout_evidence_report.sh
+shellcheck -x tools/execution_go_nogo_report.sh
+```
+
+Deterministic output strategy:
+
+1. Use fixture-driven smoke outputs as golden source.
+2. Do not use production live outputs as baseline canon.
+3. Normalize volatile fields in generated artifacts:
+   1. timestamps
+   2. absolute temp paths
+   3. durations
+
+---
+
+## 6) Measurable Parity Criteria
+
+### 6.1 Functional parity
+
+1. No new failing tests.
+2. No changed verdict semantics in gate scripts.
+3. No changed fail-closed/fail-open classifications.
+
+### 6.2 Telemetry and output parity
+
+Required key fields must remain present and parseable.
+
+Runtime/report keys:
+
+1. `adapter_rollout_verdict`
+2. `rotation_readiness_verdict`
+3. `devnet_rehearsal_verdict`
+4. `overall_go_nogo_verdict`
+5. `preflight_verdict`
+6. `fee_decomposition_verdict`
+7. `route_profile_verdict`
+
+Ingestion/risk keys and counters (where applicable):
+
+1. `ws_notifications_enqueued`
+2. `parse_rejected_total`
+3. `grpc_decode_errors`
+4. `grpc_transaction_updates_total`
+
+### 6.3 Performance sanity thresholds
+
+On the same machine and same fixture:
+
+1. `tools/ops_scripts_smoke_test.sh` median wall-time regression must be `<= 25%` vs baseline (3-run median).
+2. No single targeted test may regress by `> 50%` unless explained and accepted in phase evidence.
+
+---
+
+## 7) Refactor Strategy by Domain
+
+### 7.1 Adapter (`crates/adapter/src/main.rs`)
+
+Target split:
+
+1. `main.rs` bootstrap and router only.
+2. `config.rs`
+3. `auth.rs`
+4. `handlers.rs`
+5. `upstream.rs`
+6. `send_rpc.rs`
+7. `submit_verify.rs`
+8. `contract.rs`
+9. `http_utils.rs`
+
+Test strategy:
+
+1. Keep handler-level integration tests close to handler modules.
+2. Keep shared HTTP fixtures in dedicated test helper module.
+3. Avoid widening visibility beyond `pub(crate)` unless required.
+
+### 7.2 App (`crates/app/src/main.rs`)
+
+Refactor in three sub-phases to control blast radius.
+
+Phase 2a (safe extraction, no core loop redesign):
+
+1. `config_contract.rs`
+2. `secrets.rs`
+3. `telemetry.rs`
+4. `stale_close.rs`
+5. `task_spawns.rs`
+6. `swap_classification.rs`
+
+Phase 2b (state consolidation, moderate risk):
+
+1. Introduce `shadow_scheduler.rs` to consolidate queue state.
+2. Extract operator emergency-stop state and helpers.
+
+Phase 2c (optional, high risk, defer unless needed):
+
+1. Event-loop orchestration redesign.
+2. Requires dedicated RFC and separate audits.
+
+### 7.3 Execution (`crates/execution`)
+
+Existing modular structure must be preserved and leveraged.
+
+Focus areas:
+
+1. `lib.rs` decomposition into:
+   1. `runtime.rs`
+   2. `pipeline.rs`
+   3. `confirmation.rs`
+   4. `batch_report.rs`
+2. `submitter.rs` extraction of parser/policy helpers where ROI is real.
+3. Keep `simulator.rs` stable unless clear gain; avoid fragmentation for its own sake.
+
+### 7.4 Storage (`crates/storage/src/lib.rs`)
+
+Target split:
+
+1. `migrations.rs`
+2. `execution_orders.rs`
+3. `fills_positions.rs`
+4. `shadow.rs`
+5. `pricing.rs`
+6. `risk_metrics.rs`
+7. `discovery.rs`
+8. `risk_events.rs`
+9. `sqlite_retry.rs`
+10. `transactions.rs` for cross-domain atomic operations.
+
+Critical rule:
+
+1. Cross-domain atomic flow (e.g. finalize confirmed order) must remain coordinated in one transaction boundary.
+
+### 7.5 Ingestion (`crates/ingestion/src/source.rs`)
+
+Target split:
+
+1. `source/mod.rs`
+2. `source/mock.rs`
+3. `source/helius_ws.rs`
+4. `source/yellowstone_grpc.rs`
+5. `source/reorder.rs`
+6. `source/overflow_queue.rs`
+7. `source/telemetry.rs`
+
+Explicit dedup goal:
+
+1. Reorder-buffer logic parity and de-dup between Helius/Yellowstone paths.
+
+### 7.6 Config (`crates/config/src/lib.rs`)
+
+Target split:
+
+1. `schema.rs`
+2. `load.rs`
+3. `env_parsers.rs`
+4. `env_overrides.rs`
+5. `validation.rs`
+
+Optional reduction opportunity:
+
+1. Consider macro-driven env override mapping after move-only phase stabilizes.
+
+### 7.7 Discovery and Shadow
+
+Target split:
+
+1. Discovery: windows, scoring, quality cache, followlist sync.
+2. Shadow: candidate conversion, quality gates, signal recording, snapshots.
+
+### 7.8 Ops scripts (`tools/*.sh`)
+
+Target split:
+
+1. `tools/lib/common.sh`
+2. `tools/lib/toml_env.sh`
+
+Rules:
+
+1. Keep top-level interfaces stable.
+2. No output contract drift.
+3. Enforce shellcheck and smoke on each helper extraction slice.
+
+---
+
+## 8) Phase Order (Risk-Minimized)
+
+1. Phase 0: Baseline evidence freeze.
+2. Phase 1: Adapter modularization.
+3. Phase 2a: App safe extraction.
+4. Phase 3: Storage decomposition.
+5. Phase 4: Execution decomposition.
+6. Phase 5A: Ingestion decomposition.
+7. Phase 5B: Config decomposition.
+8. Phase 6: App state consolidation (2b).
+9. Phase 7: Ops script library extraction.
+10. Phase 8: Discovery/Shadow polish.
+11. Phase 9: App event-loop redesign (2c, optional/deferred).
+
+Rationale:
+
+1. Start with adapter (isolated binary, strong tests).
+2. De-risk app by splitting safe and stateful work.
+3. Place storage before execution due to dependency surface.
+4. Split ingestion/config instead of one combined phase.
+
+---
+
+## 9) Phase Cards with Mandatory Regression Packs
+
+## Phase 0: Baseline Freeze (mandatory)
+
+Scope:
+
+1. Build deterministic baseline evidence.
+
+Mandatory regression pack:
+
+```bash
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Exit criteria:
+
+1. Baseline evidence file committed.
+2. Raw artifacts and checksums committed.
+3. Auditor acknowledgment of baseline completeness.
+
+## Phase 1: Adapter modularization
+
+Scope:
+
+1. Split `crates/adapter/src/main.rs` into modules from section 7.1.
+2. No contract-level behavior changes.
+
+Mandatory regression pack:
+
+```bash
 cargo test -p copybot-adapter -q
 cargo test --workspace -q
 tools/ops_scripts_smoke_test.sh
 ```
 
-And publish a dedicated audit package for Phase 1.
+Targeted checks:
+
+```bash
+cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_signature_mismatch
+cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_uses_fallback_auth_token_when_retrying
+cargo test -p copybot-adapter -q verify_submit_signature_rejects_when_onchain_error_seen
+```
+
+Exit criteria:
+
+1. Error code/retryability parity confirmed.
+2. HTTP response schema parity confirmed.
+3. No unresolved High/Medium findings.
+
+## Phase 2a: App safe extraction
+
+Scope:
+
+1. Extract non-core-loop domains only.
+2. Keep core loop behavior unchanged.
+
+Mandatory regression pack:
+
+```bash
+cargo test -p copybot-app -q
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Targeted checks:
+
+```bash
+cargo test -p copybot-app -q risk_guard_infra_blocks_when_parser_stall_detected
+cargo test -p copybot-app -q risk_guard_infra_parser_stall_does_not_block_below_ratio_threshold
+cargo test -p copybot-app -q risk_guard_infra_parser_stall_blocks_at_ratio_threshold_boundary
+cargo test -p copybot-app -q stale_lot_cleanup_ignores_micro_swap_outlier_price
+cargo test -p copybot-app -q stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing
+cargo test -p copybot-app -q risk_guard_rug_rate_hard_stop_auto_clears_after_window_without_new_trades
+```
+
+Exit criteria:
+
+1. Gate precedence unchanged.
+2. Stale-close behavior unchanged.
+3. No telemetry key drift.
+
+## Phase 3: Storage decomposition
+
+Scope:
+
+1. Split storage by domain.
+2. Preserve transaction boundaries and migration behavior.
+
+Mandatory regression pack:
+
+```bash
+cargo test -p copybot-storage -q
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Targeted checks:
+
+```bash
+cargo test -p copybot-storage -q live_unrealized
+cargo test -p copybot-storage -q reliable_token_sol_price_for_stale_close
+```
+
+Exit criteria:
+
+1. Deterministic query-result parity evidence generated.
+2. Migration and finalize flows unchanged.
+3. No unresolved High findings.
+
+## Phase 4: Execution decomposition
+
+Scope:
+
+1. Decompose `lib.rs` and targeted `submitter.rs` areas.
+2. Preserve fail-closed semantics.
+
+Mandatory regression pack:
+
+```bash
+cargo test -p copybot-execution -q
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Targeted checks:
+
+```bash
+cargo test -p copybot-execution -q adapter_intent_simulator_does_not_fallback_on_invalid_json_terminal_reject
+cargo test -p copybot-execution -q adapter_intent_simulator_redacts_endpoint_on_retryable_send_error
+```
+
+Exit criteria:
+
+1. Retryable/terminal taxonomy parity verified.
+2. Submit/simulate contract parity verified.
+3. No adapter/execution drift in strict echo behavior.
+
+## Phase 5A: Ingestion decomposition
+
+Scope:
+
+1. Split source monolith.
+2. Centralize reorder logic.
+
+Mandatory regression pack:
+
+```bash
+cargo test -p copybot-ingestion -q
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Targeted checks:
+
+```bash
+cargo test -p copybot-app -q risk_guard_infra_no_progress_does_not_block_when_grpc_transaction_updates_advance
+cargo test -p copybot-app -q risk_guard_infra_no_progress_still_blocks_when_only_grpc_ping_total_advances
+```
+
+Exit criteria:
+
+1. Runtime snapshot key parity.
+2. Reorder behavior parity with fixture-driven checks.
+
+## Phase 5B: Config decomposition
+
+Scope:
+
+1. Split schema/load/parsers/overrides/validation.
+2. Preserve override precedence and fail-closed parse semantics.
+
+Mandatory regression pack:
+
+```bash
+cargo test -p copybot-config -q
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Targeted checks:
+
+1. Existing env override and parser tests must pass unchanged.
+2. Execution preflight and go/no-go smoke cases remain stable.
+
+Exit criteria:
+
+1. Env precedence unchanged.
+2. Route map/env parse fail-closed behavior unchanged.
+
+## Phase 6: App state consolidation (2b)
+
+Scope:
+
+1. Introduce `ShadowScheduler` style state holder.
+2. Reduce mutable local sprawl in loop without redesigning orchestration model.
+
+Mandatory regression pack:
+
+```bash
+cargo test -p copybot-app -q
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Exit criteria:
+
+1. No queueing/risk behavior drift.
+2. Local-state coupling reduced and documented.
+
+## Phase 7: Ops scripts extraction
+
+Scope:
+
+1. Extract shared helpers to `tools/lib/*`.
+2. Keep script interfaces stable.
+
+Mandatory regression pack:
+
+```bash
+bash -n tools/adapter_secret_rotation_report.sh
+bash -n tools/execution_devnet_rehearsal.sh
+bash -n tools/adapter_rollout_evidence_report.sh
+bash -n tools/execution_go_nogo_report.sh
+shellcheck -x tools/adapter_secret_rotation_report.sh
+shellcheck -x tools/execution_devnet_rehearsal.sh
+shellcheck -x tools/adapter_rollout_evidence_report.sh
+shellcheck -x tools/execution_go_nogo_report.sh
+tools/ops_scripts_smoke_test.sh
+```
+
+Exit criteria:
+
+1. Output contract parity for automation keys.
+2. No shell compatibility regressions.
+
+## Phase 8: Discovery and Shadow polish
+
+Scope:
+
+1. Split remaining large files in discovery/shadow where ROI is clear.
+
+Mandatory regression pack:
+
+```bash
+cargo test -p copybot-discovery -q
+cargo test -p copybot-shadow -q
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Exit criteria:
+
+1. Quality gate and followlist behavior unchanged.
+2. No new audit findings above Low.
+
+## Phase 9 (Optional): App loop redesign (2c)
+
+Scope:
+
+1. Only if size/maintainability still unacceptable after Phase 6.
+2. Requires dedicated RFC and separate approval.
+
+Mandatory regression pack:
+
+```bash
+cargo test -p copybot-app -q
+cargo test --workspace -q
+tools/ops_scripts_smoke_test.sh
+```
+
+Exit criteria:
+
+1. Explicit architecture review approved.
+2. Separate audits completed.
+
+---
+
+## 10) Rollback Matrix (Per Phase)
+
+Rollback command model:
+
+1. Never use destructive reset.
+2. Use `git revert <phase_commit_or_range>`.
+3. Re-run phase regression pack post-revert.
+
+| Phase | Rollback trigger | Rollback path | Max rollback window | Owner |
+|---|---|---|---|---|
+| 0 | Baseline missing/incomplete | Revert baseline commit, regenerate evidence | Same day | Refactor owner |
+| 1 | Any contract drift in adapter responses/error codes | Revert latest adapter slice commit(s) only | 24h | Runtime owner |
+| 2a | Risk gate or stale-close drift | Revert app slice commit(s), keep adapter intact | 24h | Runtime owner |
+| 3 | Pricing/finalize/migration parity drift | Revert storage slice commit(s) | 24h | Runtime owner |
+| 4 | Retryable/terminal taxonomy drift | Revert execution slice commit(s) | 24h | Runtime owner |
+| 5A | Snapshot/ingestion counter drift | Revert ingestion slice commit(s) | 24h | Runtime owner |
+| 5B | Env precedence or parse drift | Revert config slice commit(s) | 24h | Runtime owner |
+| 6 | Queue/scheduler behavior drift | Revert app state-consolidation commit(s) | 24h | Runtime owner |
+| 7 | Script output contract drift | Revert script helper extraction commit(s) | 24h | Ops owner |
+| 8 | Discovery/shadow behavior drift | Revert discovery/shadow slice commit(s) | 24h | Runtime owner |
+| 9 | Any event-loop orchestration drift | Revert full phase branch merge | 12h | Runtime owner |
+
+---
+
+## 11) Program DoD (Updated)
+
+Program done when all are true:
+
+1. All mandatory phases completed and signed off.
+2. Baseline and per-phase evidence packages archived.
+3. No unresolved High findings.
+4. Runtime-critical module sizes comply with budget policy, with explicit exceptions documented.
+5. Workspace tests + smoke stable across phases.
+
+LOC outcome target:
+
+1. Runtime files should trend to `< 2000 LOC` where practical.
+2. For exceptional files, enforce documented cap and follow-up milestone.
+3. LOC checks exclude `#[cfg(test)]` sections.
+
+---
+
+## 12) Immediate Execution Start
+
+First executable slice after plan approval:
+
+1. Phase 0 baseline evidence (mandatory).
+2. Phase 1 adapter move-only micro-slice #1:
+   1. Extract `http_utils` only.
+3. Phase 1 adapter move-only micro-slice #2:
+   1. Extract `send_rpc` only.
+4. Phase 1 adapter move-only micro-slice #3:
+   1. Extract `submit_verify` only.
+
+Each micro-slice must run full mandatory pack before next slice.
+
+---
+
+## 13) Auditor Checklist (for this plan revision)
+
+Please verify:
+
+1. Baseline is mandatory and deterministic.
+2. Rollback matrix is explicit and operational.
+3. Phase order reduces blast radius.
+4. App split (`2a/2b/2c`) is realistic.
+5. Ingestion/config split into `5A/5B` is explicit.
+6. Regression packs are mandatory per phase.
+7. Telemetry/perf criteria are measurable.
+8. Script compatibility gates include `shellcheck`.
+9. LOC budget policy and exceptions are clear.
+10. Ownership and sign-off authority are explicit.
