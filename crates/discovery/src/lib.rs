@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
+mod windows;
+use self::windows::{cmp_swap_order, DiscoveryWindowState};
+
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
 const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
@@ -103,13 +106,6 @@ struct WalletAccumulator {
     suspicious: bool,
     positions: HashMap<String, VecDeque<Lot>>,
     buy_observations: Vec<BuyObservation>,
-}
-
-#[derive(Debug, Default)]
-struct DiscoveryWindowState {
-    swaps: VecDeque<SwapEvent>,
-    signatures: HashSet<String>,
-    high_watermark_ts: Option<DateTime<Utc>>,
 }
 
 impl DiscoveryService {
@@ -992,13 +988,6 @@ fn cmp_score_then_trades(a: &WalletSnapshot, b: &WalletSnapshot) -> Ordering {
         .then_with(|| a.wallet_id.cmp(&b.wallet_id))
 }
 
-fn cmp_swap_order(a: &SwapEvent, b: &SwapEvent) -> Ordering {
-    a.ts_utc
-        .cmp(&b.ts_utc)
-        .then_with(|| a.slot.cmp(&b.slot))
-        .then_with(|| a.signature.cmp(&b.signature))
-}
-
 fn fetch_token_quality_from_helius_guarded(
     helius_http_url: &str,
     mint: &str,
@@ -1013,18 +1002,6 @@ fn fetch_token_quality_from_helius_guarded(
         max_signature_pages,
         min_age_hint_seconds,
     )
-}
-
-impl DiscoveryWindowState {
-    fn evict_before(&mut self, window_start: DateTime<Utc>) {
-        while let Some(front) = self.swaps.front() {
-            if front.ts_utc >= window_start {
-                break;
-            }
-            let expired = self.swaps.pop_front().expect("checked front exists above");
-            self.signatures.remove(&expired.signature);
-        }
-    }
 }
 
 #[cfg(test)]
