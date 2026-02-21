@@ -51,6 +51,26 @@ if [[ ! -f "$DB_PATH" ]]; then
   exit 1
 fi
 
+order_column_exists() {
+  local column="$1"
+  [[ "$(sqlite3 -noheader "$DB_PATH" "SELECT 1 FROM pragma_table_info('orders') WHERE name = '$column' LIMIT 1;")" == "1" ]]
+}
+
+order_column_expr_or_zero() {
+  local column="$1"
+  if order_column_exists "$column"; then
+    printf "COALESCE(o.%s, 0)" "$column"
+  else
+    printf "0"
+  fi
+}
+
+APPLIED_TIP_EXPR="$(order_column_expr_or_zero applied_tip_lamports)"
+ATA_RENT_EXPR="$(order_column_expr_or_zero ata_create_rent_lamports)"
+NETWORK_FEE_HINT_EXPR="$(order_column_expr_or_zero network_fee_lamports_hint)"
+BASE_FEE_HINT_EXPR="$(order_column_expr_or_zero base_fee_lamports_hint)"
+PRIORITY_FEE_HINT_EXPR="$(order_column_expr_or_zero priority_fee_lamports_hint)"
+
 MAX_POSITION_SOL="$(cfg_value risk max_position_sol)"
 MAX_TOTAL_EXPOSURE_SOL="$(cfg_value risk max_total_exposure_sol)"
 MAX_HOLD_HOURS="$(cfg_value risk max_hold_hours)"
@@ -187,6 +207,41 @@ WHERE datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours')
 GROUP BY status
 ORDER BY cnt DESC;
 SQL
+
+echo
+echo "=== Execution Fee Breakdown by Route (${WINDOW_HOURS}h) ==="
+sqlite3 "$DB_PATH" <<SQL
+.headers on
+.mode column
+WITH confirmed_orders AS (
+  SELECT
+    o.order_id,
+    o.route,
+    ${APPLIED_TIP_EXPR} AS applied_tip_lamports,
+    ${ATA_RENT_EXPR} AS ata_create_rent_lamports,
+    ${NETWORK_FEE_HINT_EXPR} AS network_fee_lamports_hint,
+    ${BASE_FEE_HINT_EXPR} AS base_fee_lamports_hint,
+    ${PRIORITY_FEE_HINT_EXPR} AS priority_fee_lamports_hint
+  FROM orders o
+  WHERE o.status = 'execution_confirmed'
+    AND o.confirm_ts IS NOT NULL
+    AND datetime(o.confirm_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
+)
+SELECT
+  route,
+  COUNT(*) AS confirmed_orders,
+  COALESCE(SUM(COALESCE(f.fee, 0.0)), 0.0) AS fee_sol_sum,
+  SUM(applied_tip_lamports) AS tip_lamports_sum,
+  SUM(ata_create_rent_lamports) AS ata_rent_lamports_sum,
+  SUM(network_fee_lamports_hint) AS network_fee_hint_lamports_sum,
+  SUM(base_fee_lamports_hint) AS base_fee_hint_lamports_sum,
+  SUM(priority_fee_lamports_hint) AS priority_fee_hint_lamports_sum
+FROM confirmed_orders o
+LEFT JOIN fills f ON f.order_id = o.order_id
+GROUP BY route
+ORDER BY confirmed_orders DESC, route ASC;
+SQL
+
 echo
 echo "=== Recent Risk Events (${RISK_EVENTS_MINUTES}m) ==="
 sqlite3 "$DB_PATH" <<SQL
@@ -220,16 +275,19 @@ import sys
 
 text = sys.argv[1]
 rows = []
+sqlite_rows = []
 for line in text.splitlines():
-    if "ingestion pipeline metrics" not in line:
-        continue
     m = re.search(r'(\{.*\})\s*$', line)
     if not m:
         continue
     try:
-        rows.append(json.loads(m.group(1)))
+        payload = json.loads(m.group(1))
     except json.JSONDecodeError:
         continue
+    if "ingestion pipeline metrics" in line:
+        rows.append(payload)
+    elif "sqlite contention counters" in line:
+        sqlite_rows.append(payload)
 
 if not rows:
     print("no ingestion metric samples found")
@@ -244,11 +302,24 @@ keys = [
     "fetch_concurrency_inflight",
     "ws_notifications_enqueued",
     "ws_notifications_replaced_oldest",
+    "reconnect_count",
+    "stream_gap_detected",
+    "parse_rejected_total",
+    "grpc_message_total",
+    "grpc_decode_errors",
     "rpc_429",
     "rpc_5xx",
 ]
 for key in keys:
     print(f"{key}: {last.get(key)}")
+
+for map_key in ("parse_rejected_by_reason", "parse_fallback_by_reason"):
+    breakdown = last.get(map_key)
+    if isinstance(breakdown, dict) and breakdown:
+        ordered = {key: breakdown[key] for key in sorted(breakdown)}
+        print(f"{map_key}: {json.dumps(ordered, sort_keys=True)}")
+    else:
+        print(f"{map_key}: {{}}")
 
 if len(rows) >= 2:
     prev = rows[-2]
@@ -258,6 +329,11 @@ if len(rows) >= 2:
         print(f"replaced_ratio_last_interval: {delta_replaced / delta_enqueued:.4f}")
     else:
         print("replaced_ratio_last_interval: n/a")
+
+if sqlite_rows:
+    sqlite_last = sqlite_rows[-1]
+    print(f"sqlite_write_retry_total: {sqlite_last.get('sqlite_write_retry_total')}")
+    print(f"sqlite_busy_error_total: {sqlite_last.get('sqlite_busy_error_total')}")
 PY
 else
   echo "journal access unavailable for service '$SERVICE' (try running with sudo)"

@@ -1,21 +1,36 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, RiskConfig};
+use copybot_config::{
+    load_from_env_or_default, ExecutionConfig, RiskConfig, ShadowConfig,
+    EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX, EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN,
+    EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+    EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+    EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN, EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+};
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
+use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{
     FollowSnapshot, ShadowDropReason, ShadowProcessOutcome, ShadowService, ShadowSnapshot,
 };
-use copybot_storage::{is_retryable_sqlite_anyhow_error, SqliteStore};
+use copybot_storage::{
+    is_retryable_sqlite_anyhow_error, note_sqlite_busy_error, note_sqlite_write_retry,
+    sqlite_contention_snapshot, SqliteStore, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
+    STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+    STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
+};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant as StdInstant;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
+use url::{Host, Url};
 
 const DEFAULT_CONFIG_PATH: &str = "configs/dev.toml";
 const SHADOW_WORKER_POOL_SIZE: usize = 4;
@@ -31,12 +46,20 @@ const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
 const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
+const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
+const DEFAULT_OPERATOR_EMERGENCY_STOP_PATH: &str = "state/operator_emergency_stop.flag";
+const DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS: u64 = 500;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli_config = parse_config_arg();
     let default_path = cli_config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
-    let (config, loaded_config_path) = load_from_env_or_default(&default_path)?;
+    let (mut config, loaded_config_path) = load_from_env_or_default(&default_path)?;
+    let applied_source_override = apply_ingestion_source_override(
+        &mut config.ingestion.source,
+        load_ingestion_source_override(),
+    );
+    resolve_execution_adapter_secrets(&mut config.execution, loaded_config_path.as_path())?;
 
     init_tracing(&config.system.log_level, config.system.log_json);
     info!(
@@ -44,6 +67,14 @@ async fn main() -> Result<()> {
         env = %config.system.env,
         "configuration loaded"
     );
+    if let Some(source_override) = applied_source_override.as_deref() {
+        info!(
+            source = %source_override,
+            "applying ingestion source override from failover file (override has highest priority)"
+        );
+    }
+    validate_execution_runtime_contract(&config.execution, &config.system.env)?;
+    validate_execution_risk_contract(&config.risk)?;
 
     let mut store = SqliteStore::open(Path::new(&config.sqlite.path))
         .context("failed to initialize sqlite store")?;
@@ -67,18 +98,34 @@ async fn main() -> Result<()> {
         &config.shadow.helius_http_url,
         &config.ingestion.helius_http_url,
     );
+    let discovery_http_url = enforce_quality_gate_http_url(
+        "discovery",
+        &config.system.env,
+        config.shadow.quality_gates_enabled,
+        discovery_http_url,
+    )?;
+    let shadow_http_url = enforce_quality_gate_http_url(
+        "shadow",
+        &config.system.env,
+        config.shadow.quality_gates_enabled,
+        shadow_http_url,
+    )?;
+    validate_shadow_quality_gate_contract(&config.shadow, &config.system.env)?;
     let discovery = DiscoveryService::new_with_helius(
         config.discovery.clone(),
         config.shadow.clone(),
         discovery_http_url,
     );
     let shadow = ShadowService::new_with_helius(config.shadow.clone(), shadow_http_url);
+    let execution_runtime =
+        ExecutionRuntime::from_config(config.execution.clone(), config.risk.clone());
 
     run_app_loop(
         store,
         ingestion,
         discovery,
         shadow,
+        execution_runtime,
         config.risk.clone(),
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
@@ -87,6 +134,7 @@ async fn main() -> Result<()> {
         config.shadow.max_signal_lag_seconds,
         config.shadow.causal_holdback_enabled,
         config.shadow.causal_holdback_ms,
+        config.system.pause_new_trades_on_outage,
     )
     .await
 }
@@ -104,18 +152,1087 @@ fn parse_config_arg() -> Option<PathBuf> {
     None
 }
 
+fn load_ingestion_source_override() -> Option<String> {
+    let override_path = env::var("SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE")
+        .unwrap_or_else(|_| DEFAULT_INGESTION_OVERRIDE_PATH.to_string());
+    let content = fs::read_to_string(&override_path).ok()?;
+    parse_ingestion_source_override(&content)
+}
+
+fn apply_ingestion_source_override(
+    ingestion_source: &mut String,
+    source_override: Option<String>,
+) -> Option<String> {
+    if let Some(source_override) = source_override {
+        *ingestion_source = source_override.clone();
+        return Some(source_override);
+    }
+    None
+}
+
+fn resolve_execution_adapter_secrets(
+    config: &mut ExecutionConfig,
+    loaded_config_path: &Path,
+) -> Result<()> {
+    if !config.enabled || config.mode.trim().to_ascii_lowercase() != "adapter_submit_confirm" {
+        return Ok(());
+    }
+
+    let auth_token_file = config.submit_adapter_auth_token_file.trim();
+    if !auth_token_file.is_empty() {
+        if !config.submit_adapter_auth_token.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_adapter_auth_token and execution.submit_adapter_auth_token_file cannot be set at the same time"
+            ));
+        }
+        let resolved = resolve_secret_file_path(auth_token_file, loaded_config_path);
+        config.submit_adapter_auth_token =
+            read_trimmed_secret_file(resolved.as_path()).with_context(|| {
+                format!(
+                    "failed loading execution.submit_adapter_auth_token_file from {} (resolved path: {})",
+                    auth_token_file,
+                    resolved.display()
+                )
+            })?;
+    }
+
+    let hmac_secret_file = config.submit_adapter_hmac_secret_file.trim();
+    if !hmac_secret_file.is_empty() {
+        if !config.submit_adapter_hmac_secret.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_adapter_hmac_secret and execution.submit_adapter_hmac_secret_file cannot be set at the same time"
+            ));
+        }
+        let resolved = resolve_secret_file_path(hmac_secret_file, loaded_config_path);
+        config.submit_adapter_hmac_secret = read_trimmed_secret_file(resolved.as_path())
+            .with_context(|| {
+                format!(
+                    "failed loading execution.submit_adapter_hmac_secret_file from {} (resolved path: {})",
+                    hmac_secret_file,
+                    resolved.display()
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
+fn resolve_secret_file_path(path: &str, loaded_config_path: &Path) -> PathBuf {
+    let value = Path::new(path.trim());
+    if value.is_absolute() {
+        return value.to_path_buf();
+    }
+    match loaded_config_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(value),
+        _ => value.to_path_buf(),
+    }
+}
+
+fn read_trimmed_secret_file(path: &Path) -> Result<String> {
+    let value = fs::read_to_string(path)
+        .with_context(|| format!("failed reading secret file {}", path.display()))?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("secret file {} is empty", path.display()));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn parse_ingestion_source_override(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "SOLANA_COPY_BOT_INGESTION_SOURCE" {
+            continue;
+        }
+        let source = value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+        if !source.is_empty() {
+            return Some(source);
+        }
+    }
+    None
+}
+
+fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
+#[derive(Debug)]
+struct OperatorEmergencyStop {
+    path: PathBuf,
+    poll_interval: Duration,
+    next_refresh_at: StdInstant,
+    active: bool,
+    detail: String,
+}
+
+impl OperatorEmergencyStop {
+    fn from_env() -> Self {
+        let path = env::var("SOLANA_COPY_BOT_EMERGENCY_STOP_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_OPERATOR_EMERGENCY_STOP_PATH));
+        let poll_ms = env::var("SOLANA_COPY_BOT_EMERGENCY_STOP_POLL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS)
+            .max(100);
+        Self {
+            path,
+            poll_interval: Duration::from_millis(poll_ms),
+            next_refresh_at: StdInstant::now(),
+            active: false,
+            detail: String::new(),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn is_active(&self) -> bool {
+        self.active
+    }
+
+    fn detail(&self) -> &str {
+        if self.detail.is_empty() {
+            "operator emergency stop file is present"
+        } else {
+            self.detail.as_str()
+        }
+    }
+
+    fn refresh(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+        let instant_now = StdInstant::now();
+        if instant_now < self.next_refresh_at {
+            return;
+        }
+        self.next_refresh_at = instant_now + self.poll_interval;
+
+        let (active, detail) = match fs::read_to_string(&self.path) {
+            Ok(content) => (
+                true,
+                parse_operator_emergency_stop_reason(&content)
+                    .unwrap_or_else(|| "operator emergency stop file is present".to_string()),
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, String::new()),
+            Err(error) => match fs::metadata(&self.path) {
+                Ok(_) => {
+                    let detail = format!("emergency stop file is unreadable: {error}");
+                    warn!(
+                        path = %self.path.display(),
+                        error = %error,
+                        "operator emergency stop file exists but cannot be read; failing closed"
+                    );
+                    (true, detail)
+                }
+                Err(_) => (false, String::new()),
+            },
+        };
+
+        if active == self.active && detail == self.detail {
+            return;
+        }
+
+        self.active = active;
+        self.detail = detail;
+        let path_display = self.path.display().to_string();
+
+        if self.active {
+            warn!(
+                path = %path_display,
+                detail = %self.detail(),
+                "operator emergency stop activated"
+            );
+            let details_json = format!(
+                "{{\"path\":\"{}\",\"detail\":\"{}\"}}",
+                sanitize_json_value(&path_display),
+                sanitize_json_value(self.detail())
+            );
+            if let Err(error) = store.insert_risk_event(
+                "operator_emergency_stop_activated",
+                "warn",
+                now,
+                Some(&details_json),
+            ) {
+                warn!(
+                    error = %error,
+                    "failed to persist operator emergency stop activation event"
+                );
+            }
+        } else {
+            info!(path = %path_display, "operator emergency stop cleared");
+            let details_json = format!(
+                "{{\"path\":\"{}\",\"state\":\"cleared\"}}",
+                sanitize_json_value(&path_display)
+            );
+            if let Err(error) = store.insert_risk_event(
+                "operator_emergency_stop_cleared",
+                "info",
+                now,
+                Some(&details_json),
+            ) {
+                warn!(
+                    error = %error,
+                    "failed to persist operator emergency stop clear event"
+                );
+            }
+        }
+    }
+}
+
 fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
     let role_specific = role_specific.trim();
-    if !role_specific.is_empty() && !role_specific.contains("REPLACE_ME") {
+    if !role_specific.is_empty() && !contains_placeholder_value(role_specific) {
         return Some(role_specific.to_string());
     }
 
     let fallback = fallback.trim();
-    if !fallback.is_empty() && !fallback.contains("REPLACE_ME") {
+    if !fallback.is_empty() && !contains_placeholder_value(fallback) {
         return Some(fallback.to_string());
     }
 
     None
+}
+
+fn contains_placeholder_value(value: &str) -> bool {
+    value.to_ascii_uppercase().contains("REPLACE_ME")
+}
+
+fn enforce_quality_gate_http_url(
+    role: &str,
+    env: &str,
+    quality_gates_enabled: bool,
+    endpoint: Option<String>,
+) -> Result<Option<String>> {
+    let env_norm = env.trim().to_ascii_lowercase();
+    let enforce = quality_gates_enabled
+        && (matches!(env_norm.as_str(), "paper" | "prod")
+            || env_norm.starts_with("paper-")
+            || env_norm.starts_with("prod-"));
+    if enforce && endpoint.is_none() {
+        return Err(anyhow!(
+            "{role} requires a valid helius_http_url (role-specific or ingestion fallback) when quality gates are enabled in {env}"
+        ));
+    }
+    Ok(endpoint)
+}
+
+fn validate_shadow_quality_gate_contract(config: &ShadowConfig, env: &str) -> Result<()> {
+    if !config.quality_gates_enabled {
+        return Ok(());
+    }
+    if !config.min_liquidity_sol.is_finite() || config.min_liquidity_sol < 0.0 {
+        return Err(anyhow!(
+            "shadow.min_liquidity_sol must be finite and >= 0 when quality gates are enabled in {}",
+            env
+        ));
+    }
+    if !config.min_volume_5m_sol.is_finite() || config.min_volume_5m_sol < 0.0 {
+        return Err(anyhow!(
+            "shadow.min_volume_5m_sol must be finite and >= 0 when quality gates are enabled in {}",
+            env
+        ));
+    }
+    let all_thresholds_zero = config.min_token_age_seconds == 0
+        && config.min_holders == 0
+        && config.min_liquidity_sol <= 0.0
+        && config.min_volume_5m_sol <= 0.0
+        && config.min_unique_traders_5m == 0;
+    if all_thresholds_zero {
+        return Err(anyhow!(
+            "shadow.quality_gates_enabled=true but all quality thresholds are zero in {}; set at least one non-zero threshold",
+            env
+        ));
+    }
+    Ok(())
+}
+
+fn validate_execution_runtime_contract(config: &ExecutionConfig, env: &str) -> Result<()> {
+    if !config.enabled {
+        return Ok(());
+    }
+
+    let mode = config.mode.trim().to_ascii_lowercase();
+    if !matches!(
+        mode.as_str(),
+        "paper" | "paper_rpc_confirm" | "paper_rpc_pretrade_confirm" | "adapter_submit_confirm"
+    ) {
+        return Err(anyhow!(
+            "execution.enabled=true but execution.mode={} is unsupported in current runtime; supported modes: paper, paper_rpc_confirm, paper_rpc_pretrade_confirm, adapter_submit_confirm",
+            if mode.is_empty() { "<empty>" } else { mode.as_str() }
+        ));
+    }
+    if matches!(
+        mode.as_str(),
+        "paper_rpc_confirm" | "paper_rpc_pretrade_confirm" | "adapter_submit_confirm"
+    ) {
+        let primary = config.rpc_http_url.trim();
+        let fallback = config.rpc_fallback_http_url.trim();
+        if primary.is_empty() && fallback.is_empty() {
+            return Err(anyhow!(
+                "execution.mode={} requires execution.rpc_http_url or execution.rpc_fallback_http_url",
+                mode
+            ));
+        }
+    }
+    if matches!(
+        mode.as_str(),
+        "paper_rpc_pretrade_confirm" | "adapter_submit_confirm"
+    ) && config.execution_signer_pubkey.trim().is_empty()
+    {
+        return Err(anyhow!(
+            "execution.mode={} requires non-empty execution.execution_signer_pubkey",
+            mode
+        ));
+    }
+    if mode == "adapter_submit_confirm" {
+        let submit_primary = config.submit_adapter_http_url.trim();
+        let submit_fallback = config.submit_adapter_fallback_http_url.trim();
+        if submit_primary.is_empty() && submit_fallback.is_empty() {
+            return Err(anyhow!(
+                "execution.mode=adapter_submit_confirm requires execution.submit_adapter_http_url or execution.submit_adapter_fallback_http_url"
+            ));
+        }
+        if !submit_primary.is_empty() {
+            validate_adapter_endpoint_url(
+                submit_primary,
+                "execution.submit_adapter_http_url",
+                is_production_env_profile(env),
+            )?;
+        }
+        if !submit_fallback.is_empty() {
+            validate_adapter_endpoint_url(
+                submit_fallback,
+                "execution.submit_adapter_fallback_http_url",
+                is_production_env_profile(env),
+            )?;
+        }
+        if !submit_primary.is_empty() && !submit_fallback.is_empty() {
+            let primary_identity =
+                adapter_endpoint_identity(submit_primary).with_context(|| {
+                    "failed normalizing execution.submit_adapter_http_url endpoint identity"
+                })?;
+            let fallback_identity =
+                adapter_endpoint_identity(submit_fallback).with_context(|| {
+                    "failed normalizing execution.submit_adapter_fallback_http_url endpoint identity"
+                })?;
+            if primary_identity == fallback_identity {
+                return Err(anyhow!(
+                    "execution.submit_adapter_http_url and execution.submit_adapter_fallback_http_url must resolve to distinct endpoints when both are set"
+                ));
+            }
+        }
+        let hmac_key_id = config.submit_adapter_hmac_key_id.trim();
+        let hmac_secret = config.submit_adapter_hmac_secret.trim();
+        if hmac_key_id.is_empty() ^ hmac_secret.is_empty() {
+            return Err(anyhow!(
+                "execution.mode=adapter_submit_confirm requires execution.submit_adapter_hmac_key_id and execution.submit_adapter_hmac_secret to be both set or both empty"
+            ));
+        }
+        if !hmac_key_id.is_empty() && !(5..=300).contains(&config.submit_adapter_hmac_ttl_sec) {
+            return Err(anyhow!(
+                "execution.submit_adapter_hmac_ttl_sec must be in 5..=300 when adapter HMAC auth is enabled"
+            ));
+        }
+        let contract_version = config.submit_adapter_contract_version.trim();
+        if contract_version.is_empty() {
+            return Err(anyhow!(
+                "execution.mode=adapter_submit_confirm requires non-empty execution.submit_adapter_contract_version"
+            ));
+        }
+        if contract_version.len() > 64 {
+            return Err(anyhow!(
+                "execution.submit_adapter_contract_version must be <= 64 chars"
+            ));
+        }
+        if !is_valid_contract_version_token(contract_version) {
+            return Err(anyhow!(
+                "execution.submit_adapter_contract_version must contain only [A-Za-z0-9._-]"
+            ));
+        }
+        if is_production_env_profile(env) && !config.submit_adapter_require_policy_echo {
+            return Err(anyhow!(
+                "execution.submit_adapter_require_policy_echo must be true in production-like environments when execution.mode=adapter_submit_confirm"
+            ));
+        }
+    }
+
+    if config.batch_size == 0 {
+        return Err(anyhow!(
+            "execution.batch_size must be >= 1 when execution is enabled"
+        ));
+    }
+    if config.poll_interval_ms < 100 {
+        return Err(anyhow!(
+            "execution.poll_interval_ms must be >= 100ms when execution is enabled"
+        ));
+    }
+    if config.max_confirm_seconds == 0 {
+        return Err(anyhow!(
+            "execution.max_confirm_seconds must be >= 1 when execution is enabled"
+        ));
+    }
+    if config.max_submit_attempts == 0 {
+        return Err(anyhow!(
+            "execution.max_submit_attempts must be >= 1 when execution is enabled"
+        ));
+    }
+    if config.submit_timeout_ms < 100 {
+        return Err(anyhow!(
+            "execution.submit_timeout_ms must be >= 100ms when execution is enabled"
+        ));
+    }
+    if !config.pretrade_min_sol_reserve.is_finite() || config.pretrade_min_sol_reserve < 0.0 {
+        return Err(anyhow!(
+            "execution.pretrade_min_sol_reserve must be finite and >= 0 when execution is enabled"
+        ));
+    }
+    if config.slippage_bps < 0.0 {
+        return Err(anyhow!(
+            "execution.slippage_bps must be >= 0 when execution is enabled"
+        ));
+    }
+    if config.submit_allowed_routes.is_empty() {
+        return Err(anyhow!(
+            "execution.submit_allowed_routes must not be empty when execution is enabled"
+        ));
+    }
+    validate_unique_normalized_route_list(
+        &config.submit_allowed_routes,
+        "execution.submit_allowed_routes",
+    )?;
+    let default_route = config.default_route.trim().to_ascii_lowercase();
+    let default_route = if default_route.is_empty() {
+        "paper".to_string()
+    } else {
+        default_route
+    };
+    let route_allowed = config
+        .submit_allowed_routes
+        .iter()
+        .any(|route| route.trim().to_ascii_lowercase().eq(default_route.as_str()));
+    if !route_allowed {
+        return Err(anyhow!(
+            "execution.default_route={} must be present in execution.submit_allowed_routes",
+            default_route
+        ));
+    }
+    if !config.submit_route_order.is_empty() {
+        validate_unique_normalized_route_list(
+            &config.submit_route_order,
+            "execution.submit_route_order",
+        )?;
+        for route in &config.submit_route_order {
+            let normalized = route.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                return Err(anyhow!(
+                    "execution.submit_route_order contains an empty route value"
+                ));
+            }
+            let allowed = config.submit_allowed_routes.iter().any(|candidate| {
+                candidate
+                    .trim()
+                    .to_ascii_lowercase()
+                    .eq(normalized.as_str())
+            });
+            if !allowed {
+                return Err(anyhow!(
+                    "execution.submit_route_order route={} must be present in execution.submit_allowed_routes",
+                    normalized
+                ));
+            }
+        }
+        let has_default = config
+            .submit_route_order
+            .iter()
+            .any(|route| route.trim().to_ascii_lowercase().eq(default_route.as_str()));
+        if !has_default {
+            return Err(anyhow!(
+                "execution.submit_route_order must include execution.default_route={}",
+                default_route
+            ));
+        }
+    }
+    if config.submit_route_max_slippage_bps.is_empty() {
+        return Err(anyhow!(
+            "execution.submit_route_max_slippage_bps must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS=route:cap,route2:cap2)"
+        ));
+    }
+    validate_unique_normalized_route_map_keys(
+        &config.submit_route_max_slippage_bps,
+        "execution.submit_route_max_slippage_bps",
+    )?;
+    for (route, cap) in &config.submit_route_max_slippage_bps {
+        if route.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_route_max_slippage_bps contains empty route key"
+            ));
+        }
+        if !cap.is_finite() || *cap <= 0.0 {
+            return Err(anyhow!(
+                "execution.submit_route_max_slippage_bps route={} must be finite and > 0, got {}",
+                route,
+                cap
+            ));
+        }
+    }
+    if config.submit_route_tip_lamports.is_empty() {
+        return Err(anyhow!(
+            "execution.submit_route_tip_lamports must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS=route:tip,route2:tip2)"
+        ));
+    }
+    validate_unique_normalized_route_map_keys(
+        &config.submit_route_tip_lamports,
+        "execution.submit_route_tip_lamports",
+    )?;
+    for (route, tip_lamports) in &config.submit_route_tip_lamports {
+        if route.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_route_tip_lamports contains empty route key"
+            ));
+        }
+        if *tip_lamports > EXECUTION_ROUTE_TIP_LAMPORTS_MAX {
+            return Err(anyhow!(
+                "execution.submit_route_tip_lamports route={} must be in 0..={}, got {}",
+                route,
+                EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+                tip_lamports
+            ));
+        }
+    }
+    if config.submit_route_compute_unit_limit.is_empty() {
+        return Err(anyhow!(
+            "execution.submit_route_compute_unit_limit must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT=route:limit,route2:limit2)"
+        ));
+    }
+    validate_unique_normalized_route_map_keys(
+        &config.submit_route_compute_unit_limit,
+        "execution.submit_route_compute_unit_limit",
+    )?;
+    for (route, limit) in &config.submit_route_compute_unit_limit {
+        if route.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_limit contains empty route key"
+            ));
+        }
+        if *limit < EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN
+            || *limit > EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX
+        {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_limit route={} must be in {}..={}, got {}",
+                route,
+                EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN,
+                EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX,
+                limit
+            ));
+        }
+    }
+    if config
+        .submit_route_compute_unit_price_micro_lamports
+        .is_empty()
+    {
+        return Err(anyhow!(
+            "execution.submit_route_compute_unit_price_micro_lamports must not be empty when execution is enabled (env format: SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS=route:price,route2:price2)"
+        ));
+    }
+    validate_unique_normalized_route_map_keys(
+        &config.submit_route_compute_unit_price_micro_lamports,
+        "execution.submit_route_compute_unit_price_micro_lamports",
+    )?;
+    for (route, price) in &config.submit_route_compute_unit_price_micro_lamports {
+        if route.trim().is_empty() {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_price_micro_lamports contains empty route key"
+            ));
+        }
+        if *price < EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN
+            || *price > EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX
+        {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_price_micro_lamports route={} must be in {}..={}, got {}",
+                route,
+                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+                price
+            ));
+        }
+    }
+    if mode == "adapter_submit_confirm" {
+        let find_route_cap = |route: &str| -> Option<f64> {
+            config
+                .submit_route_max_slippage_bps
+                .iter()
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
+                .map(|(_, cap)| *cap)
+        };
+        let find_route_tip = |route: &str| -> Option<u64> {
+            config
+                .submit_route_tip_lamports
+                .iter()
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
+                .map(|(_, tip)| *tip)
+        };
+        let find_route_cu_limit = |route: &str| -> Option<u32> {
+            config
+                .submit_route_compute_unit_limit
+                .iter()
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
+                .map(|(_, limit)| *limit)
+        };
+        let find_route_cu_price = |route: &str| -> Option<u64> {
+            config
+                .submit_route_compute_unit_price_micro_lamports
+                .iter()
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(route))
+                .map(|(_, price)| *price)
+        };
+        for allowed_route in &config.submit_allowed_routes {
+            let route = allowed_route.trim();
+            if route.is_empty() {
+                continue;
+            }
+            if find_route_cap(route).is_none() {
+                return Err(anyhow!(
+                    "execution.submit_route_max_slippage_bps is missing cap for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS format route:cap)",
+                    route
+                ));
+            }
+            if find_route_tip(route).is_none() {
+                return Err(anyhow!(
+                    "execution.submit_route_tip_lamports is missing tip for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS format route:tip)",
+                    route
+                ));
+            }
+            if find_route_cu_limit(route).is_none() {
+                return Err(anyhow!(
+                    "execution.submit_route_compute_unit_limit is missing limit for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT format route:limit)",
+                    route
+                ));
+            }
+            if find_route_cu_price(route).is_none() {
+                return Err(anyhow!(
+                    "execution.submit_route_compute_unit_price_micro_lamports is missing price for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS format route:price)",
+                    route
+                ));
+            }
+        }
+        let default_route_cap = find_route_cap(default_route.as_str()).ok_or_else(|| {
+            anyhow!(
+                "execution.submit_route_max_slippage_bps is missing cap for default route={}",
+                default_route
+            )
+        })?;
+        find_route_tip(default_route.as_str()).ok_or_else(|| {
+            anyhow!(
+                "execution.submit_route_tip_lamports is missing tip for default route={}",
+                default_route
+            )
+        })?;
+        let default_route_limit = find_route_cu_limit(default_route.as_str()).ok_or_else(|| {
+            anyhow!(
+                "execution.submit_route_compute_unit_limit is missing limit for default route={}",
+                default_route
+            )
+        })?;
+        if config.slippage_bps > default_route_cap {
+            return Err(anyhow!(
+                "execution.slippage_bps ({}) cannot exceed cap ({}) for default route {}",
+                config.slippage_bps,
+                default_route_cap,
+                default_route
+            ));
+        }
+        if config.pretrade_max_priority_fee_lamports > 0 {
+            for allowed_route in &config.submit_allowed_routes {
+                let route = allowed_route.trim();
+                if route.is_empty() {
+                    continue;
+                }
+                let route_price = find_route_cu_price(route).ok_or_else(|| {
+                    anyhow!(
+                        "execution.submit_route_compute_unit_price_micro_lamports is missing price for allowed route={}",
+                        route
+                    )
+                })?;
+                if route_price > config.pretrade_max_priority_fee_lamports {
+                    return Err(anyhow!(
+                        "execution.submit_route_compute_unit_price_micro_lamports route {} price ({}) cannot exceed execution.pretrade_max_priority_fee_lamports ({}) (unit: micro-lamports per CU for both fields)",
+                        route,
+                        route_price,
+                        config.pretrade_max_priority_fee_lamports
+                    ));
+                }
+            }
+        }
+        if default_route_limit < EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_limit default route {} limit ({}) is too low for reliable swaps; expected >= {}",
+                default_route,
+                default_route_limit,
+                EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN
+            ));
+        }
+    }
+
+    if matches!(
+        env.trim().to_ascii_lowercase().as_str(),
+        "paper" | "prod" | "paper-canary" | "paper-canary-yellowstone"
+    ) {
+        info!(
+            mode,
+            batch_size = config.batch_size,
+            poll_interval_ms = config.poll_interval_ms,
+            submit_timeout_ms = config.submit_timeout_ms,
+            submit_allowed_routes = ?config.submit_allowed_routes,
+            submit_route_max_slippage_bps = ?config.submit_route_max_slippage_bps,
+            submit_route_tip_lamports = ?config.submit_route_tip_lamports,
+            submit_route_compute_unit_limit = ?config.submit_route_compute_unit_limit,
+            submit_route_compute_unit_price_micro_lamports = ?config.submit_route_compute_unit_price_micro_lamports,
+            submit_adapter_contract_version = %config.submit_adapter_contract_version,
+            submit_adapter_require_policy_echo = config.submit_adapter_require_policy_echo,
+            pretrade_require_token_account = config.pretrade_require_token_account,
+            pretrade_max_priority_fee_micro_lamports_per_cu = config.pretrade_max_priority_fee_lamports,
+            "execution runtime contract validated"
+        );
+    }
+
+    Ok(())
+}
+
+fn is_production_env_profile(env: &str) -> bool {
+    let env_norm = env.trim().to_ascii_lowercase();
+    matches!(env_norm.as_str(), "prod" | "production")
+        || env_norm.starts_with("prod-")
+        || env_norm.starts_with("prod_")
+        || env_norm.starts_with("production-")
+        || env_norm.starts_with("production_")
+}
+
+fn is_valid_contract_version_token(value: &str) -> bool {
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn validate_unique_normalized_route_list(values: &[String], field_name: &str) -> Result<()> {
+    let mut seen = HashSet::new();
+    for value in values {
+        let normalized = value.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !seen.insert(normalized.clone()) {
+            return Err(anyhow!(
+                "{field_name} contains duplicate route after normalization: {}",
+                normalized
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_normalized_route_map_keys<T>(
+    values: &BTreeMap<String, T>,
+    field_name: &str,
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    for key in values.keys() {
+        let normalized = key.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !seen.insert(normalized.clone()) {
+            return Err(anyhow!(
+                "{field_name} contains duplicate route key after normalization: {}",
+                normalized
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_adapter_endpoint_url(
+    endpoint: &str,
+    field_name: &str,
+    strict_transport_policy: bool,
+) -> Result<()> {
+    if contains_placeholder_value(endpoint.trim()) {
+        return Err(anyhow!(
+            "{field_name} must not contain placeholder value REPLACE_ME"
+        ));
+    }
+    if endpoint.chars().any(char::is_whitespace) {
+        return Err(anyhow!("{field_name} must not contain whitespace"));
+    }
+    let endpoint_trimmed = endpoint.trim();
+    let endpoint_norm = endpoint_trimmed.to_ascii_lowercase();
+    let has_valid_scheme =
+        endpoint_norm.starts_with("https://") || endpoint_norm.starts_with("http://");
+    if !has_valid_scheme {
+        return Err(anyhow!(
+            "{field_name} must start with http:// or https:// (got: {})",
+            endpoint
+        ));
+    }
+    let parsed = Url::parse(endpoint_trimmed)
+        .map_err(|error| anyhow!("{field_name} must be a valid http(s) URL: {error}"))?;
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "http" | "https") {
+        return Err(anyhow!(
+            "{field_name} must use http:// or https:// scheme (got: {})",
+            scheme
+        ));
+    }
+    let Some(host) = parsed.host() else {
+        return Err(anyhow!("{field_name} must include a host"));
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(anyhow!(
+            "{field_name} must not embed credentials in URL (use submit_adapter_auth_token / HMAC fields)"
+        ));
+    }
+    if parsed.query().is_some() {
+        return Err(anyhow!(
+            "{field_name} must not include query parameters (pass auth/policy via headers)"
+        ));
+    }
+    if parsed.fragment().is_some() {
+        return Err(anyhow!("{field_name} must not include URL fragment"));
+    }
+    if strict_transport_policy && scheme == "http" && !is_loopback_host(&host) {
+        return Err(anyhow!(
+            "{field_name} must use https:// in production-like envs (http:// allowed only for loopback hosts)"
+        ));
+    }
+
+    Ok(())
+}
+
+fn adapter_endpoint_identity(endpoint: &str) -> Result<String> {
+    let parsed = Url::parse(endpoint.trim())
+        .map_err(|error| anyhow!("invalid adapter endpoint: {error}"))?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("adapter endpoint missing host"))?
+        .to_ascii_lowercase();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("adapter endpoint missing known default port for scheme"))?;
+    let path = if parsed.path().is_empty() {
+        "/".to_string()
+    } else {
+        parsed.path().to_string()
+    };
+    Ok(format!("{scheme}://{host}:{port}{path}"))
+}
+
+fn is_loopback_host(host: &Host<&str>) -> bool {
+    match host {
+        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(ip) => ip.is_loopback(),
+        Host::Ipv6(ip) => ip.is_loopback(),
+    }
+}
+
+fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
+    if !config.max_position_sol.is_finite() || config.max_position_sol <= 0.0 {
+        return Err(anyhow!(
+            "risk.max_position_sol must be finite and > 0, got {}",
+            config.max_position_sol
+        ));
+    }
+    if !config.max_total_exposure_sol.is_finite() || config.max_total_exposure_sol <= 0.0 {
+        return Err(anyhow!(
+            "risk.max_total_exposure_sol must be finite and > 0, got {}",
+            config.max_total_exposure_sol
+        ));
+    }
+    if !config.max_exposure_per_token_sol.is_finite() || config.max_exposure_per_token_sol <= 0.0 {
+        return Err(anyhow!(
+            "risk.max_exposure_per_token_sol must be finite and > 0, got {}",
+            config.max_exposure_per_token_sol
+        ));
+    }
+    if config.max_exposure_per_token_sol > config.max_total_exposure_sol {
+        return Err(anyhow!(
+            "risk.max_exposure_per_token_sol ({}) cannot exceed risk.max_total_exposure_sol ({})",
+            config.max_exposure_per_token_sol,
+            config.max_total_exposure_sol
+        ));
+    }
+    if config.max_concurrent_positions == 0 {
+        return Err(anyhow!(
+            "risk.max_concurrent_positions must be >= 1, got {}",
+            config.max_concurrent_positions
+        ));
+    }
+    if config.max_copy_delay_sec == 0 {
+        return Err(anyhow!(
+            "risk.max_copy_delay_sec must be >= 1, got {}",
+            config.max_copy_delay_sec
+        ));
+    }
+    if !config.daily_loss_limit_pct.is_finite()
+        || config.daily_loss_limit_pct < 0.0
+        || config.daily_loss_limit_pct > 100.0
+    {
+        return Err(anyhow!(
+            "risk.daily_loss_limit_pct must be finite and in [0, 100], got {}",
+            config.daily_loss_limit_pct
+        ));
+    }
+    if !config.max_drawdown_pct.is_finite()
+        || config.max_drawdown_pct < 0.0
+        || config.max_drawdown_pct > 100.0
+    {
+        return Err(anyhow!(
+            "risk.max_drawdown_pct must be finite and in [0, 100], got {}",
+            config.max_drawdown_pct
+        ));
+    }
+
+    if !config.shadow_soft_exposure_cap_sol.is_finite()
+        || config.shadow_soft_exposure_cap_sol <= 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_soft_exposure_cap_sol must be finite and > 0, got {}",
+            config.shadow_soft_exposure_cap_sol
+        ));
+    }
+    if !config.shadow_hard_exposure_cap_sol.is_finite()
+        || config.shadow_hard_exposure_cap_sol <= 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_hard_exposure_cap_sol must be finite and > 0, got {}",
+            config.shadow_hard_exposure_cap_sol
+        ));
+    }
+    if config.shadow_hard_exposure_cap_sol < config.shadow_soft_exposure_cap_sol {
+        return Err(anyhow!(
+            "risk.shadow_hard_exposure_cap_sol ({}) must be >= risk.shadow_soft_exposure_cap_sol ({})",
+            config.shadow_hard_exposure_cap_sol,
+            config.shadow_soft_exposure_cap_sol
+        ));
+    }
+    if config.shadow_killswitch_enabled && config.shadow_soft_pause_minutes == 0 {
+        return Err(anyhow!(
+            "risk.shadow_soft_pause_minutes must be >= 1 when risk.shadow_killswitch_enabled=true"
+        ));
+    }
+
+    if !config.shadow_drawdown_1h_stop_sol.is_finite()
+        || !config.shadow_drawdown_6h_stop_sol.is_finite()
+        || !config.shadow_drawdown_24h_stop_sol.is_finite()
+    {
+        return Err(anyhow!(
+            "risk.shadow_drawdown_*_stop_sol values must be finite (1h={}, 6h={}, 24h={})",
+            config.shadow_drawdown_1h_stop_sol,
+            config.shadow_drawdown_6h_stop_sol,
+            config.shadow_drawdown_24h_stop_sol
+        ));
+    }
+    if config.shadow_drawdown_1h_stop_sol > 0.0
+        || config.shadow_drawdown_6h_stop_sol > 0.0
+        || config.shadow_drawdown_24h_stop_sol > 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_drawdown_*_stop_sol values must be <= 0 (1h={}, 6h={}, 24h={})",
+            config.shadow_drawdown_1h_stop_sol,
+            config.shadow_drawdown_6h_stop_sol,
+            config.shadow_drawdown_24h_stop_sol
+        ));
+    }
+    if !(config.shadow_drawdown_1h_stop_sol >= config.shadow_drawdown_6h_stop_sol
+        && config.shadow_drawdown_6h_stop_sol >= config.shadow_drawdown_24h_stop_sol)
+    {
+        return Err(anyhow!(
+            "risk shadow drawdown ordering is invalid: expected 1h >= 6h >= 24h, got 1h={}, 6h={}, 24h={}",
+            config.shadow_drawdown_1h_stop_sol,
+            config.shadow_drawdown_6h_stop_sol,
+            config.shadow_drawdown_24h_stop_sol
+        ));
+    }
+    if config.shadow_killswitch_enabled
+        && (config.shadow_drawdown_1h_pause_minutes == 0
+            || config.shadow_drawdown_6h_pause_minutes == 0)
+    {
+        return Err(anyhow!(
+            "risk.shadow_drawdown_1h_pause_minutes and risk.shadow_drawdown_6h_pause_minutes must be >= 1 when risk.shadow_killswitch_enabled=true"
+        ));
+    }
+
+    if !config.shadow_rug_loss_return_threshold.is_finite()
+        || config.shadow_rug_loss_return_threshold >= 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_rug_loss_return_threshold must be finite and < 0, got {}",
+            config.shadow_rug_loss_return_threshold
+        ));
+    }
+    if config.shadow_rug_loss_window_minutes == 0
+        || config.shadow_rug_loss_count_threshold == 0
+        || config.shadow_rug_loss_rate_sample_size == 0
+    {
+        return Err(anyhow!(
+            "risk.shadow_rug_loss_window_minutes/count_threshold/rate_sample_size must be >= 1"
+        ));
+    }
+    if !config.shadow_rug_loss_rate_threshold.is_finite()
+        || config.shadow_rug_loss_rate_threshold <= 0.0
+        || config.shadow_rug_loss_rate_threshold > 1.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_rug_loss_rate_threshold must be finite and in (0, 1], got {}",
+            config.shadow_rug_loss_rate_threshold
+        ));
+    }
+
+    if config.shadow_infra_window_minutes == 0 || config.shadow_infra_lag_breach_minutes == 0 {
+        return Err(anyhow!(
+            "risk.shadow_infra_window_minutes and risk.shadow_infra_lag_breach_minutes must be >= 1"
+        ));
+    }
+    if config.shadow_infra_lag_p95_threshold_ms == 0 {
+        return Err(anyhow!(
+            "risk.shadow_infra_lag_p95_threshold_ms must be >= 1"
+        ));
+    }
+    if !config.shadow_infra_replaced_ratio_threshold.is_finite()
+        || config.shadow_infra_replaced_ratio_threshold <= 0.0
+        || config.shadow_infra_replaced_ratio_threshold > 1.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_infra_replaced_ratio_threshold must be finite and in (0, 1], got {}",
+            config.shadow_infra_replaced_ratio_threshold
+        ));
+    }
+
+    if config.shadow_universe_min_active_follow_wallets == 0
+        || config.shadow_universe_min_eligible_wallets == 0
+        || config.shadow_universe_breach_cycles == 0
+    {
+        return Err(anyhow!(
+            "risk.shadow_universe_min_active_follow_wallets/min_eligible_wallets/breach_cycles must be >= 1"
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_migrations_dir(config_path: &Path, configured_migrations_dir: &str) -> PathBuf {
@@ -167,6 +1284,7 @@ enum BuyRiskBlockReason {
     Infra,
     Universe,
     FailClosed,
+    OperatorEmergencyStop,
 }
 
 impl BuyRiskBlockReason {
@@ -178,6 +1296,7 @@ impl BuyRiskBlockReason {
             Self::Infra => "risk_infra_stop",
             Self::Universe => "risk_universe_stop",
             Self::FailClosed => "risk_fail_closed",
+            Self::OperatorEmergencyStop => "operator_emergency_stop",
         }
     }
 }
@@ -361,7 +1480,12 @@ impl ShadowRiskGuard {
         }
     }
 
-    fn can_open_buy(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> BuyRiskDecision {
+    fn can_open_buy(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        pause_new_trades_on_outage: bool,
+    ) -> BuyRiskDecision {
         if !self.config.shadow_killswitch_enabled {
             return BuyRiskDecision::Allow;
         }
@@ -426,11 +1550,13 @@ impl ShadowRiskGuard {
             };
         }
 
-        if let Some(reason) = self.infra_block_reason.as_deref() {
-            return BuyRiskDecision::Blocked {
-                reason: BuyRiskBlockReason::Infra,
-                detail: reason.to_string(),
-            };
+        if pause_new_trades_on_outage {
+            if let Some(reason) = self.infra_block_reason.as_deref() {
+                return BuyRiskDecision::Blocked {
+                    reason: BuyRiskBlockReason::Infra,
+                    detail: reason.to_string(),
+                };
+            }
         }
 
         BuyRiskDecision::Allow
@@ -477,12 +1603,15 @@ impl ShadowRiskGuard {
                 store.shadow_realized_pnl_since(now - chrono::Duration::hours(24))?;
 
             let rug_window_start = now
-                - chrono::Duration::minutes(self.config.shadow_rug_loss_window_minutes.max(1) as i64);
+                - chrono::Duration::minutes(
+                    self.config.shadow_rug_loss_window_minutes.max(1) as i64
+                );
             let rug_count_since = store.shadow_rug_loss_count_since(
                 rug_window_start,
                 self.config.shadow_rug_loss_return_threshold,
             )?;
             let (_, rug_sample_total, rug_rate_recent) = store.shadow_rug_loss_rate_recent(
+                rug_window_start,
                 self.config.shadow_rug_loss_rate_sample_size.max(1),
                 self.config.shadow_rug_loss_return_threshold,
             )?;
@@ -649,6 +1778,11 @@ impl ShadowRiskGuard {
         let window_start =
             now - chrono::Duration::minutes(self.config.shadow_infra_window_minutes.max(1) as i64);
         let latest = self.infra_samples.back().copied()?;
+        let has_full_window_coverage = self
+            .infra_samples
+            .front()
+            .map(|sample| sample.ts_utc <= window_start)
+            .unwrap_or(false);
         let baseline = self
             .infra_samples
             .iter()
@@ -662,8 +1796,54 @@ impl ShadowRiskGuard {
         let delta_replaced = latest
             .ws_notifications_replaced_oldest
             .saturating_sub(baseline.ws_notifications_replaced_oldest);
+        let delta_grpc_transaction_updates_total = latest
+            .grpc_transaction_updates_total
+            .saturating_sub(baseline.grpc_transaction_updates_total);
+        let delta_parse_rejected_total = latest
+            .parse_rejected_total
+            .saturating_sub(baseline.parse_rejected_total);
+        let delta_grpc_decode_errors = latest
+            .grpc_decode_errors
+            .saturating_sub(baseline.grpc_decode_errors);
         let delta_rpc_429 = latest.rpc_429.saturating_sub(baseline.rpc_429);
         let delta_rpc_5xx = latest.rpc_5xx.saturating_sub(baseline.rpc_5xx);
+
+        const INFRA_PARSER_STALL_MIN_TX_UPDATES: u64 = 25;
+        const INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD: f64 = 0.95;
+
+        if has_full_window_coverage
+            && delta_enqueued == 0
+            && delta_replaced == 0
+            && delta_grpc_transaction_updates_total == 0
+            && delta_rpc_429 == 0
+            && delta_rpc_5xx == 0
+        {
+            return Some(format!(
+                "no_ingestion_progress_for={}m",
+                self.config.shadow_infra_window_minutes.max(1)
+            ));
+        }
+
+        if has_full_window_coverage
+            && delta_enqueued == 0
+            && delta_grpc_transaction_updates_total >= INFRA_PARSER_STALL_MIN_TX_UPDATES
+        {
+            let parser_errors_delta =
+                delta_parse_rejected_total.saturating_add(delta_grpc_decode_errors);
+            if parser_errors_delta > 0 {
+                let parser_error_ratio =
+                    parser_errors_delta as f64 / delta_grpc_transaction_updates_total as f64;
+                if parser_error_ratio >= INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD {
+                    return Some(format!(
+                        "parser_stall_for={}m tx_updates_delta={} parser_errors_delta={} error_ratio={:.4}",
+                        self.config.shadow_infra_window_minutes.max(1),
+                        delta_grpc_transaction_updates_total,
+                        parser_errors_delta,
+                        parser_error_ratio
+                    ));
+                }
+            }
+        }
 
         if delta_enqueued > 0 {
             let replaced_ratio = delta_replaced as f64 / delta_enqueued as f64;
@@ -805,6 +1985,7 @@ async fn run_app_loop(
     mut ingestion: IngestionService,
     discovery: DiscoveryService,
     shadow: ShadowService,
+    execution_runtime: ExecutionRuntime,
     risk_config: RiskConfig,
     sqlite_path: String,
     heartbeat_seconds: u64,
@@ -813,14 +1994,21 @@ async fn run_app_loop(
     shadow_max_signal_lag_seconds: u64,
     shadow_causal_holdback_enabled: bool,
     shadow_causal_holdback_ms: u64,
+    pause_new_trades_on_outage: bool,
 ) -> Result<()> {
+    let execution_runtime = Arc::new(execution_runtime);
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
-    let mut risk_refresh_interval =
-        time::interval(Duration::from_secs(RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64));
+    let mut execution_interval = time::interval(Duration::from_millis(
+        execution_runtime.poll_interval_ms().max(100),
+    ));
+    let mut risk_refresh_interval = time::interval(Duration::from_secs(
+        RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64,
+    ));
     let mut discovery_interval =
         time::interval(Duration::from_secs(discovery_refresh_seconds.max(10)));
     let mut shadow_interval = time::interval(Duration::from_secs(shadow_refresh_seconds.max(10)));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    execution_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     risk_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     discovery_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     shadow_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -850,6 +2038,25 @@ async fn run_app_loop(
     let mut shadow_scheduler_needs_reset = false;
     let mut held_shadow_sells: HashMap<ShadowTaskKey, VecDeque<HeldShadowSell>> = HashMap::new();
     let mut shadow_holdback_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
+    let mut operator_emergency_stop = OperatorEmergencyStop::from_env();
+    let mut execution_emergency_stop_active_logged = false;
+    let mut execution_hard_stop_pause_logged = false;
+    let mut execution_outage_pause_logged = false;
+    operator_emergency_stop.refresh(&store, Utc::now());
+    info!(
+        path = %operator_emergency_stop.path().display(),
+        pause_new_trades_on_outage,
+        "buy gate controls initialized"
+    );
+    if execution_runtime.is_enabled() {
+        info!(
+            poll_interval_ms = execution_runtime.poll_interval_ms(),
+            "execution runtime enabled"
+        );
+    } else {
+        info!("execution runtime disabled");
+    }
 
     if !follow_snapshot.active.is_empty() {
         info!(
@@ -859,6 +2066,8 @@ async fn run_app_loop(
     }
 
     loop {
+        operator_emergency_stop.refresh(&store, Utc::now());
+
         if shadow_scheduler_needs_reset {
             if shadow_workers.is_empty() {
                 inflight_shadow_keys.clear();
@@ -1051,19 +2260,182 @@ async fn run_app_loop(
                 if let Err(error) = store.record_heartbeat("copybot-app", "alive") {
                     warn!(error = %error, "heartbeat write failed");
                 }
+                let sqlite_contention = sqlite_contention_snapshot();
+                info!(
+                    sqlite_write_retry_total = sqlite_contention.write_retry_total,
+                    sqlite_busy_error_total = sqlite_contention.busy_error_total,
+                    "sqlite contention counters"
+                );
             }
             _ = risk_refresh_interval.tick() => {
+                let now = Utc::now();
+                shadow_risk_guard.observe_ingestion_snapshot(
+                    &store,
+                    now,
+                    ingestion.runtime_snapshot(),
+                );
                 if !shadow_risk_guard.config.shadow_killswitch_enabled {
                     continue;
                 }
-                let now = Utc::now();
                 if let Err(error) = shadow_risk_guard.maybe_refresh_db_state(&store, now) {
                     if shadow_risk_guard.on_risk_refresh_error(now) {
                         warn!(error = %error, "shadow risk background refresh failed");
                     }
                 }
             }
+            execution_join = async {
+                match execution_handle.as_mut() {
+                    Some(handle) => Some(handle.await),
+                    None => None,
+                }
+            }, if execution_handle.is_some() => {
+                execution_handle = None;
+                match execution_join {
+                    Some(Ok(Ok(report))) => {
+                        if report.attempted > 0 || report.failed > 0 {
+                            let has_route_metrics = !report.submit_attempted_by_route.is_empty()
+                                || !report.submit_retry_scheduled_by_route.is_empty()
+                                || !report.submit_failed_by_route.is_empty()
+                                || !report.pretrade_retry_scheduled_by_route.is_empty()
+                                || !report.pretrade_terminal_rejected_by_route.is_empty()
+                                || !report.pretrade_failed_by_route.is_empty()
+                                || !report.confirm_confirmed_by_route.is_empty()
+                                || !report.confirm_retry_scheduled_by_route.is_empty()
+                                || !report.confirm_failed_by_route.is_empty()
+                                || !report.confirm_network_fee_rpc_by_route.is_empty()
+                                || !report.confirm_network_fee_submit_hint_by_route.is_empty()
+                                || !report.confirm_network_fee_missing_by_route.is_empty()
+                                || !report
+                                    .confirm_network_fee_lamports_sum_by_route
+                                    .is_empty()
+                                || !report.confirm_tip_lamports_sum_by_route.is_empty()
+                                || !report.confirm_ata_rent_lamports_sum_by_route.is_empty()
+                                || !report.confirm_fee_total_lamports_sum_by_route.is_empty()
+                                || !report
+                                    .confirm_base_fee_hint_lamports_sum_by_route
+                                    .is_empty()
+                                || !report
+                                    .confirm_priority_fee_hint_lamports_sum_by_route
+                                    .is_empty()
+                                || !report.confirm_latency_samples_by_route.is_empty()
+                                || !report.confirm_latency_ms_sum_by_route.is_empty();
+                            info!(
+                                attempted = report.attempted,
+                                confirmed = report.confirmed,
+                                dropped = report.dropped,
+                                failed = report.failed,
+                                skipped = report.skipped,
+                                submit_attempted_by_route = ?report.submit_attempted_by_route,
+                                submit_retry_scheduled_by_route = ?report.submit_retry_scheduled_by_route,
+                                submit_failed_by_route = ?report.submit_failed_by_route,
+                                pretrade_retry_scheduled_by_route = ?report.pretrade_retry_scheduled_by_route,
+                                pretrade_terminal_rejected_by_route = ?report.pretrade_terminal_rejected_by_route,
+                                pretrade_failed_by_route = ?report.pretrade_failed_by_route,
+                                confirm_confirmed_by_route = ?report.confirm_confirmed_by_route,
+                                confirm_retry_scheduled_by_route = ?report.confirm_retry_scheduled_by_route,
+                                confirm_failed_by_route = ?report.confirm_failed_by_route,
+                                confirm_network_fee_rpc_by_route = ?report.confirm_network_fee_rpc_by_route,
+                                confirm_network_fee_submit_hint_by_route = ?report.confirm_network_fee_submit_hint_by_route,
+                                confirm_network_fee_missing_by_route = ?report.confirm_network_fee_missing_by_route,
+                                confirm_network_fee_lamports_sum_by_route = ?report.confirm_network_fee_lamports_sum_by_route,
+                                confirm_tip_lamports_sum_by_route = ?report.confirm_tip_lamports_sum_by_route,
+                                confirm_ata_rent_lamports_sum_by_route = ?report.confirm_ata_rent_lamports_sum_by_route,
+                                confirm_fee_total_lamports_sum_by_route = ?report.confirm_fee_total_lamports_sum_by_route,
+                                confirm_base_fee_hint_lamports_sum_by_route = ?report.confirm_base_fee_hint_lamports_sum_by_route,
+                                confirm_priority_fee_hint_lamports_sum_by_route = ?report.confirm_priority_fee_hint_lamports_sum_by_route,
+                                confirm_latency_samples_by_route = ?report.confirm_latency_samples_by_route,
+                                confirm_latency_ms_sum_by_route = ?report.confirm_latency_ms_sum_by_route,
+                                confirm_latency_semantics = "submit_to_runtime_observed_confirm_ms",
+                                has_route_metrics,
+                                "execution batch processed"
+                            );
+                        }
+                    }
+                    Some(Ok(Err(error))) => {
+                        warn!(error = %error, "execution batch failed");
+                    }
+                    Some(Err(error)) => {
+                        warn!(error = %error, "execution task join failed");
+                    }
+                    None => {}
+                }
+            }
+            _ = execution_interval.tick(), if execution_runtime.is_enabled() => {
+                let mut buy_submit_pause_reason: Option<String> = None;
+                if operator_emergency_stop.is_active() {
+                    if !execution_emergency_stop_active_logged {
+                        warn!(
+                            detail = %operator_emergency_stop.detail(),
+                            "execution BUY submission paused by operator emergency stop"
+                        );
+                        execution_emergency_stop_active_logged = true;
+                    }
+                    buy_submit_pause_reason = Some(format!(
+                        "operator_emergency_stop: {}",
+                        operator_emergency_stop.detail()
+                    ));
+                } else if execution_emergency_stop_active_logged {
+                    info!("execution BUY submission resumed after operator emergency stop clear");
+                    execution_emergency_stop_active_logged = false;
+                }
+
+                if let Some(reason) = shadow_risk_guard.hard_stop_reason.as_deref() {
+                    if !execution_hard_stop_pause_logged {
+                        warn!(
+                            reason = %reason,
+                            "execution BUY submission paused by risk hard stop"
+                        );
+                        execution_hard_stop_pause_logged = true;
+                    }
+                    if buy_submit_pause_reason.is_none() {
+                        buy_submit_pause_reason = Some(format!("risk_hard_stop: {}", reason));
+                    }
+                } else if execution_hard_stop_pause_logged {
+                    info!("execution BUY submission resumed after risk hard stop clear");
+                    execution_hard_stop_pause_logged = false;
+                }
+
+                if pause_new_trades_on_outage {
+                    if let Some(reason) = shadow_risk_guard.infra_block_reason.as_deref() {
+                        if !execution_outage_pause_logged {
+                            warn!(
+                                reason = %reason,
+                                "execution BUY submission paused due to infra outage gate"
+                            );
+                            execution_outage_pause_logged = true;
+                        }
+                        if buy_submit_pause_reason.is_none() {
+                            buy_submit_pause_reason = Some(format!("risk_infra_stop: {}", reason));
+                        }
+                    } else if execution_outage_pause_logged {
+                        info!("execution BUY submission resumed after infra outage gate cleared");
+                        execution_outage_pause_logged = false;
+                    }
+                } else if execution_outage_pause_logged {
+                    info!("execution BUY submission resumed after infra outage gate disabled");
+                    execution_outage_pause_logged = false;
+                }
+
+                if execution_handle.is_some() {
+                    warn!("execution batch still running, skipping scheduled trigger");
+                    continue;
+                }
+
+                let now = Utc::now();
+                execution_handle = Some(tokio::task::spawn_blocking(spawn_execution_task(
+                    sqlite_path.clone(),
+                    Arc::clone(&execution_runtime),
+                    now,
+                    buy_submit_pause_reason.clone(),
+                )));
+            }
             maybe_swap = ingestion.next_swap() => {
+                let now = Utc::now();
+                shadow_risk_guard.observe_ingestion_snapshot(
+                    &store,
+                    now,
+                    ingestion.runtime_snapshot(),
+                );
                 let swap = match maybe_swap {
                     Ok(Some(swap)) => swap,
                     Ok(None) => {
@@ -1075,12 +2447,6 @@ async fn run_app_loop(
                         continue;
                     }
                 };
-                let now = Utc::now();
-                shadow_risk_guard.observe_ingestion_snapshot(
-                    &store,
-                    now,
-                    ingestion.runtime_snapshot(),
-                );
 
                 match insert_observed_swap_with_retry(&store, &swap).await {
                     Ok(true) => {
@@ -1149,7 +2515,27 @@ async fn run_app_loop(
                         }
 
                         if matches!(side, ShadowSwapSide::Buy) {
-                            match shadow_risk_guard.can_open_buy(&store, now) {
+                            if operator_emergency_stop.is_active() {
+                                let reason_key = BuyRiskBlockReason::OperatorEmergencyStop.as_str();
+                                *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
+                                *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
+                                debug!(
+                                    stage = "risk",
+                                    reason = reason_key,
+                                    detail = %operator_emergency_stop.detail(),
+                                    side = "buy",
+                                    wallet = %swap.wallet,
+                                    signature = %swap.signature,
+                                    "shadow gate dropped"
+                                );
+                                continue;
+                            }
+
+                            match shadow_risk_guard.can_open_buy(
+                                &store,
+                                now,
+                                pause_new_trades_on_outage,
+                            ) {
                                 BuyRiskDecision::Allow => {}
                                 BuyRiskDecision::Blocked { reason, detail } => {
                                     let reason_key = reason.as_str();
@@ -1322,6 +2708,10 @@ async fn run_app_loop(
         }
     }
 
+    if let Some(handle) = execution_handle.take() {
+        handle.abort();
+    }
+
     store
         .record_heartbeat("copybot-app", "shutdown")
         .context("failed to write shutdown heartbeat")?;
@@ -1356,8 +2746,35 @@ fn close_stale_shadow_lots(
             continue;
         }
 
-        let Some(exit_price_sol) = store.latest_token_sol_price(&lot.token, now)? else {
+        let Some(exit_price_sol) =
+            store.reliable_token_sol_price_for_stale_close(&lot.token, now)?
+        else {
             skipped_unpriced = skipped_unpriced.saturating_add(1);
+            let details_json = format!(
+                "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"window_minutes\":{},\"min_notional_sol\":{},\"min_samples\":{},\"max_samples\":{}}}",
+                sanitize_json_value(&lot.wallet_id),
+                sanitize_json_value(&lot.token),
+                lot.id,
+                sanitize_json_value(&now.to_rfc3339()),
+                STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
+                STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+                STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES,
+                STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES
+            );
+            if let Err(error) = store.insert_risk_event(
+                "shadow_stale_close_price_unavailable",
+                "warn",
+                now,
+                Some(&details_json),
+            ) {
+                warn!(
+                    error = %error,
+                    wallet_id = %lot.wallet_id,
+                    token = %lot.token,
+                    lot_id = lot.id,
+                    "failed to record stale-close price unavailable risk event"
+                );
+            }
             continue;
         };
         if exit_price_sol <= EPS {
@@ -1424,9 +2841,12 @@ async fn insert_observed_swap_with_retry(store: &SqliteStore, swap: &SwapEvent) 
         match store.insert_observed_swap(swap) {
             Ok(written) => return Ok(written),
             Err(error) => {
-                if attempt < OBSERVED_SWAP_WRITE_MAX_RETRIES
-                    && is_retryable_sqlite_anyhow_error(&error)
-                {
+                let retryable = is_retryable_sqlite_anyhow_error(&error);
+                if retryable {
+                    note_sqlite_busy_error();
+                }
+                if attempt < OBSERVED_SWAP_WRITE_MAX_RETRIES && retryable {
+                    note_sqlite_write_retry();
                     let backoff_ms = OBSERVED_SWAP_RETRY_BACKOFF_MS[attempt];
                     debug!(
                         signature = %swap.signature,
@@ -1487,6 +2907,20 @@ fn spawn_shadow_snapshot_task(
             format!("failed to open sqlite db for shadow snapshot task: {sqlite_path}")
         })?;
         shadow.snapshot_24h(&store, now)
+    }
+}
+
+fn spawn_execution_task(
+    sqlite_path: String,
+    execution_runtime: Arc<ExecutionRuntime>,
+    now: chrono::DateTime<Utc>,
+    buy_submit_pause_reason: Option<String>,
+) -> impl FnOnce() -> Result<ExecutionBatchReport> {
+    move || {
+        let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
+            format!("failed to open sqlite db for execution task: {sqlite_path}")
+        })?;
+        execution_runtime.process_batch(&store, now, buy_submit_pause_reason.as_deref())
     }
 }
 
@@ -2176,6 +3610,8 @@ fn shadow_task(
 #[cfg(test)]
 mod app_tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
 
     fn make_test_store(name: &str) -> Result<(SqliteStore, PathBuf)> {
@@ -2194,6 +3630,615 @@ mod app_tests {
         Ok((store, db_path))
     }
 
+    fn write_temp_secret_file(name: &str, content: &str) -> Result<PathBuf> {
+        let path = std::env::temp_dir().join(format!(
+            "copybot-secret-{}-{}-{}.txt",
+            name,
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        ));
+        let mut file = std::fs::File::create(&path)?;
+        file.write_all(content.as_bytes())?;
+        Ok(path)
+    }
+
+    fn write_temp_secret_dir(name: &str) -> Result<PathBuf> {
+        let dir = std::env::temp_dir().join(format!(
+            "copybot-secret-dir-{}-{}-{}",
+            name,
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        ));
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    fn error_chain_contains(error: &anyhow::Error, needle: &str) -> bool {
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains(needle))
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_reads_file_sources() -> Result<()> {
+        let auth_path = write_temp_secret_file("auth-token", "token-from-file\n")?;
+        let hmac_path = write_temp_secret_file("hmac-secret", "hmac-from-file \n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
+        execution.submit_adapter_hmac_secret_file = hmac_path.to_string_lossy().to_string();
+
+        resolve_execution_adapter_secrets(&mut execution, config_path.as_path())?;
+        assert_eq!(execution.submit_adapter_auth_token, "token-from-file");
+        assert_eq!(execution.submit_adapter_hmac_secret, "hmac-from-file");
+
+        let _ = std::fs::remove_file(auth_path);
+        let _ = std::fs::remove_file(hmac_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_inline_and_file_conflict() -> Result<()> {
+        let auth_path = write_temp_secret_file("auth-conflict", "token-from-file\n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token = "inline-token".to_string();
+        execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("inline+file secret conflict must fail");
+        assert!(
+            error.to_string().contains("cannot be set at the same time"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(auth_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_hmac_inline_and_file_conflict() -> Result<()> {
+        let hmac_path = write_temp_secret_file("hmac-conflict", "hmac-file-secret\n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_hmac_secret = "inline-hmac".to_string();
+        execution.submit_adapter_hmac_secret_file = hmac_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("inline+file hmac secret conflict must fail");
+        assert!(
+            error.to_string().contains("cannot be set at the same time"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(hmac_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_empty_secret_file() -> Result<()> {
+        let empty_path = write_temp_secret_file("auth-empty", " \n\t")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = empty_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("empty secret file must fail");
+        assert!(
+            error_chain_contains(&error, "is empty"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(empty_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_missing_secret_file() -> Result<()> {
+        let missing_path = std::env::temp_dir().join(format!(
+            "copybot-secret-missing-{}-{}.txt",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        ));
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = missing_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("missing secret file must fail");
+        assert!(
+            error_chain_contains(&error, "failed reading secret file"),
+            "unexpected error: {}",
+            error
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_resolves_relative_paths_from_config_dir() -> Result<()> {
+        let root = write_temp_secret_dir("relative-resolve")?;
+        let config_dir = root.join("configs");
+        let secrets_dir = root.join("secrets");
+        std::fs::create_dir_all(&config_dir)?;
+        std::fs::create_dir_all(&secrets_dir)?;
+
+        let auth_path = secrets_dir.join("auth.txt");
+        let hmac_path = secrets_dir.join("hmac.txt");
+        std::fs::write(&auth_path, "auth-rel\n")?;
+        std::fs::write(&hmac_path, "hmac-rel\n")?;
+
+        let loaded_config_path = config_dir.join("dev.toml");
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = "../secrets/auth.txt".to_string();
+        execution.submit_adapter_hmac_secret_file = "../secrets/hmac.txt".to_string();
+
+        resolve_execution_adapter_secrets(&mut execution, loaded_config_path.as_path())?;
+        assert_eq!(execution.submit_adapter_auth_token, "auth-rel");
+        assert_eq!(execution.submit_adapter_hmac_secret, "hmac-rel");
+
+        let _ = std::fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_route_price_above_pretrade_cap() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.default_route = "jito".to_string();
+        execution.submit_allowed_routes = vec!["jito".to_string(), "rpc".to_string()];
+        execution.submit_route_max_slippage_bps =
+            BTreeMap::from([("jito".to_string(), 50.0), ("rpc".to_string(), 50.0)]);
+        execution.submit_route_tip_lamports =
+            BTreeMap::from([("jito".to_string(), 0), ("rpc".to_string(), 0)]);
+        execution.submit_route_compute_unit_limit =
+            BTreeMap::from([("jito".to_string(), 300_000), ("rpc".to_string(), 300_000)]);
+        execution.submit_route_compute_unit_price_micro_lamports =
+            BTreeMap::from([("jito".to_string(), 500), ("rpc".to_string(), 1_500)]);
+        execution.pretrade_max_priority_fee_lamports = 1_000;
+        execution.slippage_bps = 50.0;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("allowed-route CU price above pretrade cap must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("route rpc price (1500) cannot exceed"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_contract_version_token() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        for contract_version in ["v1 beta", "v1/rollout"] {
+            execution.submit_adapter_contract_version = contract_version.to_string();
+            let error = validate_execution_runtime_contract(&execution, "paper")
+                .expect_err("invalid contract version token must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("must contain only [A-Za-z0-9._-]"),
+                "unexpected error for contract_version {}: {}",
+                contract_version,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_allowed_routes_after_normalization() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.submit_allowed_routes = vec!["paper".to_string(), "PAPER".to_string()];
+        execution.default_route = "paper".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate allowed routes must fail after normalization");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.submit_allowed_routes contains duplicate route"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_submit_route_order_after_normalization(
+    ) {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.submit_allowed_routes = vec!["paper".to_string()];
+        execution.submit_route_order = vec!["paper".to_string(), "PAPER".to_string()];
+        execution.default_route = "paper".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate route order entries must fail after normalization");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.submit_route_order contains duplicate route"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_route_policy_map_keys_after_normalization(
+    ) {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.submit_allowed_routes = vec!["paper".to_string()];
+        execution.default_route = "paper".to_string();
+        execution.submit_route_tip_lamports =
+            BTreeMap::from([("paper".to_string(), 0), ("PAPER".to_string(), 0)]);
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate route policy map keys must fail after normalization");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.submit_route_tip_lamports contains duplicate route key"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_primary_and_fallback_adapter_endpoint()
+    {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local/submit".to_string();
+        execution.submit_adapter_fallback_http_url = "https://ADAPTER.local:443/submit".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate primary/fallback adapter endpoints must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must resolve to distinct endpoints"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_requires_policy_echo_in_prod_adapter_mode() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_adapter_require_policy_echo = false;
+
+        let error = validate_execution_runtime_contract(&execution, "prod")
+            .expect_err("prod adapter mode must require strict policy echo");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_adapter_require_policy_echo must be true in production-like"),
+            "unexpected error: {}",
+            error
+        );
+
+        execution.submit_adapter_require_policy_echo = true;
+        validate_execution_runtime_contract(&execution, "prod")
+            .expect("prod adapter mode with strict policy echo should pass");
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_requires_policy_echo_in_prod_variants() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        execution.submit_adapter_require_policy_echo = false;
+        for env in ["prod-eu", "PRODUCTION", "production_canary"] {
+            validate_execution_runtime_contract(&execution, env).expect_err(
+                "production-like adapter mode must require strict policy echo across env variants",
+            );
+        }
+
+        execution.submit_adapter_require_policy_echo = true;
+        for env in ["prod-eu", "PRODUCTION", "production_canary"] {
+            validate_execution_runtime_contract(&execution, env)
+                .expect("production-like adapter mode with strict policy echo should pass");
+        }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_adapter_endpoint_url() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint without scheme must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must start with http:// or https://"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_adapter_endpoint_placeholder() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        for endpoint in ["https://REPLACE_ME.example", "https://replace_me.example"] {
+            execution.submit_adapter_http_url = endpoint.to_string();
+            let error = validate_execution_runtime_contract(&execution, "paper")
+                .expect_err("adapter endpoint placeholder must fail contract validation");
+            assert!(
+                error.to_string().contains("must not contain placeholder"),
+                "unexpected error for endpoint {}: {}",
+                endpoint,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_adapter_endpoint_authority_forms() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        for endpoint in [
+            "https://:443",
+            "https://?x=1",
+            "https://#frag",
+            "https://[::1",
+        ] {
+            execution.submit_adapter_http_url = endpoint.to_string();
+            let error = validate_execution_runtime_contract(&execution, "paper").expect_err(
+                "adapter endpoint with malformed/empty host authority must fail contract validation",
+            );
+            assert!(
+                error.to_string().contains("must be a valid http(s) URL"),
+                "unexpected error for endpoint {}: {}",
+                endpoint,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_adapter_endpoint_with_url_credentials() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://user:pass@adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint with URL credentials must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must not embed credentials in URL"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_adapter_endpoint_with_query_or_fragment() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        execution.submit_adapter_http_url = "https://adapter.local?api-key=secret".to_string();
+        let query_error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint with query must fail");
+        assert!(
+            query_error
+                .to_string()
+                .contains("must not include query parameters"),
+            "unexpected error: {}",
+            query_error
+        );
+
+        execution.submit_adapter_http_url = "https://adapter.local#frag".to_string();
+        let fragment_error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("adapter endpoint with fragment must fail");
+        assert!(
+            fragment_error
+                .to_string()
+                .contains("must not include URL fragment"),
+            "unexpected error: {}",
+            fragment_error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_fallback_adapter_endpoint_with_secret_bearing_url_forms(
+    ) {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "https://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+
+        for (endpoint, expected_error) in [
+            (
+                "https://user:pass@adapter-fallback.local",
+                "must not embed credentials in URL",
+            ),
+            (
+                "https://adapter-fallback.local?api-key=secret",
+                "must not include query parameters",
+            ),
+            (
+                "https://adapter-fallback.local#frag",
+                "must not include URL fragment",
+            ),
+        ] {
+            execution.submit_adapter_fallback_http_url = endpoint.to_string();
+            let error = validate_execution_runtime_contract(&execution, "paper")
+                .expect_err("fallback adapter endpoint with secret-bearing URL form must fail");
+            assert!(
+                error.to_string().contains(expected_error),
+                "unexpected error for fallback endpoint {}: {}",
+                endpoint,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_non_loopback_http_adapter_endpoint_in_prod() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_adapter_require_policy_echo = true;
+
+        let error = validate_execution_runtime_contract(&execution, "prod")
+            .expect_err("non-loopback http adapter endpoint must fail in production-like env");
+        assert!(
+            error
+                .to_string()
+                .contains("must use https:// in production-like envs"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_allows_loopback_http_adapter_endpoint_in_prod() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://127.0.0.1:8080".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_adapter_require_policy_echo = true;
+
+        validate_execution_runtime_contract(&execution, "prod")
+            .expect("loopback http adapter endpoint should be allowed in production-like env");
+
+        execution.submit_adapter_http_url = "http://[0:0:0:0:0:0:0:1]:8080".to_string();
+        validate_execution_runtime_contract(&execution, "prod").expect(
+            "expanded IPv6 loopback representation should be allowed in production-like env",
+        );
+    }
+
+    #[test]
+    fn validate_execution_risk_contract_rejects_invalid_shadow_caps() {
+        let mut risk = RiskConfig::default();
+        risk.shadow_soft_exposure_cap_sol = f64::NAN;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("non-finite shadow soft cap must fail risk contract");
+        assert!(
+            error
+                .to_string()
+                .contains("risk.shadow_soft_exposure_cap_sol"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_risk_contract_rejects_invalid_live_loss_limits() {
+        let mut risk = RiskConfig::default();
+        risk.daily_loss_limit_pct = -0.1;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("negative daily loss limit percent must fail");
+        assert!(
+            error.to_string().contains("risk.daily_loss_limit_pct"),
+            "unexpected error: {}",
+            error
+        );
+
+        let mut risk = RiskConfig::default();
+        risk.max_drawdown_pct = 150.0;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("max drawdown percent above 100 must fail");
+        assert!(
+            error.to_string().contains("risk.max_drawdown_pct"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_risk_contract_rejects_invalid_shadow_drawdown_order() {
+        let mut risk = RiskConfig::default();
+        risk.shadow_drawdown_1h_stop_sol = -4.0;
+        risk.shadow_drawdown_6h_stop_sol = -1.0;
+        risk.shadow_drawdown_24h_stop_sol = -5.0;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("invalid drawdown threshold order must fail");
+        assert!(
+            error.to_string().contains("drawdown ordering is invalid"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
     #[test]
     fn risk_guard_infra_ratio_uses_window_delta_not_cumulative() -> Result<()> {
         let (store, db_path) = make_test_store("infra-ratio")?;
@@ -2207,6 +4252,10 @@ mod app_tests {
                 ts_utc: now - chrono::Duration::minutes(30),
                 ws_notifications_enqueued: 10_000,
                 ws_notifications_replaced_oldest: 9_000,
+                grpc_message_total: 1_200_000,
+                grpc_transaction_updates_total: 12_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -2215,6 +4264,10 @@ mod app_tests {
                 ts_utc: now - chrono::Duration::minutes(10),
                 ws_notifications_enqueued: 16_500_000,
                 ws_notifications_replaced_oldest: 14_400_000,
+                grpc_message_total: 2_400_000,
+                grpc_transaction_updates_total: 24_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -2223,6 +4276,10 @@ mod app_tests {
                 ts_utc: now,
                 ws_notifications_enqueued: 16_500_176,
                 ws_notifications_replaced_oldest: 14_400_134,
+                grpc_message_total: 2_400_176,
+                grpc_transaction_updates_total: 24_176,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -2240,6 +4297,10 @@ mod app_tests {
                 ts_utc: now + chrono::Duration::seconds(20),
                 ws_notifications_enqueued: 16_500_300,
                 ws_notifications_replaced_oldest: 14_400_270,
+                grpc_message_total: 2_400_300,
+                grpc_transaction_updates_total: 24_300,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
@@ -2252,6 +4313,328 @@ mod app_tests {
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
+    }
+
+    #[test]
+    fn risk_guard_infra_blocks_when_no_ingestion_progress_for_full_window() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        let reason = guard
+            .compute_infra_block_reason(now)
+            .expect("no progress over full infra window must trigger block");
+        assert!(
+            reason.contains("no_ingestion_progress_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_no_progress_does_not_block_when_grpc_transaction_updates_advance() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 910_000, // could include pings
+                grpc_transaction_updates_total: 910_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 920_000, // could include pings
+                grpc_transaction_updates_total: 920_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        assert!(
+            guard.compute_infra_block_reason(now).is_none(),
+            "no-ingestion-progress gate must not trigger while grpc_transaction_updates_total is advancing"
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_no_progress_still_blocks_when_only_grpc_ping_total_advances() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 910_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 920_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        let reason = guard.compute_infra_block_reason(now).expect(
+            "no-ingestion-progress gate must trigger when only ping-level grpc traffic advances",
+        );
+        assert!(
+            reason.contains("no_ingestion_progress_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_blocks_when_parser_stall_detected() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 950_000,
+                grpc_transaction_updates_total: 1_000,
+                parse_rejected_total: 50,
+                grpc_decode_errors: 5,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 960_000,
+                grpc_transaction_updates_total: 1_200,
+                parse_rejected_total: 240,
+                grpc_decode_errors: 10,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 970_000,
+                grpc_transaction_updates_total: 1_400,
+                parse_rejected_total: 430,
+                grpc_decode_errors: 15,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        let reason = guard
+            .compute_infra_block_reason(now)
+            .expect("parser-stall pattern over full window must trigger block");
+        assert!(
+            reason.contains("parser_stall_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_parser_stall_does_not_block_below_ratio_threshold() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 950_000,
+                grpc_transaction_updates_total: 1_000,
+                parse_rejected_total: 50,
+                grpc_decode_errors: 5,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 960_000,
+                grpc_transaction_updates_total: 1_200,
+                parse_rejected_total: 120,
+                grpc_decode_errors: 10,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 970_000,
+                grpc_transaction_updates_total: 1_400,
+                parse_rejected_total: 190,
+                grpc_decode_errors: 15,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        assert!(
+            guard.compute_infra_block_reason(now).is_none(),
+            "parser-stall gate must not trigger when error ratio is below threshold"
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_parser_stall_blocks_at_ratio_threshold_boundary() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(21),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 950_000,
+                grpc_transaction_updates_total: 1_000,
+                parse_rejected_total: 50,
+                grpc_decode_errors: 5,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(10),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 960_000,
+                grpc_transaction_updates_total: 1_200,
+                parse_rejected_total: 240,
+                grpc_decode_errors: 10,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 970_000,
+                grpc_transaction_updates_total: 1_400,
+                parse_rejected_total: 425,
+                grpc_decode_errors: 15,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+            },
+        ]);
+
+        let reason = guard
+            .compute_infra_block_reason(now)
+            .expect("parser-stall gate must trigger at >= 0.95 ratio boundary");
+        assert!(
+            reason.contains("parser_stall_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
     }
 
     #[test]
@@ -2291,7 +4674,7 @@ mod app_tests {
         let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts)?;
         let now = Utc::now();
 
-        let decision = guard.can_open_buy(&store, now);
+        let decision = guard.can_open_buy(&store, now, true);
         match decision {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::ExposureCap,
@@ -2304,6 +4687,7 @@ mod app_tests {
         let decision_after_clear = guard.can_open_buy(
             &store,
             now + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 1).max(6)),
+            true,
         );
         match decision_after_clear {
             BuyRiskDecision::Allow => {}
@@ -2315,7 +4699,7 @@ mod app_tests {
     }
 
     #[test]
-    fn stale_lot_cleanup_closes_old_lots_using_latest_price() -> Result<()> {
+    fn stale_lot_cleanup_ignores_micro_swap_outlier_price() -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-cleanup")?;
         let now = Utc::now();
         let opened_ts = now - chrono::Duration::hours(10);
@@ -2325,11 +4709,44 @@ mod app_tests {
             dex: "pumpswap".to_string(),
             token_in: "So11111111111111111111111111111111111111112".to_string(),
             token_out: "token-a".to_string(),
+            amount_in: 0.9,
+            amount_out: 900.0,
+            signature: "sig-price-1".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(20),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
             amount_in: 1.0,
             amount_out: 1000.0,
-            signature: "sig-price".to_string(),
-            slot: 1,
-            ts_utc: now - chrono::Duration::minutes(5),
+            signature: "sig-price-2".to_string(),
+            slot: 2,
+            ts_utc: now - chrono::Duration::minutes(12),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.1,
+            amount_out: 1100.0,
+            signature: "sig-price-3".to_string(),
+            slot: 3,
+            ts_utc: now - chrono::Duration::minutes(7),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 0.001,
+            amount_out: 0.000001,
+            signature: "sig-price-outlier".to_string(),
+            slot: 4,
+            ts_utc: now - chrono::Duration::minutes(1),
         })?;
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
@@ -2344,6 +4761,46 @@ mod app_tests {
         let (trades, pnl) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
         assert_eq!(trades, 1);
         assert!(pnl > 0.0, "expected positive pnl after stale cleanup close");
+        assert!(
+            pnl < 2.0,
+            "stale-close pnl must stay in realistic band and ignore micro-swap outlier (got {})",
+            pnl
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing() -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-unpriced")?;
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::hours(10);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+        })?;
+        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let (closed, skipped) = close_stale_shadow_lots(&store, &mut open_pairs, 8, now)?;
+
+        assert_eq!(closed, 0);
+        assert_eq!(skipped, 1);
+        assert!(store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_price_unavailable")?,
+            1
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -2371,7 +4828,7 @@ mod app_tests {
             now - chrono::Duration::minutes(5),
         )?;
 
-        let decision = guard.can_open_buy(&store, now);
+        let decision = guard.can_open_buy(&store, now, true);
         match decision {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::TimedPause,
@@ -2422,7 +4879,7 @@ mod app_tests {
             now - chrono::Duration::minutes(10),
         )?;
 
-        let decision = guard.can_open_buy(&store, now);
+        let decision = guard.can_open_buy(&store, now, true);
         match decision {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::HardStop,
@@ -2430,6 +4887,70 @@ mod app_tests {
             } => assert!(detail.contains("rug_loss")),
             other => panic!("expected hard stop block, got {other:?}"),
         }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_rug_rate_hard_stop_auto_clears_after_window_without_new_trades() -> Result<()> {
+        let (store, db_path) = make_test_store("rug-rate-autoclear")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_rug_loss_window_minutes = 1;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_sample_size = 200;
+        cfg.shadow_rug_loss_rate_threshold = 0.5;
+        cfg.shadow_rug_loss_return_threshold = -0.70;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-rug-rate-lock",
+            "wallet-a",
+            "token-a",
+            1.0,
+            1.0,
+            0.2,
+            -0.8,
+            now - chrono::Duration::seconds(55),
+            now - chrono::Duration::seconds(50),
+        )?;
+
+        match guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::HardStop,
+                ..
+            } => {}
+            other => panic!("expected hard-stop block from rug-rate breach, got {other:?}"),
+        }
+        assert!(
+            guard.hard_stop_reason.is_some(),
+            "hard stop should be active after rug-rate breach"
+        );
+
+        let refresh_step_seconds = (RISK_DB_REFRESH_MIN_SECONDS + 1).max(6);
+        let mut cleared = false;
+        for cycle in 1..=30 {
+            let cycle_ts = now + chrono::Duration::seconds(refresh_step_seconds * cycle as i64);
+            if matches!(
+                guard.can_open_buy(&store, cycle_ts, true),
+                BuyRiskDecision::Allow
+            ) {
+                cleared = true;
+                break;
+            }
+        }
+        assert!(
+            cleared,
+            "hard stop should auto-clear after rug window expires even without new trades"
+        );
+        assert!(
+            guard.hard_stop_reason.is_none(),
+            "hard stop reason should clear after healthy refresh streak"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -2459,7 +4980,7 @@ mod app_tests {
             now - chrono::Duration::minutes(20),
         )?;
 
-        match guard.can_open_buy(&store, now) {
+        match guard.can_open_buy(&store, now, true) {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::HardStop,
                 ..
@@ -2486,7 +5007,7 @@ mod app_tests {
         let refresh_step_seconds = (RISK_DB_REFRESH_MIN_SECONDS + 1).max(6);
         for cycle in 1..HARD_STOP_CLEAR_HEALTHY_REFRESHES {
             let cycle_ts = now + chrono::Duration::seconds(refresh_step_seconds * cycle as i64);
-            match guard.can_open_buy(&store, cycle_ts) {
+            match guard.can_open_buy(&store, cycle_ts, true) {
                 BuyRiskDecision::Blocked {
                     reason: BuyRiskBlockReason::HardStop,
                     ..
@@ -2506,6 +5027,7 @@ mod app_tests {
             now + chrono::Duration::seconds(
                 refresh_step_seconds * HARD_STOP_CLEAR_HEALTHY_REFRESHES as i64,
             ),
+            true,
         );
         match decision_after_recovery {
             BuyRiskDecision::Allow => {}
@@ -2544,7 +5066,7 @@ mod app_tests {
         guard.last_db_refresh_at = Some(now);
         guard.last_db_refresh_error = Some("simulated refresh failure".to_string());
 
-        match guard.can_open_buy(&store, now + chrono::Duration::seconds(1)) {
+        match guard.can_open_buy(&store, now + chrono::Duration::seconds(1), true) {
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::FailClosed,
                 detail,
@@ -2552,9 +5074,7 @@ mod app_tests {
                 detail.contains("cached error"),
                 "expected cached refresh error in fail-closed detail, got: {detail}"
             ),
-            other => panic!(
-                "expected fail-closed block from cached refresh error, got {other:?}"
-            ),
+            other => panic!("expected fail-closed block from cached refresh error, got {other:?}"),
         }
 
         let _ = std::fs::remove_file(db_path);
@@ -3023,6 +5543,137 @@ mod app_tests {
 
         let selected_none = select_role_helius_http_url("", "https://x/?api-key=REPLACE_ME");
         assert!(selected_none.is_none());
+
+        let selected_lowercase = select_role_helius_http_url(
+            "https://role.endpoint/?api-key=replace_me",
+            "https://fallback.endpoint/?api-key=def",
+        );
+        assert_eq!(
+            selected_lowercase.as_deref(),
+            Some("https://fallback.endpoint/?api-key=def")
+        );
+    }
+
+    #[test]
+    fn enforce_quality_gate_http_url_requires_endpoint_for_paper_prod() {
+        let result = enforce_quality_gate_http_url("shadow", "paper", true, None);
+        assert!(result.is_err());
+
+        let result = enforce_quality_gate_http_url("shadow", "paper-canary", true, None);
+        assert!(result.is_err());
+
+        let result = enforce_quality_gate_http_url(
+            "shadow",
+            "prod",
+            true,
+            Some("https://endpoint".to_string()),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_quality_gate_http_url_is_lenient_for_dev_or_disabled_gates() {
+        let result = enforce_quality_gate_http_url("shadow", "dev", true, None);
+        assert!(result.is_ok());
+
+        let result = enforce_quality_gate_http_url("shadow", "paper", false, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_shadow_quality_gate_contract_rejects_all_zero_thresholds_when_enabled() {
+        let mut cfg = ShadowConfig::default();
+        cfg.quality_gates_enabled = true;
+        cfg.min_token_age_seconds = 0;
+        cfg.min_holders = 0;
+        cfg.min_liquidity_sol = 0.0;
+        cfg.min_volume_5m_sol = 0.0;
+        cfg.min_unique_traders_5m = 0;
+        let err = validate_shadow_quality_gate_contract(&cfg, "prod")
+            .expect_err("all-zero quality thresholds must fail when gates are enabled")
+            .to_string();
+        assert!(err.contains("all quality thresholds are zero"));
+    }
+
+    #[test]
+    fn validate_shadow_quality_gate_contract_allows_non_zero_thresholds_when_enabled() {
+        let mut cfg = ShadowConfig::default();
+        cfg.quality_gates_enabled = true;
+        cfg.min_token_age_seconds = 30;
+        cfg.min_holders = 5;
+        cfg.min_liquidity_sol = 1.0;
+        cfg.min_volume_5m_sol = 0.5;
+        cfg.min_unique_traders_5m = 2;
+        validate_shadow_quality_gate_contract(&cfg, "prod")
+            .expect("non-zero thresholds should pass quality gate validation");
+    }
+
+    #[test]
+    fn parse_ingestion_source_override_reads_valid_source_key() {
+        let content = r#"
+# comment
+SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws
+"#;
+        assert_eq!(
+            parse_ingestion_source_override(content).as_deref(),
+            Some("helius_ws")
+        );
+    }
+
+    #[test]
+    fn parse_ingestion_source_override_ignores_invalid_lines() {
+        let content = r#"
+FOO=bar
+SOLANA_COPY_BOT_INGESTION_SOURCE=
+this-is-not-a-valid-line
+"#;
+        assert!(parse_ingestion_source_override(content).is_none());
+    }
+
+    #[test]
+    fn apply_ingestion_source_override_has_priority_over_existing_source() {
+        let mut source = "yellowstone_grpc".to_string();
+        let applied = apply_ingestion_source_override(&mut source, Some("helius_ws".to_string()));
+        assert_eq!(applied.as_deref(), Some("helius_ws"));
+        assert_eq!(source, "helius_ws");
+    }
+
+    #[test]
+    fn parse_operator_emergency_stop_reason_ignores_comments() {
+        let content = r#"
+# stop trading immediately
+
+manual override by operator
+"#;
+        assert_eq!(
+            parse_operator_emergency_stop_reason(content).as_deref(),
+            Some("manual override by operator")
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_block_respects_pause_new_trades_on_outage_flag() -> Result<()> {
+        let (store, db_path) = make_test_store("infra-outage-flag")?;
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        guard.infra_block_reason = Some("ingestion_degraded".to_string());
+        let now = Utc::now();
+
+        match guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Infra,
+                detail,
+            } => assert!(detail.contains("ingestion_degraded")),
+            other => panic!("expected infra block when outage pausing is enabled, got {other:?}"),
+        }
+        match guard.can_open_buy(&store, now, false) {
+            BuyRiskDecision::Allow => {}
+            other => panic!(
+                "expected outage infra block bypass when pause_new_trades_on_outage=false, got {other:?}"
+            ),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
     }
 
     #[test]

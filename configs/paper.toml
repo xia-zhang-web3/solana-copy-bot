@@ -10,10 +10,18 @@ pause_new_trades_on_outage = true
 path = "state/paper_copybot.db"
 
 [ingestion]
-source = "helius_ws"
+source = "yellowstone_grpc"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_urls = []
+yellowstone_grpc_url = "REPLACE_ME"
+yellowstone_x_token = "REPLACE_ME"
+yellowstone_connect_timeout_ms = 5000
+yellowstone_subscribe_timeout_ms = 15000
+yellowstone_stream_buffer_capacity = 2048
+yellowstone_reconnect_initial_ms = 500
+yellowstone_reconnect_max_ms = 8000
+yellowstone_program_ids = []
 fetch_concurrency = 4
 ws_queue_capacity = 512
 output_queue_capacity = 2048
@@ -44,10 +52,10 @@ mock_interval_ms = 1500
 [discovery]
 scoring_window_days = 7
 decay_window_days = 1
-follow_top_n = 20
+follow_top_n = 40
 min_leader_notional_sol = 0.35
 helius_http_url = ""
-refresh_seconds = 600
+refresh_seconds = 1800
 min_trades = 4
 min_active_days = 2
 min_score = 0.25
@@ -75,9 +83,45 @@ min_liquidity_sol = 1.0
 min_volume_5m_sol = 0.5
 min_unique_traders_5m = 1
 
+[execution]
+enabled = false
+mode = "paper"
+poll_interval_ms = 750
+batch_size = 32
+default_route = "paper"
+rpc_http_url = ""
+rpc_fallback_http_url = ""
+rpc_devnet_http_url = ""
+submit_adapter_http_url = ""
+submit_adapter_fallback_http_url = ""
+submit_adapter_auth_token = ""
+submit_adapter_auth_token_file = ""
+submit_adapter_hmac_key_id = ""
+submit_adapter_hmac_secret = ""
+submit_adapter_hmac_secret_file = ""
+submit_adapter_hmac_ttl_sec = 30
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = false
+submit_allowed_routes = ["paper"]
+submit_route_order = []
+submit_route_max_slippage_bps = { paper = 50.0 }
+submit_route_tip_lamports = { paper = 0 }
+submit_route_compute_unit_limit = { paper = 300000 }
+submit_route_compute_unit_price_micro_lamports = { paper = 1000 }
+submit_timeout_ms = 3000
+execution_signer_pubkey = ""
+pretrade_min_sol_reserve = 0.05
+pretrade_require_token_account = false
+pretrade_max_priority_fee_lamports = 0
+slippage_bps = 50.0
+max_confirm_seconds = 15
+max_submit_attempts = 3
+simulate_before_submit = true
+
 [risk]
 max_position_sol = 0.5
 max_total_exposure_sol = 3.0
+max_exposure_per_token_sol = 0.5
 max_concurrent_positions = 5
 daily_loss_limit_pct = 1.5
 max_drawdown_pct = 6.0
@@ -96,7 +140,7 @@ shadow_rug_loss_return_threshold = -0.70
 shadow_rug_loss_window_minutes = 120
 shadow_rug_loss_count_threshold = 3
 shadow_rug_loss_rate_sample_size = 200
-shadow_rug_loss_rate_threshold = 0.04
+shadow_rug_loss_rate_threshold = 0.06
 shadow_infra_window_minutes = 20
 shadow_infra_lag_p95_threshold_ms = 10000
 shadow_infra_lag_breach_minutes = 10

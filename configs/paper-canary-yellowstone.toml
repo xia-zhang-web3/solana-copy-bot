@@ -1,16 +1,16 @@
 [system]
-env = "dev"
-log_level = "debug"
-log_json = false
-heartbeat_seconds = 15
+env = "paper-canary"
+log_level = "info"
+log_json = true
+heartbeat_seconds = 20
 migrations_dir = "migrations"
 pause_new_trades_on_outage = true
 
 [sqlite]
-path = "state/dev_copybot.db"
+path = "state/paper_canary_copybot.db"
 
 [ingestion]
-source = "mock"
+source = "yellowstone_grpc"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_urls = []
@@ -22,11 +22,14 @@ yellowstone_stream_buffer_capacity = 2048
 yellowstone_reconnect_initial_ms = 500
 yellowstone_reconnect_max_ms = 8000
 yellowstone_program_ids = []
-fetch_concurrency = 8
-ws_queue_capacity = 2048
-output_queue_capacity = 1024
-reorder_hold_ms = 2000
-reorder_max_buffer = 512
+fetch_concurrency = 4
+ws_queue_capacity = 512
+output_queue_capacity = 2048
+prefetch_stale_drop_ms = 30000
+seen_signatures_ttl_ms = 600000
+queue_overflow_policy = "drop_oldest"
+reorder_hold_ms = 1500
+reorder_max_buffer = 1024
 telemetry_report_seconds = 30
 subscribe_program_ids = []
 raydium_program_ids = [
@@ -36,23 +39,33 @@ raydium_program_ids = [
 pumpswap_program_ids = ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"]
 reconnect_initial_ms = 500
 reconnect_max_ms = 8000
-tx_fetch_retries = 3
-tx_fetch_retry_delay_ms = 150
+tx_fetch_retries = 1
+tx_fetch_retry_delay_ms = 500
+tx_fetch_retry_max_ms = 2000
+tx_fetch_retry_jitter_ms = 150
 tx_request_timeout_ms = 5000
+global_rpc_rps_limit = 45
+per_endpoint_rpc_rps_limit = 16
 seen_signatures_limit = 5000
-mock_interval_ms = 1000
+mock_interval_ms = 1500
 
 [discovery]
-scoring_window_days = 30
-decay_window_days = 7
+scoring_window_days = 7
+decay_window_days = 1
 follow_top_n = 20
-min_leader_notional_sol = 0.5
+min_leader_notional_sol = 0.35
 helius_http_url = ""
-refresh_seconds = 120
-min_trades = 8
-min_active_days = 3
-min_score = 0.55
-max_tx_per_minute = 50
+refresh_seconds = 1800
+min_trades = 4
+min_active_days = 2
+min_score = 0.25
+max_tx_per_minute = 80
+min_buy_count = 2
+min_tradable_ratio = 0.05
+max_rug_ratio = 0.80
+rug_lookahead_seconds = 1800
+thin_market_min_volume_sol = 3.0
+thin_market_min_unique_traders = 10
 
 [shadow]
 enabled = true
@@ -60,10 +73,15 @@ helius_http_url = ""
 causal_holdback_enabled = true
 causal_holdback_ms = 2500
 refresh_seconds = 60
-copy_notional_sol = 0.25
-min_leader_notional_sol = 0.5
-max_signal_lag_seconds = 45
+copy_notional_sol = 0.10
+min_leader_notional_sol = 0.10
+max_signal_lag_seconds = 1200
 quality_gates_enabled = true
+min_token_age_seconds = 30
+min_holders = 1
+min_liquidity_sol = 1.0
+min_volume_5m_sol = 0.5
+min_unique_traders_5m = 1
 
 [execution]
 enabled = false
@@ -105,8 +123,8 @@ max_position_sol = 0.5
 max_total_exposure_sol = 3.0
 max_exposure_per_token_sol = 0.5
 max_concurrent_positions = 5
-daily_loss_limit_pct = 2.0
-max_drawdown_pct = 8.0
+daily_loss_limit_pct = 1.5
+max_drawdown_pct = 6.0
 max_hold_hours = 8
 max_copy_delay_sec = 5
 shadow_killswitch_enabled = true
@@ -126,7 +144,7 @@ shadow_rug_loss_rate_threshold = 0.04
 shadow_infra_window_minutes = 20
 shadow_infra_lag_p95_threshold_ms = 10000
 shadow_infra_lag_breach_minutes = 10
-shadow_infra_replaced_ratio_threshold = 0.85
+shadow_infra_replaced_ratio_threshold = 0.93
 shadow_infra_rpc429_delta_threshold = 5
 shadow_infra_rpc5xx_delta_threshold = 20
 shadow_universe_min_active_follow_wallets = 15

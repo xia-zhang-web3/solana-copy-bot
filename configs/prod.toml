@@ -10,10 +10,18 @@ pause_new_trades_on_outage = true
 path = "state/prod_copybot.db"
 
 [ingestion]
-source = "helius_ws"
+source = "yellowstone_grpc"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_url = "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME"
 helius_http_urls = []
+yellowstone_grpc_url = "REPLACE_ME"
+yellowstone_x_token = "REPLACE_ME"
+yellowstone_connect_timeout_ms = 5000
+yellowstone_subscribe_timeout_ms = 15000
+yellowstone_stream_buffer_capacity = 2048
+yellowstone_reconnect_initial_ms = 500
+yellowstone_reconnect_max_ms = 8000
+yellowstone_program_ids = []
 fetch_concurrency = 4
 ws_queue_capacity = 512
 output_queue_capacity = 2048
@@ -52,6 +60,9 @@ min_trades = 10
 min_active_days = 4
 min_score = 0.6
 max_tx_per_minute = 50
+min_buy_count = 10
+min_tradable_ratio = 0.25
+max_rug_ratio = 0.60
 
 [shadow]
 enabled = true
@@ -63,10 +74,51 @@ copy_notional_sol = 0.20
 min_leader_notional_sol = 0.75
 max_signal_lag_seconds = 30
 quality_gates_enabled = true
+min_token_age_seconds = 30
+min_holders = 1
+min_liquidity_sol = 1.0
+min_volume_5m_sol = 0.5
+min_unique_traders_5m = 1
+
+[execution]
+enabled = false
+mode = "paper"
+poll_interval_ms = 750
+batch_size = 32
+default_route = "paper"
+rpc_http_url = ""
+rpc_fallback_http_url = ""
+rpc_devnet_http_url = ""
+submit_adapter_http_url = ""
+submit_adapter_fallback_http_url = ""
+submit_adapter_auth_token = ""
+submit_adapter_auth_token_file = ""
+submit_adapter_hmac_key_id = ""
+submit_adapter_hmac_secret = ""
+submit_adapter_hmac_secret_file = ""
+submit_adapter_hmac_ttl_sec = 30
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = false
+submit_allowed_routes = ["paper"]
+submit_route_order = []
+submit_route_max_slippage_bps = { paper = 50.0 }
+submit_route_tip_lamports = { paper = 0 }
+submit_route_compute_unit_limit = { paper = 300000 }
+submit_route_compute_unit_price_micro_lamports = { paper = 1000 }
+submit_timeout_ms = 3000
+execution_signer_pubkey = ""
+pretrade_min_sol_reserve = 0.05
+pretrade_require_token_account = false
+pretrade_max_priority_fee_lamports = 0
+slippage_bps = 50.0
+max_confirm_seconds = 15
+max_submit_attempts = 3
+simulate_before_submit = true
 
 [risk]
 max_position_sol = 0.4
 max_total_exposure_sol = 2.5
+max_exposure_per_token_sol = 0.4
 max_concurrent_positions = 4
 daily_loss_limit_pct = 1.0
 max_drawdown_pct = 5.0

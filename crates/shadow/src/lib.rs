@@ -600,6 +600,7 @@ mod tests {
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;
         cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
         let service = ShadowService::new(cfg);
 
         let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
@@ -667,6 +668,7 @@ mod tests {
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;
         cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
         let service = ShadowService::new(cfg);
 
         let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
@@ -743,6 +745,7 @@ mod tests {
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;
         cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
         let service = ShadowService::new(cfg);
 
         let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
@@ -782,6 +785,7 @@ mod tests {
         let mut cfg = ShadowConfig::default();
         cfg.copy_notional_sol = 0.5;
         cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
         let service = ShadowService::new(cfg);
 
         let demoted_at = DateTime::parse_from_rfc3339("2026-02-12T11:59:30Z")

@@ -6,6 +6,8 @@ members = [
   "crates/ingestion",
   "crates/discovery",
   "crates/shadow",
+  "crates/execution",
+  "crates/adapter",
   "crates/app",
 ]
 resolver = "2"
@@ -24,3 +26,4 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+url = "2"

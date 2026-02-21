@@ -1,8 +1,16 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub const EXECUTION_ROUTE_TIP_LAMPORTS_MAX: u64 = 100_000_000;
+pub const EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN: u32 = 1;
+pub const EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX: u32 = 1_400_000;
+pub const EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN: u64 = 1;
+pub const EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX: u64 = 10_000_000;
+pub const EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN: u32 = 100_000;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -12,6 +20,7 @@ pub struct AppConfig {
     pub ingestion: IngestionConfig,
     pub discovery: DiscoveryConfig,
     pub shadow: ShadowConfig,
+    pub execution: ExecutionConfig,
     pub risk: RiskConfig,
 }
 
@@ -41,6 +50,90 @@ impl Default for SystemConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+pub struct ExecutionConfig {
+    pub enabled: bool,
+    pub mode: String,
+    pub poll_interval_ms: u64,
+    pub batch_size: u32,
+    pub default_route: String,
+    pub rpc_http_url: String,
+    pub rpc_fallback_http_url: String,
+    pub rpc_devnet_http_url: String,
+    pub submit_adapter_http_url: String,
+    pub submit_adapter_fallback_http_url: String,
+    pub submit_adapter_auth_token: String,
+    pub submit_adapter_auth_token_file: String,
+    pub submit_adapter_hmac_key_id: String,
+    pub submit_adapter_hmac_secret: String,
+    pub submit_adapter_hmac_secret_file: String,
+    pub submit_adapter_hmac_ttl_sec: u64,
+    pub submit_adapter_contract_version: String,
+    pub submit_adapter_require_policy_echo: bool,
+    pub submit_allowed_routes: Vec<String>,
+    pub submit_route_order: Vec<String>,
+    pub submit_route_max_slippage_bps: BTreeMap<String, f64>,
+    pub submit_route_tip_lamports: BTreeMap<String, u64>,
+    pub submit_route_compute_unit_limit: BTreeMap<String, u32>,
+    pub submit_route_compute_unit_price_micro_lamports: BTreeMap<String, u64>,
+    pub submit_timeout_ms: u64,
+    pub execution_signer_pubkey: String,
+    pub pretrade_min_sol_reserve: f64,
+    pub pretrade_require_token_account: bool,
+    /// Legacy field name kept for backward compatibility.
+    /// Unit is micro-lamports per CU (not plain lamports).
+    #[serde(alias = "pretrade_max_priority_fee_micro_lamports_per_cu")]
+    pub pretrade_max_priority_fee_lamports: u64,
+    pub slippage_bps: f64,
+    pub max_confirm_seconds: u64,
+    pub max_submit_attempts: u32,
+    pub simulate_before_submit: bool,
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: "paper".to_string(),
+            poll_interval_ms: 750,
+            batch_size: 32,
+            default_route: "paper".to_string(),
+            rpc_http_url: String::new(),
+            rpc_fallback_http_url: String::new(),
+            rpc_devnet_http_url: String::new(),
+            submit_adapter_http_url: String::new(),
+            submit_adapter_fallback_http_url: String::new(),
+            submit_adapter_auth_token: String::new(),
+            submit_adapter_auth_token_file: String::new(),
+            submit_adapter_hmac_key_id: String::new(),
+            submit_adapter_hmac_secret: String::new(),
+            submit_adapter_hmac_secret_file: String::new(),
+            submit_adapter_hmac_ttl_sec: 30,
+            submit_adapter_contract_version: "v1".to_string(),
+            submit_adapter_require_policy_echo: false,
+            submit_allowed_routes: vec!["paper".to_string()],
+            submit_route_order: Vec::new(),
+            submit_route_max_slippage_bps: BTreeMap::from([(String::from("paper"), 50.0)]),
+            submit_route_tip_lamports: BTreeMap::from([(String::from("paper"), 0)]),
+            submit_route_compute_unit_limit: BTreeMap::from([(String::from("paper"), 300_000)]),
+            submit_route_compute_unit_price_micro_lamports: BTreeMap::from([(
+                String::from("paper"),
+                1_000,
+            )]),
+            submit_timeout_ms: 3_000,
+            execution_signer_pubkey: String::new(),
+            pretrade_min_sol_reserve: 0.05,
+            pretrade_require_token_account: false,
+            pretrade_max_priority_fee_lamports: 0,
+            slippage_bps: 50.0,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 3,
+            simulate_before_submit: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct SqliteConfig {
     pub path: String,
 }
@@ -60,6 +153,14 @@ pub struct IngestionConfig {
     pub helius_ws_url: String,
     pub helius_http_url: String,
     pub helius_http_urls: Vec<String>,
+    pub yellowstone_grpc_url: String,
+    pub yellowstone_x_token: String,
+    pub yellowstone_connect_timeout_ms: u64,
+    pub yellowstone_subscribe_timeout_ms: u64,
+    pub yellowstone_stream_buffer_capacity: usize,
+    pub yellowstone_reconnect_initial_ms: u64,
+    pub yellowstone_reconnect_max_ms: u64,
+    pub yellowstone_program_ids: Vec<String>,
     pub fetch_concurrency: usize,
     pub ws_queue_capacity: usize,
     pub output_queue_capacity: usize,
@@ -92,6 +193,14 @@ impl Default for IngestionConfig {
             helius_ws_url: "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_url: "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_urls: Vec::new(),
+            yellowstone_grpc_url: "REPLACE_ME".to_string(),
+            yellowstone_x_token: "REPLACE_ME".to_string(),
+            yellowstone_connect_timeout_ms: 5_000,
+            yellowstone_subscribe_timeout_ms: 15_000,
+            yellowstone_stream_buffer_capacity: 2_048,
+            yellowstone_reconnect_initial_ms: 500,
+            yellowstone_reconnect_max_ms: 8_000,
+            yellowstone_program_ids: Vec::new(),
             fetch_concurrency: 8,
             ws_queue_capacity: 2048,
             output_queue_capacity: 1024,
@@ -171,6 +280,7 @@ impl Default for DiscoveryConfig {
 pub struct RiskConfig {
     pub max_position_sol: f64,
     pub max_total_exposure_sol: f64,
+    pub max_exposure_per_token_sol: f64,
     pub max_concurrent_positions: u32,
     pub daily_loss_limit_pct: f64,
     pub max_drawdown_pct: f64,
@@ -232,11 +342,11 @@ impl Default for ShadowConfig {
             min_leader_notional_sol: 0.5,
             max_signal_lag_seconds: 45,
             quality_gates_enabled: true,
-            min_token_age_seconds: 0,
-            min_holders: 0,
-            min_liquidity_sol: 0.0,
-            min_volume_5m_sol: 0.0,
-            min_unique_traders_5m: 0,
+            min_token_age_seconds: 30,
+            min_holders: 1,
+            min_liquidity_sol: 1.0,
+            min_volume_5m_sol: 0.5,
+            min_unique_traders_5m: 1,
         }
     }
 }
@@ -246,6 +356,7 @@ impl Default for RiskConfig {
         Self {
             max_position_sol: 0.75,
             max_total_exposure_sol: 4.0,
+            max_exposure_per_token_sol: 1.0,
             max_concurrent_positions: 5,
             daily_loss_limit_pct: 2.0,
             max_drawdown_pct: 8.0,
@@ -301,6 +412,58 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     }
     if let Ok(http_url) = env::var("SOLANA_COPY_BOT_HELIUS_HTTP_URL") {
         config.ingestion.helius_http_url = http_url;
+    }
+    if let Ok(grpc_url) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_GRPC_URL") {
+        config.ingestion.yellowstone_grpc_url = grpc_url;
+    }
+    if let Ok(x_token) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_X_TOKEN") {
+        config.ingestion.yellowstone_x_token = x_token;
+    }
+    if let Some(connect_timeout_ms) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.yellowstone_connect_timeout_ms = connect_timeout_ms;
+    }
+    if let Some(subscribe_timeout_ms) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_SUBSCRIBE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.yellowstone_subscribe_timeout_ms = subscribe_timeout_ms;
+    }
+    if let Some(stream_buffer_capacity) =
+        env::var("SOLANA_COPY_BOT_YELLOWSTONE_STREAM_BUFFER_CAPACITY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.ingestion.yellowstone_stream_buffer_capacity = stream_buffer_capacity;
+    }
+    if let Some(reconnect_initial_ms) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_RECONNECT_INITIAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.yellowstone_reconnect_initial_ms = reconnect_initial_ms;
+    }
+    if let Some(reconnect_max_ms) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_RECONNECT_MAX_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.ingestion.yellowstone_reconnect_max_ms = reconnect_max_ms;
+    }
+    if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_PROGRAM_IDS") {
+        let values: Vec<String> = program_ids_csv
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .split(',')
+            .map(str::trim)
+            .map(|value| value.trim_matches('"').trim_matches('\''))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        if !values.is_empty() {
+            config.ingestion.yellowstone_program_ids = values;
+        }
     }
     if let Ok(http_urls_csv) = env::var("SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS") {
         let values: Vec<String> = http_urls_csv
@@ -425,6 +588,234 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(shadow_http_url) = env::var("SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL") {
         config.shadow.helius_http_url = shadow_http_url;
     }
+    if let Some(enabled) = env::var("SOLANA_COPY_BOT_EXECUTION_ENABLED")
+        .ok()
+        .and_then(parse_env_bool)
+    {
+        config.execution.enabled = enabled;
+    }
+    if let Ok(mode) = env::var("SOLANA_COPY_BOT_EXECUTION_MODE") {
+        let trimmed = mode.trim();
+        if !trimmed.is_empty() {
+            config.execution.mode = trimmed.to_string();
+        }
+    }
+    if let Some(poll_interval_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_POLL_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.poll_interval_ms = poll_interval_ms;
+    }
+    if let Some(batch_size) = env::var("SOLANA_COPY_BOT_EXECUTION_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.execution.batch_size = batch_size;
+    }
+    if let Ok(route) = env::var("SOLANA_COPY_BOT_EXECUTION_DEFAULT_ROUTE") {
+        let trimmed = route.trim();
+        if !trimmed.is_empty() {
+            config.execution.default_route = trimmed.to_string();
+        }
+    }
+    if let Ok(rpc_http_url) = env::var("SOLANA_COPY_BOT_EXECUTION_RPC_HTTP_URL") {
+        config.execution.rpc_http_url = rpc_http_url;
+    }
+    if let Ok(rpc_fallback_http_url) = env::var("SOLANA_COPY_BOT_EXECUTION_RPC_FALLBACK_HTTP_URL") {
+        config.execution.rpc_fallback_http_url = rpc_fallback_http_url;
+    }
+    if let Ok(rpc_devnet_http_url) = env::var("SOLANA_COPY_BOT_EXECUTION_RPC_DEVNET_HTTP_URL") {
+        config.execution.rpc_devnet_http_url = rpc_devnet_http_url;
+    }
+    if let Ok(submit_adapter_http_url) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HTTP_URL")
+    {
+        config.execution.submit_adapter_http_url = submit_adapter_http_url;
+    }
+    if let Ok(submit_adapter_fallback_http_url) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_FALLBACK_HTTP_URL")
+    {
+        config.execution.submit_adapter_fallback_http_url = submit_adapter_fallback_http_url;
+    }
+    if let Ok(submit_adapter_auth_token) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_AUTH_TOKEN")
+    {
+        config.execution.submit_adapter_auth_token = submit_adapter_auth_token;
+    }
+    if let Ok(submit_adapter_auth_token_file) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_AUTH_TOKEN_FILE")
+    {
+        config.execution.submit_adapter_auth_token_file = submit_adapter_auth_token_file;
+    }
+    if let Ok(submit_adapter_hmac_key_id) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_KEY_ID")
+    {
+        config.execution.submit_adapter_hmac_key_id = submit_adapter_hmac_key_id;
+    }
+    if let Ok(submit_adapter_hmac_secret) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET")
+    {
+        config.execution.submit_adapter_hmac_secret = submit_adapter_hmac_secret;
+    }
+    if let Ok(submit_adapter_hmac_secret_file) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_SECRET_FILE")
+    {
+        config.execution.submit_adapter_hmac_secret_file = submit_adapter_hmac_secret_file;
+    }
+    if let Some(submit_adapter_hmac_ttl_sec) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_TTL_SEC")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.submit_adapter_hmac_ttl_sec = submit_adapter_hmac_ttl_sec;
+    }
+    if let Ok(submit_adapter_contract_version) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_CONTRACT_VERSION")
+    {
+        let trimmed = submit_adapter_contract_version.trim();
+        if !trimmed.is_empty() {
+            config.execution.submit_adapter_contract_version = trimmed.to_string();
+        }
+    }
+    if let Some(submit_adapter_require_policy_echo) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.submit_adapter_require_policy_echo = submit_adapter_require_policy_echo;
+    }
+    if let Ok(submit_allowed_routes_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES")
+    {
+        let routes = parse_execution_route_list_env(
+            &submit_allowed_routes_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES",
+        )?;
+        if !routes.is_empty() {
+            config.execution.submit_allowed_routes = routes;
+        }
+    }
+    if let Ok(submit_route_order_csv) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER") {
+        let routes = parse_execution_route_list_env(
+            &submit_route_order_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER",
+        )?;
+        if !routes.is_empty() {
+            config.execution.submit_route_order = routes;
+        }
+    }
+    if let Ok(submit_route_max_slippage_bps_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS")
+    {
+        let route_caps = parse_execution_route_map_env(
+            &submit_route_max_slippage_bps_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS",
+            |value| value.trim().parse::<f64>().ok(),
+        )?;
+        if !route_caps.is_empty() {
+            config.execution.submit_route_max_slippage_bps = route_caps;
+        }
+    }
+    if let Ok(submit_route_tip_lamports_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS")
+    {
+        let route_tips = parse_execution_route_map_env(
+            &submit_route_tip_lamports_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS",
+            |value| value.trim().parse::<u64>().ok(),
+        )?;
+        if !route_tips.is_empty() {
+            config.execution.submit_route_tip_lamports = route_tips;
+        }
+    }
+    if let Ok(submit_route_compute_unit_limit_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT")
+    {
+        let route_limits = parse_execution_route_map_env(
+            &submit_route_compute_unit_limit_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT",
+            |value| value.trim().parse::<u32>().ok(),
+        )?;
+        if !route_limits.is_empty() {
+            config.execution.submit_route_compute_unit_limit = route_limits;
+        }
+    }
+    if let Ok(submit_route_compute_unit_price_micro_lamports_csv) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS")
+    {
+        let route_prices = parse_execution_route_map_env(
+            &submit_route_compute_unit_price_micro_lamports_csv,
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
+            |value| value.trim().parse::<u64>().ok(),
+        )?;
+        if !route_prices.is_empty() {
+            config
+                .execution
+                .submit_route_compute_unit_price_micro_lamports = route_prices;
+        }
+    }
+    if let Some(submit_timeout_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.submit_timeout_ms = submit_timeout_ms;
+    }
+    if let Ok(execution_signer_pubkey) = env::var("SOLANA_COPY_BOT_EXECUTION_SIGNER_PUBKEY") {
+        config.execution.execution_signer_pubkey = execution_signer_pubkey;
+    }
+    if let Some(pretrade_min_sol_reserve) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.execution.pretrade_min_sol_reserve = pretrade_min_sol_reserve;
+    }
+    if let Some(pretrade_require_token_account) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_REQUIRE_TOKEN_ACCOUNT")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.pretrade_require_token_account = pretrade_require_token_account;
+    }
+    if let Some(pretrade_max_priority_fee_micro_lamports) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.pretrade_max_priority_fee_lamports =
+            pretrade_max_priority_fee_micro_lamports;
+    } else if let Some(pretrade_max_priority_fee_lamports) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.pretrade_max_priority_fee_lamports = pretrade_max_priority_fee_lamports;
+    }
+    if let Some(slippage_bps) = env::var("SOLANA_COPY_BOT_EXECUTION_SLIPPAGE_BPS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.execution.slippage_bps = slippage_bps;
+    }
+    if let Some(max_confirm_seconds) = env::var("SOLANA_COPY_BOT_EXECUTION_MAX_CONFIRM_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.execution.max_confirm_seconds = max_confirm_seconds;
+    }
+    if let Some(max_submit_attempts) = env::var("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.execution.max_submit_attempts = max_submit_attempts;
+    }
+    if let Some(simulate_before_submit) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SIMULATE_BEFORE_SUBMIT")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.simulate_before_submit = simulate_before_submit;
+    }
     if let Some(holdback_enabled) = env::var("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED")
         .ok()
         .and_then(parse_env_bool)
@@ -436,6 +827,254 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         .and_then(|value| value.parse::<u64>().ok())
     {
         config.shadow.causal_holdback_ms = holdback_ms;
+    }
+    if let Some(quality_gates_enabled) = env::var("SOLANA_COPY_BOT_SHADOW_QUALITY_GATES_ENABLED")
+        .ok()
+        .and_then(parse_env_bool)
+    {
+        config.shadow.quality_gates_enabled = quality_gates_enabled;
+    }
+    if let Some(min_token_age_seconds) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.min_token_age_seconds = min_token_age_seconds;
+    }
+    if let Some(min_holders) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.min_holders = min_holders;
+    }
+    if let Some(min_liquidity_sol) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_LIQUIDITY_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.shadow.min_liquidity_sol = min_liquidity_sol;
+    }
+    if let Some(min_volume_5m_sol) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_VOLUME_5M_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.shadow.min_volume_5m_sol = min_volume_5m_sol;
+    }
+    if let Some(min_unique_traders_5m) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_UNIQUE_TRADERS_5M")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.shadow.min_unique_traders_5m = min_unique_traders_5m;
+    }
+    if let Some(max_position_sol) = env::var("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.max_position_sol = max_position_sol;
+    }
+    if let Some(max_total_exposure_sol) = env::var("SOLANA_COPY_BOT_RISK_MAX_TOTAL_EXPOSURE_SOL")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.max_total_exposure_sol = max_total_exposure_sol;
+    }
+    if let Some(max_exposure_per_token_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_MAX_EXPOSURE_PER_TOKEN_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.max_exposure_per_token_sol = max_exposure_per_token_sol;
+    }
+    if let Some(max_concurrent_positions) =
+        env::var("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.risk.max_concurrent_positions = max_concurrent_positions;
+    }
+    if let Some(daily_loss_limit_pct) = env::var("SOLANA_COPY_BOT_RISK_DAILY_LOSS_LIMIT_PCT")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.daily_loss_limit_pct = daily_loss_limit_pct;
+    }
+    if let Some(max_drawdown_pct) = env::var("SOLANA_COPY_BOT_RISK_MAX_DRAWDOWN_PCT")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.max_drawdown_pct = max_drawdown_pct;
+    }
+    if let Some(max_hold_hours) = env::var("SOLANA_COPY_BOT_RISK_MAX_HOLD_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.risk.max_hold_hours = max_hold_hours;
+    }
+    if let Some(max_copy_delay_sec) = env::var("SOLANA_COPY_BOT_RISK_MAX_COPY_DELAY_SEC")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.max_copy_delay_sec = max_copy_delay_sec;
+    }
+    if let Some(shadow_killswitch_enabled) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.risk.shadow_killswitch_enabled = shadow_killswitch_enabled;
+    }
+    if let Some(shadow_soft_exposure_cap_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_soft_exposure_cap_sol = shadow_soft_exposure_cap_sol;
+    }
+    if let Some(shadow_soft_pause_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_PAUSE_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_soft_pause_minutes = shadow_soft_pause_minutes;
+    }
+    if let Some(shadow_hard_exposure_cap_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_HARD_EXPOSURE_CAP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_hard_exposure_cap_sol = shadow_hard_exposure_cap_sol;
+    }
+    if let Some(shadow_drawdown_1h_stop_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_1H_STOP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_drawdown_1h_stop_sol = shadow_drawdown_1h_stop_sol;
+    }
+    if let Some(shadow_drawdown_1h_pause_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_1H_PAUSE_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_drawdown_1h_pause_minutes = shadow_drawdown_1h_pause_minutes;
+    }
+    if let Some(shadow_drawdown_6h_stop_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_6H_STOP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_drawdown_6h_stop_sol = shadow_drawdown_6h_stop_sol;
+    }
+    if let Some(shadow_drawdown_6h_pause_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_6H_PAUSE_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_drawdown_6h_pause_minutes = shadow_drawdown_6h_pause_minutes;
+    }
+    if let Some(shadow_drawdown_24h_stop_sol) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_24H_STOP_SOL")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_drawdown_24h_stop_sol = shadow_drawdown_24h_stop_sol;
+    }
+    if let Some(shadow_rug_loss_return_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RETURN_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_rug_loss_return_threshold = shadow_rug_loss_return_threshold;
+    }
+    if let Some(shadow_rug_loss_window_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_WINDOW_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_rug_loss_window_minutes = shadow_rug_loss_window_minutes;
+    }
+    if let Some(shadow_rug_loss_count_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_COUNT_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_rug_loss_count_threshold = shadow_rug_loss_count_threshold;
+    }
+    if let Some(shadow_rug_loss_rate_sample_size) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_SAMPLE_SIZE")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_rug_loss_rate_sample_size = shadow_rug_loss_rate_sample_size;
+    }
+    if let Some(shadow_rug_loss_rate_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_rug_loss_rate_threshold = shadow_rug_loss_rate_threshold;
+    }
+    if let Some(shadow_infra_window_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_WINDOW_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_window_minutes = shadow_infra_window_minutes;
+    }
+    if let Some(shadow_infra_lag_p95_threshold_ms) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_LAG_P95_THRESHOLD_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_lag_p95_threshold_ms = shadow_infra_lag_p95_threshold_ms;
+    }
+    if let Some(shadow_infra_lag_breach_minutes) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_LAG_BREACH_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_lag_breach_minutes = shadow_infra_lag_breach_minutes;
+    }
+    if let Some(shadow_infra_replaced_ratio_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_REPLACED_RATIO_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+    {
+        config.risk.shadow_infra_replaced_ratio_threshold = shadow_infra_replaced_ratio_threshold;
+    }
+    if let Some(shadow_infra_rpc429_delta_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_RPC429_DELTA_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_rpc429_delta_threshold = shadow_infra_rpc429_delta_threshold;
+    }
+    if let Some(shadow_infra_rpc5xx_delta_threshold) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_RPC5XX_DELTA_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_infra_rpc5xx_delta_threshold = shadow_infra_rpc5xx_delta_threshold;
+    }
+    if let Some(shadow_universe_min_active_follow_wallets) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_MIN_ACTIVE_FOLLOW_WALLETS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_universe_min_active_follow_wallets =
+            shadow_universe_min_active_follow_wallets;
+    }
+    if let Some(shadow_universe_min_eligible_wallets) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_MIN_ELIGIBLE_WALLETS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_universe_min_eligible_wallets = shadow_universe_min_eligible_wallets;
+    }
+    if let Some(shadow_universe_breach_cycles) =
+        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.risk.shadow_universe_breach_cycles = shadow_universe_breach_cycles;
     }
     if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_PROGRAM_IDS") {
         let values: Vec<String> = program_ids_csv
@@ -449,6 +1088,8 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         }
     }
 
+    validate_adapter_route_policy_completeness(&config.execution)?;
+
     Ok((config, configured))
 }
 
@@ -457,5 +1098,430 @@ fn parse_env_bool(value: String) -> Option<bool> {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+fn validate_adapter_route_policy_completeness(config: &ExecutionConfig) -> Result<()> {
+    if !config.enabled
+        || !config
+            .mode
+            .trim()
+            .eq_ignore_ascii_case("adapter_submit_confirm")
+    {
+        return Ok(());
+    }
+
+    let default_route = {
+        let value = config.default_route.trim().to_ascii_lowercase();
+        if value.is_empty() {
+            "paper".to_string()
+        } else {
+            value
+        }
+    };
+
+    let allowed_routes: Vec<String> = config
+        .submit_allowed_routes
+        .iter()
+        .map(|route| route.trim().to_ascii_lowercase())
+        .filter(|route| !route.is_empty())
+        .collect();
+
+    for route in &allowed_routes {
+        if !map_contains_route(&config.submit_route_max_slippage_bps, route) {
+            return Err(anyhow!(
+                "execution.submit_route_max_slippage_bps is missing cap for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS format route:cap)",
+                route
+            ));
+        }
+        if !map_contains_route(&config.submit_route_tip_lamports, route) {
+            return Err(anyhow!(
+                "execution.submit_route_tip_lamports is missing tip for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS format route:tip)",
+                route
+            ));
+        }
+        if !map_contains_route(&config.submit_route_compute_unit_limit, route) {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_limit is missing limit for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT format route:limit)",
+                route
+            ));
+        }
+        if !map_contains_route(
+            &config.submit_route_compute_unit_price_micro_lamports,
+            route,
+        ) {
+            return Err(anyhow!(
+                "execution.submit_route_compute_unit_price_micro_lamports is missing price for allowed route={} (check SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS format route:price)",
+                route
+            ));
+        }
+    }
+
+    if !map_contains_route(
+        &config.submit_route_max_slippage_bps,
+        default_route.as_str(),
+    ) {
+        return Err(anyhow!(
+            "execution.submit_route_max_slippage_bps is missing cap for default route={}",
+            default_route
+        ));
+    }
+    if !map_contains_route(&config.submit_route_tip_lamports, default_route.as_str()) {
+        return Err(anyhow!(
+            "execution.submit_route_tip_lamports is missing tip for default route={}",
+            default_route
+        ));
+    }
+    if !map_contains_route(
+        &config.submit_route_compute_unit_limit,
+        default_route.as_str(),
+    ) {
+        return Err(anyhow!(
+            "execution.submit_route_compute_unit_limit is missing limit for default route={}",
+            default_route
+        ));
+    }
+    if !map_contains_route(
+        &config.submit_route_compute_unit_price_micro_lamports,
+        default_route.as_str(),
+    ) {
+        return Err(anyhow!(
+            "execution.submit_route_compute_unit_price_micro_lamports is missing price for default route={}",
+            default_route
+        ));
+    }
+
+    Ok(())
+}
+
+fn map_contains_route<T>(map: &BTreeMap<String, T>, route: &str) -> bool {
+    map.keys()
+        .any(|candidate| candidate.trim().eq_ignore_ascii_case(route))
+}
+
+fn parse_execution_route_map_env<T, F>(
+    csv: &str,
+    env_name: &str,
+    parse_value: F,
+) -> Result<BTreeMap<String, T>>
+where
+    F: Fn(&str) -> Option<T>,
+{
+    let mut values = BTreeMap::new();
+    let mut seen_normalized = HashSet::new();
+    for token in csv.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let Some((route, raw_value)) = token.split_once(':') else {
+            return Err(anyhow!(
+                "{env_name} contains malformed token (expected route:value): {}",
+                token
+            ));
+        };
+        let route = route.trim().to_ascii_lowercase();
+        if route.is_empty() {
+            return Err(anyhow!(
+                "{env_name} contains empty route key in token: {}",
+                token
+            ));
+        }
+        let Some(parsed_value) = parse_value(raw_value) else {
+            return Err(anyhow!(
+                "{env_name} contains invalid numeric value for route={}: {}",
+                route,
+                raw_value.trim()
+            ));
+        };
+        if !seen_normalized.insert(route.clone()) {
+            return Err(anyhow!(
+                "{env_name} contains duplicate route after normalization: {}",
+                route
+            ));
+        }
+        values.insert(route, parsed_value);
+    }
+    Ok(values)
+}
+
+fn parse_execution_route_list_env(csv: &str, env_name: &str) -> Result<Vec<String>> {
+    let mut values = Vec::new();
+    let mut seen_normalized = HashSet::new();
+    for token in csv.split(',') {
+        let route = token.trim();
+        if route.is_empty() {
+            continue;
+        }
+        let normalized = route.to_ascii_lowercase();
+        if !seen_normalized.insert(normalized.clone()) {
+            return Err(anyhow!(
+                "{env_name} contains duplicate route after normalization: {}",
+                normalized
+            ));
+        }
+        values.push(route.to_string());
+    }
+    Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn ingestion_yellowstone_defaults_are_applied() {
+        let ingestion = IngestionConfig::default();
+        assert_eq!(ingestion.yellowstone_grpc_url, "REPLACE_ME");
+        assert_eq!(ingestion.yellowstone_x_token, "REPLACE_ME");
+        assert_eq!(ingestion.yellowstone_connect_timeout_ms, 5_000);
+        assert_eq!(ingestion.yellowstone_subscribe_timeout_ms, 15_000);
+        assert_eq!(ingestion.yellowstone_stream_buffer_capacity, 2_048);
+        assert_eq!(ingestion.yellowstone_reconnect_initial_ms, 500);
+        assert_eq!(ingestion.yellowstone_reconnect_max_ms, 8_000);
+        assert!(ingestion.yellowstone_program_ids.is_empty());
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_route_max_slippage_keys() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS",
+            "rpc:50,RPC:75",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_route_tip_keys() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS",
+            "rpc:100,RPC:200",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_route_cu_limit_keys() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_LIMIT",
+            "rpc:300000,RPC:350000",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_route_cu_price_keys() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS",
+            "rpc:1000,RPC:2000",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_submit_allowed_routes() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES",
+            "rpc,RPC",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_duplicate_normalized_submit_route_order() {
+        assert_duplicate_normalized_route_env_rejected(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_ORDER",
+            "jito,JITO",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_malformed_route_map_token() {
+        assert_route_map_env_rejected_contains(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS",
+            "rpc:50,jito",
+            "malformed token",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_invalid_route_map_numeric_value() {
+        assert_route_map_env_rejected_contains(
+            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS",
+            "rpc:not-a-number",
+            "invalid numeric value",
+        );
+    }
+
+    #[test]
+    fn load_from_env_rejects_incomplete_route_policy_for_allowed_routes() {
+        with_temp_config_file("", |config_path| {
+            with_clean_copybot_env(|| {
+                with_env_var("SOLANA_COPY_BOT_EXECUTION_ENABLED", "true", || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_EXECUTION_MODE",
+                        "adapter_submit_confirm",
+                        || {
+                            with_env_var(
+                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES",
+                                "paper,rpc",
+                                || {
+                                    let err = load_from_env_or_default(config_path)
+                                    .expect_err(
+                                        "missing route policy for allowed route must fail at config load",
+                                    )
+                                    .to_string();
+                                    assert!(
+                                    err.contains(
+                                        "execution.submit_route_max_slippage_bps is missing cap for allowed route=rpc",
+                                    ),
+                                    "unexpected error: {err}"
+                                );
+                                },
+                            );
+                        },
+                    );
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn load_from_env_applies_risk_and_shadow_quality_overrides() {
+        with_temp_config_file("", |config_path| {
+            with_clean_copybot_env(|| {
+                with_env_var("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL", "0.99", || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED",
+                        "false",
+                        || {
+                            with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "42", || {
+                                with_env_var(
+                                "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS",
+                                "12345",
+                                || {
+                                    let (cfg, _) = load_from_env_or_default(config_path)
+                                        .expect("load config with env overrides");
+                                    assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
+                                    assert!(!cfg.risk.shadow_killswitch_enabled);
+                                    assert_eq!(cfg.shadow.min_holders, 42);
+                                    assert_eq!(
+                                        cfg.execution.pretrade_max_priority_fee_lamports,
+                                        12_345
+                                    );
+                                },
+                            );
+                            });
+                        },
+                    );
+                });
+            });
+        });
+    }
+
+    fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
+        with_temp_config_file("", |config_path| {
+            with_clean_copybot_env(|| {
+                with_env_var(env_name, env_value, || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("duplicate normalized route keys should fail")
+                        .to_string();
+                    assert!(
+                        err.contains(env_name),
+                        "error should mention env var, got: {err}"
+                    );
+                    assert!(
+                        err.contains("duplicate route after normalization"),
+                        "error should describe duplicate normalization, got: {err}"
+                    );
+                });
+            });
+        });
+    }
+
+    fn assert_route_map_env_rejected_contains(
+        env_name: &'static str,
+        env_value: &str,
+        needle: &str,
+    ) {
+        with_temp_config_file("", |config_path| {
+            with_clean_copybot_env(|| {
+                with_env_var(env_name, env_value, || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("invalid route map env should fail")
+                        .to_string();
+                    assert!(
+                        err.contains(env_name),
+                        "error should mention env var, got: {err}"
+                    );
+                    assert!(
+                        err.contains(needle),
+                        "error should contain '{needle}', got: {err}"
+                    );
+                });
+            });
+        });
+    }
+
+    fn with_env_var<T>(key: &'static str, value: &str, run: impl FnOnce() -> T) -> T {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        restore_env_var(key, previous);
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn restore_env_var(key: &'static str, previous: Option<OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    fn with_clean_copybot_env<T>(run: impl FnOnce() -> T) -> T {
+        // Serialize all SOLANA_COPY_BOT_* env mutations in this test module.
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved: Vec<(OsString, OsString)> = std::env::vars_os()
+            .filter(|(key, _)| key.to_string_lossy().starts_with("SOLANA_COPY_BOT_"))
+            .collect();
+        for (key, _) in &saved {
+            std::env::remove_var(key);
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        for (key, value) in saved {
+            std::env::set_var(key, value);
+        }
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn with_temp_config_file<T>(contents: &str, run: impl FnOnce(&Path) -> T) -> T {
+        let path = unique_temp_path();
+        fs::write(&path, contents).expect("write temp config");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&path)));
+        let _ = fs::remove_file(&path);
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn unique_temp_path() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let seq = TEMP_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("copybot-config-test-{pid}-{nanos}-{seq}.toml"))
     }
 }

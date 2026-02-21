@@ -1,0 +1,2028 @@
+use chrono::{DateTime, Utc};
+use reqwest::blocking::Client;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
+use std::time::Duration as StdDuration;
+use uuid::Uuid;
+
+use crate::auth::compute_hmac_signature_hex;
+use crate::intent::ExecutionIntent;
+use copybot_config::{
+    EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX, EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN,
+    EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+    EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN, EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+};
+
+const POLICY_FLOAT_EPSILON: f64 = 1e-6;
+
+#[derive(Debug, Clone)]
+pub struct SubmitResult {
+    pub route: String,
+    pub tx_signature: String,
+    pub submitted_at: DateTime<Utc>,
+    pub applied_tip_lamports: u64,
+    pub ata_create_rent_lamports: Option<u64>,
+    pub network_fee_lamports_hint: Option<u64>,
+    pub base_fee_lamports_hint: Option<u64>,
+    pub priority_fee_lamports_hint: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitErrorKind {
+    Retryable,
+    Terminal,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubmitError {
+    pub kind: SubmitErrorKind,
+    pub code: String,
+    pub detail: String,
+}
+
+impl SubmitError {
+    pub fn retryable(code: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            kind: SubmitErrorKind::Retryable,
+            code: code.into(),
+            detail: detail.into(),
+        }
+    }
+
+    pub fn terminal(code: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            kind: SubmitErrorKind::Terminal,
+            code: code.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
+impl fmt::Display for SubmitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "submit_error kind={:?} code={} detail={}",
+            self.kind, self.code, self.detail
+        )
+    }
+}
+
+impl std::error::Error for SubmitError {}
+
+pub trait OrderSubmitter {
+    fn submit(
+        &self,
+        intent: &ExecutionIntent,
+        client_order_id: &str,
+        route: &str,
+    ) -> std::result::Result<SubmitResult, SubmitError>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PaperOrderSubmitter;
+
+impl OrderSubmitter for PaperOrderSubmitter {
+    fn submit(
+        &self,
+        intent: &ExecutionIntent,
+        client_order_id: &str,
+        route: &str,
+    ) -> std::result::Result<SubmitResult, SubmitError> {
+        let sig = format!(
+            "paper:{}:{}:{}",
+            intent.side.as_str(),
+            client_order_id,
+            Uuid::new_v4().simple()
+        );
+        Ok(SubmitResult {
+            route: route.to_string(),
+            tx_signature: sig,
+            submitted_at: Utc::now(),
+            applied_tip_lamports: 0,
+            ata_create_rent_lamports: None,
+            network_fee_lamports_hint: None,
+            base_fee_lamports_hint: None,
+            priority_fee_lamports_hint: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FailClosedOrderSubmitter {
+    code: String,
+    detail: String,
+}
+
+impl FailClosedOrderSubmitter {
+    pub fn new(code: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
+impl OrderSubmitter for FailClosedOrderSubmitter {
+    fn submit(
+        &self,
+        _intent: &ExecutionIntent,
+        _client_order_id: &str,
+        _route: &str,
+    ) -> std::result::Result<SubmitResult, SubmitError> {
+        Err(SubmitError::terminal(
+            self.code.clone(),
+            self.detail.clone(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AdapterHmacAuth {
+    key_id: String,
+    secret: String,
+    ttl_sec: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdapterOrderSubmitter {
+    endpoints: Vec<String>,
+    auth_token: Option<String>,
+    hmac_auth: Option<AdapterHmacAuth>,
+    contract_version: String,
+    require_policy_echo: bool,
+    allowed_routes: HashSet<String>,
+    route_max_slippage_bps: HashMap<String, f64>,
+    route_tip_lamports: HashMap<String, u64>,
+    route_compute_unit_limit: HashMap<String, u32>,
+    route_compute_unit_price_micro_lamports: HashMap<String, u64>,
+    slippage_bps: f64,
+    client: Client,
+}
+
+impl AdapterOrderSubmitter {
+    pub fn new(
+        primary_url: &str,
+        fallback_url: &str,
+        auth_token: &str,
+        hmac_key_id: &str,
+        hmac_secret: &str,
+        hmac_ttl_sec: u64,
+        contract_version: &str,
+        require_policy_echo: bool,
+        allowed_routes: &[String],
+        route_max_slippage_bps: &BTreeMap<String, f64>,
+        route_tip_lamports: &BTreeMap<String, u64>,
+        route_compute_unit_limit: &BTreeMap<String, u32>,
+        route_compute_unit_price_micro_lamports: &BTreeMap<String, u64>,
+        timeout_ms: u64,
+        slippage_bps: f64,
+    ) -> Option<Self> {
+        let mut endpoints = Vec::new();
+        let primary = primary_url.trim();
+        if !primary.is_empty() {
+            endpoints.push(primary.to_string());
+        }
+        let fallback = fallback_url.trim();
+        if !fallback.is_empty() && fallback != primary {
+            endpoints.push(fallback.to_string());
+        }
+        if endpoints.is_empty() || !slippage_bps.is_finite() || slippage_bps < 0.0 {
+            return None;
+        }
+
+        let allowed_routes = normalize_allowed_routes(allowed_routes);
+        if allowed_routes.is_empty() {
+            return None;
+        }
+        let route_max_slippage_bps = normalize_route_slippage_caps(route_max_slippage_bps);
+        if route_max_slippage_bps.is_empty() {
+            return None;
+        }
+        let route_tip_lamports = normalize_route_tip_lamports(route_tip_lamports);
+        if route_tip_lamports.is_empty() {
+            return None;
+        }
+        let route_compute_unit_limit = normalize_route_cu_limit(route_compute_unit_limit);
+        if route_compute_unit_limit.is_empty() {
+            return None;
+        }
+        let route_compute_unit_price_micro_lamports =
+            normalize_route_cu_price(route_compute_unit_price_micro_lamports);
+        if route_compute_unit_price_micro_lamports.is_empty() {
+            return None;
+        }
+        if !allowed_routes
+            .iter()
+            .all(|route| route_max_slippage_bps.contains_key(route))
+        {
+            return None;
+        }
+        if !allowed_routes
+            .iter()
+            .all(|route| route_tip_lamports.contains_key(route))
+        {
+            return None;
+        }
+        if !allowed_routes
+            .iter()
+            .all(|route| route_compute_unit_limit.contains_key(route))
+        {
+            return None;
+        }
+        if !allowed_routes
+            .iter()
+            .all(|route| route_compute_unit_price_micro_lamports.contains_key(route))
+        {
+            return None;
+        }
+
+        let client = match Client::builder()
+            .timeout(StdDuration::from_millis(timeout_ms.max(500)))
+            .build()
+        {
+            Ok(value) => value,
+            Err(_) => return None,
+        };
+
+        let token = auth_token.trim();
+        let auth_token = if token.is_empty() {
+            None
+        } else {
+            Some(token.to_string())
+        };
+        let hmac_key_id = hmac_key_id.trim();
+        let hmac_secret = hmac_secret.trim();
+        let hmac_auth = if hmac_key_id.is_empty() && hmac_secret.is_empty() {
+            None
+        } else if hmac_key_id.is_empty()
+            || hmac_secret.is_empty()
+            || !(5..=300).contains(&hmac_ttl_sec)
+        {
+            return None;
+        } else {
+            Some(AdapterHmacAuth {
+                key_id: hmac_key_id.to_string(),
+                secret: hmac_secret.to_string(),
+                ttl_sec: hmac_ttl_sec,
+            })
+        };
+        let contract_version = contract_version.trim();
+        if contract_version.is_empty()
+            || contract_version.len() > 64
+            || !is_valid_contract_version_token(contract_version)
+        {
+            return None;
+        }
+
+        Some(Self {
+            endpoints,
+            auth_token,
+            hmac_auth,
+            contract_version: contract_version.to_string(),
+            require_policy_echo,
+            allowed_routes,
+            route_max_slippage_bps,
+            route_tip_lamports,
+            route_compute_unit_limit,
+            route_compute_unit_price_micro_lamports,
+            slippage_bps,
+            client,
+        })
+    }
+
+    fn submit_via_endpoint(
+        &self,
+        endpoint: &str,
+        payload: &Value,
+        expected_route: &str,
+        expected_client_order_id: &str,
+        expected_contract_version: &str,
+        require_policy_echo: bool,
+        expected_slippage_bps: f64,
+        expected_tip_lamports: u64,
+        expected_cu_limit: u32,
+        expected_cu_price_micro_lamports: u64,
+    ) -> std::result::Result<SubmitResult, SubmitError> {
+        let payload_json = serde_json::to_string(payload).map_err(|error| {
+            SubmitError::terminal(
+                "submit_adapter_payload_serialize_failed",
+                format!("failed serializing submit payload: {}", error),
+            )
+        })?;
+        let mut request = self
+            .client
+            .post(endpoint)
+            .header("content-type", "application/json")
+            .body(payload_json.clone());
+        if let Some(token) = self.auth_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+        if let Some(hmac_auth) = self.hmac_auth.as_ref() {
+            let timestamp_sec = Utc::now().timestamp();
+            let nonce = Uuid::new_v4().simple().to_string();
+            // Signature must cover the exact UTF-8 JSON bytes sent in this HTTP request body.
+            // Verifier should use raw body bytes instead of re-serialized JSON.
+            let signature_payload = format!(
+                "{}\n{}\n{}\n{}",
+                timestamp_sec, hmac_auth.ttl_sec, nonce, payload_json
+            );
+            let signature = compute_hmac_signature_hex(
+                hmac_auth.secret.as_bytes(),
+                signature_payload.as_bytes(),
+            )
+            .map_err(|error| {
+                SubmitError::terminal(
+                    "submit_adapter_hmac_signing_failed",
+                    format!("failed creating submit request signature: {}", error),
+                )
+            })?;
+            request = request
+                .header("x-copybot-key-id", hmac_auth.key_id.as_str())
+                .header("x-copybot-timestamp", timestamp_sec.to_string())
+                .header("x-copybot-auth-ttl-sec", hmac_auth.ttl_sec.to_string())
+                .header("x-copybot-nonce", nonce)
+                .header("x-copybot-signature", signature)
+                .header("x-copybot-signature-alg", "hmac-sha256-v1");
+        }
+        let response = request.send().map_err(|error| {
+            SubmitError::retryable(
+                "submit_adapter_unavailable",
+                format!("endpoint={} request_error={}", endpoint, error),
+            )
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            let status_code = status.as_u16();
+            let body_text = response.text().unwrap_or_default();
+            let detail = format!(
+                "endpoint={} http_status={} body={}",
+                endpoint, status_code, body_text
+            );
+            if status_code == 429 || status.is_server_error() {
+                return Err(SubmitError::retryable(
+                    "submit_adapter_http_unavailable",
+                    detail,
+                ));
+            }
+            return Err(SubmitError::terminal(
+                "submit_adapter_http_rejected",
+                detail,
+            ));
+        }
+        let body: Value = response.json().map_err(|error| {
+            SubmitError::retryable(
+                "submit_adapter_invalid_json",
+                format!("endpoint={} parse_error={}", endpoint, error),
+            )
+        })?;
+        parse_adapter_submit_response(
+            &body,
+            expected_route,
+            expected_client_order_id,
+            expected_contract_version,
+            require_policy_echo,
+            expected_slippage_bps,
+            expected_tip_lamports,
+            expected_cu_limit,
+            expected_cu_price_micro_lamports,
+        )
+        .map_err(|error| {
+            if matches!(error.kind, SubmitErrorKind::Retryable) {
+                SubmitError::retryable(
+                    error.code,
+                    format!("endpoint={} {}", endpoint, error.detail),
+                )
+            } else {
+                SubmitError::terminal(
+                    error.code,
+                    format!("endpoint={} {}", endpoint, error.detail),
+                )
+            }
+        })
+    }
+}
+
+impl OrderSubmitter for AdapterOrderSubmitter {
+    fn submit(
+        &self,
+        intent: &ExecutionIntent,
+        client_order_id: &str,
+        route: &str,
+    ) -> std::result::Result<SubmitResult, SubmitError> {
+        let route = normalize_route(route).ok_or_else(|| {
+            SubmitError::terminal("route_missing", "execution route is empty for submit")
+        })?;
+        if !self.allowed_routes.contains(route.as_str()) {
+            return Err(SubmitError::terminal(
+                "route_not_allowed",
+                format!(
+                    "route={} is not allowed by execution.submit_allowed_routes",
+                    route
+                ),
+            ));
+        }
+        let route_cap = self
+            .route_max_slippage_bps
+            .get(route.as_str())
+            .copied()
+            .ok_or_else(|| {
+                SubmitError::terminal(
+                    "route_slippage_policy_missing",
+                    format!("missing slippage cap for route={}", route),
+                )
+            })?;
+        let effective_slippage_bps = self.slippage_bps.min(route_cap);
+        let route_tip_lamports = self
+            .route_tip_lamports
+            .get(route.as_str())
+            .copied()
+            .ok_or_else(|| {
+                SubmitError::terminal(
+                    "route_tip_policy_missing",
+                    format!("missing tip_lamports policy for route={}", route),
+                )
+            })?;
+        let route_cu_limit = self
+            .route_compute_unit_limit
+            .get(route.as_str())
+            .copied()
+            .ok_or_else(|| {
+                SubmitError::terminal(
+                    "route_compute_budget_policy_missing",
+                    format!("missing compute unit limit for route={}", route),
+                )
+            })?;
+        let route_cu_price_micro_lamports = self
+            .route_compute_unit_price_micro_lamports
+            .get(route.as_str())
+            .copied()
+            .ok_or_else(|| {
+                SubmitError::terminal(
+                    "route_compute_budget_policy_missing",
+                    format!(
+                        "missing compute unit price (micro-lamports) for route={}",
+                        route
+                    ),
+                )
+            })?;
+
+        let payload = json!({
+            "contract_version": self.contract_version,
+            "signal_id": intent.signal_id,
+            "client_order_id": client_order_id,
+            "request_id": client_order_id,
+            "side": intent.side.as_str(),
+            "token": intent.token,
+            "notional_sol": intent.notional_sol,
+            "signal_ts": intent.signal_ts.to_rfc3339(),
+            "route": route,
+            "slippage_bps": effective_slippage_bps,
+            "route_slippage_cap_bps": route_cap,
+            "tip_lamports": route_tip_lamports,
+            "compute_budget": {
+                "cu_limit": route_cu_limit,
+                "cu_price_micro_lamports": route_cu_price_micro_lamports
+            },
+        });
+
+        let mut last_retryable_error: Option<SubmitError> = None;
+        for endpoint in &self.endpoints {
+            match self.submit_via_endpoint(
+                endpoint,
+                &payload,
+                route.as_str(),
+                client_order_id,
+                self.contract_version.as_str(),
+                self.require_policy_echo,
+                effective_slippage_bps,
+                route_tip_lamports,
+                route_cu_limit,
+                route_cu_price_micro_lamports,
+            ) {
+                Ok(result) => return Ok(result),
+                Err(error) if matches!(error.kind, SubmitErrorKind::Terminal) => {
+                    return Err(error);
+                }
+                Err(error) => last_retryable_error = Some(error),
+            }
+        }
+
+        Err(last_retryable_error.unwrap_or_else(|| {
+            SubmitError::retryable(
+                "submit_adapter_unavailable",
+                "all submit adapter endpoints failed".to_string(),
+            )
+        }))
+    }
+}
+
+fn parse_adapter_submit_response(
+    body: &Value,
+    expected_route: &str,
+    expected_client_order_id: &str,
+    expected_contract_version: &str,
+    require_policy_echo: bool,
+    expected_slippage_bps: f64,
+    expected_tip_lamports: u64,
+    expected_cu_limit: u32,
+    expected_cu_price_micro_lamports: u64,
+) -> std::result::Result<SubmitResult, SubmitError> {
+    let status = body
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let ok_flag = body.get("ok").and_then(Value::as_bool);
+    let accepted_flag = body.get("accepted").and_then(Value::as_bool);
+    let is_known_success_status = matches!(status.as_str(), "ok" | "accepted" | "success");
+    let is_known_reject_status = matches!(
+        status.as_str(),
+        "reject" | "rejected" | "error" | "failed" | "failure"
+    );
+    if !status.is_empty() && !is_known_success_status && !is_known_reject_status {
+        return Err(SubmitError::terminal(
+            "submit_adapter_invalid_status",
+            format!("adapter response status={} is not recognized", status),
+        ));
+    }
+    let is_reject =
+        is_known_reject_status || ok_flag == Some(false) || accepted_flag == Some(false);
+    if is_reject {
+        let retryable = body
+            .get("retryable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let code = body
+            .get("code")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("submit_adapter_rejected");
+        let detail = body
+            .get("detail")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("submit adapter rejected order");
+        return Err(if retryable {
+            SubmitError::retryable(code, detail)
+        } else {
+            SubmitError::terminal(code, detail)
+        });
+    }
+    let is_success = accepted_flag.or(ok_flag).unwrap_or(is_known_success_status);
+    if !is_success {
+        return Err(SubmitError::terminal(
+            "submit_adapter_invalid_response",
+            "adapter response did not explicitly confirm submit success".to_string(),
+        ));
+    }
+
+    let tx_signature = body
+        .get("tx_signature")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SubmitError::retryable(
+                "submit_adapter_invalid_response",
+                "missing tx_signature in adapter response".to_string(),
+            )
+        })?;
+    let route = body
+        .get("route")
+        .and_then(Value::as_str)
+        .and_then(normalize_route)
+        .ok_or_else(|| {
+            SubmitError::terminal(
+                "submit_adapter_policy_echo_missing",
+                "adapter response missing required field route".to_string(),
+            )
+        })?;
+    if route != expected_route {
+        return Err(SubmitError::terminal(
+            "submit_adapter_route_mismatch",
+            format!(
+                "adapter response route={} does not match requested route={}",
+                route, expected_route
+            ),
+        ));
+    }
+    if let Some(client_order_id) = body
+        .get("client_order_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if client_order_id != expected_client_order_id {
+            return Err(SubmitError::terminal(
+                "submit_adapter_client_order_id_mismatch",
+                format!(
+                    "adapter response client_order_id={} does not match requested client_order_id={}",
+                    client_order_id, expected_client_order_id
+                ),
+            ));
+        }
+    }
+    if let Some(request_id) = body
+        .get("request_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if request_id != expected_client_order_id {
+            return Err(SubmitError::terminal(
+                "submit_adapter_request_id_mismatch",
+                format!(
+                    "adapter response request_id={} does not match requested client_order_id={}",
+                    request_id, expected_client_order_id
+                ),
+            ));
+        }
+    }
+    let response_contract_version = body
+        .get("contract_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(version) = response_contract_version {
+        if version != expected_contract_version {
+            return Err(SubmitError::terminal(
+                "submit_adapter_contract_version_mismatch",
+                format!(
+                    "adapter response contract_version={} does not match expected contract_version={}",
+                    version, expected_contract_version
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field contract_version".to_string(),
+        ));
+    }
+
+    let response_slippage_bps = body.get("slippage_bps").and_then(Value::as_f64);
+    if let Some(value) = response_slippage_bps {
+        if !approx_f64_eq(value, expected_slippage_bps) {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_mismatch",
+                format!(
+                    "adapter response slippage_bps={} does not match expected slippage_bps={}",
+                    value, expected_slippage_bps
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field slippage_bps".to_string(),
+        ));
+    }
+
+    let response_tip_lamports = body.get("tip_lamports").and_then(Value::as_u64);
+    if let Some(value) = response_tip_lamports {
+        if value != expected_tip_lamports {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_mismatch",
+                format!(
+                    "adapter response tip_lamports={} does not match expected tip_lamports={}",
+                    value, expected_tip_lamports
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field tip_lamports".to_string(),
+        ));
+    }
+    let applied_tip_lamports = response_tip_lamports.unwrap_or(expected_tip_lamports);
+    let ata_create_rent_lamports =
+        parse_optional_non_negative_u64_field(body, "ata_create_rent_lamports")?;
+    let network_fee_lamports_hint =
+        parse_optional_non_negative_u64_field(body, "network_fee_lamports")?;
+    let base_fee_lamports_hint = parse_optional_non_negative_u64_field(body, "base_fee_lamports")?;
+    let priority_fee_lamports_hint =
+        parse_optional_non_negative_u64_field(body, "priority_fee_lamports")?;
+    let derived_network_fee_lamports_hint = if let (Some(base), Some(priority)) =
+        (base_fee_lamports_hint, priority_fee_lamports_hint)
+    {
+        Some(base.saturating_add(priority))
+    } else {
+        None
+    };
+    if let (Some(network_fee), Some(derived_network_fee)) =
+        (network_fee_lamports_hint, derived_network_fee_lamports_hint)
+    {
+        if network_fee != derived_network_fee {
+            return Err(SubmitError::terminal(
+                "submit_adapter_invalid_response",
+                format!(
+                    "adapter response network_fee_lamports={} does not match base+priority={}",
+                    network_fee, derived_network_fee
+                ),
+            ));
+        }
+    }
+
+    if let Some(value) = ata_create_rent_lamports {
+        if value > i64::MAX as u64 {
+            return Err(SubmitError::terminal(
+                "submit_adapter_invalid_response",
+                format!(
+                    "adapter response ata_create_rent_lamports={} exceeds i64::MAX",
+                    value
+                ),
+            ));
+        }
+    }
+    for (field, value) in [
+        ("network_fee_lamports", network_fee_lamports_hint),
+        ("base_fee_lamports", base_fee_lamports_hint),
+        ("priority_fee_lamports", priority_fee_lamports_hint),
+        (
+            "derived_network_fee_lamports",
+            derived_network_fee_lamports_hint,
+        ),
+    ] {
+        if let Some(value) = value {
+            if value > i64::MAX as u64 {
+                return Err(SubmitError::terminal(
+                    "submit_adapter_invalid_response",
+                    format!("adapter response {}={} exceeds i64::MAX", field, value),
+                ));
+            }
+        }
+    }
+
+    let response_cu_limit = body
+        .get("compute_budget")
+        .and_then(|value| value.get("cu_limit"))
+        .and_then(Value::as_u64);
+    if let Some(value) = response_cu_limit {
+        if value != expected_cu_limit as u64 {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_mismatch",
+                format!(
+                    "adapter response compute_budget.cu_limit={} does not match expected cu_limit={}",
+                    value, expected_cu_limit
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field compute_budget.cu_limit".to_string(),
+        ));
+    }
+
+    let response_cu_price = body
+        .get("compute_budget")
+        .and_then(|value| value.get("cu_price_micro_lamports"))
+        .and_then(Value::as_u64);
+    if let Some(value) = response_cu_price {
+        if value != expected_cu_price_micro_lamports {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_mismatch",
+                format!(
+                    "adapter response compute_budget.cu_price_micro_lamports={} does not match expected cu_price_micro_lamports={}",
+                    value, expected_cu_price_micro_lamports
+                ),
+            ));
+        }
+    } else if require_policy_echo {
+        return Err(SubmitError::terminal(
+            "submit_adapter_policy_echo_missing",
+            "adapter response missing required field compute_budget.cu_price_micro_lamports"
+                .to_string(),
+        ));
+    }
+    if require_policy_echo {
+        if base_fee_lamports_hint.is_none() {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_echo_missing",
+                "adapter response missing required field base_fee_lamports".to_string(),
+            ));
+        }
+        if priority_fee_lamports_hint.is_none() {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_echo_missing",
+                "adapter response missing required field priority_fee_lamports".to_string(),
+            ));
+        }
+        if network_fee_lamports_hint.is_none() {
+            return Err(SubmitError::terminal(
+                "submit_adapter_policy_echo_missing",
+                "adapter response missing required field network_fee_lamports".to_string(),
+            ));
+        }
+    }
+
+    let submitted_at = match body.get("submitted_at") {
+        Some(value) => {
+            let raw = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    SubmitError::terminal(
+                        "submit_adapter_invalid_response",
+                        "adapter response field submitted_at must be a non-empty RFC3339 string"
+                            .to_string(),
+                    )
+                })?;
+            parse_rfc3339_utc(raw).ok_or_else(|| {
+                SubmitError::terminal(
+                    "submit_adapter_invalid_response",
+                    format!(
+                        "adapter response submitted_at is not valid RFC3339 timestamp: {}",
+                        raw
+                    ),
+                )
+            })?
+        }
+        None => Utc::now(),
+    };
+
+    Ok(SubmitResult {
+        route,
+        tx_signature: tx_signature.to_string(),
+        submitted_at,
+        applied_tip_lamports,
+        ata_create_rent_lamports,
+        network_fee_lamports_hint: network_fee_lamports_hint.or(derived_network_fee_lamports_hint),
+        base_fee_lamports_hint,
+        priority_fee_lamports_hint,
+    })
+}
+
+fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value.trim())
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn parse_optional_non_negative_u64_field(
+    body: &Value,
+    field: &str,
+) -> std::result::Result<Option<u64>, SubmitError> {
+    let Some(value) = body.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    if let Some(parsed) = value.as_u64() {
+        return Ok(Some(parsed));
+    }
+    Err(SubmitError::terminal(
+        "submit_adapter_invalid_response",
+        format!(
+            "adapter response {} must be a non-negative integer when present",
+            field
+        ),
+    ))
+}
+
+fn approx_f64_eq(left: f64, right: f64) -> bool {
+    (left - right).abs() <= POLICY_FLOAT_EPSILON
+}
+
+fn normalize_route(route: &str) -> Option<String> {
+    let route = route.trim().to_ascii_lowercase();
+    if route.is_empty() {
+        None
+    } else {
+        Some(route)
+    }
+}
+
+fn is_valid_contract_version_token(value: &str) -> bool {
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn normalize_allowed_routes(routes: &[String]) -> HashSet<String> {
+    routes
+        .iter()
+        .filter_map(|value| normalize_route(value))
+        .collect()
+}
+
+fn normalize_route_slippage_caps(route_caps: &BTreeMap<String, f64>) -> HashMap<String, f64> {
+    route_caps
+        .iter()
+        .filter_map(|(route, cap)| {
+            let route = normalize_route(route)?;
+            if !cap.is_finite() || *cap <= 0.0 {
+                return None;
+            }
+            Some((route, *cap))
+        })
+        .collect()
+}
+
+fn normalize_route_tip_lamports(route_tips: &BTreeMap<String, u64>) -> HashMap<String, u64> {
+    route_tips
+        .iter()
+        .filter_map(|(route, value)| {
+            let route = normalize_route(route)?;
+            if *value > EXECUTION_ROUTE_TIP_LAMPORTS_MAX {
+                return None;
+            }
+            Some((route, *value))
+        })
+        .collect()
+}
+
+fn normalize_route_cu_limit(route_caps: &BTreeMap<String, u32>) -> HashMap<String, u32> {
+    route_caps
+        .iter()
+        .filter_map(|(route, value)| {
+            let route = normalize_route(route)?;
+            if *value < EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN
+                || *value > EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX
+            {
+                return None;
+            }
+            Some((route, *value))
+        })
+        .collect()
+}
+
+fn normalize_route_cu_price(route_caps: &BTreeMap<String, u64>) -> HashMap<String, u64> {
+    route_caps
+        .iter()
+        .filter_map(|(route, value)| {
+            let route = normalize_route(route)?;
+            if *value < EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN
+                || *value > EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX
+            {
+                return None;
+            }
+            Some((route, *value))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intent::{ExecutionIntent, ExecutionSide};
+    use chrono::Utc;
+    use std::collections::BTreeMap;
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration as StdDuration;
+
+    fn make_intent() -> ExecutionIntent {
+        ExecutionIntent {
+            signal_id: "shadow:test:wallet:buy:token".to_string(),
+            leader_wallet: "leader".to_string(),
+            side: ExecutionSide::Buy,
+            token: "token".to_string(),
+            notional_sol: 0.1,
+            signal_ts: Utc::now(),
+        }
+    }
+
+    fn make_route_caps(route: &str, cap: f64) -> BTreeMap<String, f64> {
+        BTreeMap::from([(route.to_string(), cap)])
+    }
+
+    fn make_route_tips(route: &str, value: u64) -> BTreeMap<String, u64> {
+        BTreeMap::from([(route.to_string(), value)])
+    }
+
+    fn make_route_cu_limits(route: &str, value: u32) -> BTreeMap<String, u32> {
+        BTreeMap::from([(route.to_string(), value)])
+    }
+
+    fn make_route_cu_prices(route: &str, value: u64) -> BTreeMap<String, u64> {
+        BTreeMap::from([(route.to_string(), value)])
+    }
+
+    #[derive(Debug)]
+    struct CapturedHttpRequest {
+        path: String,
+        headers: HashMap<String, String>,
+        body: String,
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+
+    fn spawn_one_shot_adapter(
+        status: u16,
+        response_body: Value,
+    ) -> Option<(String, thread::JoinHandle<CapturedHttpRequest>)> {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!(
+                    "skipping adapter HTTP integration test: failed to bind 127.0.0.1:0: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        if let Err(error) = listener.set_nonblocking(false) {
+            eprintln!(
+                "skipping adapter HTTP integration test: failed to set blocking mode: {}",
+                error
+            );
+            return None;
+        }
+        let addr = match listener.local_addr() {
+            Ok(addr) => addr,
+            Err(error) => {
+                eprintln!(
+                    "skipping adapter HTTP integration test: failed to read listener addr: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        let response_body = response_body.to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept adapter client");
+            stream
+                .set_read_timeout(Some(StdDuration::from_secs(5)))
+                .expect("set read timeout");
+            let mut buffer = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            let mut header_end = None;
+            while header_end.is_none() {
+                let read = stream.read(&mut chunk).expect("read request headers");
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                header_end = find_header_end(&buffer).map(|offset| offset + 4);
+            }
+
+            let header_end = header_end.expect("request headers must be present");
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+            let mut lines = header_text.split("\r\n");
+            let request_line = lines.next().unwrap_or_default().to_string();
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let mut headers = HashMap::new();
+            let mut content_length = 0usize;
+            for line in lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    let key = name.trim().to_ascii_lowercase();
+                    let value = value.trim().to_string();
+                    if key == "content-length" {
+                        content_length = value.parse::<usize>().unwrap_or(0);
+                    }
+                    headers.insert(key, value);
+                }
+            }
+
+            while buffer.len() < header_end.saturating_add(content_length) {
+                let read = stream.read(&mut chunk).expect("read request body");
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            let body_end = header_end
+                .saturating_add(content_length)
+                .min(buffer.len())
+                .max(header_end);
+            let body = String::from_utf8_lossy(&buffer[header_end..body_end]).to_string();
+
+            let reason = if status == 200 { "OK" } else { "ERR" };
+            let response = format!(
+                "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                status,
+                reason,
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write adapter response");
+            stream.flush().expect("flush adapter response");
+
+            CapturedHttpRequest {
+                path,
+                headers,
+                body,
+            }
+        });
+        Some((format!("http://{}/submit", addr), handle))
+    }
+
+    fn parse_response(
+        body: &Value,
+        expected_route: &str,
+        expected_client_order_id: &str,
+    ) -> std::result::Result<SubmitResult, SubmitError> {
+        parse_adapter_submit_response(
+            body,
+            expected_route,
+            expected_client_order_id,
+            "v1",
+            false,
+            50.0,
+            0,
+            300_000,
+            1_000,
+        )
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_parses_success_payload() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "submitted_at": "2026-02-19T12:34:56Z",
+            "client_order_id": "cid-1",
+            "request_id": "cid-1"
+        });
+        let result = parse_response(&body, "rpc", "cid-1").expect("success payload");
+        assert_eq!(result.tx_signature, "5ig1ature");
+        assert_eq!(result.route, "rpc");
+        assert_eq!(
+            result.submitted_at.to_rfc3339(),
+            "2026-02-19T12:34:56+00:00"
+        );
+        assert_eq!(result.applied_tip_lamports, 0);
+        assert_eq!(result.ata_create_rent_lamports, None);
+        assert_eq!(result.network_fee_lamports_hint, None);
+        assert_eq!(result.base_fee_lamports_hint, None);
+        assert_eq!(result.priority_fee_lamports_hint, None);
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_parses_ata_rent_lamports() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "tip_lamports": 777,
+            "ata_create_rent_lamports": 2_039_280
+        });
+        let result = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 777, 300_000, 1_000,
+        )
+        .expect("success payload");
+        assert_eq!(result.applied_tip_lamports, 777);
+        assert_eq!(result.ata_create_rent_lamports, Some(2_039_280));
+        assert_eq!(result.network_fee_lamports_hint, None);
+        assert_eq!(result.base_fee_lamports_hint, None);
+        assert_eq!(result.priority_fee_lamports_hint, None);
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_ata_rent_above_i64_max() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "tip_lamports": 777,
+            "ata_create_rent_lamports": (i64::MAX as u64).saturating_add(1)
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 777, 300_000, 1_000,
+        )
+        .expect_err("ata rent above i64 max must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_parses_fee_hints_and_derives_network_fee() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "tip_lamports": 777,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "ata_create_rent_lamports": 2_039_280
+        });
+        let result = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 777, 300_000, 1_000,
+        )
+        .expect("success payload");
+        assert_eq!(result.applied_tip_lamports, 777);
+        assert_eq!(result.ata_create_rent_lamports, Some(2_039_280));
+        assert_eq!(result.network_fee_lamports_hint, Some(17_000));
+        assert_eq!(result.base_fee_lamports_hint, Some(5_000));
+        assert_eq!(result.priority_fee_lamports_hint, Some(12_000));
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_network_fee_hint_above_i64_max() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "network_fee_lamports": (i64::MAX as u64).saturating_add(1)
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("network fee hint above i64 max must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_negative_fee_hint() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "network_fee_lamports": -1
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("negative fee hint must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_non_numeric_fee_hint() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "base_fee_lamports": "5000"
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("non-numeric fee hint must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_missing_fee_breakdown_in_strict_mode() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("strict mode must require fee breakdown echo");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+        assert!(
+            error.detail.contains("base_fee_lamports"),
+            "unexpected detail: {}",
+            error.detail
+        );
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_accepts_fee_breakdown_in_strict_mode() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            },
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000
+        });
+        let result = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect("strict mode should accept valid fee breakdown echo");
+        assert_eq!(result.network_fee_lamports_hint, Some(17_000));
+        assert_eq!(result.base_fee_lamports_hint, Some(5_000));
+        assert_eq!(result.priority_fee_lamports_hint, Some(12_000));
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_missing_network_fee_hint_in_strict_mode() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            },
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("strict mode must require network_fee_lamports echo");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+        assert!(
+            error.detail.contains("network_fee_lamports"),
+            "unexpected detail: {}",
+            error.detail
+        );
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_network_fee_mismatch_with_base_priority() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "network_fee_lamports": 1000,
+            "base_fee_lamports": 600,
+            "priority_fee_lamports": 500
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", false, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("mismatched network/base+priority must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_returns_retryable_on_retryable_reject() {
+        let body = json!({
+            "status": "reject",
+            "retryable": true,
+            "code": "adapter_busy",
+            "detail": "backpressure"
+        });
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("reject payload expected");
+        assert_eq!(error.kind, SubmitErrorKind::Retryable);
+        assert_eq!(error.code, "adapter_busy");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_returns_terminal_on_terminal_reject() {
+        let body = json!({
+            "ok": false,
+            "retryable": false,
+            "code": "invalid_route",
+            "detail": "route unsupported"
+        });
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("reject payload expected");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "invalid_route");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_route_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc"
+        });
+        let error = parse_response(&body, "jito", "cid-1").expect_err("route mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_route_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_missing_route_echo() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature"
+        });
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("missing route must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_unknown_status_even_with_ok_true() {
+        let body = json!({
+            "status": "pending",
+            "ok": true,
+            "tx_signature": "5ig1ature",
+            "route": "rpc"
+        });
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("unknown status must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_status");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_unknown_status_even_with_accepted_true() {
+        let body = json!({
+            "status": "pending",
+            "accepted": true,
+            "tx_signature": "5ig1ature",
+            "route": "rpc"
+        });
+        let error = parse_response(&body, "rpc", "cid-1").expect_err("unknown status must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_status");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_invalid_submitted_at_timestamp() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "submitted_at": "not-a-timestamp"
+        });
+        let error =
+            parse_response(&body, "rpc", "cid-1").expect_err("invalid submitted_at must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_invalid_response");
+        assert!(error.detail.contains("submitted_at"));
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_client_order_id_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "client_order_id": "cid-2"
+        });
+        let error =
+            parse_response(&body, "rpc", "cid-1").expect_err("client_order_id mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_client_order_id_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_missing_required_policy_echo() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc"
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("missing policy echo must fail in strict mode");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_contract_version_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v2",
+            "slippage_bps": 50.0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("contract version mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_contract_version_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_compute_budget_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 310000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect_err("compute budget mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_mismatch");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_accepts_small_slippage_rounding_delta() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0000004,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            },
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000
+        });
+        let result = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 0, 300_000, 1_000,
+        )
+        .expect("small floating point noise in slippage_bps should be tolerated");
+        assert_eq!(result.route, "rpc");
+    }
+
+    #[test]
+    fn parse_adapter_submit_response_rejects_tip_mismatch() {
+        let body = json!({
+            "status": "ok",
+            "tx_signature": "5ig1ature",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 50.0,
+            "tip_lamports": 1000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let error = parse_adapter_submit_response(
+            &body, "rpc", "cid-1", "v1", true, 50.0, 500, 300_000, 1_000,
+        )
+        .expect_err("tip mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_mismatch");
+    }
+
+    #[test]
+    fn compute_hmac_signature_hex_matches_known_vector() {
+        let signature =
+            compute_hmac_signature_hex(b"key", b"The quick brown fox jumps over the lazy dog")
+                .expect("signature should be generated");
+        assert_eq!(
+            signature,
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_blocks_disallowed_route_before_network_call() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let error = submitter
+            .submit(&make_intent(), "cid-1", "paper")
+            .expect_err("route should be rejected");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "route_not_allowed");
+    }
+
+    #[test]
+    fn adapter_submitter_requires_complete_hmac_auth_config() {
+        let missing_secret = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "key-1",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(missing_secret.is_none());
+
+        let missing_key = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "secret",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(missing_key.is_none());
+
+        let invalid_ttl = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "key-1",
+            "secret",
+            4,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(invalid_ttl.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_requires_route_slippage_cap_for_allowed_route() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("paper", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_requires_compute_budget_policy_for_allowed_route() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("paper", 300_000),
+            &make_route_cu_prices("paper", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_requires_tip_policy_for_allowed_route() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("paper", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_rejects_tip_above_guardrail() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", EXECUTION_ROUTE_TIP_LAMPORTS_MAX.saturating_add(1)),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_requires_non_empty_contract_version() {
+        let submitter = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+
+        let invalid_token = AdapterOrderSubmitter::new(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1 beta",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            1_000,
+            50.0,
+        );
+        assert!(invalid_token.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_posts_route_tip_and_budget_policy() {
+        let response = json!({
+            "status": "ok",
+            "tx_signature": "sig-123",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((endpoint, handle)) = spawn_one_shot_adapter(200, response) else {
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new(
+            &endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-integration-1", "rpc")
+            .expect("submit call should succeed");
+        assert_eq!(result.route, "rpc");
+        assert_eq!(result.tx_signature, "sig-123");
+
+        let captured = handle.join().expect("join adapter server thread");
+        assert_eq!(captured.path, "/submit");
+        assert_eq!(
+            captured
+                .headers
+                .get("content-type")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            "application/json"
+        );
+        let payload: Value = serde_json::from_str(&captured.body).expect("parse captured payload");
+        assert_eq!(
+            payload
+                .get("route")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "rpc"
+        );
+        assert_eq!(
+            payload
+                .get("tip_lamports")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            777
+        );
+        assert_eq!(
+            payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_limit"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            300_000
+        );
+        assert_eq!(
+            payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            1_500
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_rejects_missing_tip_echo_in_strict_mode() {
+        let response = json!({
+            "status": "ok",
+            "tx_signature": "sig-123",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((endpoint, handle)) = spawn_one_shot_adapter(200, response) else {
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new(
+            &endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let error = submitter
+            .submit(&make_intent(), "cid-integration-2", "rpc")
+            .expect_err("missing tip echo should fail in strict mode");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_echo_missing");
+        let _ = handle.join().expect("join adapter server thread");
+    }
+
+    #[test]
+    fn adapter_submitter_hmac_signature_matches_raw_http_body() {
+        let response = json!({
+            "status": "ok",
+            "tx_signature": "sig-123",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((endpoint, handle)) = spawn_one_shot_adapter(200, response) else {
+            return;
+        };
+        let hmac_secret = "super-secret";
+        let submitter = AdapterOrderSubmitter::new(
+            &endpoint,
+            "",
+            "",
+            "key-123",
+            hmac_secret,
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        submitter
+            .submit(&make_intent(), "cid-integration-3", "rpc")
+            .expect("submit call should succeed");
+
+        let captured = handle.join().expect("join adapter server thread");
+        let headers = &captured.headers;
+        let key_id = headers
+            .get("x-copybot-key-id")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let timestamp = headers
+            .get("x-copybot-timestamp")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let ttl = headers
+            .get("x-copybot-auth-ttl-sec")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let nonce = headers
+            .get("x-copybot-nonce")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let signature = headers
+            .get("x-copybot-signature")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let alg = headers
+            .get("x-copybot-signature-alg")
+            .map(String::as_str)
+            .unwrap_or_default();
+
+        assert_eq!(key_id, "key-123");
+        assert_eq!(ttl, "30");
+        assert_eq!(alg, "hmac-sha256-v1");
+        assert!(!timestamp.is_empty(), "timestamp header must be present");
+        assert!(!nonce.is_empty(), "nonce header must be present");
+        assert!(!signature.is_empty(), "signature header must be present");
+
+        let signed_payload = format!("{}\n{}\n{}\n{}", timestamp, ttl, nonce, captured.body);
+        let expected_signature =
+            compute_hmac_signature_hex(hmac_secret.as_bytes(), signed_payload.as_bytes())
+                .expect("compute expected signature");
+        assert_eq!(signature, expected_signature);
+    }
+}
