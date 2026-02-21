@@ -587,6 +587,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 63. optional dynamic submit CU-price policy added for adapter mode: runtime can now raise route `compute_budget.cu_price_micro_lamports` using RPC `getRecentPrioritizationFees` percentile hints (`execution.submit_dynamic_cu_price_enabled`, `execution.submit_dynamic_cu_price_percentile`), bounded fail-closed by `execution.pretrade_max_priority_fee_lamports`; default remains disabled and falls back to static per-route CU policy when hints are unavailable.
 64. dynamic CU-price hinting timeout isolation added: fee-hint RPC polling now uses a dedicated short-timeout client (capped independently from submit timeout) so degraded priority-fee endpoints cannot consume the full submit request budget before adapter submit.
 65. dynamic CU-price hint phase now has a strict total timeout budget across primary+fallback RPC endpoints (not per-endpoint additive), preventing sequential endpoint probing from extending submit latency beyond the dedicated hint window.
+66. dynamic CU-price timeout behavior is now covered by integration test (`slow primary + optional fast fallback`) that verifies wall-clock budget enforcement and static-policy fallback when hint budget is exhausted before secondary endpoint polling.
 
 Остается в next-code-queue:
 

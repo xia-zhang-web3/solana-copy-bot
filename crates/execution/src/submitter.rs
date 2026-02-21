@@ -798,10 +798,11 @@ mod tests {
     use chrono::Utc;
     use std::collections::BTreeMap;
     use std::collections::HashMap;
+    use std::io::ErrorKind;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
-    use std::time::Duration as StdDuration;
+    use std::time::{Duration as StdDuration, Instant};
 
     fn make_intent() -> ExecutionIntent {
         ExecutionIntent {
@@ -948,6 +949,140 @@ mod tests {
             }
         });
         Some((format!("http://{}/submit", addr), handle))
+    }
+
+    fn spawn_probe_server_with_optional_capture(
+        path: &str,
+        status: u16,
+        response_body: Value,
+        response_delay_ms: u64,
+        accept_timeout_ms: u64,
+    ) -> Option<(String, thread::JoinHandle<Option<CapturedHttpRequest>>)> {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!(
+                    "skipping probe server test: failed to bind 127.0.0.1:0: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        if let Err(error) = listener.set_nonblocking(true) {
+            eprintln!(
+                "skipping probe server test: failed to set nonblocking mode: {}",
+                error
+            );
+            return None;
+        }
+        let addr = match listener.local_addr() {
+            Ok(addr) => addr,
+            Err(error) => {
+                eprintln!(
+                    "skipping probe server test: failed to read listener addr: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        let endpoint = format!("http://{}/{}", addr, path.trim_start_matches('/'));
+        let response_body = response_body.to_string();
+        let handle = thread::spawn(move || -> Option<CapturedHttpRequest> {
+            let deadline = Instant::now() + StdDuration::from_millis(accept_timeout_ms.max(100));
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return None;
+                        }
+                        thread::sleep(StdDuration::from_millis(5));
+                    }
+                    Err(_) => return None,
+                }
+            };
+
+            if stream
+                .set_read_timeout(Some(StdDuration::from_secs(5)))
+                .is_err()
+            {
+                return None;
+            }
+            let mut buffer = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            let mut header_end = None;
+            while header_end.is_none() {
+                let read = match stream.read(&mut chunk) {
+                    Ok(value) => value,
+                    Err(_) => return None,
+                };
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                header_end = find_header_end(&buffer).map(|offset| offset + 4);
+            }
+            let header_end = header_end?;
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+            let mut lines = header_text.split("\r\n");
+            let request_line = lines.next().unwrap_or_default().to_string();
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let mut headers = HashMap::new();
+            let mut content_length = 0usize;
+            for line in lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    let key = name.trim().to_ascii_lowercase();
+                    let value = value.trim().to_string();
+                    if key == "content-length" {
+                        content_length = value.parse::<usize>().unwrap_or(0);
+                    }
+                    headers.insert(key, value);
+                }
+            }
+            while buffer.len() < header_end.saturating_add(content_length) {
+                let read = match stream.read(&mut chunk) {
+                    Ok(value) => value,
+                    Err(_) => break,
+                };
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            let body_end = header_end
+                .saturating_add(content_length)
+                .min(buffer.len())
+                .max(header_end);
+            let body = String::from_utf8_lossy(&buffer[header_end..body_end]).to_string();
+
+            if response_delay_ms > 0 {
+                thread::sleep(StdDuration::from_millis(response_delay_ms));
+            }
+            let reason = if status == 200 { "OK" } else { "ERR" };
+            let response = format!(
+                "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                status,
+                reason,
+                response_body.len(),
+                response_body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+
+            Some(CapturedHttpRequest {
+                path,
+                headers,
+                body,
+            })
+        });
+        Some((endpoint, handle))
     }
 
     fn parse_response(
@@ -2114,6 +2249,109 @@ mod tests {
         submitter
             .submit(&make_intent(), "cid-dynamic-2", "rpc")
             .expect("submit call should succeed with static fallback");
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            1_500
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_total_timeout_budget_prevents_additive_endpoint_delay() {
+        let slow_rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [{ "prioritizationFee": 3000 }]
+        });
+        let Some((slow_rpc_endpoint, slow_rpc_handle)) =
+            spawn_probe_server_with_optional_capture("rpc", 200, slow_rpc_response, 1_500, 2_500)
+        else {
+            return;
+        };
+        let fast_rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [{ "prioritizationFee": 4500 }]
+        });
+        let Some((fast_rpc_endpoint, fast_rpc_handle)) =
+            spawn_probe_server_with_optional_capture("rpc", 200, fast_rpc_response, 0, 1_500)
+        else {
+            let _ = slow_rpc_handle.join();
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-budget",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = slow_rpc_handle.join();
+            let _ = fast_rpc_handle.join();
+            return;
+        };
+
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &slow_rpc_endpoint,
+            &fast_rpc_endpoint,
+            true,
+            90,
+            3_500,
+            3_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+
+        let started = Instant::now();
+        submitter
+            .submit(&make_intent(), "cid-dynamic-budget", "rpc")
+            .expect("submit should succeed with static fallback after hint timeout budget");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < StdDuration::from_millis(1_500),
+            "hint phase should be capped by total timeout budget, got elapsed={:?}",
+            elapsed
+        );
+
+        let slow_rpc_captured = slow_rpc_handle.join().expect("join slow rpc server");
+        assert!(
+            slow_rpc_captured.is_some(),
+            "primary hint endpoint should be attempted"
+        );
+        let fast_rpc_captured = fast_rpc_handle.join().expect("join fast rpc server");
+        assert!(
+            fast_rpc_captured.is_none(),
+            "fallback hint endpoint should not be attempted after budget exhaustion"
+        );
 
         let adapter_captured = adapter_handle.join().expect("join adapter server thread");
         let adapter_payload: Value =
