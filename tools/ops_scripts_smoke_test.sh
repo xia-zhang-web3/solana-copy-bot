@@ -967,6 +967,70 @@ run_go_nogo_dynamic_hint_source_gate_case() {
   echo "[ok] go-no-go dynamic hint source gate"
 }
 
+run_windowed_signoff_report_case() {
+  local db_path="$1"
+  local paper_cfg="$2"
+  local adapter_cfg="$3"
+
+  local hold_output=""
+  if hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$paper_cfg" \
+      SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for windowed signoff helper in paper mode" >&2
+    exit 1
+  else
+    local hold_exit_code=$?
+    if [[ "$hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for windowed signoff helper, got $hold_exit_code" >&2
+      echo "$hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$hold_output" "window_24h_fee_decomposition_verdict: SKIP"
+  assert_contains "$hold_output" "window_24h_route_profile_verdict: SKIP"
+  assert_contains "$hold_output" "signoff_verdict: HOLD"
+
+  local artifacts_dir="$TMP_DIR/windowed-signoff-artifacts"
+  local go_output
+  go_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$adapter_cfg" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$artifacts_dir" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60
+  )"
+  assert_contains "$go_output" "window_24h_fee_decomposition_verdict: PASS"
+  assert_contains "$go_output" "window_24h_route_profile_verdict: PASS"
+  assert_contains "$go_output" "signoff_verdict: GO"
+  assert_contains "$go_output" "artifact_summary:"
+  assert_contains "$go_output" "artifact_manifest:"
+  assert_contains "$go_output" "window_24h_capture_path:"
+  assert_contains "$go_output" "window_24h_capture_sha256:"
+  assert_sha256_field "$go_output" "summary_sha256"
+  assert_sha256_field "$go_output" "window_24h_capture_sha256"
+  if ! ls "$artifacts_dir"/execution_windowed_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected windowed signoff summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_windowed_signoff_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected windowed signoff manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_24h/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
+    echo "expected captured go/no-go artifact for 24h window in $artifacts_dir/window_24h" >&2
+    exit 1
+  fi
+  echo "[ok] execution windowed signoff helper"
+}
+
 run_go_nogo_preflight_fail_case() {
   local db_path="$1"
   local fail_cfg="$TMP_DIR/go-nogo-preflight-fail.toml"
@@ -1626,11 +1690,12 @@ main() {
   run_go_nogo_artifact_export_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_unknown_precedence_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_dynamic_hint_source_gate_case "$legacy_db" "$legacy_cfg"
+  local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
+  write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
+  run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case
   run_go_nogo_preflight_fail_case "$legacy_db"
-  local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
-  write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
   run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
 
