@@ -76,6 +76,17 @@ parse_rejected_total="$(extract_field "parse_rejected_total" "$snapshot_output")
 parse_rejected_by_reason="$(extract_field "parse_rejected_by_reason" "$snapshot_output")"
 parse_fallback_by_reason="$(extract_field "parse_fallback_by_reason" "$snapshot_output")"
 replaced_ratio_last_interval="$(extract_field "replaced_ratio_last_interval" "$snapshot_output")"
+execution_batch_sample_available="$(extract_field "execution_batch_sample_available" "$snapshot_output")"
+submit_attempted_by_route="$(extract_field "submit_attempted_by_route" "$snapshot_output")"
+submit_retry_scheduled_by_route="$(extract_field "submit_retry_scheduled_by_route" "$snapshot_output")"
+submit_failed_by_route="$(extract_field "submit_failed_by_route" "$snapshot_output")"
+submit_dynamic_cu_policy_enabled_by_route="$(extract_field "submit_dynamic_cu_policy_enabled_by_route" "$snapshot_output")"
+submit_dynamic_cu_hint_used_by_route="$(extract_field "submit_dynamic_cu_hint_used_by_route" "$snapshot_output")"
+submit_dynamic_cu_price_applied_by_route="$(extract_field "submit_dynamic_cu_price_applied_by_route" "$snapshot_output")"
+submit_dynamic_cu_static_fallback_by_route="$(extract_field "submit_dynamic_cu_static_fallback_by_route" "$snapshot_output")"
+submit_dynamic_tip_policy_enabled_by_route="$(extract_field "submit_dynamic_tip_policy_enabled_by_route" "$snapshot_output")"
+submit_dynamic_tip_applied_by_route="$(extract_field "submit_dynamic_tip_applied_by_route" "$snapshot_output")"
+submit_dynamic_tip_static_floor_by_route="$(extract_field "submit_dynamic_tip_static_floor_by_route" "$snapshot_output")"
 
 # Test-only overrides for smoke validation of verdict precedence branches.
 go_nogo_test_mode="$(normalize_bool_token "${GO_NOGO_TEST_MODE:-false}")"
@@ -140,6 +151,17 @@ parse_rejected_total: ${parse_rejected_total:-n/a}
 parse_rejected_by_reason: ${parse_rejected_by_reason:-{}}
 parse_fallback_by_reason: ${parse_fallback_by_reason:-{}}
 replaced_ratio_last_interval: ${replaced_ratio_last_interval:-n/a}
+execution_batch_sample_available: ${execution_batch_sample_available:-false}
+submit_attempted_by_route: ${submit_attempted_by_route:-{}}
+submit_retry_scheduled_by_route: ${submit_retry_scheduled_by_route:-{}}
+submit_failed_by_route: ${submit_failed_by_route:-{}}
+submit_dynamic_cu_policy_enabled_by_route: ${submit_dynamic_cu_policy_enabled_by_route:-{}}
+submit_dynamic_cu_hint_used_by_route: ${submit_dynamic_cu_hint_used_by_route:-{}}
+submit_dynamic_cu_price_applied_by_route: ${submit_dynamic_cu_price_applied_by_route:-{}}
+submit_dynamic_cu_static_fallback_by_route: ${submit_dynamic_cu_static_fallback_by_route:-{}}
+submit_dynamic_tip_policy_enabled_by_route: ${submit_dynamic_tip_policy_enabled_by_route:-{}}
+submit_dynamic_tip_applied_by_route: ${submit_dynamic_tip_applied_by_route:-{}}
+submit_dynamic_tip_static_floor_by_route: ${submit_dynamic_tip_static_floor_by_route:-{}}
 
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: $overall_go_nogo_reason

@@ -592,6 +592,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 68. execution batch telemetry extended for dynamic submit policies: runtime now emits per-route counters for dynamic CU policy enablement/hint usage/applied-vs-static-fallback and dynamic tip policy enablement/applied-vs-static-floor, allowing rollout evidence to distinguish true dynamic-path usage from static fallback behavior.
 69. dynamic submit-policy telemetry now covers failed/retryable submit attempts too: adapter submit errors preserve dynamic policy flags (`enabled/hint_used/applied`) and execution pipeline records the same per-route dynamic counters on both success and error paths, eliminating observability blind spots during degraded submit windows.
 70. ops runtime snapshot helper now surfaces latest execution batch counters from journal logs (including dynamic submit-policy route maps), and smoke coverage validates presence/absence branches to keep go/no-go evidence observable during adapter-mode rollout.
+71. go/no-go summary now explicitly carries execution submit dynamic-policy evidence from runtime snapshot (`execution_batch_sample_available` and per-route submit/dynamic maps), so rollout packets can be reviewed from a single `tools/execution_go_nogo_report.sh` artifact without cross-reading raw snapshot output.
 
 Остается в next-code-queue:
 

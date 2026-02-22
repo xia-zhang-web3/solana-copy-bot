@@ -736,6 +736,10 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "fee_decomposition_verdict: SKIP"
   assert_contains "$go_nogo_output" "route_profile_verdict: SKIP"
   assert_contains "$go_nogo_output" "preflight_verdict: SKIP"
+  assert_contains "$go_nogo_output" "execution_batch_sample_available: true"
+  assert_contains "$go_nogo_output" "submit_attempted_by_route: {\"rpc\": 3}"
+  assert_contains "$go_nogo_output" "submit_dynamic_cu_policy_enabled_by_route: {\"rpc\": 2}"
+  assert_contains "$go_nogo_output" "submit_dynamic_tip_static_floor_by_route: {\"rpc\": 1}"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
 
   echo "[ok] ${label}"
