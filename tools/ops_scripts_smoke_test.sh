@@ -1284,6 +1284,8 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "artifact_tests:"
   assert_contains "$output" "artifact_manifest:"
   assert_contains "$output" "summary_sha256:"
+  assert_contains "$output" "go_nogo_artifact_manifest:"
+  assert_contains "$output" "go_nogo_summary_sha256:"
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_summary_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1357,6 +1359,8 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "artifact_summary:"
   assert_contains "$pass_output" "artifact_manifest:"
   assert_contains "$pass_output" "summary_sha256:"
+  assert_contains "$pass_output" "go_nogo_artifact_manifest:"
+  assert_contains "$pass_output" "go_nogo_summary_sha256:"
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
     echo "expected adapter rollout summary artifact in $artifacts_dir" >&2
     exit 1

@@ -601,6 +601,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 77. go/no-go artifact export now emits deterministic SHA-256 checksums (`calibration/snapshot/preflight/summary`) and writes a manifest file (`execution_go_nogo_manifest_*.txt`) alongside raw captures, improving evidence-chain verification during Stage C.5 and rollout audits.
 78. devnet rehearsal and rollout orchestrators now emit checksum manifests too (`execution_devnet_rehearsal_manifest_*.txt`, `adapter_rollout_evidence_manifest_*.txt`) with SHA-256 hashes for their captured artifacts, aligning all Stage C.5 rollout evidence tools to the same integrity contract.
 79. adapter secret rotation helper now emits a checksum manifest (`adapter_secret_rotation_manifest_*.txt`) with report SHA-256 when `OUTPUT_DIR` is set, completing checksum-chain parity across rotation/rehearsal/rollout evidence helpers.
+80. rehearsal/rollout summaries now propagate nested go/no-go manifest/hash metadata (`go_nogo_artifact_manifest`, `go_nogo_*_sha256`) so checksum-chain tracing can be audited directly from top-level orchestrator outputs.
 
 Остается в next-code-queue:
 

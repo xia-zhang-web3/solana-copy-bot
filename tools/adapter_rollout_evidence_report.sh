@@ -105,6 +105,11 @@ fee_consistency_missing_coverage_rows=""
 fee_consistency_mismatch_rows=""
 fallback_used_events=""
 hint_mismatch_events=""
+go_nogo_artifact_manifest=""
+go_nogo_calibration_sha256=""
+go_nogo_snapshot_sha256=""
+go_nogo_preflight_sha256=""
+go_nogo_summary_sha256=""
 tests_run=""
 tests_failed=""
 if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
@@ -155,6 +160,11 @@ else
   fee_consistency_mismatch_rows="$(trim_string "$(extract_field "fee_consistency_mismatch_rows" "$rehearsal_output")")"
   fallback_used_events="$(trim_string "$(extract_field "fallback_used_events" "$rehearsal_output")")"
   hint_mismatch_events="$(trim_string "$(extract_field "hint_mismatch_events" "$rehearsal_output")")"
+  go_nogo_artifact_manifest="$(trim_string "$(extract_field "go_nogo_artifact_manifest" "$rehearsal_output")")"
+  go_nogo_calibration_sha256="$(trim_string "$(extract_field "go_nogo_calibration_sha256" "$rehearsal_output")")"
+  go_nogo_snapshot_sha256="$(trim_string "$(extract_field "go_nogo_snapshot_sha256" "$rehearsal_output")")"
+  go_nogo_preflight_sha256="$(trim_string "$(extract_field "go_nogo_preflight_sha256" "$rehearsal_output")")"
+  go_nogo_summary_sha256="$(trim_string "$(extract_field "go_nogo_summary_sha256" "$rehearsal_output")")"
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
   if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
@@ -228,6 +238,11 @@ fee_consistency_missing_coverage_rows: ${fee_consistency_missing_coverage_rows:-
 fee_consistency_mismatch_rows: ${fee_consistency_mismatch_rows:-n/a}
 fallback_used_events: ${fallback_used_events:-n/a}
 hint_mismatch_events: ${hint_mismatch_events:-n/a}
+go_nogo_artifact_manifest: ${go_nogo_artifact_manifest:-n/a}
+go_nogo_calibration_sha256: ${go_nogo_calibration_sha256:-n/a}
+go_nogo_snapshot_sha256: ${go_nogo_snapshot_sha256:-n/a}
+go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
+go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
 tests_run: ${tests_run:-unknown}
 tests_failed: ${tests_failed:-unknown}
 input_error_count: ${#input_errors[@]}

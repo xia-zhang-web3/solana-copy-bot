@@ -223,6 +223,11 @@ fee_consistency_missing_coverage_rows="$(trim_string "$(extract_field "fee_consi
 fee_consistency_mismatch_rows="$(trim_string "$(extract_field "fee_consistency_mismatch_rows" "$go_nogo_output")")"
 fallback_used_events="$(trim_string "$(extract_field "fallback_used_events" "$go_nogo_output")")"
 hint_mismatch_events="$(trim_string "$(extract_field "hint_mismatch_events" "$go_nogo_output")")"
+go_nogo_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$go_nogo_output")")"
+go_nogo_calibration_sha256="$(trim_string "$(extract_field "calibration_sha256" "$go_nogo_output")")"
+go_nogo_snapshot_sha256="$(trim_string "$(extract_field "snapshot_sha256" "$go_nogo_output")")"
+go_nogo_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$go_nogo_output")")"
+go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
 if [[ "$overall_go_nogo_verdict" == "UNKNOWN" && "$go_nogo_exit_code" -ne 0 && -z "$overall_go_nogo_reason" ]]; then
   overall_go_nogo_reason="execution_go_nogo_report exited with code $go_nogo_exit_code"
 fi
@@ -327,6 +332,11 @@ fee_consistency_missing_coverage_rows: ${fee_consistency_missing_coverage_rows:-
 fee_consistency_mismatch_rows: ${fee_consistency_mismatch_rows:-n/a}
 fallback_used_events: ${fallback_used_events:-n/a}
 hint_mismatch_events: ${hint_mismatch_events:-n/a}
+go_nogo_artifact_manifest: ${go_nogo_artifact_manifest:-n/a}
+go_nogo_calibration_sha256: ${go_nogo_calibration_sha256:-n/a}
+go_nogo_snapshot_sha256: ${go_nogo_snapshot_sha256:-n/a}
+go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
+go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
 tests_run: $tests_run
 tests_total: $tests_total
 tests_failed: $tests_failed
