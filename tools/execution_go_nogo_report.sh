@@ -331,6 +331,11 @@ else
   overall_go_nogo_reason="unrecognized go/no-go gate state; fail-closed"
 fi
 
+artifacts_written="false"
+if [[ -n "$OUTPUT_DIR" ]]; then
+  artifacts_written="true"
+fi
+
 summary_output="$(cat <<EOF
 === Execution Go/No-Go Summary ===
 utc_now: $timestamp_utc
@@ -404,6 +409,7 @@ dynamic_tip_policy_reason: $dynamic_tip_policy_reason
 
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: $overall_go_nogo_reason
+artifacts_written: $artifacts_written
 EOF
 )"
 

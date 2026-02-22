@@ -82,6 +82,7 @@ declare -a window_dynamic_hint_source_reasons=()
 declare -a window_dynamic_tip_policy_config_enabled=()
 declare -a window_dynamic_tip_policy_verdicts=()
 declare -a window_dynamic_tip_policy_reasons=()
+declare -a window_go_nogo_artifacts_written=()
 declare -a window_go_nogo_artifact_manifests=()
 declare -a window_go_nogo_calibration_sha256=()
 declare -a window_go_nogo_snapshot_sha256=()
@@ -153,6 +154,7 @@ if ((${#input_errors[@]} == 0)); then
     fee_mismatch_rows="$(trim_string "$(extract_field "fee_consistency_mismatch_rows" "$go_nogo_output")")"
     fallback_used_events="$(trim_string "$(extract_field "fallback_used_events" "$go_nogo_output")")"
     hint_mismatch_events="$(trim_string "$(extract_field "hint_mismatch_events" "$go_nogo_output")")"
+    go_nogo_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$go_nogo_output")")"
     go_nogo_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$go_nogo_output")")"
     go_nogo_calibration_sha256="$(trim_string "$(extract_field "calibration_sha256" "$go_nogo_output")")"
     go_nogo_snapshot_sha256="$(trim_string "$(extract_field "snapshot_sha256" "$go_nogo_output")")"
@@ -197,6 +199,7 @@ if ((${#input_errors[@]} == 0)); then
     window_dynamic_tip_policy_config_enabled+=("$dynamic_tip_policy_config_enabled")
     window_dynamic_tip_policy_verdicts+=("$dynamic_tip_policy_verdict")
     window_dynamic_tip_policy_reasons+=("$dynamic_tip_policy_reason")
+    window_go_nogo_artifacts_written+=("$go_nogo_artifacts_written")
     window_go_nogo_artifact_manifests+=("${go_nogo_artifact_manifest:-n/a}")
     window_go_nogo_calibration_sha256+=("${go_nogo_calibration_sha256:-n/a}")
     window_go_nogo_snapshot_sha256+=("${go_nogo_snapshot_sha256:-n/a}")
@@ -285,6 +288,11 @@ if [[ "$fallback_route_seen" == "false" ]]; then
   stable_fallback_route="n/a"
 fi
 
+artifacts_written="false"
+if [[ -n "$OUTPUT_DIR" ]]; then
+  artifacts_written="true"
+fi
+
 signoff_verdict="NO_GO"
 signoff_reason="unrecognized signoff gate state"
 if ((${#input_errors[@]} > 0)); then
@@ -328,6 +336,7 @@ stable_primary_route: $stable_primary_route
 fallback_route_stable: $fallback_route_stable
 stable_fallback_route: $stable_fallback_route
 input_error_count: ${#input_errors[@]}
+artifacts_written: $artifacts_written
 EOF
 )"
 
@@ -350,6 +359,7 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_dynamic_tip_policy_config_enabled: ${window_dynamic_tip_policy_config_enabled[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_dynamic_tip_policy_verdict: ${window_dynamic_tip_policy_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_dynamic_tip_policy_reason: ${window_dynamic_tip_policy_reasons[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_go_nogo_artifacts_written: ${window_go_nogo_artifacts_written[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifact_manifest: ${window_go_nogo_artifact_manifests[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_calibration_sha256: ${window_go_nogo_calibration_sha256[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_snapshot_sha256: ${window_go_nogo_snapshot_sha256[$idx]}"

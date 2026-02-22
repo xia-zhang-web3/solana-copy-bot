@@ -269,12 +269,14 @@ go_nogo_calibration_sha256="$(trim_string "$(extract_field "calibration_sha256" 
 go_nogo_snapshot_sha256="$(trim_string "$(extract_field "snapshot_sha256" "$go_nogo_output")")"
 go_nogo_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$go_nogo_output")")"
 go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
+go_nogo_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$go_nogo_output")")"
 windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$windowed_signoff_output")")"
 windowed_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$windowed_signoff_output")")"
 windowed_signoff_require_dynamic_hint_source_pass="$(normalize_bool_token "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")")"
 windowed_signoff_require_dynamic_tip_policy_pass="$(normalize_bool_token "$(extract_field "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")")"
 windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$windowed_signoff_output")")"
 windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$windowed_signoff_output")")"
+windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$windowed_signoff_output")")"
 if [[ "$overall_go_nogo_verdict" == "UNKNOWN" && "$go_nogo_exit_code" -ne 0 && -z "$overall_go_nogo_reason" ]]; then
   overall_go_nogo_reason="execution_go_nogo_report exited with code $go_nogo_exit_code"
 fi
@@ -364,6 +366,11 @@ elif [[ "$tests_run" != "true" && "$test_mode_norm" == "true" ]]; then
   devnet_rehearsal_reason="test mode override active (RUN_TESTS=false, DEVNET_REHEARSAL_TEST_MODE=true)"
 fi
 
+artifacts_written="false"
+if [[ -n "$OUTPUT_DIR" ]]; then
+  artifacts_written="true"
+fi
+
 summary_output="$(cat <<EOF
 === Execution Devnet Rehearsal ===
 utc_now: $timestamp_utc
@@ -407,6 +414,7 @@ go_nogo_calibration_sha256: ${go_nogo_calibration_sha256:-n/a}
 go_nogo_snapshot_sha256: ${go_nogo_snapshot_sha256:-n/a}
 go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
+go_nogo_artifacts_written: $go_nogo_artifacts_written
 windowed_signoff_required: $windowed_signoff_required_norm
 windowed_signoff_windows_csv: $WINDOWED_SIGNOFF_WINDOWS_CSV
 windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass
@@ -416,11 +424,13 @@ windowed_signoff_verdict: ${windowed_signoff_verdict:-unknown}
 windowed_signoff_reason: ${windowed_signoff_reason:-n/a}
 windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
 windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
+windowed_signoff_artifacts_written: $windowed_signoff_artifacts_written
 tests_run: $tests_run
 tests_total: $tests_total
 tests_failed: $tests_failed
 devnet_rehearsal_verdict: $devnet_rehearsal_verdict
 devnet_rehearsal_reason: $devnet_rehearsal_reason
+artifacts_written: $artifacts_written
 EOF
 )"
 

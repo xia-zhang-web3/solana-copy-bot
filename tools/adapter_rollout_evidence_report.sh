@@ -51,6 +51,7 @@ rotation_reason="rotation helper not executed"
 rotation_artifact_report=""
 rotation_artifact_manifest=""
 rotation_report_sha256=""
+rotation_artifacts_written="false"
 if [[ -f "$ADAPTER_ENV_PATH" ]]; then
   if rotation_output="$(
     ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
@@ -67,6 +68,7 @@ if [[ -f "$ADAPTER_ENV_PATH" ]]; then
   rotation_artifact_report="$(trim_string "$(extract_field "artifact_report" "$rotation_output")")"
   rotation_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rotation_output")")"
   rotation_report_sha256="$(trim_string "$(extract_field "report_sha256" "$rotation_output")")"
+  rotation_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rotation_output")")"
   rotation_first_error="$(printf '%s\n' "$rotation_output" | awk '
     /^--- errors ---$/ {in_errors=1; next}
     /^--- / && in_errors {exit}
@@ -126,13 +128,16 @@ go_nogo_calibration_sha256=""
 go_nogo_snapshot_sha256=""
 go_nogo_preflight_sha256=""
 go_nogo_summary_sha256=""
+go_nogo_artifacts_written="false"
 rehearsal_artifact_manifest=""
 rehearsal_summary_sha256=""
 rehearsal_preflight_sha256=""
 rehearsal_go_nogo_sha256=""
 rehearsal_tests_sha256=""
+rehearsal_artifacts_written="false"
 windowed_signoff_artifact_manifest=""
 windowed_signoff_summary_sha256=""
+windowed_signoff_artifacts_written="false"
 tests_run=""
 tests_failed=""
 if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
@@ -203,13 +208,16 @@ else
   go_nogo_snapshot_sha256="$(trim_string "$(extract_field "go_nogo_snapshot_sha256" "$rehearsal_output")")"
   go_nogo_preflight_sha256="$(trim_string "$(extract_field "go_nogo_preflight_sha256" "$rehearsal_output")")"
   go_nogo_summary_sha256="$(trim_string "$(extract_field "go_nogo_summary_sha256" "$rehearsal_output")")"
+  go_nogo_artifacts_written="$(normalize_bool_token "$(extract_field "go_nogo_artifacts_written" "$rehearsal_output")")"
   rehearsal_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rehearsal_output")")"
   rehearsal_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rehearsal_output")")"
   rehearsal_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$rehearsal_output")")"
   rehearsal_go_nogo_sha256="$(trim_string "$(extract_field "go_nogo_sha256" "$rehearsal_output")")"
   rehearsal_tests_sha256="$(trim_string "$(extract_field "tests_sha256" "$rehearsal_output")")"
+  rehearsal_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rehearsal_output")")"
   windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "windowed_signoff_artifact_manifest" "$rehearsal_output")")"
   windowed_signoff_summary_sha256="$(trim_string "$(extract_field "windowed_signoff_summary_sha256" "$rehearsal_output")")"
+  windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "windowed_signoff_artifacts_written" "$rehearsal_output")")"
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
   if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
@@ -248,6 +256,11 @@ elif [[ "$rotation_verdict" == "PASS" && "$rehearsal_verdict" == "GO" ]]; then
   adapter_rollout_reason="rotation readiness and devnet rehearsal gates passed"
 fi
 
+artifacts_written="false"
+if [[ -n "$OUTPUT_DIR" ]]; then
+  artifacts_written="true"
+fi
+
 summary_output="$(cat <<EOF
 === Adapter Rollout Evidence Summary ===
 utc_now: $timestamp_utc
@@ -263,6 +276,7 @@ rotation_exit_code: $rotation_exit_code
 rotation_artifact_report: ${rotation_artifact_report:-n/a}
 rotation_artifact_manifest: ${rotation_artifact_manifest:-n/a}
 rotation_report_sha256: ${rotation_report_sha256:-n/a}
+rotation_artifacts_written: $rotation_artifacts_written
 
 devnet_rehearsal_verdict: $rehearsal_verdict
 devnet_rehearsal_reason: ${rehearsal_reason:-n/a}
@@ -302,19 +316,23 @@ go_nogo_calibration_sha256: ${go_nogo_calibration_sha256:-n/a}
 go_nogo_snapshot_sha256: ${go_nogo_snapshot_sha256:-n/a}
 go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
+go_nogo_artifacts_written: $go_nogo_artifacts_written
 rehearsal_artifact_manifest: ${rehearsal_artifact_manifest:-n/a}
 rehearsal_summary_sha256: ${rehearsal_summary_sha256:-n/a}
 rehearsal_preflight_sha256: ${rehearsal_preflight_sha256:-n/a}
 rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
 rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
+rehearsal_artifacts_written: $rehearsal_artifacts_written
 windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
 windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
+windowed_signoff_artifacts_written: $windowed_signoff_artifacts_written
 tests_run: ${tests_run:-unknown}
 tests_failed: ${tests_failed:-unknown}
 input_error_count: ${#input_errors[@]}
 
 adapter_rollout_verdict: $adapter_rollout_verdict
 adapter_rollout_reason: $adapter_rollout_reason
+artifacts_written: $artifacts_written
 EOF
 )"
 
