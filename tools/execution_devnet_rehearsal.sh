@@ -14,6 +14,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-}"
 RUN_TESTS="${RUN_TESTS:-true}"
 # Test-only override: when true, allows GO with RUN_TESTS=false.
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
+WINDOWED_SIGNOFF_WINDOWS_CSV="${WINDOWED_SIGNOFF_WINDOWS_CSV:-1,6,24}"
+WINDOWED_SIGNOFF_REQUIRED="${WINDOWED_SIGNOFF_REQUIRED:-false}"
 
 if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
   echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
@@ -135,6 +137,7 @@ timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
 run_tests_norm="$(normalize_bool_token "$RUN_TESTS")"
 test_mode_norm="$(normalize_bool_token "$DEVNET_REHEARSAL_TEST_MODE")"
+windowed_signoff_required_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRED")"
 
 execution_enabled_raw="$(cfg_or_env_string execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED)"
 execution_enabled="$(normalize_bool_token "${execution_enabled_raw:-false}")"
@@ -204,6 +207,33 @@ if [[ -n "$go_nogo_output_dir" ]]; then
   printf '%s\n' "$go_nogo_output" > "$go_nogo_nested_capture_path"
 fi
 
+windowed_signoff_output_dir=""
+if [[ -n "$OUTPUT_DIR" ]]; then
+  windowed_signoff_output_dir="$OUTPUT_DIR/windowed_signoff"
+  mkdir -p "$windowed_signoff_output_dir"
+fi
+
+windowed_signoff_output=""
+windowed_signoff_exit_code=0
+if windowed_signoff_output="$(
+  CONFIG_PATH="$CONFIG_PATH" \
+  SERVICE="$SERVICE" \
+  GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
+  GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
+  GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+  OUTPUT_DIR="$windowed_signoff_output_dir" \
+  bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" "$WINDOWED_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+)"; then
+  windowed_signoff_exit_code=0
+else
+  windowed_signoff_exit_code=$?
+fi
+windowed_signoff_nested_capture_path=""
+if [[ -n "$windowed_signoff_output_dir" ]]; then
+  windowed_signoff_nested_capture_path="$windowed_signoff_output_dir/execution_windowed_signoff_captured_${timestamp_compact}.txt"
+  printf '%s\n' "$windowed_signoff_output" > "$windowed_signoff_nested_capture_path"
+fi
+
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
 overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
 dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_policy_verdict" "$go_nogo_output")")"
@@ -233,8 +263,15 @@ go_nogo_calibration_sha256="$(trim_string "$(extract_field "calibration_sha256" 
 go_nogo_snapshot_sha256="$(trim_string "$(extract_field "snapshot_sha256" "$go_nogo_output")")"
 go_nogo_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$go_nogo_output")")"
 go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
+windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$windowed_signoff_output")")"
+windowed_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$windowed_signoff_output")")"
+windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$windowed_signoff_output")")"
+windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$windowed_signoff_output")")"
 if [[ "$overall_go_nogo_verdict" == "UNKNOWN" && "$go_nogo_exit_code" -ne 0 && -z "$overall_go_nogo_reason" ]]; then
   overall_go_nogo_reason="execution_go_nogo_report exited with code $go_nogo_exit_code"
+fi
+if [[ "$windowed_signoff_verdict" == "UNKNOWN" && "$windowed_signoff_exit_code" -ne 0 && -z "$windowed_signoff_reason" ]]; then
+  windowed_signoff_reason="execution_windowed_signoff_report exited with code $windowed_signoff_exit_code"
 fi
 if [[ -z "$dynamic_cu_policy_reason" ]]; then
   dynamic_cu_policy_reason="n/a"
@@ -244,6 +281,9 @@ if [[ -z "$dynamic_tip_policy_reason" ]]; then
 fi
 if [[ -z "$dynamic_cu_hint_source_reason" ]]; then
   dynamic_cu_hint_source_reason="n/a"
+fi
+if [[ -z "$windowed_signoff_reason" ]]; then
+  windowed_signoff_reason="n/a"
 fi
 
 tests_total=0
@@ -296,6 +336,15 @@ elif [[ "$overall_go_nogo_verdict" == "NO_GO" ]]; then
 elif [[ "$overall_go_nogo_verdict" == "HOLD" ]]; then
   devnet_rehearsal_verdict="HOLD"
   devnet_rehearsal_reason="${overall_go_nogo_reason:-go/no-go returned HOLD}"
+elif [[ "$windowed_signoff_required_norm" == "true" && "$windowed_signoff_verdict" == "UNKNOWN" ]]; then
+  devnet_rehearsal_verdict="NO_GO"
+  devnet_rehearsal_reason="windowed signoff verdict unknown: ${windowed_signoff_reason:-n/a}"
+elif [[ "$windowed_signoff_required_norm" == "true" && "$windowed_signoff_verdict" == "NO_GO" ]]; then
+  devnet_rehearsal_verdict="NO_GO"
+  devnet_rehearsal_reason="windowed signoff returned NO_GO: ${windowed_signoff_reason:-n/a}"
+elif [[ "$windowed_signoff_required_norm" == "true" && "$windowed_signoff_verdict" == "HOLD" ]]; then
+  devnet_rehearsal_verdict="HOLD"
+  devnet_rehearsal_reason="windowed signoff returned HOLD: ${windowed_signoff_reason:-n/a}"
 elif [[ "$tests_run" != "true" && "$test_mode_norm" != "true" ]]; then
   devnet_rehearsal_verdict="HOLD"
   devnet_rehearsal_reason="targeted regression tests were skipped (RUN_TESTS=false)"
@@ -350,6 +399,13 @@ go_nogo_calibration_sha256: ${go_nogo_calibration_sha256:-n/a}
 go_nogo_snapshot_sha256: ${go_nogo_snapshot_sha256:-n/a}
 go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
+windowed_signoff_required: $windowed_signoff_required_norm
+windowed_signoff_windows_csv: $WINDOWED_SIGNOFF_WINDOWS_CSV
+windowed_signoff_exit_code: $windowed_signoff_exit_code
+windowed_signoff_verdict: ${windowed_signoff_verdict:-unknown}
+windowed_signoff_reason: ${windowed_signoff_reason:-n/a}
+windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
+windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
 tests_run: $tests_run
 tests_total: $tests_total
 tests_failed: $tests_failed
@@ -370,28 +426,38 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   summary_path="$OUTPUT_DIR/execution_devnet_rehearsal_summary_${timestamp_compact}.txt"
   preflight_path="$OUTPUT_DIR/execution_devnet_rehearsal_preflight_${timestamp_compact}.txt"
   go_nogo_path="$OUTPUT_DIR/execution_devnet_rehearsal_go_nogo_${timestamp_compact}.txt"
+  windowed_signoff_path="$OUTPUT_DIR/execution_devnet_rehearsal_windowed_signoff_${timestamp_compact}.txt"
   tests_path="$OUTPUT_DIR/execution_devnet_rehearsal_tests_${timestamp_compact}.txt"
   manifest_path="$OUTPUT_DIR/execution_devnet_rehearsal_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary_output" > "$summary_path"
   printf '%s\n' "$preflight_output" > "$preflight_path"
   printf '%s\n' "$go_nogo_output" > "$go_nogo_path"
+  printf '%s\n' "$windowed_signoff_output" > "$windowed_signoff_path"
   printf '%s\n' "$test_log" > "$tests_path"
 
   summary_sha256="$(sha256_file_value "$summary_path")"
   preflight_sha256="$(sha256_file_value "$preflight_path")"
   go_nogo_sha256="$(sha256_file_value "$go_nogo_path")"
+  windowed_signoff_sha256="$(sha256_file_value "$windowed_signoff_path")"
   tests_sha256="$(sha256_file_value "$tests_path")"
   if [[ -n "$go_nogo_nested_capture_path" ]]; then
     go_nogo_nested_capture_sha256="$(sha256_file_value "$go_nogo_nested_capture_path")"
   else
     go_nogo_nested_capture_sha256="n/a"
   fi
+  if [[ -n "$windowed_signoff_nested_capture_path" ]]; then
+    windowed_signoff_nested_capture_sha256="$(sha256_file_value "$windowed_signoff_nested_capture_path")"
+  else
+    windowed_signoff_nested_capture_sha256="n/a"
+  fi
   cat >"$manifest_path" <<EOF
 summary_sha256: $summary_sha256
 preflight_sha256: $preflight_sha256
 go_nogo_sha256: $go_nogo_sha256
+windowed_signoff_sha256: $windowed_signoff_sha256
 tests_sha256: $tests_sha256
 go_nogo_nested_capture_sha256: $go_nogo_nested_capture_sha256
+windowed_signoff_nested_capture_sha256: $windowed_signoff_nested_capture_sha256
 EOF
 
   echo
@@ -399,15 +465,21 @@ EOF
   echo "artifact_summary: $summary_path"
   echo "artifact_preflight: $preflight_path"
   echo "artifact_go_nogo: $go_nogo_path"
+  echo "artifact_windowed_signoff: $windowed_signoff_path"
   echo "artifact_tests: $tests_path"
   echo "artifact_manifest: $manifest_path"
   echo "summary_sha256: $summary_sha256"
   echo "preflight_sha256: $preflight_sha256"
   echo "go_nogo_sha256: $go_nogo_sha256"
+  echo "windowed_signoff_sha256: $windowed_signoff_sha256"
   echo "tests_sha256: $tests_sha256"
   if [[ -n "$go_nogo_nested_capture_path" ]]; then
     echo "artifact_go_nogo_nested_capture: $go_nogo_nested_capture_path"
     echo "go_nogo_nested_capture_sha256: $go_nogo_nested_capture_sha256"
+  fi
+  if [[ -n "$windowed_signoff_nested_capture_path" ]]; then
+    echo "artifact_windowed_signoff_nested_capture: $windowed_signoff_nested_capture_path"
+    echo "windowed_signoff_nested_capture_sha256: $windowed_signoff_nested_capture_sha256"
   fi
 fi
 

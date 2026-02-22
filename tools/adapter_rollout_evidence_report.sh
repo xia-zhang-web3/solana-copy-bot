@@ -98,6 +98,10 @@ dynamic_cu_policy_verdict=""
 dynamic_cu_policy_reason=""
 dynamic_tip_policy_verdict=""
 dynamic_tip_policy_reason=""
+windowed_signoff_required=""
+windowed_signoff_windows_csv=""
+windowed_signoff_verdict=""
+windowed_signoff_reason=""
 primary_route=""
 fallback_route=""
 primary_attempted_orders=""
@@ -121,6 +125,8 @@ rehearsal_summary_sha256=""
 rehearsal_preflight_sha256=""
 rehearsal_go_nogo_sha256=""
 rehearsal_tests_sha256=""
+windowed_signoff_artifact_manifest=""
+windowed_signoff_summary_sha256=""
 tests_run=""
 tests_failed=""
 if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
@@ -158,6 +164,10 @@ else
   dynamic_cu_policy_reason="$(trim_string "$(extract_field "dynamic_cu_policy_reason" "$rehearsal_output")")"
   dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$rehearsal_output")")"
   dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$rehearsal_output")")"
+  windowed_signoff_required="$(trim_string "$(extract_field "windowed_signoff_required" "$rehearsal_output")")"
+  windowed_signoff_windows_csv="$(trim_string "$(extract_field "windowed_signoff_windows_csv" "$rehearsal_output")")"
+  windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "windowed_signoff_verdict" "$rehearsal_output")")"
+  windowed_signoff_reason="$(trim_string "$(extract_field "windowed_signoff_reason" "$rehearsal_output")")"
   dynamic_cu_hint_api_total="$(trim_string "$(extract_field "dynamic_cu_hint_api_total" "$rehearsal_output")")"
   dynamic_cu_hint_rpc_total="$(trim_string "$(extract_field "dynamic_cu_hint_rpc_total" "$rehearsal_output")")"
   dynamic_cu_hint_api_configured="$(trim_string "$(extract_field "dynamic_cu_hint_api_configured" "$rehearsal_output")")"
@@ -186,6 +196,8 @@ else
   rehearsal_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$rehearsal_output")")"
   rehearsal_go_nogo_sha256="$(trim_string "$(extract_field "go_nogo_sha256" "$rehearsal_output")")"
   rehearsal_tests_sha256="$(trim_string "$(extract_field "tests_sha256" "$rehearsal_output")")"
+  windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "windowed_signoff_artifact_manifest" "$rehearsal_output")")"
+  windowed_signoff_summary_sha256="$(trim_string "$(extract_field "windowed_signoff_summary_sha256" "$rehearsal_output")")"
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
   if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
@@ -249,6 +261,10 @@ dynamic_cu_policy_verdict: ${dynamic_cu_policy_verdict:-unknown}
 dynamic_cu_policy_reason: ${dynamic_cu_policy_reason:-n/a}
 dynamic_tip_policy_verdict: ${dynamic_tip_policy_verdict:-unknown}
 dynamic_tip_policy_reason: ${dynamic_tip_policy_reason:-n/a}
+windowed_signoff_required: ${windowed_signoff_required:-false}
+windowed_signoff_windows_csv: ${windowed_signoff_windows_csv:-n/a}
+windowed_signoff_verdict: ${windowed_signoff_verdict:-unknown}
+windowed_signoff_reason: ${windowed_signoff_reason:-n/a}
 dynamic_cu_hint_api_total: ${dynamic_cu_hint_api_total:-n/a}
 dynamic_cu_hint_rpc_total: ${dynamic_cu_hint_rpc_total:-n/a}
 dynamic_cu_hint_api_configured: ${dynamic_cu_hint_api_configured:-false}
@@ -277,6 +293,8 @@ rehearsal_summary_sha256: ${rehearsal_summary_sha256:-n/a}
 rehearsal_preflight_sha256: ${rehearsal_preflight_sha256:-n/a}
 rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
 rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
+windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
+windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
 tests_run: ${tests_run:-unknown}
 tests_failed: ${tests_failed:-unknown}
 input_error_count: ${#input_errors[@]}

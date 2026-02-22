@@ -1431,6 +1431,12 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_contains "$output" "windowed_signoff_required: false"
+  assert_contains "$output" "windowed_signoff_windows_csv: 1,6,24"
+  assert_contains "$output" "windowed_signoff_exit_code: 0"
+  assert_contains "$output" "windowed_signoff_verdict: GO"
+  assert_contains "$output" "windowed_signoff_artifact_manifest:"
+  assert_contains "$output" "windowed_signoff_summary_sha256:"
   assert_contains "$output" "primary_route:"
   assert_contains "$output" "fallback_route:"
   assert_contains "$output" "confirmed_orders_total:"
@@ -1439,17 +1445,23 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "artifact_summary:"
   assert_contains "$output" "artifact_preflight:"
   assert_contains "$output" "artifact_go_nogo:"
+  assert_contains "$output" "artifact_windowed_signoff:"
   assert_contains "$output" "artifact_tests:"
   assert_contains "$output" "artifact_manifest:"
   assert_contains "$output" "summary_sha256:"
   assert_sha256_field "$output" "summary_sha256"
   assert_sha256_field "$output" "preflight_sha256"
   assert_sha256_field "$output" "go_nogo_sha256"
+  assert_sha256_field "$output" "windowed_signoff_sha256"
   assert_sha256_field "$output" "tests_sha256"
   assert_sha256_field "$output" "go_nogo_nested_capture_sha256"
+  assert_sha256_field "$output" "windowed_signoff_nested_capture_sha256"
   assert_sha256_field "$output" "go_nogo_summary_sha256"
+  assert_sha256_field "$output" "windowed_signoff_summary_sha256"
   assert_contains "$output" "go_nogo_artifact_manifest:"
   assert_contains "$output" "go_nogo_summary_sha256:"
+  assert_contains "$output" "windowed_signoff_artifact_manifest:"
+  assert_contains "$output" "windowed_signoff_summary_sha256:"
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_summary_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1460,6 +1472,10 @@ run_devnet_rehearsal_case() {
   fi
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_go_nogo_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal go/no-go artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_windowed_signoff_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal windowed signoff artifact in $artifacts_dir" >&2
     exit 1
   fi
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_tests_*.txt >/dev/null 2>&1; then
@@ -1474,6 +1490,36 @@ run_devnet_rehearsal_case() {
     echo "expected nested go/no-go capture artifact in $artifacts_dir/go_nogo" >&2
     exit 1
   fi
+  if ! ls "$artifacts_dir"/windowed_signoff/execution_windowed_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested windowed signoff summary artifact in $artifacts_dir/windowed_signoff" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/windowed_signoff/execution_windowed_signoff_captured_*.txt >/dev/null 2>&1; then
+    echo "expected nested windowed signoff capture artifact in $artifacts_dir/windowed_signoff" >&2
+    exit 1
+  fi
+
+  local required_nogo_output=""
+  if required_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="true" WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for devnet rehearsal helper when required windowed signoff returns NO_GO" >&2
+    exit 1
+  else
+    local required_nogo_exit_code=$?
+    if [[ "$required_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required windowed signoff branch, got $required_nogo_exit_code" >&2
+      echo "$required_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$required_nogo_output" "windowed_signoff_required: true"
+  assert_contains "$required_nogo_output" "windowed_signoff_verdict: NO_GO"
+  assert_contains "$required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   echo "[ok] execution devnet rehearsal helper"
 }
 
@@ -1522,6 +1568,11 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$pass_output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$pass_output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_contains "$pass_output" "windowed_signoff_required: false"
+  assert_contains "$pass_output" "windowed_signoff_windows_csv: 1,6,24"
+  assert_contains "$pass_output" "windowed_signoff_verdict: GO"
+  assert_contains "$pass_output" "windowed_signoff_artifact_manifest:"
+  assert_contains "$pass_output" "windowed_signoff_summary_sha256:"
   assert_contains "$pass_output" "primary_route:"
   assert_contains "$pass_output" "fallback_route:"
   assert_contains "$pass_output" "confirmed_orders_total:"
@@ -1539,6 +1590,7 @@ run_adapter_rollout_evidence_case() {
   assert_sha256_field "$pass_output" "rehearsal_preflight_sha256"
   assert_sha256_field "$pass_output" "rehearsal_go_nogo_sha256"
   assert_sha256_field "$pass_output" "rehearsal_tests_sha256"
+  assert_sha256_field "$pass_output" "windowed_signoff_summary_sha256"
   assert_sha256_field "$pass_output" "go_nogo_calibration_sha256"
   assert_sha256_field "$pass_output" "go_nogo_snapshot_sha256"
   assert_sha256_field "$pass_output" "go_nogo_preflight_sha256"
@@ -1557,10 +1609,45 @@ run_adapter_rollout_evidence_case() {
     echo "expected adapter rollout rehearsal capture artifact in $artifacts_dir" >&2
     exit 1
   fi
+  if ! ls "$artifacts_dir"/rehearsal/windowed_signoff/execution_windowed_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested windowed signoff summary artifact in $artifacts_dir/rehearsal/windowed_signoff" >&2
+    exit 1
+  fi
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_manifest_*.txt >/dev/null 2>&1; then
     echo "expected adapter rollout manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
+
+  local windowed_nogo_output=""
+  if windowed_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="true" \
+      WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when required windowed signoff returns NO_GO" >&2
+    exit 1
+  else
+    local windowed_nogo_exit_code=$?
+    if [[ "$windowed_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required windowed signoff rollout branch, got $windowed_nogo_exit_code" >&2
+      echo "$windowed_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$windowed_nogo_output" "windowed_signoff_required: true"
+  assert_contains "$windowed_nogo_output" "windowed_signoff_verdict: NO_GO"
+  assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_contains "$windowed_nogo_output" "adapter_rollout_verdict: NO_GO"
 
   local rehearsal_hold_output=""
   if rehearsal_hold_output="$(
