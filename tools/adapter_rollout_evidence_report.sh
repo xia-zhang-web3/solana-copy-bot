@@ -160,6 +160,9 @@ else
   dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$rehearsal_output")")"
   dynamic_cu_hint_api_total="$(trim_string "$(extract_field "dynamic_cu_hint_api_total" "$rehearsal_output")")"
   dynamic_cu_hint_rpc_total="$(trim_string "$(extract_field "dynamic_cu_hint_rpc_total" "$rehearsal_output")")"
+  dynamic_cu_hint_api_configured="$(trim_string "$(extract_field "dynamic_cu_hint_api_configured" "$rehearsal_output")")"
+  dynamic_cu_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$rehearsal_output")")"
+  dynamic_cu_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$rehearsal_output")")"
   primary_route="$(trim_string "$(extract_field "primary_route" "$rehearsal_output")")"
   fallback_route="$(trim_string "$(extract_field "fallback_route" "$rehearsal_output")")"
   primary_attempted_orders="$(trim_string "$(extract_field "primary_attempted_orders" "$rehearsal_output")")"
@@ -248,6 +251,9 @@ dynamic_tip_policy_verdict: ${dynamic_tip_policy_verdict:-unknown}
 dynamic_tip_policy_reason: ${dynamic_tip_policy_reason:-n/a}
 dynamic_cu_hint_api_total: ${dynamic_cu_hint_api_total:-n/a}
 dynamic_cu_hint_rpc_total: ${dynamic_cu_hint_rpc_total:-n/a}
+dynamic_cu_hint_api_configured: ${dynamic_cu_hint_api_configured:-false}
+dynamic_cu_hint_source_verdict: ${dynamic_cu_hint_source_verdict:-unknown}
+dynamic_cu_hint_source_reason: ${dynamic_cu_hint_source_reason:-n/a}
 primary_route: ${primary_route:-n/a}
 fallback_route: ${fallback_route:-n/a}
 primary_attempted_orders: ${primary_attempted_orders:-n/a}

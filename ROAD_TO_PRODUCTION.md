@@ -606,6 +606,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 82. smoke coverage now validates checksum fields as strict lowercase SHA-256 hex (64 chars) across rotation/go-no-go/rehearsal/rollout helpers, preventing silent fallback to non-hash tokens in evidence outputs.
 83. dynamic CU-price policy now supports an optional external Priority Fee API source (`execution.submit_dynamic_cu_price_api_primary_url` with optional fallback/auth token and `_file` secret source), queried before RPC hints with shared timeout budget and fail-closed config guards; RPC `getRecentPrioritizationFees` remains automatic fallback when API hints are unavailable.
 84. dynamic CU hint source split (`api` vs `rpc`) is now propagated end-to-end in evidence orchestration: go/no-go emits source totals, devnet rehearsal mirrors them (`dynamic_cu_hint_api_total`/`dynamic_cu_hint_rpc_total`), and rollout summary carries the same fields; smoke validates snapshot/go-no-go/rehearsal/rollout branches to keep source-level telemetry regressions visible.
+85. go/no-go now emits explicit dynamic CU hint-source readiness gate (`dynamic_cu_hint_source_verdict/reason`) with config awareness (`dynamic_cu_hint_api_configured`) and source totals, and rehearsal/rollout summaries propagate the same fields so API-vs-RPC hint adoption can be audited without opening nested artifacts.
 
 Остается в next-code-queue:
 

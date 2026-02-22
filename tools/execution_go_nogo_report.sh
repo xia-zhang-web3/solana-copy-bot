@@ -70,6 +70,24 @@ cfg_or_env_bool() {
   normalize_bool_token "$raw"
 }
 
+cfg_or_env_string() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local fallback="${4:-}"
+  local raw=""
+  if [[ -n "${!env_name+x}" ]]; then
+    raw="${!env_name}"
+  else
+    raw="$(cfg_value "$section" "$key")"
+  fi
+  raw="$(trim_string "$raw")"
+  if [[ -z "$raw" ]]; then
+    raw="$fallback"
+  fi
+  printf '%s' "$raw"
+}
+
 sum_route_map_values() {
   local raw_map="$1"
   python3 - "$raw_map" <<'PY'
@@ -182,6 +200,11 @@ submit_dynamic_tip_applied_by_route="$(extract_field "submit_dynamic_tip_applied
 submit_dynamic_tip_static_floor_by_route="$(extract_field "submit_dynamic_tip_static_floor_by_route" "$snapshot_output")"
 dynamic_cu_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_cu_price_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED false)"
 dynamic_tip_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_tip_lamports_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED false)"
+dynamic_cu_hint_api_primary_url="$(cfg_or_env_string execution submit_dynamic_cu_price_api_primary_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL "")"
+dynamic_cu_hint_api_configured="false"
+if [[ -n "$dynamic_cu_hint_api_primary_url" ]]; then
+  dynamic_cu_hint_api_configured="true"
+fi
 
 submit_dynamic_cu_policy_enabled_total="$(sum_route_map_values "${submit_dynamic_cu_policy_enabled_by_route:-}")"
 submit_dynamic_cu_hint_used_total="$(sum_route_map_values "${submit_dynamic_cu_hint_used_by_route:-}")"
@@ -211,6 +234,40 @@ if [[ "$dynamic_cu_policy_config_enabled" == "true" ]]; then
   else
     dynamic_cu_policy_verdict="WARN"
     dynamic_cu_policy_reason="no priority-fee hints observed; submits used static CU-price fallback only"
+  fi
+fi
+
+dynamic_cu_hint_source_verdict="SKIP"
+dynamic_cu_hint_source_reason="dynamic CU-price policy disabled in execution config"
+if [[ "$dynamic_cu_policy_config_enabled" == "true" ]]; then
+  if [[ "$(normalize_bool_token "${execution_batch_sample_available:-false}")" != "true" ]]; then
+    dynamic_cu_hint_source_verdict="NO_DATA"
+    dynamic_cu_hint_source_reason="no execution batch sample available in runtime snapshot window"
+  elif (( submit_dynamic_cu_hint_used_total == 0 )); then
+    dynamic_cu_hint_source_verdict="WARN"
+    dynamic_cu_hint_source_reason="no dynamic CU-price hints observed in submit attempts"
+  elif [[ "$dynamic_cu_hint_api_configured" == "true" ]]; then
+    if (( submit_dynamic_cu_hint_api_total > 0 )); then
+      dynamic_cu_hint_source_verdict="PASS"
+      dynamic_cu_hint_source_reason="external Priority Fee API hints observed"
+    elif (( submit_dynamic_cu_hint_rpc_total > 0 )); then
+      dynamic_cu_hint_source_verdict="WARN"
+      dynamic_cu_hint_source_reason="external Priority Fee API configured but only RPC fallback hints observed"
+    else
+      dynamic_cu_hint_source_verdict="WARN"
+      dynamic_cu_hint_source_reason="dynamic CU-price hints observed but source split counters are missing"
+    fi
+  else
+    if (( submit_dynamic_cu_hint_rpc_total > 0 )); then
+      dynamic_cu_hint_source_verdict="PASS"
+      dynamic_cu_hint_source_reason="RPC priority-fee hints observed (external API not configured)"
+    elif (( submit_dynamic_cu_hint_api_total > 0 )); then
+      dynamic_cu_hint_source_verdict="WARN"
+      dynamic_cu_hint_source_reason="API hint counters observed while external Priority Fee API is not configured"
+    else
+      dynamic_cu_hint_source_verdict="WARN"
+      dynamic_cu_hint_source_reason="hint source split counters are missing despite hint usage"
+    fi
   fi
 fi
 
@@ -331,6 +388,9 @@ dynamic_cu_policy_enabled_total: ${submit_dynamic_cu_policy_enabled_total:-0}
 dynamic_cu_hint_used_total: ${submit_dynamic_cu_hint_used_total:-0}
 dynamic_cu_hint_api_total: ${submit_dynamic_cu_hint_api_total:-0}
 dynamic_cu_hint_rpc_total: ${submit_dynamic_cu_hint_rpc_total:-0}
+dynamic_cu_hint_api_configured: ${dynamic_cu_hint_api_configured:-false}
+dynamic_cu_hint_source_verdict: $dynamic_cu_hint_source_verdict
+dynamic_cu_hint_source_reason: $dynamic_cu_hint_source_reason
 dynamic_cu_price_applied_total: ${submit_dynamic_cu_price_applied_total:-0}
 dynamic_cu_static_fallback_total: ${submit_dynamic_cu_static_fallback_total:-0}
 dynamic_cu_policy_verdict: $dynamic_cu_policy_verdict

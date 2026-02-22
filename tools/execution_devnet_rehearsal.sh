@@ -212,6 +212,9 @@ dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_t
 dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$go_nogo_output")")"
 dynamic_cu_hint_api_total="$(trim_string "$(extract_field "dynamic_cu_hint_api_total" "$go_nogo_output")")"
 dynamic_cu_hint_rpc_total="$(trim_string "$(extract_field "dynamic_cu_hint_rpc_total" "$go_nogo_output")")"
+dynamic_cu_hint_api_configured="$(trim_string "$(extract_field "dynamic_cu_hint_api_configured" "$go_nogo_output")")"
+dynamic_cu_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$go_nogo_output")")"
+dynamic_cu_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$go_nogo_output")")"
 primary_route="$(trim_string "$(extract_field "primary_route" "$go_nogo_output")")"
 fallback_route="$(trim_string "$(extract_field "fallback_route" "$go_nogo_output")")"
 primary_attempted_orders="$(trim_string "$(extract_field "primary_attempted_orders" "$go_nogo_output")")"
@@ -238,6 +241,9 @@ if [[ -z "$dynamic_cu_policy_reason" ]]; then
 fi
 if [[ -z "$dynamic_tip_policy_reason" ]]; then
   dynamic_tip_policy_reason="n/a"
+fi
+if [[ -z "$dynamic_cu_hint_source_reason" ]]; then
+  dynamic_cu_hint_source_reason="n/a"
 fi
 
 tests_total=0
@@ -323,6 +329,9 @@ dynamic_tip_policy_verdict: $dynamic_tip_policy_verdict
 dynamic_tip_policy_reason: $dynamic_tip_policy_reason
 dynamic_cu_hint_api_total: ${dynamic_cu_hint_api_total:-n/a}
 dynamic_cu_hint_rpc_total: ${dynamic_cu_hint_rpc_total:-n/a}
+dynamic_cu_hint_api_configured: ${dynamic_cu_hint_api_configured:-false}
+dynamic_cu_hint_source_verdict: ${dynamic_cu_hint_source_verdict:-unknown}
+dynamic_cu_hint_source_reason: ${dynamic_cu_hint_source_reason:-n/a}
 primary_route: ${primary_route:-n/a}
 fallback_route: ${fallback_route:-n/a}
 primary_attempted_orders: ${primary_attempted_orders:-n/a}
