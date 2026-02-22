@@ -1045,8 +1045,17 @@ run_windowed_signoff_report_case() {
   assert_contains "$go_output" "artifact_manifest:"
   assert_contains "$go_output" "window_24h_capture_path:"
   assert_contains "$go_output" "window_24h_capture_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_artifact_manifest:"
+  assert_contains "$go_output" "window_24h_go_nogo_calibration_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_snapshot_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_preflight_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_summary_sha256:"
   assert_sha256_field "$go_output" "summary_sha256"
   assert_sha256_field "$go_output" "window_24h_capture_sha256"
+  assert_sha256_field "$go_output" "window_24h_go_nogo_calibration_sha256"
+  assert_sha256_field "$go_output" "window_24h_go_nogo_snapshot_sha256"
+  assert_sha256_field "$go_output" "window_24h_go_nogo_preflight_sha256"
+  assert_sha256_field "$go_output" "window_24h_go_nogo_summary_sha256"
   if ! ls "$artifacts_dir"/execution_windowed_signoff_summary_*.txt >/dev/null 2>&1; then
     echo "expected windowed signoff summary artifact in $artifacts_dir" >&2
     exit 1
