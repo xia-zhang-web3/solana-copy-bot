@@ -210,6 +210,19 @@ dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu
 dynamic_cu_policy_reason="$(trim_string "$(extract_field "dynamic_cu_policy_reason" "$go_nogo_output")")"
 dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$go_nogo_output")")"
 dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$go_nogo_output")")"
+primary_route="$(trim_string "$(extract_field "primary_route" "$go_nogo_output")")"
+fallback_route="$(trim_string "$(extract_field "fallback_route" "$go_nogo_output")")"
+primary_attempted_orders="$(trim_string "$(extract_field "primary_attempted_orders" "$go_nogo_output")")"
+primary_success_rate_pct="$(trim_string "$(extract_field "primary_success_rate_pct" "$go_nogo_output")")"
+primary_timeout_rate_pct="$(trim_string "$(extract_field "primary_timeout_rate_pct" "$go_nogo_output")")"
+fallback_attempted_orders="$(trim_string "$(extract_field "fallback_attempted_orders" "$go_nogo_output")")"
+fallback_success_rate_pct="$(trim_string "$(extract_field "fallback_success_rate_pct" "$go_nogo_output")")"
+fallback_timeout_rate_pct="$(trim_string "$(extract_field "fallback_timeout_rate_pct" "$go_nogo_output")")"
+confirmed_orders_total="$(trim_string "$(extract_field "confirmed_orders_total" "$go_nogo_output")")"
+fee_consistency_missing_coverage_rows="$(trim_string "$(extract_field "fee_consistency_missing_coverage_rows" "$go_nogo_output")")"
+fee_consistency_mismatch_rows="$(trim_string "$(extract_field "fee_consistency_mismatch_rows" "$go_nogo_output")")"
+fallback_used_events="$(trim_string "$(extract_field "fallback_used_events" "$go_nogo_output")")"
+hint_mismatch_events="$(trim_string "$(extract_field "hint_mismatch_events" "$go_nogo_output")")"
 if [[ "$overall_go_nogo_verdict" == "UNKNOWN" && "$go_nogo_exit_code" -ne 0 && -z "$overall_go_nogo_reason" ]]; then
   overall_go_nogo_reason="execution_go_nogo_report exited with code $go_nogo_exit_code"
 fi
@@ -301,6 +314,19 @@ dynamic_cu_policy_verdict: $dynamic_cu_policy_verdict
 dynamic_cu_policy_reason: $dynamic_cu_policy_reason
 dynamic_tip_policy_verdict: $dynamic_tip_policy_verdict
 dynamic_tip_policy_reason: $dynamic_tip_policy_reason
+primary_route: ${primary_route:-n/a}
+fallback_route: ${fallback_route:-n/a}
+primary_attempted_orders: ${primary_attempted_orders:-n/a}
+primary_success_rate_pct: ${primary_success_rate_pct:-n/a}
+primary_timeout_rate_pct: ${primary_timeout_rate_pct:-n/a}
+fallback_attempted_orders: ${fallback_attempted_orders:-n/a}
+fallback_success_rate_pct: ${fallback_success_rate_pct:-n/a}
+fallback_timeout_rate_pct: ${fallback_timeout_rate_pct:-n/a}
+confirmed_orders_total: ${confirmed_orders_total:-n/a}
+fee_consistency_missing_coverage_rows: ${fee_consistency_missing_coverage_rows:-n/a}
+fee_consistency_mismatch_rows: ${fee_consistency_mismatch_rows:-n/a}
+fallback_used_events: ${fallback_used_events:-n/a}
+hint_mismatch_events: ${hint_mismatch_events:-n/a}
 tests_run: $tests_run
 tests_total: $tests_total
 tests_failed: $tests_failed

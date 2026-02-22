@@ -596,6 +596,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 72. go/no-go helper now emits explicit dynamic-policy readiness verdicts (`dynamic_cu_policy_verdict`, `dynamic_tip_policy_verdict`) with per-policy reasons and aggregate counters from runtime submit telemetry; this keeps dynamic-policy rollout evidence actionable without changing top-level fail-closed `overall_go_nogo_verdict` precedence.
 73. Stage C.5/rollout orchestrators now propagate dynamic-policy readiness fields from go/no-go output (`dynamic_cu_policy_verdict/reason`, `dynamic_tip_policy_verdict/reason`) into `tools/execution_devnet_rehearsal.sh` and `tools/adapter_rollout_evidence_report.sh` summaries, so auditors can review dynamic submit readiness directly from top-level rehearsal/rollout artifacts.
 74. go/no-go summary now includes route-profile and fee-decomposition calibration context fields (`primary_route/fallback_route`, primary/fallback KPI sample metrics, and fee-consistency/fallback counters), so Stage D tightening evidence for route order and fee decomposition can be audited from one consolidated artifact.
+75. devnet rehearsal summary now mirrors go/no-go route-profile/fee-decomposition context fields (primary/fallback route and KPI/counter excerpts), reducing operator dependency on nested artifact lookup during Stage C.5 evidence review.
 
 Остается в next-code-queue:
 
