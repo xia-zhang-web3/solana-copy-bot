@@ -146,6 +146,21 @@ fee_decomposition_reason="$(extract_field "fee_decomposition_reason" "$calibrati
 route_profile_verdict="$(normalize_gate_verdict "$(extract_field "route_profile_verdict" "$calibration_output")")"
 route_profile_reason="$(extract_field "route_profile_reason" "$calibration_output")"
 recommended_route_order_csv="$(extract_field "recommended_route_order_csv" "$calibration_output")"
+adapter_mode_strict_policy_echo="$(extract_field "adapter_mode_strict_policy_echo" "$calibration_output")"
+confirmed_orders_total="$(extract_field "confirmed_orders_total" "$calibration_output")"
+fee_consistency_missing_coverage_rows="$(extract_field "fee_consistency_missing_coverage_rows" "$calibration_output")"
+fee_consistency_mismatch_rows="$(extract_field "fee_consistency_mismatch_rows" "$calibration_output")"
+fallback_used_events="$(extract_field "fallback_used_events" "$calibration_output")"
+hint_mismatch_events="$(extract_field "hint_mismatch_events" "$calibration_output")"
+allowlisted_route_count="$(extract_field "allowlisted_route_count" "$calibration_output")"
+primary_route="$(extract_field "primary_route" "$calibration_output")"
+fallback_route="$(extract_field "fallback_route" "$calibration_output")"
+primary_attempted_orders="$(extract_field "primary_attempted_orders" "$calibration_output")"
+primary_success_rate_pct="$(extract_field "primary_success_rate_pct" "$calibration_output")"
+primary_timeout_rate_pct="$(extract_field "primary_timeout_rate_pct" "$calibration_output")"
+fallback_attempted_orders="$(extract_field "fallback_attempted_orders" "$calibration_output")"
+fallback_success_rate_pct="$(extract_field "fallback_success_rate_pct" "$calibration_output")"
+fallback_timeout_rate_pct="$(extract_field "fallback_timeout_rate_pct" "$calibration_output")"
 ingestion_lag_ms_p95="$(extract_field "ingestion_lag_ms_p95" "$snapshot_output")"
 ingestion_lag_ms_p99="$(extract_field "ingestion_lag_ms_p99" "$snapshot_output")"
 parse_rejected_total="$(extract_field "parse_rejected_total" "$snapshot_output")"
@@ -269,6 +284,21 @@ fee_decomposition_reason: ${fee_decomposition_reason:-n/a}
 route_profile_verdict: $route_profile_verdict
 route_profile_reason: ${route_profile_reason:-n/a}
 recommended_route_order_csv: ${recommended_route_order_csv:-n/a}
+adapter_mode_strict_policy_echo: ${adapter_mode_strict_policy_echo:-n/a}
+confirmed_orders_total: ${confirmed_orders_total:-n/a}
+fee_consistency_missing_coverage_rows: ${fee_consistency_missing_coverage_rows:-n/a}
+fee_consistency_mismatch_rows: ${fee_consistency_mismatch_rows:-n/a}
+fallback_used_events: ${fallback_used_events:-n/a}
+hint_mismatch_events: ${hint_mismatch_events:-n/a}
+allowlisted_route_count: ${allowlisted_route_count:-n/a}
+primary_route: ${primary_route:-n/a}
+fallback_route: ${fallback_route:-n/a}
+primary_attempted_orders: ${primary_attempted_orders:-n/a}
+primary_success_rate_pct: ${primary_success_rate_pct:-n/a}
+primary_timeout_rate_pct: ${primary_timeout_rate_pct:-n/a}
+fallback_attempted_orders: ${fallback_attempted_orders:-n/a}
+fallback_success_rate_pct: ${fallback_success_rate_pct:-n/a}
+fallback_timeout_rate_pct: ${fallback_timeout_rate_pct:-n/a}
 preflight_verdict: $preflight_verdict
 preflight_reason: ${preflight_reason:-n/a}
 preflight_error_count: ${preflight_error_count:-0}
