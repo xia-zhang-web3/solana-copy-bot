@@ -2784,4 +2784,95 @@ mod tests {
         );
         let _ = rpc_handle.join();
     }
+
+    #[test]
+    fn adapter_submitter_dynamic_tip_policy_saturates_at_global_tip_cap() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 10000000 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-tip-cap",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX,
+                "cu_price_micro_lamports": EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic_and_tip(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 1_000),
+            &make_route_cu_limits("rpc", EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+            true,
+            100_000,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-tip-cap", "rpc")
+            .expect("submit call should succeed");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+        assert!(result.dynamic_tip_policy_enabled);
+        assert!(result.dynamic_tip_applied);
+        assert_eq!(
+            result.applied_tip_lamports,
+            EXECUTION_ROUTE_TIP_LAMPORTS_MAX
+        );
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX
+        );
+        assert_eq!(
+            adapter_payload
+                .get("tip_lamports")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            EXECUTION_ROUTE_TIP_LAMPORTS_MAX
+        );
+        let _ = rpc_handle.join();
+    }
 }
