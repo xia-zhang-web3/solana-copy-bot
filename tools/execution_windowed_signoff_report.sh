@@ -12,10 +12,12 @@ SERVICE="${SERVICE:-solana-copy-bot}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
+WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 windowed_signoff_require_dynamic_hint_source_pass="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
+windowed_signoff_require_dynamic_tip_policy_pass="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS")"
 
 declare -a input_errors=()
 declare -a windows=()
@@ -77,6 +79,9 @@ declare -a window_hint_mismatch=()
 declare -a window_dynamic_policy_config_enabled=()
 declare -a window_dynamic_hint_source_verdicts=()
 declare -a window_dynamic_hint_source_reasons=()
+declare -a window_dynamic_tip_policy_config_enabled=()
+declare -a window_dynamic_tip_policy_verdicts=()
+declare -a window_dynamic_tip_policy_reasons=()
 declare -a window_capture_paths=()
 declare -a window_capture_sha256=()
 
@@ -146,8 +151,14 @@ if ((${#input_errors[@]} == 0)); then
     dynamic_policy_config_enabled="$(normalize_bool_token "$(extract_field "dynamic_cu_policy_config_enabled" "$go_nogo_output")")"
     dynamic_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$go_nogo_output")")"
     dynamic_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$go_nogo_output")")"
+    dynamic_tip_policy_config_enabled="$(normalize_bool_token "$(extract_field "dynamic_tip_policy_config_enabled" "$go_nogo_output")")"
+    dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$go_nogo_output")")"
+    dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$go_nogo_output")")"
     if [[ -z "$dynamic_hint_source_reason" ]]; then
       dynamic_hint_source_reason="n/a"
+    fi
+    if [[ -z "$dynamic_tip_policy_reason" ]]; then
+      dynamic_tip_policy_reason="n/a"
     fi
 
     capture_path=""
@@ -173,6 +184,9 @@ if ((${#input_errors[@]} == 0)); then
     window_dynamic_policy_config_enabled+=("$dynamic_policy_config_enabled")
     window_dynamic_hint_source_verdicts+=("$dynamic_hint_source_verdict")
     window_dynamic_hint_source_reasons+=("$dynamic_hint_source_reason")
+    window_dynamic_tip_policy_config_enabled+=("$dynamic_tip_policy_config_enabled")
+    window_dynamic_tip_policy_verdicts+=("$dynamic_tip_policy_verdict")
+    window_dynamic_tip_policy_reasons+=("$dynamic_tip_policy_reason")
     window_capture_paths+=("${capture_path:-n/a}")
     window_capture_sha256+=("${capture_sha256:-n/a}")
 
@@ -187,6 +201,13 @@ if ((${#input_errors[@]} == 0)); then
       window_unknown_count=$((window_unknown_count + 1))
       if [[ -z "$first_unknown_reason" ]]; then
         first_unknown_reason="window=${window_hours}h dynamic hint source verdict unknown while required (exit_code=${go_nogo_exit_code})"
+      fi
+      continue
+    fi
+    if [[ "$windowed_signoff_require_dynamic_tip_policy_pass" == "true" && "$dynamic_tip_policy_config_enabled" == "true" && "$dynamic_tip_policy_verdict" == "UNKNOWN" ]]; then
+      window_unknown_count=$((window_unknown_count + 1))
+      if [[ -z "$first_unknown_reason" ]]; then
+        first_unknown_reason="window=${window_hours}h dynamic tip policy verdict unknown while required (exit_code=${go_nogo_exit_code})"
       fi
       continue
     fi
@@ -211,6 +232,12 @@ if ((${#input_errors[@]} == 0)); then
     if [[ "$windowed_signoff_require_dynamic_hint_source_pass" == "true" && "$dynamic_policy_config_enabled" == "true" && "$dynamic_hint_source_verdict" != "PASS" ]]; then
       if [[ -z "$first_non_pass_reason" ]]; then
         first_non_pass_reason="window=${window_hours}h dynamic hint source gate not PASS (verdict=${dynamic_hint_source_verdict}, reason=${dynamic_hint_source_reason})"
+      fi
+      continue
+    fi
+    if [[ "$windowed_signoff_require_dynamic_tip_policy_pass" == "true" && "$dynamic_tip_policy_config_enabled" == "true" && "$dynamic_tip_policy_verdict" != "PASS" ]]; then
+      if [[ -z "$first_non_pass_reason" ]]; then
+        first_non_pass_reason="window=${window_hours}h dynamic tip policy gate not PASS (verdict=${dynamic_tip_policy_verdict}, reason=${dynamic_tip_policy_reason})"
       fi
       continue
     fi
@@ -276,6 +303,7 @@ service: $SERVICE
 windows_csv: $WINDOWS_CSV
 risk_events_minutes: $RISK_EVENTS_MINUTES
 windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass
+windowed_signoff_require_dynamic_tip_policy_pass: $windowed_signoff_require_dynamic_tip_policy_pass
 window_count: $window_total
 window_pass_count: $window_pass_count
 window_unknown_count: $window_unknown_count
@@ -304,6 +332,9 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_dynamic_cu_policy_config_enabled: ${window_dynamic_policy_config_enabled[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_dynamic_cu_hint_source_verdict: ${window_dynamic_hint_source_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_dynamic_cu_hint_source_reason: ${window_dynamic_hint_source_reasons[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_dynamic_tip_policy_config_enabled: ${window_dynamic_tip_policy_config_enabled[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_dynamic_tip_policy_verdict: ${window_dynamic_tip_policy_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_dynamic_tip_policy_reason: ${window_dynamic_tip_policy_reasons[$idx]}"
 done
 
 summary_output+=$'\n'
