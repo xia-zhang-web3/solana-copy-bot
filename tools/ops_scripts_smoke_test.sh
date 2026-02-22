@@ -864,6 +864,8 @@ run_go_nogo_artifact_export_case() {
   assert_contains "$output" "artifact_snapshot:"
   assert_contains "$output" "artifact_preflight:"
   assert_contains "$output" "artifact_summary:"
+  assert_contains "$output" "artifact_manifest:"
+  assert_contains "$output" "summary_sha256:"
   if ! ls "$artifacts_dir"/execution_go_nogo_summary_*.txt >/dev/null 2>&1; then
     echo "expected go/no-go summary artifact in $artifacts_dir" >&2
     exit 1
@@ -878,6 +880,10 @@ run_go_nogo_artifact_export_case() {
   fi
   if ! ls "$artifacts_dir"/execution_adapter_preflight_*.txt >/dev/null 2>&1; then
     echo "expected adapter preflight artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_go_nogo_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected go/no-go manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
   echo "[ok] go-no-go artifact export"

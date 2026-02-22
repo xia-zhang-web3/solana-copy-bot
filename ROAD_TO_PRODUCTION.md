@@ -598,6 +598,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 74. go/no-go summary now includes route-profile and fee-decomposition calibration context fields (`primary_route/fallback_route`, primary/fallback KPI sample metrics, and fee-consistency/fallback counters), so Stage D tightening evidence for route order and fee decomposition can be audited from one consolidated artifact.
 75. devnet rehearsal summary now mirrors go/no-go route-profile/fee-decomposition context fields (primary/fallback route and KPI/counter excerpts), reducing operator dependency on nested artifact lookup during Stage C.5 evidence review.
 76. adapter rollout evidence summary now also mirrors rehearsal route-profile/fee-decomposition context fields (primary/fallback route, KPI snippets, fee-consistency/fallback counters), so final rollout packets remain self-contained at the top-level orchestrator artifact.
+77. go/no-go artifact export now emits deterministic SHA-256 checksums (`calibration/snapshot/preflight/summary`) and writes a manifest file (`execution_go_nogo_manifest_*.txt`) alongside raw captures, improving evidence-chain verification during Stage C.5 and rollout audits.
 
 Остается в next-code-queue:
 

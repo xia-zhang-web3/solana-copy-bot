@@ -103,6 +103,19 @@ print(total)
 PY
 }
 
+sha256_file_value() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+    return
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return
+  fi
+  printf "unavailable"
+}
+
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
@@ -347,14 +360,32 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   snapshot_path="$OUTPUT_DIR/runtime_snapshot_${timestamp_compact}.txt"
   preflight_path="$OUTPUT_DIR/execution_adapter_preflight_${timestamp_compact}.txt"
   summary_path="$OUTPUT_DIR/execution_go_nogo_summary_${timestamp_compact}.txt"
+  manifest_path="$OUTPUT_DIR/execution_go_nogo_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$calibration_output" > "$calibration_path"
   printf '%s\n' "$snapshot_output" > "$snapshot_path"
   printf '%s\n' "$preflight_output" > "$preflight_path"
   printf '%s\n' "$summary_output" > "$summary_path"
+
+  calibration_sha256="$(sha256_file_value "$calibration_path")"
+  snapshot_sha256="$(sha256_file_value "$snapshot_path")"
+  preflight_sha256="$(sha256_file_value "$preflight_path")"
+  summary_sha256="$(sha256_file_value "$summary_path")"
+  cat >"$manifest_path" <<EOF
+calibration_sha256: $calibration_sha256
+snapshot_sha256: $snapshot_sha256
+preflight_sha256: $preflight_sha256
+summary_sha256: $summary_sha256
+EOF
+
   echo
   echo "artifacts_written: true"
   echo "artifact_calibration: $calibration_path"
   echo "artifact_snapshot: $snapshot_path"
   echo "artifact_preflight: $preflight_path"
   echo "artifact_summary: $summary_path"
+  echo "artifact_manifest: $manifest_path"
+  echo "calibration_sha256: $calibration_sha256"
+  echo "snapshot_sha256: $snapshot_sha256"
+  echo "preflight_sha256: $preflight_sha256"
+  echo "summary_sha256: $summary_sha256"
 fi
