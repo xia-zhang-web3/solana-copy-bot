@@ -13,6 +13,8 @@ pub struct ExecutionBatchReport {
     pub submit_fallback_blocked_by_route: BTreeMap<String, u64>,
     pub submit_dynamic_cu_policy_enabled_by_route: BTreeMap<String, u64>,
     pub submit_dynamic_cu_hint_used_by_route: BTreeMap<String, u64>,
+    pub submit_dynamic_cu_hint_api_by_route: BTreeMap<String, u64>,
+    pub submit_dynamic_cu_hint_rpc_by_route: BTreeMap<String, u64>,
     pub submit_dynamic_cu_price_applied_by_route: BTreeMap<String, u64>,
     pub submit_dynamic_cu_static_fallback_by_route: BTreeMap<String, u64>,
     pub submit_dynamic_tip_policy_enabled_by_route: BTreeMap<String, u64>,

@@ -311,6 +311,8 @@ def emit_execution_sample(rows):
             "submit_failed_by_route",
             "submit_dynamic_cu_policy_enabled_by_route",
             "submit_dynamic_cu_hint_used_by_route",
+            "submit_dynamic_cu_hint_api_by_route",
+            "submit_dynamic_cu_hint_rpc_by_route",
             "submit_dynamic_cu_price_applied_by_route",
             "submit_dynamic_cu_static_fallback_by_route",
             "submit_dynamic_tip_policy_enabled_by_route",

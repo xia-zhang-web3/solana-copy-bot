@@ -27,6 +27,7 @@ pub struct SubmitResult {
     pub priority_fee_lamports_hint: Option<u64>,
     pub dynamic_cu_price_policy_enabled: bool,
     pub dynamic_cu_price_hint_used: bool,
+    pub dynamic_cu_price_hint_source: Option<DynamicCuPriceHintSource>,
     pub dynamic_cu_price_applied: bool,
     pub dynamic_tip_policy_enabled: bool,
     pub dynamic_tip_applied: bool,
@@ -38,6 +39,12 @@ pub enum SubmitErrorKind {
     Terminal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicCuPriceHintSource {
+    Api,
+    Rpc,
+}
+
 #[derive(Debug, Clone)]
 pub struct SubmitError {
     pub kind: SubmitErrorKind,
@@ -45,6 +52,7 @@ pub struct SubmitError {
     pub detail: String,
     pub dynamic_cu_price_policy_enabled: bool,
     pub dynamic_cu_price_hint_used: bool,
+    pub dynamic_cu_price_hint_source: Option<DynamicCuPriceHintSource>,
     pub dynamic_cu_price_applied: bool,
     pub dynamic_tip_policy_enabled: bool,
     pub dynamic_tip_applied: bool,
@@ -58,6 +66,7 @@ impl SubmitError {
             detail: detail.into(),
             dynamic_cu_price_policy_enabled: false,
             dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_hint_source: None,
             dynamic_cu_price_applied: false,
             dynamic_tip_policy_enabled: false,
             dynamic_tip_applied: false,
@@ -71,6 +80,7 @@ impl SubmitError {
             detail: detail.into(),
             dynamic_cu_price_policy_enabled: false,
             dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_hint_source: None,
             dynamic_cu_price_applied: false,
             dynamic_tip_policy_enabled: false,
             dynamic_tip_applied: false,
@@ -81,12 +91,14 @@ impl SubmitError {
         mut self,
         dynamic_cu_price_policy_enabled: bool,
         dynamic_cu_price_hint_used: bool,
+        dynamic_cu_price_hint_source: Option<DynamicCuPriceHintSource>,
         dynamic_cu_price_applied: bool,
         dynamic_tip_policy_enabled: bool,
         dynamic_tip_applied: bool,
     ) -> Self {
         self.dynamic_cu_price_policy_enabled = dynamic_cu_price_policy_enabled;
         self.dynamic_cu_price_hint_used = dynamic_cu_price_hint_used;
+        self.dynamic_cu_price_hint_source = dynamic_cu_price_hint_source;
         self.dynamic_cu_price_applied = dynamic_cu_price_applied;
         self.dynamic_tip_policy_enabled = dynamic_tip_policy_enabled;
         self.dynamic_tip_applied = dynamic_tip_applied;
@@ -142,6 +154,7 @@ impl OrderSubmitter for PaperOrderSubmitter {
             priority_fee_lamports_hint: None,
             dynamic_cu_price_policy_enabled: false,
             dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_hint_source: None,
             dynamic_cu_price_applied: false,
             dynamic_tip_policy_enabled: false,
             dynamic_tip_applied: false,
@@ -551,22 +564,25 @@ impl AdapterOrderSubmitter {
     fn resolve_route_cu_price_micro_lamports(
         &self,
         static_route_cu_price: u64,
-    ) -> (u64, bool, bool) {
+    ) -> (u64, Option<DynamicCuPriceHintSource>, bool) {
         let Some(policy) = self.dynamic_cu_price_policy.as_ref() else {
-            return (static_route_cu_price, false, false);
+            return (static_route_cu_price, None, false);
         };
-        let hinted = self
-            .query_recent_priority_fee_micro_lamports(policy)
-            .map(|dynamic| {
-                dynamic
-                    .max(static_route_cu_price)
-                    .min(policy.max_micro_lamports)
-                    .clamp(
-                        EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
-                        EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
-                    )
-            });
+        let hinted =
+            self.query_recent_priority_fee_micro_lamports(policy)
+                .map(|(dynamic, source)| {
+                    let resolved = dynamic
+                        .max(static_route_cu_price)
+                        .min(policy.max_micro_lamports)
+                        .clamp(
+                            EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+                            EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+                        );
+                    (resolved, source)
+                });
         let resolved = hinted
+            .as_ref()
+            .map(|(value, _)| *value)
             .unwrap_or(static_route_cu_price)
             .max(static_route_cu_price)
             .min(policy.max_micro_lamports)
@@ -574,9 +590,9 @@ impl AdapterOrderSubmitter {
                 EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
                 EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
             );
-        let hint_used = hinted.is_some();
+        let hint_source = hinted.map(|(_, source)| source);
         let applied = resolved > static_route_cu_price;
-        (resolved, hint_used, applied)
+        (resolved, hint_source, applied)
     }
 
     fn resolve_route_tip_lamports(
@@ -603,7 +619,7 @@ impl AdapterOrderSubmitter {
     fn query_recent_priority_fee_micro_lamports(
         &self,
         policy: &DynamicCuPricePolicy,
-    ) -> Option<u64> {
+    ) -> Option<(u64, DynamicCuPriceHintSource)> {
         let client = self.dynamic_cu_price_client.as_ref()?;
         let started = Instant::now();
         let total_timeout = StdDuration::from_millis(policy.timeout_ms);
@@ -802,8 +818,9 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 )
             })?;
         let dynamic_cu_price_policy_enabled = self.dynamic_cu_price_policy.is_some();
-        let (route_cu_price_micro_lamports, dynamic_cu_price_hint_used, dynamic_cu_price_applied) =
+        let (route_cu_price_micro_lamports, dynamic_cu_price_hint_source, dynamic_cu_price_applied) =
             self.resolve_route_cu_price_micro_lamports(static_route_cu_price_micro_lamports);
+        let dynamic_cu_price_hint_used = dynamic_cu_price_hint_source.is_some();
         let dynamic_tip_policy_enabled = self.dynamic_tip_lamports_policy.is_some();
         let (route_tip_lamports, dynamic_tip_applied) = self.resolve_route_tip_lamports(
             static_route_tip_lamports,
@@ -847,6 +864,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 Ok(mut result) => {
                     result.dynamic_cu_price_policy_enabled = dynamic_cu_price_policy_enabled;
                     result.dynamic_cu_price_hint_used = dynamic_cu_price_hint_used;
+                    result.dynamic_cu_price_hint_source = dynamic_cu_price_hint_source;
                     result.dynamic_cu_price_applied = dynamic_cu_price_applied;
                     result.dynamic_tip_policy_enabled = dynamic_tip_policy_enabled;
                     result.dynamic_tip_applied = dynamic_tip_applied;
@@ -856,6 +874,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                     let error = error.with_dynamic_policy_flags(
                         dynamic_cu_price_policy_enabled,
                         dynamic_cu_price_hint_used,
+                        dynamic_cu_price_hint_source,
                         dynamic_cu_price_applied,
                         dynamic_tip_policy_enabled,
                         dynamic_tip_applied,
@@ -866,6 +885,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                     let error = error.with_dynamic_policy_flags(
                         dynamic_cu_price_policy_enabled,
                         dynamic_cu_price_hint_used,
+                        dynamic_cu_price_hint_source,
                         dynamic_cu_price_applied,
                         dynamic_tip_policy_enabled,
                         dynamic_tip_applied,
@@ -983,7 +1003,7 @@ fn query_priority_fee_rpc_endpoints(
     started: Instant,
     total_timeout: StdDuration,
     percentile: u8,
-) -> Option<u64> {
+) -> Option<(u64, DynamicCuPriceHintSource)> {
     for endpoint in endpoints {
         let elapsed = started.elapsed();
         if elapsed >= total_timeout {
@@ -1013,7 +1033,7 @@ fn query_priority_fee_rpc_endpoints(
             Err(_) => continue,
         };
         if let Some(fee) = parse_recent_priority_fee_percentile_from_rpc_body(&body, percentile) {
-            return Some(fee);
+            return Some((fee, DynamicCuPriceHintSource::Rpc));
         }
     }
     None
@@ -1026,7 +1046,7 @@ fn query_priority_fee_hint_api_endpoints(
     started: Instant,
     total_timeout: StdDuration,
     percentile: u8,
-) -> Option<u64> {
+) -> Option<(u64, DynamicCuPriceHintSource)> {
     for endpoint in endpoints {
         let elapsed = started.elapsed();
         if elapsed >= total_timeout {
@@ -1052,7 +1072,7 @@ fn query_priority_fee_hint_api_endpoints(
             Err(_) => continue,
         };
         if let Some(fee) = parse_priority_fee_hint_from_api_body(&body, percentile) {
-            return Some(fee);
+            return Some((fee, DynamicCuPriceHintSource::Api));
         }
     }
     None

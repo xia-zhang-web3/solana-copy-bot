@@ -621,6 +621,7 @@ mod tests {
                 priority_fee_lamports_hint: None,
                 dynamic_cu_price_policy_enabled: false,
                 dynamic_cu_price_hint_used: false,
+                dynamic_cu_price_hint_source: None,
                 dynamic_cu_price_applied: false,
                 dynamic_tip_policy_enabled: false,
                 dynamic_tip_applied: false,
@@ -650,6 +651,7 @@ mod tests {
                 priority_fee_lamports_hint: None,
                 dynamic_cu_price_policy_enabled: false,
                 dynamic_cu_price_hint_used: false,
+                dynamic_cu_price_hint_source: None,
                 dynamic_cu_price_applied: false,
                 dynamic_tip_policy_enabled: false,
                 dynamic_tip_applied: false,
@@ -680,6 +682,7 @@ mod tests {
                 priority_fee_lamports_hint: None,
                 dynamic_cu_price_policy_enabled: false,
                 dynamic_cu_price_hint_used: false,
+                dynamic_cu_price_hint_source: None,
                 dynamic_cu_price_applied: false,
                 dynamic_tip_policy_enabled: false,
                 dynamic_tip_applied: false,
@@ -690,6 +693,7 @@ mod tests {
     struct DynamicPolicyMetricsSubmitter {
         dynamic_cu_price_policy_enabled: bool,
         dynamic_cu_price_hint_used: bool,
+        dynamic_cu_price_hint_source: Option<submitter::DynamicCuPriceHintSource>,
         dynamic_cu_price_applied: bool,
         dynamic_tip_policy_enabled: bool,
         dynamic_tip_applied: bool,
@@ -713,6 +717,7 @@ mod tests {
                 priority_fee_lamports_hint: None,
                 dynamic_cu_price_policy_enabled: self.dynamic_cu_price_policy_enabled,
                 dynamic_cu_price_hint_used: self.dynamic_cu_price_hint_used,
+                dynamic_cu_price_hint_source: self.dynamic_cu_price_hint_source,
                 dynamic_cu_price_applied: self.dynamic_cu_price_applied,
                 dynamic_tip_policy_enabled: self.dynamic_tip_policy_enabled,
                 dynamic_tip_applied: self.dynamic_tip_applied,
@@ -723,6 +728,7 @@ mod tests {
     struct DynamicPolicyRetryableErrorSubmitter {
         dynamic_cu_price_policy_enabled: bool,
         dynamic_cu_price_hint_used: bool,
+        dynamic_cu_price_hint_source: Option<submitter::DynamicCuPriceHintSource>,
         dynamic_cu_price_applied: bool,
         dynamic_tip_policy_enabled: bool,
         dynamic_tip_applied: bool,
@@ -740,6 +746,7 @@ mod tests {
                     .with_dynamic_policy_flags(
                         self.dynamic_cu_price_policy_enabled,
                         self.dynamic_cu_price_hint_used,
+                        self.dynamic_cu_price_hint_source,
                         self.dynamic_cu_price_applied,
                         self.dynamic_tip_policy_enabled,
                         self.dynamic_tip_applied,
@@ -1483,6 +1490,7 @@ mod tests {
             submitter: Box::new(DynamicPolicyMetricsSubmitter {
                 dynamic_cu_price_policy_enabled: true,
                 dynamic_cu_price_hint_used: true,
+                dynamic_cu_price_hint_source: Some(submitter::DynamicCuPriceHintSource::Rpc),
                 dynamic_cu_price_applied: true,
                 dynamic_tip_policy_enabled: true,
                 dynamic_tip_applied: false,
@@ -1498,6 +1506,11 @@ mod tests {
         );
         assert_eq!(
             report.submit_dynamic_cu_hint_used_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_cu_hint_api_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_cu_hint_rpc_by_route.get("rpc"),
             Some(&1)
         );
         assert_eq!(
@@ -1568,6 +1581,7 @@ mod tests {
             submitter: Box::new(DynamicPolicyMetricsSubmitter {
                 dynamic_cu_price_policy_enabled: true,
                 dynamic_cu_price_hint_used: true,
+                dynamic_cu_price_hint_source: Some(submitter::DynamicCuPriceHintSource::Api),
                 dynamic_cu_price_applied: false,
                 dynamic_tip_policy_enabled: false,
                 dynamic_tip_applied: false,
@@ -1585,6 +1599,11 @@ mod tests {
             report.submit_dynamic_cu_hint_used_by_route.get("rpc"),
             Some(&1)
         );
+        assert_eq!(
+            report.submit_dynamic_cu_hint_api_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_cu_hint_rpc_by_route.get("rpc"), None);
         assert_eq!(
             report.submit_dynamic_cu_price_applied_by_route.get("rpc"),
             None
@@ -1647,6 +1666,7 @@ mod tests {
             submitter: Box::new(DynamicPolicyRetryableErrorSubmitter {
                 dynamic_cu_price_policy_enabled: true,
                 dynamic_cu_price_hint_used: true,
+                dynamic_cu_price_hint_source: Some(submitter::DynamicCuPriceHintSource::Rpc),
                 dynamic_cu_price_applied: false,
                 dynamic_tip_policy_enabled: true,
                 dynamic_tip_applied: false,
@@ -1662,6 +1682,11 @@ mod tests {
         );
         assert_eq!(
             report.submit_dynamic_cu_hint_used_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_cu_hint_api_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_cu_hint_rpc_by_route.get("rpc"),
             Some(&1)
         );
         assert_eq!(

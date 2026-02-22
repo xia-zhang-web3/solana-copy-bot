@@ -1,7 +1,7 @@
 use crate::batch_report::bump_route_counter;
 use crate::intent::ExecutionIntent;
 use crate::pretrade::PreTradeDecisionKind;
-use crate::submitter::SubmitErrorKind;
+use crate::submitter::{DynamicCuPriceHintSource, SubmitErrorKind};
 use crate::{ExecutionBatchReport, ExecutionRuntime, SignalResult};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -13,6 +13,7 @@ fn bump_dynamic_submit_policy_counters(
     route: &str,
     dynamic_cu_price_policy_enabled: bool,
     dynamic_cu_price_hint_used: bool,
+    dynamic_cu_price_hint_source: Option<DynamicCuPriceHintSource>,
     dynamic_cu_price_applied: bool,
     dynamic_tip_policy_enabled: bool,
     dynamic_tip_applied: bool,
@@ -21,6 +22,15 @@ fn bump_dynamic_submit_policy_counters(
         bump_route_counter(&mut report.submit_dynamic_cu_policy_enabled_by_route, route);
         if dynamic_cu_price_hint_used {
             bump_route_counter(&mut report.submit_dynamic_cu_hint_used_by_route, route);
+            match dynamic_cu_price_hint_source {
+                Some(DynamicCuPriceHintSource::Api) => {
+                    bump_route_counter(&mut report.submit_dynamic_cu_hint_api_by_route, route);
+                }
+                Some(DynamicCuPriceHintSource::Rpc) => {
+                    bump_route_counter(&mut report.submit_dynamic_cu_hint_rpc_by_route, route);
+                }
+                None => {}
+            }
         }
         if dynamic_cu_price_applied {
             bump_route_counter(&mut report.submit_dynamic_cu_price_applied_by_route, route);
@@ -202,6 +212,7 @@ impl ExecutionRuntime {
                     selected_route,
                     error.dynamic_cu_price_policy_enabled,
                     error.dynamic_cu_price_hint_used,
+                    error.dynamic_cu_price_hint_source,
                     error.dynamic_cu_price_applied,
                     error.dynamic_tip_policy_enabled,
                     error.dynamic_tip_applied,
@@ -317,6 +328,7 @@ impl ExecutionRuntime {
             submit.route.as_str(),
             submit.dynamic_cu_price_policy_enabled,
             submit.dynamic_cu_price_hint_used,
+            submit.dynamic_cu_price_hint_source,
             submit.dynamic_cu_price_applied,
             submit.dynamic_tip_policy_enabled,
             submit.dynamic_tip_applied,

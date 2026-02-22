@@ -345,6 +345,7 @@ pub(crate) fn parse_adapter_submit_response(
         priority_fee_lamports_hint,
         dynamic_cu_price_policy_enabled: false,
         dynamic_cu_price_hint_used: false,
+        dynamic_cu_price_hint_source: None,
         dynamic_cu_price_applied: false,
         dynamic_tip_policy_enabled: false,
         dynamic_tip_applied: false,

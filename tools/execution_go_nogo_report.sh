@@ -173,6 +173,8 @@ submit_retry_scheduled_by_route="$(extract_field "submit_retry_scheduled_by_rout
 submit_failed_by_route="$(extract_field "submit_failed_by_route" "$snapshot_output")"
 submit_dynamic_cu_policy_enabled_by_route="$(extract_field "submit_dynamic_cu_policy_enabled_by_route" "$snapshot_output")"
 submit_dynamic_cu_hint_used_by_route="$(extract_field "submit_dynamic_cu_hint_used_by_route" "$snapshot_output")"
+submit_dynamic_cu_hint_api_by_route="$(extract_field "submit_dynamic_cu_hint_api_by_route" "$snapshot_output")"
+submit_dynamic_cu_hint_rpc_by_route="$(extract_field "submit_dynamic_cu_hint_rpc_by_route" "$snapshot_output")"
 submit_dynamic_cu_price_applied_by_route="$(extract_field "submit_dynamic_cu_price_applied_by_route" "$snapshot_output")"
 submit_dynamic_cu_static_fallback_by_route="$(extract_field "submit_dynamic_cu_static_fallback_by_route" "$snapshot_output")"
 submit_dynamic_tip_policy_enabled_by_route="$(extract_field "submit_dynamic_tip_policy_enabled_by_route" "$snapshot_output")"
@@ -183,6 +185,8 @@ dynamic_tip_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_ti
 
 submit_dynamic_cu_policy_enabled_total="$(sum_route_map_values "${submit_dynamic_cu_policy_enabled_by_route:-}")"
 submit_dynamic_cu_hint_used_total="$(sum_route_map_values "${submit_dynamic_cu_hint_used_by_route:-}")"
+submit_dynamic_cu_hint_api_total="$(sum_route_map_values "${submit_dynamic_cu_hint_api_by_route:-}")"
+submit_dynamic_cu_hint_rpc_total="$(sum_route_map_values "${submit_dynamic_cu_hint_rpc_by_route:-}")"
 submit_dynamic_cu_price_applied_total="$(sum_route_map_values "${submit_dynamic_cu_price_applied_by_route:-}")"
 submit_dynamic_cu_static_fallback_total="$(sum_route_map_values "${submit_dynamic_cu_static_fallback_by_route:-}")"
 submit_dynamic_tip_policy_enabled_total="$(sum_route_map_values "${submit_dynamic_tip_policy_enabled_by_route:-}")"
@@ -315,6 +319,8 @@ submit_retry_scheduled_by_route: ${submit_retry_scheduled_by_route:-{}}
 submit_failed_by_route: ${submit_failed_by_route:-{}}
 submit_dynamic_cu_policy_enabled_by_route: ${submit_dynamic_cu_policy_enabled_by_route:-{}}
 submit_dynamic_cu_hint_used_by_route: ${submit_dynamic_cu_hint_used_by_route:-{}}
+submit_dynamic_cu_hint_api_by_route: ${submit_dynamic_cu_hint_api_by_route:-{}}
+submit_dynamic_cu_hint_rpc_by_route: ${submit_dynamic_cu_hint_rpc_by_route:-{}}
 submit_dynamic_cu_price_applied_by_route: ${submit_dynamic_cu_price_applied_by_route:-{}}
 submit_dynamic_cu_static_fallback_by_route: ${submit_dynamic_cu_static_fallback_by_route:-{}}
 submit_dynamic_tip_policy_enabled_by_route: ${submit_dynamic_tip_policy_enabled_by_route:-{}}
@@ -323,6 +329,8 @@ submit_dynamic_tip_static_floor_by_route: ${submit_dynamic_tip_static_floor_by_r
 dynamic_cu_policy_config_enabled: $dynamic_cu_policy_config_enabled
 dynamic_cu_policy_enabled_total: ${submit_dynamic_cu_policy_enabled_total:-0}
 dynamic_cu_hint_used_total: ${submit_dynamic_cu_hint_used_total:-0}
+dynamic_cu_hint_api_total: ${submit_dynamic_cu_hint_api_total:-0}
+dynamic_cu_hint_rpc_total: ${submit_dynamic_cu_hint_rpc_total:-0}
 dynamic_cu_price_applied_total: ${submit_dynamic_cu_price_applied_total:-0}
 dynamic_cu_static_fallback_total: ${submit_dynamic_cu_static_fallback_total:-0}
 dynamic_cu_policy_verdict: $dynamic_cu_policy_verdict
