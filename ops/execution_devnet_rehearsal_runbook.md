@@ -29,7 +29,8 @@ Arguments:
 1. `24` — execution evidence window in hours.
 2. `60` — recent risk-events window in minutes.
 
-Optional strictness knobs (default `false`):
+Optional windowed-signoff knobs:
+Defaults: `WINDOWED_SIGNOFF_REQUIRED=false`, `WINDOWED_SIGNOFF_WINDOWS_CSV=1,6,24`, `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS=false`, `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=false`.
 
 1. `WINDOWED_SIGNOFF_REQUIRED=true`:
    1. rehearsal treats nested `execution_windowed_signoff_report.sh` verdict as required gate.
