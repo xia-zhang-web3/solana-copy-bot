@@ -1251,6 +1251,8 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "=== Execution Devnet Rehearsal ==="
   assert_contains "$output" "preflight_verdict: PASS"
   assert_contains "$output" "overall_go_nogo_verdict: GO"
+  assert_contains "$output" "dynamic_cu_policy_verdict: SKIP"
+  assert_contains "$output" "dynamic_tip_policy_verdict: SKIP"
   assert_contains "$output" "tests_run: false"
   assert_contains "$output" "devnet_rehearsal_verdict: GO"
   assert_contains "$output" "artifact_summary:"
@@ -1317,6 +1319,8 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "=== Adapter Rollout Evidence Summary ==="
   assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
   assert_contains "$pass_output" "devnet_rehearsal_verdict: GO"
+  assert_contains "$pass_output" "dynamic_cu_policy_verdict: SKIP"
+  assert_contains "$pass_output" "dynamic_tip_policy_verdict: SKIP"
   assert_contains "$pass_output" "adapter_rollout_verdict: GO"
   assert_contains "$pass_output" "artifact_summary:"
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then

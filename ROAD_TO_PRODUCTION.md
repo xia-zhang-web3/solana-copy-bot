@@ -594,6 +594,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 70. ops runtime snapshot helper now surfaces latest execution batch counters from journal logs (including dynamic submit-policy route maps), and smoke coverage validates presence/absence branches to keep go/no-go evidence observable during adapter-mode rollout.
 71. go/no-go summary now explicitly carries execution submit dynamic-policy evidence from runtime snapshot (`execution_batch_sample_available` and per-route submit/dynamic maps), so rollout packets can be reviewed from a single `tools/execution_go_nogo_report.sh` artifact without cross-reading raw snapshot output.
 72. go/no-go helper now emits explicit dynamic-policy readiness verdicts (`dynamic_cu_policy_verdict`, `dynamic_tip_policy_verdict`) with per-policy reasons and aggregate counters from runtime submit telemetry; this keeps dynamic-policy rollout evidence actionable without changing top-level fail-closed `overall_go_nogo_verdict` precedence.
+73. Stage C.5/rollout orchestrators now propagate dynamic-policy readiness fields from go/no-go output (`dynamic_cu_policy_verdict/reason`, `dynamic_tip_policy_verdict/reason`) into `tools/execution_devnet_rehearsal.sh` and `tools/adapter_rollout_evidence_report.sh` summaries, so auditors can review dynamic submit readiness directly from top-level rehearsal/rollout artifacts.
 
 Остается в next-code-queue:
 

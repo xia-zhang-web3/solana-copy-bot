@@ -88,6 +88,10 @@ rehearsal_verdict="UNKNOWN"
 rehearsal_reason="execution devnet rehearsal helper not executed"
 preflight_verdict=""
 go_nogo_verdict=""
+dynamic_cu_policy_verdict=""
+dynamic_cu_policy_reason=""
+dynamic_tip_policy_verdict=""
+dynamic_tip_policy_reason=""
 tests_run=""
 tests_failed=""
 if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
@@ -121,6 +125,10 @@ else
   rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
   preflight_verdict="$(trim_string "$(extract_field "preflight_verdict" "$rehearsal_output")")"
   go_nogo_verdict="$(trim_string "$(extract_field "overall_go_nogo_verdict" "$rehearsal_output")")"
+  dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_policy_verdict" "$rehearsal_output")")"
+  dynamic_cu_policy_reason="$(trim_string "$(extract_field "dynamic_cu_policy_reason" "$rehearsal_output")")"
+  dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$rehearsal_output")")"
+  dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$rehearsal_output")")"
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
   if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
@@ -177,6 +185,10 @@ devnet_rehearsal_reason: ${rehearsal_reason:-n/a}
 devnet_rehearsal_exit_code: $rehearsal_exit_code
 preflight_verdict: ${preflight_verdict:-unknown}
 overall_go_nogo_verdict: ${go_nogo_verdict:-unknown}
+dynamic_cu_policy_verdict: ${dynamic_cu_policy_verdict:-unknown}
+dynamic_cu_policy_reason: ${dynamic_cu_policy_reason:-n/a}
+dynamic_tip_policy_verdict: ${dynamic_tip_policy_verdict:-unknown}
+dynamic_tip_policy_reason: ${dynamic_tip_policy_reason:-n/a}
 tests_run: ${tests_run:-unknown}
 tests_failed: ${tests_failed:-unknown}
 input_error_count: ${#input_errors[@]}

@@ -206,8 +206,18 @@ fi
 
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
 overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
+dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_policy_verdict" "$go_nogo_output")")"
+dynamic_cu_policy_reason="$(trim_string "$(extract_field "dynamic_cu_policy_reason" "$go_nogo_output")")"
+dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$go_nogo_output")")"
+dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$go_nogo_output")")"
 if [[ "$overall_go_nogo_verdict" == "UNKNOWN" && "$go_nogo_exit_code" -ne 0 && -z "$overall_go_nogo_reason" ]]; then
   overall_go_nogo_reason="execution_go_nogo_report exited with code $go_nogo_exit_code"
+fi
+if [[ -z "$dynamic_cu_policy_reason" ]]; then
+  dynamic_cu_policy_reason="n/a"
+fi
+if [[ -z "$dynamic_tip_policy_reason" ]]; then
+  dynamic_tip_policy_reason="n/a"
 fi
 
 tests_total=0
@@ -287,6 +297,10 @@ preflight_verdict: $preflight_verdict
 preflight_reason: ${preflight_reason:-n/a}
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: ${overall_go_nogo_reason:-n/a}
+dynamic_cu_policy_verdict: $dynamic_cu_policy_verdict
+dynamic_cu_policy_reason: $dynamic_cu_policy_reason
+dynamic_tip_policy_verdict: $dynamic_tip_policy_verdict
+dynamic_tip_policy_reason: $dynamic_tip_policy_reason
 tests_run: $tests_run
 tests_total: $tests_total
 tests_failed: $tests_failed
