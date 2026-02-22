@@ -44,6 +44,9 @@ rotation_output=""
 rotation_exit_code=3
 rotation_verdict="UNKNOWN"
 rotation_reason="rotation helper not executed"
+rotation_artifact_report=""
+rotation_artifact_manifest=""
+rotation_report_sha256=""
 if [[ -f "$ADAPTER_ENV_PATH" ]]; then
   if rotation_output="$(
     ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
@@ -57,6 +60,9 @@ if [[ -f "$ADAPTER_ENV_PATH" ]]; then
 
   rotation_verdict="$(normalize_rotation_verdict "$(extract_field "rotation_readiness_verdict" "$rotation_output")")"
   rotation_reason="$(extract_field "rotation_readiness_reason" "$rotation_output")"
+  rotation_artifact_report="$(trim_string "$(extract_field "artifact_report" "$rotation_output")")"
+  rotation_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rotation_output")")"
+  rotation_report_sha256="$(trim_string "$(extract_field "report_sha256" "$rotation_output")")"
   rotation_first_error="$(printf '%s\n' "$rotation_output" | awk '
     /^--- errors ---$/ {in_errors=1; next}
     /^--- / && in_errors {exit}
@@ -110,6 +116,11 @@ go_nogo_calibration_sha256=""
 go_nogo_snapshot_sha256=""
 go_nogo_preflight_sha256=""
 go_nogo_summary_sha256=""
+rehearsal_artifact_manifest=""
+rehearsal_summary_sha256=""
+rehearsal_preflight_sha256=""
+rehearsal_go_nogo_sha256=""
+rehearsal_tests_sha256=""
 tests_run=""
 tests_failed=""
 if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
@@ -165,6 +176,11 @@ else
   go_nogo_snapshot_sha256="$(trim_string "$(extract_field "go_nogo_snapshot_sha256" "$rehearsal_output")")"
   go_nogo_preflight_sha256="$(trim_string "$(extract_field "go_nogo_preflight_sha256" "$rehearsal_output")")"
   go_nogo_summary_sha256="$(trim_string "$(extract_field "go_nogo_summary_sha256" "$rehearsal_output")")"
+  rehearsal_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rehearsal_output")")"
+  rehearsal_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rehearsal_output")")"
+  rehearsal_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$rehearsal_output")")"
+  rehearsal_go_nogo_sha256="$(trim_string "$(extract_field "go_nogo_sha256" "$rehearsal_output")")"
+  rehearsal_tests_sha256="$(trim_string "$(extract_field "tests_sha256" "$rehearsal_output")")"
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
   if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
@@ -215,6 +231,9 @@ risk_events_minutes: $RISK_EVENTS_MINUTES
 rotation_readiness_verdict: $rotation_verdict
 rotation_readiness_reason: ${rotation_reason:-n/a}
 rotation_exit_code: $rotation_exit_code
+rotation_artifact_report: ${rotation_artifact_report:-n/a}
+rotation_artifact_manifest: ${rotation_artifact_manifest:-n/a}
+rotation_report_sha256: ${rotation_report_sha256:-n/a}
 
 devnet_rehearsal_verdict: $rehearsal_verdict
 devnet_rehearsal_reason: ${rehearsal_reason:-n/a}
@@ -243,6 +262,11 @@ go_nogo_calibration_sha256: ${go_nogo_calibration_sha256:-n/a}
 go_nogo_snapshot_sha256: ${go_nogo_snapshot_sha256:-n/a}
 go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
+rehearsal_artifact_manifest: ${rehearsal_artifact_manifest:-n/a}
+rehearsal_summary_sha256: ${rehearsal_summary_sha256:-n/a}
+rehearsal_preflight_sha256: ${rehearsal_preflight_sha256:-n/a}
+rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
+rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
 tests_run: ${tests_run:-unknown}
 tests_failed: ${tests_failed:-unknown}
 input_error_count: ${#input_errors[@]}
