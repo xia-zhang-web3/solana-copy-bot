@@ -91,6 +91,7 @@ route_is_value() {
 window_total=0
 window_pass_count=0
 window_unknown_count=0
+window_hard_block_count=0
 first_unknown_reason=""
 first_non_pass_reason=""
 
@@ -169,11 +170,24 @@ if ((${#input_errors[@]} == 0)); then
       continue
     fi
 
-    if [[ "$fee_verdict" == "PASS" && "$route_verdict" == "PASS" ]]; then
-      window_pass_count=$((window_pass_count + 1))
-    elif [[ -z "$first_non_pass_reason" ]]; then
-      first_non_pass_reason="window=${window_hours}h has non-PASS gates (fee=${fee_verdict}, route=${route_verdict})"
+    if [[ "$overall_verdict" != "GO" || "$go_nogo_exit_code" -ne 0 ]]; then
+      if [[ "$overall_verdict" == "NO_GO" || "$go_nogo_exit_code" -ne 0 ]]; then
+        window_hard_block_count=$((window_hard_block_count + 1))
+      fi
+      if [[ -z "$first_non_pass_reason" ]]; then
+        first_non_pass_reason="window=${window_hours}h blocked by overall go/no-go state (overall=${overall_verdict}, exit_code=${go_nogo_exit_code})"
+      fi
+      continue
     fi
+
+    if [[ "$fee_verdict" != "PASS" || "$route_verdict" != "PASS" ]]; then
+      window_unknown_count=$((window_unknown_count + 1))
+      if [[ -z "$first_unknown_reason" ]]; then
+        first_unknown_reason="window=${window_hours}h produced inconsistent GO state with non-PASS gates (fee=${fee_verdict}, route=${route_verdict})"
+      fi
+      continue
+    fi
+    window_pass_count=$((window_pass_count + 1))
 
     if route_is_value "$primary_route"; then
       if [[ "$primary_route_seen" == "false" ]]; then
@@ -210,9 +224,12 @@ if ((${#input_errors[@]} > 0)); then
 elif ((window_unknown_count > 0)); then
   signoff_verdict="NO_GO"
   signoff_reason="${first_unknown_reason:-unknown window verdict state}"
+elif ((window_hard_block_count > 0)); then
+  signoff_verdict="NO_GO"
+  signoff_reason="${first_non_pass_reason:-at least one window is blocked by overall go/no-go state}"
 elif ((window_pass_count == window_total)) && [[ "$primary_route_stable" == "true" ]] && [[ "$fallback_route_stable" == "true" ]]; then
   signoff_verdict="GO"
-  signoff_reason="all windows PASS for fee/route gates and primary/fallback routes are stable"
+  signoff_reason="all windows GO with PASS fee/route gates and stable primary/fallback routes"
 else
   signoff_verdict="HOLD"
   if [[ "$primary_route_stable" != "true" ]]; then
@@ -234,6 +251,7 @@ risk_events_minutes: $RISK_EVENTS_MINUTES
 window_count: $window_total
 window_pass_count: $window_pass_count
 window_unknown_count: $window_unknown_count
+window_hard_block_count: $window_hard_block_count
 primary_route_stable: $primary_route_stable
 stable_primary_route: $stable_primary_route
 fallback_route_stable: $fallback_route_stable

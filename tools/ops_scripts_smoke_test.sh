@@ -994,6 +994,33 @@ run_windowed_signoff_report_case() {
   assert_contains "$hold_output" "window_24h_route_profile_verdict: SKIP"
   assert_contains "$hold_output" "signoff_verdict: HOLD"
 
+  local nogo_output=""
+  if nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$paper_cfg" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for windowed signoff helper when nested overall go/no-go is not GO" >&2
+    exit 1
+  else
+    local nogo_exit_code=$?
+    if [[ "$nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for windowed signoff helper, got $nogo_exit_code" >&2
+      echo "$nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$nogo_output" "window_24h_overall_go_nogo_verdict: NO_GO"
+  assert_contains "$nogo_output" "window_24h_fee_decomposition_verdict: PASS"
+  assert_contains "$nogo_output" "window_24h_route_profile_verdict: PASS"
+  assert_contains "$nogo_output" "window_hard_block_count: 1"
+  assert_contains "$nogo_output" "signoff_verdict: NO_GO"
+
   local artifacts_dir="$TMP_DIR/windowed-signoff-artifacts"
   local go_output
   go_output="$(

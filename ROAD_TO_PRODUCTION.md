@@ -608,6 +608,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 84. dynamic CU hint source split (`api` vs `rpc`) is now propagated end-to-end in evidence orchestration: go/no-go emits source totals, devnet rehearsal mirrors them (`dynamic_cu_hint_api_total`/`dynamic_cu_hint_rpc_total`), and rollout summary carries the same fields; smoke validates snapshot/go-no-go/rehearsal/rollout branches to keep source-level telemetry regressions visible.
 85. go/no-go now emits explicit dynamic CU hint-source readiness gate (`dynamic_cu_hint_source_verdict/reason`) with config awareness (`dynamic_cu_hint_api_configured`) and source totals, and rehearsal/rollout summaries propagate the same fields so API-vs-RPC hint adoption can be audited without opening nested artifacts.
 86. multi-window adapter readiness helper added: `tools/execution_windowed_signoff_report.sh` now aggregates `execution_go_nogo_report.sh` over configurable windows (default `1,6,24`) into one `signoff_verdict=GO|HOLD|NO_GO` with per-window fee/route gates, route stability checks, and captured-artifact checksum manifest; smoke covers both `HOLD` (paper/skip) and `GO` (adapter test-mode PASS) branches.
+87. windowed signoff helper hardened fail-closed: per-window PASS now requires nested `overall_go_nogo_verdict=GO` and exit code `0` (not only fee/route PASS), preventing false `signoff_verdict=GO` when nested go/no-go is `NO_GO/HOLD`; smoke includes explicit regression case (`fee/route PASS` with nested overall `NO_GO` => signoff `NO_GO`).
 
 Остается в next-code-queue:
 
