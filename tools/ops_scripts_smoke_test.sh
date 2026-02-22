@@ -681,6 +681,32 @@ assert_contains() {
   fi
 }
 
+extract_field_value() {
+  local text="$1"
+  local key="$2"
+  printf '%s\n' "$text" | awk -F': ' -v key="$key" '
+    $1 == key {
+      print substr($0, index($0, ": ") + 2)
+      exit
+    }
+  '
+}
+
+assert_sha256_field() {
+  local text="$1"
+  local key="$2"
+  local value
+  value="$(extract_field_value "$text" "$key")"
+  if [[ -z "$value" ]]; then
+    echo "expected sha256 field missing: $key" >&2
+    exit 1
+  fi
+  if ! [[ "$value" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "expected $key to be 64-char lowercase hex sha256, got: $value" >&2
+    exit 1
+  fi
+}
+
 run_ops_scripts_for_db() {
   local label="$1"
   local db_path="$2"
@@ -866,6 +892,10 @@ run_go_nogo_artifact_export_case() {
   assert_contains "$output" "artifact_summary:"
   assert_contains "$output" "artifact_manifest:"
   assert_contains "$output" "summary_sha256:"
+  assert_sha256_field "$output" "calibration_sha256"
+  assert_sha256_field "$output" "snapshot_sha256"
+  assert_sha256_field "$output" "preflight_sha256"
+  assert_sha256_field "$output" "summary_sha256"
   if ! ls "$artifacts_dir"/execution_go_nogo_summary_*.txt >/dev/null 2>&1; then
     echo "expected go/no-go summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1095,6 +1125,7 @@ run_adapter_secret_rotation_report_case() {
   assert_contains "$pass_output" "artifact_report:"
   assert_contains "$pass_output" "artifact_manifest:"
   assert_contains "$pass_output" "report_sha256:"
+  assert_sha256_field "$pass_output" "report_sha256"
   if ! ls "$artifacts_dir"/adapter_secret_rotation_report_*.txt >/dev/null 2>&1; then
     echo "expected adapter secret rotation artifact in $artifacts_dir" >&2
     exit 1
@@ -1284,6 +1315,12 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "artifact_tests:"
   assert_contains "$output" "artifact_manifest:"
   assert_contains "$output" "summary_sha256:"
+  assert_sha256_field "$output" "summary_sha256"
+  assert_sha256_field "$output" "preflight_sha256"
+  assert_sha256_field "$output" "go_nogo_sha256"
+  assert_sha256_field "$output" "tests_sha256"
+  assert_sha256_field "$output" "go_nogo_nested_capture_sha256"
+  assert_sha256_field "$output" "go_nogo_summary_sha256"
   assert_contains "$output" "go_nogo_artifact_manifest:"
   assert_contains "$output" "go_nogo_summary_sha256:"
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_summary_*.txt >/dev/null 2>&1; then
@@ -1363,6 +1400,18 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "artifact_summary:"
   assert_contains "$pass_output" "artifact_manifest:"
   assert_contains "$pass_output" "summary_sha256:"
+  assert_sha256_field "$pass_output" "summary_sha256"
+  assert_sha256_field "$pass_output" "rotation_capture_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_capture_sha256"
+  assert_sha256_field "$pass_output" "rotation_report_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_summary_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_preflight_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_go_nogo_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_tests_sha256"
+  assert_sha256_field "$pass_output" "go_nogo_calibration_sha256"
+  assert_sha256_field "$pass_output" "go_nogo_snapshot_sha256"
+  assert_sha256_field "$pass_output" "go_nogo_preflight_sha256"
+  assert_sha256_field "$pass_output" "go_nogo_summary_sha256"
   assert_contains "$pass_output" "go_nogo_artifact_manifest:"
   assert_contains "$pass_output" "go_nogo_summary_sha256:"
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
