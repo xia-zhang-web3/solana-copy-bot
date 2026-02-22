@@ -944,6 +944,29 @@ run_go_nogo_unknown_precedence_case() {
   echo "[ok] go-no-go UNKNOWN precedence"
 }
 
+run_go_nogo_dynamic_hint_source_gate_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL="https://priority-fee.example/api" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$output" "dynamic_cu_policy_config_enabled: true"
+  assert_contains "$output" "dynamic_cu_policy_verdict: PASS"
+  assert_contains "$output" "dynamic_cu_hint_api_configured: true"
+  assert_contains "$output" "dynamic_cu_hint_api_total: 1"
+  assert_contains "$output" "dynamic_cu_hint_rpc_total: 1"
+  assert_contains "$output" "dynamic_cu_hint_source_verdict: PASS"
+  assert_contains "$output" "dynamic_cu_hint_source_reason: external Priority Fee API hints observed"
+  echo "[ok] go-no-go dynamic hint source gate"
+}
+
 run_go_nogo_preflight_fail_case() {
   local db_path="$1"
   local fail_cfg="$TMP_DIR/go-nogo-preflight-fail.toml"
@@ -1602,6 +1625,7 @@ main() {
   run_runtime_snapshot_no_ingestion_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_artifact_export_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_unknown_precedence_case "$legacy_db" "$legacy_cfg"
+  run_go_nogo_dynamic_hint_source_gate_case "$legacy_db" "$legacy_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case
   run_go_nogo_preflight_fail_case "$legacy_db"
