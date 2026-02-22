@@ -591,6 +591,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 67. optional dynamic tip strategy added for adapter mode: runtime can now raise route `tip_lamports` from resolved compute budget (`cu_limit` × `cu_price_micro_lamports`) using configurable multiplier (`execution.submit_dynamic_tip_lamports_multiplier_bps`) with static tip as floor and global tip guardrail cap; policy is fail-closed and default-off.
 68. execution batch telemetry extended for dynamic submit policies: runtime now emits per-route counters for dynamic CU policy enablement/hint usage/applied-vs-static-fallback and dynamic tip policy enablement/applied-vs-static-floor, allowing rollout evidence to distinguish true dynamic-path usage from static fallback behavior.
 69. dynamic submit-policy telemetry now covers failed/retryable submit attempts too: adapter submit errors preserve dynamic policy flags (`enabled/hint_used/applied`) and execution pipeline records the same per-route dynamic counters on both success and error paths, eliminating observability blind spots during degraded submit windows.
+70. ops runtime snapshot helper now surfaces latest execution batch counters from journal logs (including dynamic submit-policy route maps), and smoke coverage validates presence/absence branches to keep go/no-go evidence observable during adapter-mode rollout.
 
 Остается в next-code-queue:
 

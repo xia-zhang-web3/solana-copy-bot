@@ -43,6 +43,7 @@ LOGS
 2026-02-19T12:00:00Z INFO ingestion pipeline metrics {"ingestion_lag_ms_p95":1400,"ingestion_lag_ms_p99":2100,"ws_to_fetch_queue_depth":1,"fetch_to_output_queue_depth":0,"fetch_concurrency_inflight":2,"ws_notifications_enqueued":111,"ws_notifications_replaced_oldest":0,"reconnect_count":0,"stream_gap_detected":0,"parse_rejected_total":3,"parse_rejected_by_reason":{"other":1,"missing_slot":2},"parse_fallback_by_reason":{"missing_program_ids_fallback":4},"grpc_message_total":12345,"grpc_decode_errors":0,"rpc_429":0,"rpc_5xx":0}
 2026-02-19T12:00:00Z INFO ingestion pipeline metrics {"ingestion_lag_ms_p95":1700,"ingestion_lag_ms_p99":2600,"ws_to_fetch_queue_depth":2,"fetch_to_output_queue_depth":1,"fetch_concurrency_inflight":3,"ws_notifications_enqueued":222,"ws_notifications_replaced_oldest":1,"reconnect_count":1,"stream_gap_detected":0,"parse_rejected_total":5,"parse_rejected_by_reason":{"missing_signer":3,"other":2},"parse_fallback_by_reason":{"missing_program_ids_fallback":1,"missing_slot_fallback":2},"grpc_message_total":22345,"grpc_decode_errors":1,"rpc_429":1,"rpc_5xx":0}
 2026-02-19T12:00:01Z INFO sqlite contention counters {"sqlite_write_retry_total":0,"sqlite_busy_error_total":0}
+2026-02-19T12:00:02Z INFO execution batch processed {"attempted":3,"confirmed":2,"dropped":0,"failed":1,"skipped":0,"submit_attempted_by_route":{"rpc":3},"submit_retry_scheduled_by_route":{"rpc":1},"submit_failed_by_route":{"rpc":1},"submit_dynamic_cu_policy_enabled_by_route":{"rpc":2},"submit_dynamic_cu_hint_used_by_route":{"rpc":2},"submit_dynamic_cu_price_applied_by_route":{"rpc":1},"submit_dynamic_cu_static_fallback_by_route":{"rpc":1},"submit_dynamic_tip_policy_enabled_by_route":{"rpc":2},"submit_dynamic_tip_applied_by_route":{"rpc":1},"submit_dynamic_tip_static_floor_by_route":{"rpc":1}}
 LOGS
 fi
 exit 0
@@ -718,6 +719,13 @@ run_ops_scripts_for_db() {
   assert_contains "$snapshot_output" "parse_rejected_total: 5"
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
   assert_contains "$snapshot_output" "parse_fallback_by_reason: {\"missing_program_ids_fallback\": 1, \"missing_slot_fallback\": 2}"
+  assert_contains "$snapshot_output" "execution_batch_sample_available: true"
+  assert_contains "$snapshot_output" "submit_dynamic_cu_policy_enabled_by_route: {\"rpc\": 2}"
+  assert_contains "$snapshot_output" "submit_dynamic_cu_price_applied_by_route: {\"rpc\": 1}"
+  assert_contains "$snapshot_output" "submit_dynamic_cu_static_fallback_by_route: {\"rpc\": 1}"
+  assert_contains "$snapshot_output" "submit_dynamic_tip_policy_enabled_by_route: {\"rpc\": 2}"
+  assert_contains "$snapshot_output" "submit_dynamic_tip_applied_by_route: {\"rpc\": 1}"
+  assert_contains "$snapshot_output" "submit_dynamic_tip_static_floor_by_route: {\"rpc\": 1}"
 
   local go_nogo_output
   go_nogo_output="$(
@@ -822,6 +830,7 @@ run_runtime_snapshot_no_ingestion_case() {
   )"
   assert_contains "$snapshot_output" "=== Ingestion Runtime (latest samples) ==="
   assert_contains "$snapshot_output" "no ingestion metric samples found"
+  assert_contains "$snapshot_output" "execution_batch_sample_available: false"
   echo "[ok] runtime snapshot no-ingestion branch"
 }
 

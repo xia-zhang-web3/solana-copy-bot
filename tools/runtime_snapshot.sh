@@ -276,6 +276,7 @@ import sys
 text = sys.argv[1]
 rows = []
 sqlite_rows = []
+execution_rows = []
 for line in text.splitlines():
     m = re.search(r'(\{.*\})\s*$', line)
     if not m:
@@ -288,9 +289,47 @@ for line in text.splitlines():
         rows.append(payload)
     elif "sqlite contention counters" in line:
         sqlite_rows.append(payload)
+    elif "execution batch processed" in line:
+        execution_rows.append(payload)
+
+def emit_execution_sample(rows):
+    if rows:
+        print("execution_batch_sample_available: true")
+        execution_last = rows[-1]
+        keys = [
+            "attempted",
+            "confirmed",
+            "dropped",
+            "failed",
+            "skipped",
+        ]
+        for key in keys:
+            print(f"{key}: {execution_last.get(key)}")
+        map_keys = [
+            "submit_attempted_by_route",
+            "submit_retry_scheduled_by_route",
+            "submit_failed_by_route",
+            "submit_dynamic_cu_policy_enabled_by_route",
+            "submit_dynamic_cu_hint_used_by_route",
+            "submit_dynamic_cu_price_applied_by_route",
+            "submit_dynamic_cu_static_fallback_by_route",
+            "submit_dynamic_tip_policy_enabled_by_route",
+            "submit_dynamic_tip_applied_by_route",
+            "submit_dynamic_tip_static_floor_by_route",
+        ]
+        for map_key in map_keys:
+            value = execution_last.get(map_key)
+            if isinstance(value, dict) and value:
+                ordered = {key: value[key] for key in sorted(value)}
+                print(f"{map_key}: {json.dumps(ordered, sort_keys=True)}")
+            else:
+                print(f"{map_key}: {{}}")
+    else:
+        print("execution_batch_sample_available: false")
 
 if not rows:
     print("no ingestion metric samples found")
+    emit_execution_sample(execution_rows)
     raise SystemExit(0)
 
 last = rows[-1]
@@ -334,6 +373,8 @@ if sqlite_rows:
     sqlite_last = sqlite_rows[-1]
     print(f"sqlite_write_retry_total: {sqlite_last.get('sqlite_write_retry_total')}")
     print(f"sqlite_busy_error_total: {sqlite_last.get('sqlite_busy_error_total')}")
+
+emit_execution_sample(execution_rows)
 PY
 else
   echo "journal access unavailable for service '$SERVICE' (try running with sudo)"
