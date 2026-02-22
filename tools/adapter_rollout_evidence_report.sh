@@ -249,14 +249,29 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   summary_path="$OUTPUT_DIR/adapter_rollout_evidence_summary_${timestamp_compact}.txt"
   rotation_capture_path="$OUTPUT_DIR/adapter_secret_rotation_captured_${timestamp_compact}.txt"
   rehearsal_capture_path="$OUTPUT_DIR/execution_devnet_rehearsal_captured_${timestamp_compact}.txt"
+  manifest_path="$OUTPUT_DIR/adapter_rollout_evidence_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary_output" >"$summary_path"
   printf '%s\n' "$rotation_output" >"$rotation_capture_path"
   printf '%s\n' "$rehearsal_output" >"$rehearsal_capture_path"
+
+  summary_sha256="$(sha256_file_value "$summary_path")"
+  rotation_capture_sha256="$(sha256_file_value "$rotation_capture_path")"
+  rehearsal_capture_sha256="$(sha256_file_value "$rehearsal_capture_path")"
+  cat >"$manifest_path" <<EOF
+summary_sha256: $summary_sha256
+rotation_capture_sha256: $rotation_capture_sha256
+rehearsal_capture_sha256: $rehearsal_capture_sha256
+EOF
+
   echo
   echo "artifacts_written: true"
   echo "artifact_summary: $summary_path"
   echo "artifact_rotation_capture: $rotation_capture_path"
   echo "artifact_rehearsal_capture: $rehearsal_capture_path"
+  echo "artifact_manifest: $manifest_path"
+  echo "summary_sha256: $summary_sha256"
+  echo "rotation_capture_sha256: $rotation_capture_sha256"
+  echo "rehearsal_capture_sha256: $rehearsal_capture_sha256"
 fi
 
 case "$adapter_rollout_verdict" in

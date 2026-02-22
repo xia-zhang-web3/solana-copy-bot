@@ -1276,6 +1276,8 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "artifact_preflight:"
   assert_contains "$output" "artifact_go_nogo:"
   assert_contains "$output" "artifact_tests:"
+  assert_contains "$output" "artifact_manifest:"
+  assert_contains "$output" "summary_sha256:"
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_summary_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1290,6 +1292,10 @@ run_devnet_rehearsal_case() {
   fi
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_tests_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal tests artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
   if ! ls "$artifacts_dir"/go_nogo/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
@@ -1343,6 +1349,8 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "confirmed_orders_total:"
   assert_contains "$pass_output" "adapter_rollout_verdict: GO"
   assert_contains "$pass_output" "artifact_summary:"
+  assert_contains "$pass_output" "artifact_manifest:"
+  assert_contains "$pass_output" "summary_sha256:"
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
     echo "expected adapter rollout summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1353,6 +1361,10 @@ run_adapter_rollout_evidence_case() {
   fi
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_captured_*.txt >/dev/null 2>&1; then
     echo "expected adapter rollout rehearsal capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/adapter_rollout_evidence_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected adapter rollout manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
 

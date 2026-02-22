@@ -348,18 +348,43 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   preflight_path="$OUTPUT_DIR/execution_devnet_rehearsal_preflight_${timestamp_compact}.txt"
   go_nogo_path="$OUTPUT_DIR/execution_devnet_rehearsal_go_nogo_${timestamp_compact}.txt"
   tests_path="$OUTPUT_DIR/execution_devnet_rehearsal_tests_${timestamp_compact}.txt"
+  manifest_path="$OUTPUT_DIR/execution_devnet_rehearsal_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary_output" > "$summary_path"
   printf '%s\n' "$preflight_output" > "$preflight_path"
   printf '%s\n' "$go_nogo_output" > "$go_nogo_path"
   printf '%s\n' "$test_log" > "$tests_path"
+
+  summary_sha256="$(sha256_file_value "$summary_path")"
+  preflight_sha256="$(sha256_file_value "$preflight_path")"
+  go_nogo_sha256="$(sha256_file_value "$go_nogo_path")"
+  tests_sha256="$(sha256_file_value "$tests_path")"
+  if [[ -n "$go_nogo_nested_capture_path" ]]; then
+    go_nogo_nested_capture_sha256="$(sha256_file_value "$go_nogo_nested_capture_path")"
+  else
+    go_nogo_nested_capture_sha256="n/a"
+  fi
+  cat >"$manifest_path" <<EOF
+summary_sha256: $summary_sha256
+preflight_sha256: $preflight_sha256
+go_nogo_sha256: $go_nogo_sha256
+tests_sha256: $tests_sha256
+go_nogo_nested_capture_sha256: $go_nogo_nested_capture_sha256
+EOF
+
   echo
   echo "artifacts_written: true"
   echo "artifact_summary: $summary_path"
   echo "artifact_preflight: $preflight_path"
   echo "artifact_go_nogo: $go_nogo_path"
   echo "artifact_tests: $tests_path"
+  echo "artifact_manifest: $manifest_path"
+  echo "summary_sha256: $summary_sha256"
+  echo "preflight_sha256: $preflight_sha256"
+  echo "go_nogo_sha256: $go_nogo_sha256"
+  echo "tests_sha256: $tests_sha256"
   if [[ -n "$go_nogo_nested_capture_path" ]]; then
     echo "artifact_go_nogo_nested_capture: $go_nogo_nested_capture_path"
+    echo "go_nogo_nested_capture_sha256: $go_nogo_nested_capture_sha256"
   fi
 fi
 

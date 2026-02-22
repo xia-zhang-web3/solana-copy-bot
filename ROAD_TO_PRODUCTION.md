@@ -599,6 +599,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 75. devnet rehearsal summary now mirrors go/no-go route-profile/fee-decomposition context fields (primary/fallback route and KPI/counter excerpts), reducing operator dependency on nested artifact lookup during Stage C.5 evidence review.
 76. adapter rollout evidence summary now also mirrors rehearsal route-profile/fee-decomposition context fields (primary/fallback route, KPI snippets, fee-consistency/fallback counters), so final rollout packets remain self-contained at the top-level orchestrator artifact.
 77. go/no-go artifact export now emits deterministic SHA-256 checksums (`calibration/snapshot/preflight/summary`) and writes a manifest file (`execution_go_nogo_manifest_*.txt`) alongside raw captures, improving evidence-chain verification during Stage C.5 and rollout audits.
+78. devnet rehearsal and rollout orchestrators now emit checksum manifests too (`execution_devnet_rehearsal_manifest_*.txt`, `adapter_rollout_evidence_manifest_*.txt`) with SHA-256 hashes for their captured artifacts, aligning all Stage C.5 rollout evidence tools to the same integrity contract.
 
 Остается в next-code-queue:
 
