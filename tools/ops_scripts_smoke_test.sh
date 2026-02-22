@@ -1673,6 +1673,7 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
   assert_contains "$pass_output" "rotation_artifact_manifest:"
   assert_contains "$pass_output" "rotation_report_sha256:"
+  assert_contains "$pass_output" "rotation_artifacts_written: true"
   assert_contains "$pass_output" "devnet_rehearsal_verdict: GO"
   assert_contains "$pass_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$pass_output" "dynamic_tip_policy_verdict: SKIP"

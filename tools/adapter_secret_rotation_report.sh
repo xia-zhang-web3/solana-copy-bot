@@ -367,6 +367,10 @@ elif ((${#warnings[@]} > 0)); then
   reason="secret rotation baseline checks passed with warnings (permissions hardening recommended)"
   exit_code=2
 fi
+artifacts_written="false"
+if [[ -n "$OUTPUT_DIR" ]]; then
+  artifacts_written="true"
+fi
 
 summary="$({
   echo "=== Adapter Secret Rotation Report ==="
@@ -378,6 +382,7 @@ summary="$({
   echo "allow_unauthenticated: $allow_unauthenticated"
   echo "rotation_readiness_verdict: $verdict"
   echo "rotation_readiness_reason: $reason"
+  echo "artifacts_written: $artifacts_written"
   if ((${#report_lines[@]} > 0)); then
     echo "--- secret file checks ---"
     printf '%s\n' "${report_lines[@]}"
