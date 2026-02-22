@@ -1341,18 +1341,30 @@ mod tests {
                 }
             };
 
+            if stream.set_nonblocking(false).is_err() {
+                return None;
+            }
             if stream
                 .set_read_timeout(Some(StdDuration::from_secs(5)))
                 .is_err()
             {
                 return None;
             }
+            let read_deadline = Instant::now() + StdDuration::from_secs(6);
             let mut buffer = Vec::new();
             let mut chunk = [0_u8; 1024];
             let mut header_end = None;
             while header_end.is_none() {
                 let read = match stream.read(&mut chunk) {
                     Ok(value) => value,
+                    Err(error)
+                        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                    {
+                        if Instant::now() >= read_deadline {
+                            return None;
+                        }
+                        continue;
+                    }
                     Err(_) => return None,
                 };
                 if read == 0 {
