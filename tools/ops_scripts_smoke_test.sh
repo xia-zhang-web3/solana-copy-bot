@@ -1093,8 +1093,14 @@ run_adapter_secret_rotation_report_case() {
   assert_contains "$pass_output" "=== Adapter Secret Rotation Report ==="
   assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
   assert_contains "$pass_output" "artifact_report:"
+  assert_contains "$pass_output" "artifact_manifest:"
+  assert_contains "$pass_output" "report_sha256:"
   if ! ls "$artifacts_dir"/adapter_secret_rotation_report_*.txt >/dev/null 2>&1; then
     echo "expected adapter secret rotation artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/adapter_secret_rotation_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected adapter secret rotation manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
 

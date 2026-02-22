@@ -397,8 +397,15 @@ echo "$summary"
 if [[ -n "$OUTPUT_DIR" ]]; then
   mkdir -p "$OUTPUT_DIR"
   artifact_path="$OUTPUT_DIR/adapter_secret_rotation_report_${timestamp_compact}.txt"
+  manifest_path="$OUTPUT_DIR/adapter_secret_rotation_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary" >"$artifact_path"
+  report_sha256="$(sha256_file_value "$artifact_path")"
+  cat >"$manifest_path" <<EOF
+report_sha256: $report_sha256
+EOF
   echo "artifact_report: $artifact_path"
+  echo "artifact_manifest: $manifest_path"
+  echo "report_sha256: $report_sha256"
 fi
 
 exit "$exit_code"
