@@ -992,6 +992,7 @@ run_windowed_signoff_report_case() {
   fi
   assert_contains "$hold_output" "window_24h_fee_decomposition_verdict: SKIP"
   assert_contains "$hold_output" "window_24h_route_profile_verdict: SKIP"
+  assert_contains "$hold_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
   assert_contains "$hold_output" "signoff_verdict: HOLD"
 
   local nogo_output=""
@@ -1036,6 +1037,7 @@ run_windowed_signoff_report_case() {
   )"
   assert_contains "$go_output" "window_24h_fee_decomposition_verdict: PASS"
   assert_contains "$go_output" "window_24h_route_profile_verdict: PASS"
+  assert_contains "$go_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
   assert_contains "$go_output" "signoff_verdict: GO"
   assert_contains "$go_output" "artifact_summary:"
   assert_contains "$go_output" "artifact_manifest:"
@@ -1055,6 +1057,49 @@ run_windowed_signoff_report_case() {
     echo "expected captured go/no-go artifact for 24h window in $artifacts_dir/window_24h" >&2
     exit 1
   fi
+
+  local dynamic_fake_bin_dir="$TMP_DIR/fake-bin-dynamic-hint-warn"
+  mkdir -p "$dynamic_fake_bin_dir"
+  cp "$FAKE_BIN_DIR/journalctl" "$dynamic_fake_bin_dir/journalctl"
+  python3 - "$dynamic_fake_bin_dir/journalctl" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = text.replace('"submit_dynamic_cu_hint_api_by_route":{"rpc":1},', "")
+path.write_text(text)
+PY
+  chmod +x "$dynamic_fake_bin_dir/journalctl"
+
+  local dynamic_gate_hold_output=""
+  if dynamic_gate_hold_output="$(
+    PATH="$dynamic_fake_bin_dir:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$adapter_cfg" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL="https://priority-fee.example/api" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for windowed signoff helper when dynamic hint source gate is required and not PASS" >&2
+    exit 1
+  else
+    local dynamic_gate_hold_exit_code=$?
+    if [[ "$dynamic_gate_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for required dynamic hint source gate, got $dynamic_gate_hold_exit_code" >&2
+      echo "$dynamic_gate_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$dynamic_gate_hold_output" "windowed_signoff_require_dynamic_hint_source_pass: true"
+  assert_contains "$dynamic_gate_hold_output" "window_24h_dynamic_cu_policy_config_enabled: true"
+  assert_contains "$dynamic_gate_hold_output" "window_24h_dynamic_cu_hint_source_verdict: WARN"
+  assert_contains "$dynamic_gate_hold_output" "signoff_verdict: HOLD"
   echo "[ok] execution windowed signoff helper"
 }
 
@@ -1433,6 +1478,7 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "dynamic_cu_hint_source_verdict: SKIP"
   assert_contains "$output" "windowed_signoff_required: false"
   assert_contains "$output" "windowed_signoff_windows_csv: 1,6,24"
+  assert_contains "$output" "windowed_signoff_require_dynamic_hint_source_pass: false"
   assert_contains "$output" "windowed_signoff_exit_code: 0"
   assert_contains "$output" "windowed_signoff_verdict: GO"
   assert_contains "$output" "windowed_signoff_artifact_manifest:"
@@ -1505,6 +1551,7 @@ run_devnet_rehearsal_case() {
       RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
       GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       WINDOWED_SIGNOFF_REQUIRED="true" WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" \
       bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
   )"; then
     echo "expected NO_GO exit for devnet rehearsal helper when required windowed signoff returns NO_GO" >&2
@@ -1518,6 +1565,7 @@ run_devnet_rehearsal_case() {
     fi
   fi
   assert_contains "$required_nogo_output" "windowed_signoff_required: true"
+  assert_contains "$required_nogo_output" "windowed_signoff_require_dynamic_hint_source_pass: true"
   assert_contains "$required_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   echo "[ok] execution devnet rehearsal helper"
@@ -1570,6 +1618,7 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "dynamic_cu_hint_source_verdict: SKIP"
   assert_contains "$pass_output" "windowed_signoff_required: false"
   assert_contains "$pass_output" "windowed_signoff_windows_csv: 1,6,24"
+  assert_contains "$pass_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
   assert_contains "$pass_output" "windowed_signoff_verdict: GO"
   assert_contains "$pass_output" "windowed_signoff_artifact_manifest:"
   assert_contains "$pass_output" "windowed_signoff_summary_sha256:"
@@ -1632,6 +1681,7 @@ run_adapter_rollout_evidence_case() {
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       WINDOWED_SIGNOFF_REQUIRED="true" \
       WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" \
       bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
   )"; then
     echo "expected NO_GO exit for rollout helper when required windowed signoff returns NO_GO" >&2
@@ -1645,6 +1695,7 @@ run_adapter_rollout_evidence_case() {
     fi
   fi
   assert_contains "$windowed_nogo_output" "windowed_signoff_required: true"
+  assert_contains "$windowed_nogo_output" "windowed_signoff_require_dynamic_hint_source_pass: true"
   assert_contains "$windowed_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "adapter_rollout_verdict: NO_GO"

@@ -14,6 +14,9 @@ SERVICE="${SERVICE:-solana-copy-bot}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
+WINDOWED_SIGNOFF_WINDOWS_CSV="${WINDOWED_SIGNOFF_WINDOWS_CSV:-1,6,24}"
+WINDOWED_SIGNOFF_REQUIRED="${WINDOWED_SIGNOFF_REQUIRED:-false}"
+WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -100,6 +103,7 @@ dynamic_tip_policy_verdict=""
 dynamic_tip_policy_reason=""
 windowed_signoff_required=""
 windowed_signoff_windows_csv=""
+windowed_signoff_require_dynamic_hint_source_pass=""
 windowed_signoff_verdict=""
 windowed_signoff_reason=""
 primary_route=""
@@ -149,6 +153,9 @@ else
       GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+      WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
+      WINDOWED_SIGNOFF_REQUIRED="$WINDOWED_SIGNOFF_REQUIRED" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" \
       bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     rehearsal_exit_code=0
@@ -166,6 +173,7 @@ else
   dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$rehearsal_output")")"
   windowed_signoff_required="$(trim_string "$(extract_field "windowed_signoff_required" "$rehearsal_output")")"
   windowed_signoff_windows_csv="$(trim_string "$(extract_field "windowed_signoff_windows_csv" "$rehearsal_output")")"
+  windowed_signoff_require_dynamic_hint_source_pass="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$rehearsal_output")")"
   windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "windowed_signoff_verdict" "$rehearsal_output")")"
   windowed_signoff_reason="$(trim_string "$(extract_field "windowed_signoff_reason" "$rehearsal_output")")"
   dynamic_cu_hint_api_total="$(trim_string "$(extract_field "dynamic_cu_hint_api_total" "$rehearsal_output")")"
@@ -263,6 +271,7 @@ dynamic_tip_policy_verdict: ${dynamic_tip_policy_verdict:-unknown}
 dynamic_tip_policy_reason: ${dynamic_tip_policy_reason:-n/a}
 windowed_signoff_required: ${windowed_signoff_required:-false}
 windowed_signoff_windows_csv: ${windowed_signoff_windows_csv:-n/a}
+windowed_signoff_require_dynamic_hint_source_pass: ${windowed_signoff_require_dynamic_hint_source_pass:-false}
 windowed_signoff_verdict: ${windowed_signoff_verdict:-unknown}
 windowed_signoff_reason: ${windowed_signoff_reason:-n/a}
 dynamic_cu_hint_api_total: ${dynamic_cu_hint_api_total:-n/a}

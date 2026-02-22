@@ -16,6 +16,7 @@ RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
 WINDOWED_SIGNOFF_WINDOWS_CSV="${WINDOWED_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 WINDOWED_SIGNOFF_REQUIRED="${WINDOWED_SIGNOFF_REQUIRED:-false}"
+WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
 
 if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
   echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
@@ -138,6 +139,7 @@ timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 run_tests_norm="$(normalize_bool_token "$RUN_TESTS")"
 test_mode_norm="$(normalize_bool_token "$DEVNET_REHEARSAL_TEST_MODE")"
 windowed_signoff_required_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRED")"
+windowed_signoff_require_dynamic_hint_source_pass_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
 
 execution_enabled_raw="$(cfg_or_env_string execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED)"
 execution_enabled="$(normalize_bool_token "${execution_enabled_raw:-false}")"
@@ -221,6 +223,7 @@ if windowed_signoff_output="$(
   GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
   GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+  WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
   OUTPUT_DIR="$windowed_signoff_output_dir" \
   bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" "$WINDOWED_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
 )"; then
@@ -265,6 +268,7 @@ go_nogo_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$go
 go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
 windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$windowed_signoff_output")")"
 windowed_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$windowed_signoff_output")")"
+windowed_signoff_require_dynamic_hint_source_pass="$(normalize_bool_token "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")")"
 windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$windowed_signoff_output")")"
 windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$windowed_signoff_output")")"
 if [[ "$overall_go_nogo_verdict" == "UNKNOWN" && "$go_nogo_exit_code" -ne 0 && -z "$overall_go_nogo_reason" ]]; then
@@ -401,6 +405,7 @@ go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
 windowed_signoff_required: $windowed_signoff_required_norm
 windowed_signoff_windows_csv: $WINDOWED_SIGNOFF_WINDOWS_CSV
+windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass
 windowed_signoff_exit_code: $windowed_signoff_exit_code
 windowed_signoff_verdict: ${windowed_signoff_verdict:-unknown}
 windowed_signoff_reason: ${windowed_signoff_reason:-n/a}

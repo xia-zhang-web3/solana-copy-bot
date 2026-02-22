@@ -11,9 +11,11 @@ RISK_EVENTS_MINUTES="${2:-60}"
 SERVICE="${SERVICE:-solana-copy-bot}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
+WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
+windowed_signoff_require_dynamic_hint_source_pass="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
 
 declare -a input_errors=()
 declare -a windows=()
@@ -72,6 +74,9 @@ declare -a window_fee_missing=()
 declare -a window_fee_mismatch=()
 declare -a window_fallback_used=()
 declare -a window_hint_mismatch=()
+declare -a window_dynamic_policy_config_enabled=()
+declare -a window_dynamic_hint_source_verdicts=()
+declare -a window_dynamic_hint_source_reasons=()
 declare -a window_capture_paths=()
 declare -a window_capture_sha256=()
 
@@ -138,6 +143,12 @@ if ((${#input_errors[@]} == 0)); then
     fee_mismatch_rows="$(trim_string "$(extract_field "fee_consistency_mismatch_rows" "$go_nogo_output")")"
     fallback_used_events="$(trim_string "$(extract_field "fallback_used_events" "$go_nogo_output")")"
     hint_mismatch_events="$(trim_string "$(extract_field "hint_mismatch_events" "$go_nogo_output")")"
+    dynamic_policy_config_enabled="$(normalize_bool_token "$(extract_field "dynamic_cu_policy_config_enabled" "$go_nogo_output")")"
+    dynamic_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$go_nogo_output")")"
+    dynamic_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$go_nogo_output")")"
+    if [[ -z "$dynamic_hint_source_reason" ]]; then
+      dynamic_hint_source_reason="n/a"
+    fi
 
     capture_path=""
     capture_sha256="n/a"
@@ -159,6 +170,9 @@ if ((${#input_errors[@]} == 0)); then
     window_fee_mismatch+=("${fee_mismatch_rows:-n/a}")
     window_fallback_used+=("${fallback_used_events:-n/a}")
     window_hint_mismatch+=("${hint_mismatch_events:-n/a}")
+    window_dynamic_policy_config_enabled+=("$dynamic_policy_config_enabled")
+    window_dynamic_hint_source_verdicts+=("$dynamic_hint_source_verdict")
+    window_dynamic_hint_source_reasons+=("$dynamic_hint_source_reason")
     window_capture_paths+=("${capture_path:-n/a}")
     window_capture_sha256+=("${capture_sha256:-n/a}")
 
@@ -166,6 +180,13 @@ if ((${#input_errors[@]} == 0)); then
       window_unknown_count=$((window_unknown_count + 1))
       if [[ -z "$first_unknown_reason" ]]; then
         first_unknown_reason="window=${window_hours}h produced UNKNOWN verdict fields (overall=${overall_verdict}, fee=${fee_verdict}, route=${route_verdict}, exit_code=${go_nogo_exit_code})"
+      fi
+      continue
+    fi
+    if [[ "$windowed_signoff_require_dynamic_hint_source_pass" == "true" && "$dynamic_policy_config_enabled" == "true" && "$dynamic_hint_source_verdict" == "UNKNOWN" ]]; then
+      window_unknown_count=$((window_unknown_count + 1))
+      if [[ -z "$first_unknown_reason" ]]; then
+        first_unknown_reason="window=${window_hours}h dynamic hint source verdict unknown while required (exit_code=${go_nogo_exit_code})"
       fi
       continue
     fi
@@ -184,6 +205,12 @@ if ((${#input_errors[@]} == 0)); then
       window_unknown_count=$((window_unknown_count + 1))
       if [[ -z "$first_unknown_reason" ]]; then
         first_unknown_reason="window=${window_hours}h produced inconsistent GO state with non-PASS gates (fee=${fee_verdict}, route=${route_verdict})"
+      fi
+      continue
+    fi
+    if [[ "$windowed_signoff_require_dynamic_hint_source_pass" == "true" && "$dynamic_policy_config_enabled" == "true" && "$dynamic_hint_source_verdict" != "PASS" ]]; then
+      if [[ -z "$first_non_pass_reason" ]]; then
+        first_non_pass_reason="window=${window_hours}h dynamic hint source gate not PASS (verdict=${dynamic_hint_source_verdict}, reason=${dynamic_hint_source_reason})"
       fi
       continue
     fi
@@ -248,6 +275,7 @@ config: $CONFIG_PATH
 service: $SERVICE
 windows_csv: $WINDOWS_CSV
 risk_events_minutes: $RISK_EVENTS_MINUTES
+windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass
 window_count: $window_total
 window_pass_count: $window_pass_count
 window_unknown_count: $window_unknown_count
@@ -273,6 +301,9 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_fee_consistency_mismatch_rows: ${window_fee_mismatch[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fallback_used_events: ${window_fallback_used[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_hint_mismatch_events: ${window_hint_mismatch[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_dynamic_cu_policy_config_enabled: ${window_dynamic_policy_config_enabled[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_dynamic_cu_hint_source_verdict: ${window_dynamic_hint_source_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_dynamic_cu_hint_source_reason: ${window_dynamic_hint_source_reasons[$idx]}"
 done
 
 summary_output+=$'\n'
