@@ -713,6 +713,34 @@ mod tests {
         }
     }
 
+    struct DynamicPolicyRetryableErrorSubmitter {
+        dynamic_cu_price_policy_enabled: bool,
+        dynamic_cu_price_hint_used: bool,
+        dynamic_cu_price_applied: bool,
+        dynamic_tip_policy_enabled: bool,
+        dynamic_tip_applied: bool,
+    }
+
+    impl OrderSubmitter for DynamicPolicyRetryableErrorSubmitter {
+        fn submit(
+            &self,
+            _intent: &ExecutionIntent,
+            _client_order_id: &str,
+            _route: &str,
+        ) -> std::result::Result<submitter::SubmitResult, submitter::SubmitError> {
+            Err(
+                submitter::SubmitError::retryable("submit_retryable_dynamic", "forced retryable")
+                    .with_dynamic_policy_flags(
+                        self.dynamic_cu_price_policy_enabled,
+                        self.dynamic_cu_price_hint_used,
+                        self.dynamic_cu_price_applied,
+                        self.dynamic_tip_policy_enabled,
+                        self.dynamic_tip_applied,
+                    ),
+            )
+        }
+    }
+
     struct RetryableOncePreTradeChecker {
         routes: Arc<Mutex<Vec<String>>>,
     }
@@ -1566,6 +1594,85 @@ mod tests {
         assert_eq!(
             report.submit_dynamic_tip_static_floor_by_route.get("rpc"),
             None
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_records_dynamic_policy_counters_on_retryable_submit_error() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-dynamic-submit-policy-retryable")?;
+        let now = Utc::now();
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4f:w:buy:dynamic".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-dynamic-submit-policy-retryable".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(DynamicPolicyRetryableErrorSubmitter {
+                dynamic_cu_price_policy_enabled: true,
+                dynamic_cu_price_hint_used: true,
+                dynamic_cu_price_applied: false,
+                dynamic_tip_policy_enabled: true,
+                dynamic_tip_applied: false,
+            }),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.submit_dynamic_cu_policy_enabled_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_hint_used_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_price_applied_by_route.get("rpc"),
+            None
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_static_fallback_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_tip_policy_enabled_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_tip_applied_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_tip_static_floor_by_route.get("rpc"),
+            Some(&1)
         );
 
         let _ = std::fs::remove_file(db_path);

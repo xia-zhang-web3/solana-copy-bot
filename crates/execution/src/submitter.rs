@@ -43,6 +43,11 @@ pub struct SubmitError {
     pub kind: SubmitErrorKind,
     pub code: String,
     pub detail: String,
+    pub dynamic_cu_price_policy_enabled: bool,
+    pub dynamic_cu_price_hint_used: bool,
+    pub dynamic_cu_price_applied: bool,
+    pub dynamic_tip_policy_enabled: bool,
+    pub dynamic_tip_applied: bool,
 }
 
 impl SubmitError {
@@ -51,6 +56,11 @@ impl SubmitError {
             kind: SubmitErrorKind::Retryable,
             code: code.into(),
             detail: detail.into(),
+            dynamic_cu_price_policy_enabled: false,
+            dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_applied: false,
+            dynamic_tip_policy_enabled: false,
+            dynamic_tip_applied: false,
         }
     }
 
@@ -59,7 +69,28 @@ impl SubmitError {
             kind: SubmitErrorKind::Terminal,
             code: code.into(),
             detail: detail.into(),
+            dynamic_cu_price_policy_enabled: false,
+            dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_applied: false,
+            dynamic_tip_policy_enabled: false,
+            dynamic_tip_applied: false,
         }
+    }
+
+    pub(crate) fn with_dynamic_policy_flags(
+        mut self,
+        dynamic_cu_price_policy_enabled: bool,
+        dynamic_cu_price_hint_used: bool,
+        dynamic_cu_price_applied: bool,
+        dynamic_tip_policy_enabled: bool,
+        dynamic_tip_applied: bool,
+    ) -> Self {
+        self.dynamic_cu_price_policy_enabled = dynamic_cu_price_policy_enabled;
+        self.dynamic_cu_price_hint_used = dynamic_cu_price_hint_used;
+        self.dynamic_cu_price_applied = dynamic_cu_price_applied;
+        self.dynamic_tip_policy_enabled = dynamic_tip_policy_enabled;
+        self.dynamic_tip_applied = dynamic_tip_applied;
+        self
     }
 }
 
@@ -802,9 +833,25 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                     return Ok(result);
                 }
                 Err(error) if matches!(error.kind, SubmitErrorKind::Terminal) => {
+                    let error = error.with_dynamic_policy_flags(
+                        dynamic_cu_price_policy_enabled,
+                        dynamic_cu_price_hint_used,
+                        dynamic_cu_price_applied,
+                        dynamic_tip_policy_enabled,
+                        dynamic_tip_applied,
+                    );
                     return Err(error);
                 }
-                Err(error) => last_retryable_error = Some(error),
+                Err(error) => {
+                    let error = error.with_dynamic_policy_flags(
+                        dynamic_cu_price_policy_enabled,
+                        dynamic_cu_price_hint_used,
+                        dynamic_cu_price_applied,
+                        dynamic_tip_policy_enabled,
+                        dynamic_tip_applied,
+                    );
+                    last_retryable_error = Some(error);
+                }
             }
         }
 
@@ -2450,6 +2497,78 @@ mod tests {
                 .unwrap_or_default(),
             1_500
         );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_terminal_error_preserves_policy_flags() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 1200 },
+                { "prioritizationFee": 2600 },
+                { "prioritizationFee": 4400 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-policy-error",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let error = submitter
+            .submit(&make_intent(), "cid-dynamic-policy-error", "rpc")
+            .expect_err("policy mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_mismatch");
+        assert!(error.dynamic_cu_price_policy_enabled);
+        assert!(error.dynamic_cu_price_hint_used);
+        assert!(error.dynamic_cu_price_applied);
+        assert!(!error.dynamic_tip_policy_enabled);
+        assert!(!error.dynamic_tip_applied);
+
+        let _ = rpc_handle.join();
+        let _ = adapter_handle.join();
     }
 
     #[test]

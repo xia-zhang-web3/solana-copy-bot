@@ -8,6 +8,42 @@ use chrono::{DateTime, Utc};
 use copybot_storage::{ExecutionOrderRow, SqliteStore};
 use serde_json::json;
 
+fn bump_dynamic_submit_policy_counters(
+    report: &mut ExecutionBatchReport,
+    route: &str,
+    dynamic_cu_price_policy_enabled: bool,
+    dynamic_cu_price_hint_used: bool,
+    dynamic_cu_price_applied: bool,
+    dynamic_tip_policy_enabled: bool,
+    dynamic_tip_applied: bool,
+) {
+    if dynamic_cu_price_policy_enabled {
+        bump_route_counter(&mut report.submit_dynamic_cu_policy_enabled_by_route, route);
+        if dynamic_cu_price_hint_used {
+            bump_route_counter(&mut report.submit_dynamic_cu_hint_used_by_route, route);
+        }
+        if dynamic_cu_price_applied {
+            bump_route_counter(&mut report.submit_dynamic_cu_price_applied_by_route, route);
+        } else {
+            bump_route_counter(
+                &mut report.submit_dynamic_cu_static_fallback_by_route,
+                route,
+            );
+        }
+    }
+    if dynamic_tip_policy_enabled {
+        bump_route_counter(
+            &mut report.submit_dynamic_tip_policy_enabled_by_route,
+            route,
+        );
+        if dynamic_tip_applied {
+            bump_route_counter(&mut report.submit_dynamic_tip_applied_by_route, route);
+        } else {
+            bump_route_counter(&mut report.submit_dynamic_tip_static_floor_by_route, route);
+        }
+    }
+}
+
 impl ExecutionRuntime {
     pub(crate) fn process_pending_order(
         &self,
@@ -161,6 +197,15 @@ impl ExecutionRuntime {
         {
             Ok(value) => value,
             Err(error) => {
+                bump_dynamic_submit_policy_counters(
+                    report,
+                    selected_route,
+                    error.dynamic_cu_price_policy_enabled,
+                    error.dynamic_cu_price_hint_used,
+                    error.dynamic_cu_price_applied,
+                    error.dynamic_tip_policy_enabled,
+                    error.dynamic_tip_applied,
+                );
                 let retryable = matches!(error.kind, SubmitErrorKind::Retryable);
                 let detail = format!(
                     "submit_error attempt={} max_attempts={} route={} code={} detail={}",
@@ -267,46 +312,15 @@ impl ExecutionRuntime {
                 return Ok(SignalResult::Failed);
             }
         };
-        if submit.dynamic_cu_price_policy_enabled {
-            bump_route_counter(
-                &mut report.submit_dynamic_cu_policy_enabled_by_route,
-                submit.route.as_str(),
-            );
-            if submit.dynamic_cu_price_hint_used {
-                bump_route_counter(
-                    &mut report.submit_dynamic_cu_hint_used_by_route,
-                    submit.route.as_str(),
-                );
-            }
-            if submit.dynamic_cu_price_applied {
-                bump_route_counter(
-                    &mut report.submit_dynamic_cu_price_applied_by_route,
-                    submit.route.as_str(),
-                );
-            } else {
-                bump_route_counter(
-                    &mut report.submit_dynamic_cu_static_fallback_by_route,
-                    submit.route.as_str(),
-                );
-            }
-        }
-        if submit.dynamic_tip_policy_enabled {
-            bump_route_counter(
-                &mut report.submit_dynamic_tip_policy_enabled_by_route,
-                submit.route.as_str(),
-            );
-            if submit.dynamic_tip_applied {
-                bump_route_counter(
-                    &mut report.submit_dynamic_tip_applied_by_route,
-                    submit.route.as_str(),
-                );
-            } else {
-                bump_route_counter(
-                    &mut report.submit_dynamic_tip_static_floor_by_route,
-                    submit.route.as_str(),
-                );
-            }
-        }
+        bump_dynamic_submit_policy_counters(
+            report,
+            submit.route.as_str(),
+            submit.dynamic_cu_price_policy_enabled,
+            submit.dynamic_cu_price_hint_used,
+            submit.dynamic_cu_price_applied,
+            submit.dynamic_tip_policy_enabled,
+            submit.dynamic_tip_applied,
+        );
         store.mark_order_submitted(
             &order.order_id,
             submit.route.as_str(),
