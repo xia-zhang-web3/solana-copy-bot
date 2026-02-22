@@ -35,7 +35,7 @@ Config profiles:
 - `configs/dev.toml` — local development defaults.
 - `configs/paper.toml` — paper/runtime-ops profile.
 - `configs/prod.toml` — production scaffold with execution disabled.
-- `configs/live.toml` — Stage D/E live-path baseline (`adapter_submit_confirm`, `jito/rpc`, tiny-live limits, optional dynamic CU-price/tip policy knobs), execution disabled by default.
+- `configs/live.toml` — Stage D/E live-path baseline (`adapter_submit_confirm`, `jito/rpc`, tiny-live limits, optional dynamic CU-price/tip policy knobs including external Priority Fee API hint endpoint), execution disabled by default.
 
 Run adapter backend (contract gateway for `adapter_submit_confirm` mode):
 

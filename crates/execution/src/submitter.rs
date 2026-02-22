@@ -188,6 +188,8 @@ struct AdapterHmacAuth {
 #[derive(Debug, Clone)]
 struct DynamicCuPricePolicy {
     rpc_endpoints: Vec<String>,
+    api_endpoints: Vec<String>,
+    api_auth_token: Option<String>,
     percentile: u8,
     max_micro_lamports: u64,
     timeout_ms: u64,
@@ -415,6 +417,8 @@ impl AdapterOrderSubmitter {
             }
             Some(DynamicCuPricePolicy {
                 rpc_endpoints,
+                api_endpoints: Vec::new(),
+                api_auth_token: None,
                 percentile: submit_dynamic_cu_price_percentile,
                 max_micro_lamports: pretrade_max_priority_fee_micro_lamports,
                 timeout_ms: hint_timeout_ms,
@@ -510,6 +514,40 @@ impl AdapterOrderSubmitter {
         })
     }
 
+    pub fn with_dynamic_cu_price_api(
+        mut self,
+        api_primary_url: &str,
+        api_fallback_url: &str,
+        api_auth_token: &str,
+    ) -> Option<Self> {
+        let api_endpoints =
+            normalize_distinct_non_empty_endpoints(api_primary_url, api_fallback_url);
+        let token = api_auth_token.trim();
+        let api_auth_token = if token.is_empty() {
+            None
+        } else {
+            Some(token.to_string())
+        };
+
+        let Some(policy) = self.dynamic_cu_price_policy.as_mut() else {
+            if api_endpoints.is_empty() && api_auth_token.is_none() {
+                return Some(self);
+            }
+            return None;
+        };
+
+        if api_endpoints.is_empty() {
+            if api_auth_token.is_none() {
+                return Some(self);
+            }
+            return None;
+        }
+
+        policy.api_endpoints = api_endpoints;
+        policy.api_auth_token = api_auth_token;
+        Some(self)
+    }
+
     fn resolve_route_cu_price_micro_lamports(
         &self,
         static_route_cu_price: u64,
@@ -569,41 +607,23 @@ impl AdapterOrderSubmitter {
         let client = self.dynamic_cu_price_client.as_ref()?;
         let started = Instant::now();
         let total_timeout = StdDuration::from_millis(policy.timeout_ms);
-        for endpoint in &policy.rpc_endpoints {
-            let elapsed = started.elapsed();
-            if elapsed >= total_timeout {
-                break;
-            }
-            let remaining_timeout = total_timeout.saturating_sub(elapsed);
-            let response = match client
-                .post(endpoint)
-                .header("content-type", "application/json")
-                .timeout(remaining_timeout)
-                .json(&json!({
-                    "jsonrpc": "2.0",
-                    "id": "copybot-priority-fee",
-                    "method": "getRecentPrioritizationFees",
-                    "params": []
-                }))
-                .send()
-            {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            if !response.status().is_success() {
-                continue;
-            }
-            let body: Value = match response.json() {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            if let Some(fee) =
-                parse_recent_priority_fee_percentile_from_rpc_body(&body, policy.percentile)
-            {
-                return Some(fee);
-            }
+        if let Some(fee) = query_priority_fee_hint_api_endpoints(
+            client,
+            &policy.api_endpoints,
+            policy.api_auth_token.as_deref(),
+            started,
+            total_timeout,
+            policy.percentile,
+        ) {
+            return Some(fee);
         }
-        None
+        query_priority_fee_rpc_endpoints(
+            client,
+            &policy.rpc_endpoints,
+            started,
+            total_timeout,
+            policy.percentile,
+        )
     }
 
     fn submit_via_endpoint(
@@ -955,6 +975,120 @@ fn priority_fee_lamports_from_compute_budget(cu_limit: u32, cu_price_micro_lampo
         .min(u64::MAX as u128)
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+fn query_priority_fee_rpc_endpoints(
+    client: &Client,
+    endpoints: &[String],
+    started: Instant,
+    total_timeout: StdDuration,
+    percentile: u8,
+) -> Option<u64> {
+    for endpoint in endpoints {
+        let elapsed = started.elapsed();
+        if elapsed >= total_timeout {
+            break;
+        }
+        let remaining_timeout = total_timeout.saturating_sub(elapsed);
+        let response = match client
+            .post(endpoint)
+            .header("content-type", "application/json")
+            .timeout(remaining_timeout)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "copybot-priority-fee",
+                "method": "getRecentPrioritizationFees",
+                "params": []
+            }))
+            .send()
+        {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let body: Value = match response.json() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(fee) = parse_recent_priority_fee_percentile_from_rpc_body(&body, percentile) {
+            return Some(fee);
+        }
+    }
+    None
+}
+
+fn query_priority_fee_hint_api_endpoints(
+    client: &Client,
+    endpoints: &[String],
+    auth_token: Option<&str>,
+    started: Instant,
+    total_timeout: StdDuration,
+    percentile: u8,
+) -> Option<u64> {
+    for endpoint in endpoints {
+        let elapsed = started.elapsed();
+        if elapsed >= total_timeout {
+            break;
+        }
+        let remaining_timeout = total_timeout.saturating_sub(elapsed);
+        let mut request = client
+            .get(endpoint)
+            .header("accept", "application/json")
+            .timeout(remaining_timeout);
+        if let Some(token) = auth_token {
+            request = request.bearer_auth(token);
+        }
+        let response = match request.send() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let body: Value = match response.json() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(fee) = parse_priority_fee_hint_from_api_body(&body, percentile) {
+            return Some(fee);
+        }
+    }
+    None
+}
+
+fn parse_priority_fee_hint_from_api_body(body: &Value, percentile: u8) -> Option<u64> {
+    [
+        body.get("cu_price_micro_lamports"),
+        body.get("priority_fee_micro_lamports"),
+        body.get("recommended_micro_lamports"),
+        body.get("result")
+            .and_then(|value| value.get("cu_price_micro_lamports")),
+        body.get("result")
+            .and_then(|value| value.get("priority_fee_micro_lamports")),
+        body.get("result")
+            .and_then(|value| value.get("recommended_micro_lamports")),
+        body.get("data")
+            .and_then(|value| value.get("cu_price_micro_lamports")),
+        body.get("data")
+            .and_then(|value| value.get("priority_fee_micro_lamports")),
+        body.get("data")
+            .and_then(|value| value.get("recommended_micro_lamports")),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(parse_u64_from_json_value)
+    .or_else(|| parse_recent_priority_fee_percentile_from_rpc_body(body, percentile))
+}
+
+fn parse_u64_from_json_value(value: &Value) -> Option<u64> {
+    if let Some(number) = value.as_u64() {
+        return Some(number);
+    }
+    value
+        .as_str()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
 }
 
 fn parse_recent_priority_fee_percentile_from_rpc_body(body: &Value, percentile: u8) -> Option<u64> {
@@ -1783,6 +1917,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_priority_fee_hint_from_api_body_supports_common_shapes() {
+        let root_value = json!({
+            "cu_price_micro_lamports": "3300"
+        });
+        assert_eq!(
+            parse_priority_fee_hint_from_api_body(&root_value, 75),
+            Some(3_300)
+        );
+
+        let nested_value = json!({
+            "result": {
+                "priority_fee_micro_lamports": 2800
+            }
+        });
+        assert_eq!(
+            parse_priority_fee_hint_from_api_body(&nested_value, 75),
+            Some(2_800)
+        );
+
+        let rpc_compatible_value = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 2000 },
+                { "prioritizationFee": 3000 }
+            ]
+        });
+        assert_eq!(
+            parse_priority_fee_hint_from_api_body(&rpc_compatible_value, 90),
+            Some(3_000)
+        );
+    }
+
+    #[test]
     fn priority_fee_lamports_from_compute_budget_rounds_up_micro_lamports() {
         assert_eq!(
             priority_fee_lamports_from_compute_budget(300_000, 1_500),
@@ -2496,6 +2663,208 @@ mod tests {
                 .and_then(Value::as_u64)
                 .unwrap_or_default(),
             1_500
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_prefers_external_api_hint_when_configured() {
+        let Some((api_endpoint, api_handle)) = spawn_probe_server_with_optional_capture(
+            "priority-fee",
+            200,
+            json!({"cu_price_micro_lamports": 3200}),
+            0,
+            1_500,
+        ) else {
+            return;
+        };
+        let Some((rpc_endpoint, rpc_handle)) = spawn_probe_server_with_optional_capture(
+            "rpc",
+            200,
+            json!({
+                "jsonrpc": "2.0",
+                "result": [{ "prioritizationFee": 4_400 }]
+            }),
+            0,
+            500,
+        ) else {
+            let _ = api_handle.join();
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-api",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 3200
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = api_handle.join();
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .and_then(|value| value.with_dynamic_cu_price_api(&api_endpoint, "", "priority-api-token"))
+        .expect("submitter should initialize");
+
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-api", "rpc")
+            .expect("submit call should succeed with API hint");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+
+        let api_captured = api_handle
+            .join()
+            .expect("join API hint server")
+            .expect("API hint endpoint should be called");
+        assert_eq!(
+            api_captured
+                .headers
+                .get("authorization")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            "Bearer priority-api-token"
+        );
+
+        let rpc_captured = rpc_handle.join().expect("join rpc hint server");
+        assert!(
+            rpc_captured.is_none(),
+            "RPC hint endpoint should not be called when API hint succeeds"
+        );
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            3_200
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_falls_back_to_rpc_when_external_api_unavailable() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 1200 },
+                { "prioritizationFee": 2600 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-api-rpc-fallback",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 2600
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .and_then(|value| {
+            value.with_dynamic_cu_price_api("http://127.0.0.1:1", "", "priority-api-token")
+        })
+        .expect("submitter should initialize");
+
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-api-rpc-fallback", "rpc")
+            .expect("submit call should succeed with RPC fallback hint");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+
+        let rpc_captured = rpc_handle.join().expect("join rpc hint server");
+        let rpc_payload: Value = serde_json::from_str(&rpc_captured.body)
+            .expect("parse captured rpc payload after API fallback");
+        assert_eq!(
+            rpc_payload
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "getRecentPrioritizationFees"
+        );
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            2_600
         );
     }
 

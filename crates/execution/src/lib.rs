@@ -204,7 +204,14 @@ impl ExecutionRuntime {
                         config.submit_dynamic_tip_lamports_multiplier_bps,
                         config.submit_timeout_ms.max(500),
                         config.slippage_bps,
-                    ) {
+                    )
+                    .and_then(|value| {
+                        value.with_dynamic_cu_price_api(
+                            &config.submit_dynamic_cu_price_api_primary_url,
+                            &config.submit_dynamic_cu_price_api_fallback_url,
+                            &config.submit_dynamic_cu_price_api_auth_token,
+                        )
+                    }) {
                         Some(value) => Box::new(value),
                         None => Box::new(FailClosedOrderSubmitter::new(
                             "submitter_init_failed",

@@ -47,6 +47,30 @@ pub(crate) fn resolve_execution_adapter_secrets(
             })?;
     }
 
+    let dynamic_cu_price_api_auth_token_file =
+        config.submit_dynamic_cu_price_api_auth_token_file.trim();
+    if !dynamic_cu_price_api_auth_token_file.is_empty() {
+        if !config
+            .submit_dynamic_cu_price_api_auth_token
+            .trim()
+            .is_empty()
+        {
+            return Err(anyhow!(
+                "execution.submit_dynamic_cu_price_api_auth_token and execution.submit_dynamic_cu_price_api_auth_token_file cannot be set at the same time"
+            ));
+        }
+        let resolved =
+            resolve_secret_file_path(dynamic_cu_price_api_auth_token_file, loaded_config_path);
+        config.submit_dynamic_cu_price_api_auth_token =
+            read_trimmed_secret_file(resolved.as_path()).with_context(|| {
+                format!(
+                    "failed loading execution.submit_dynamic_cu_price_api_auth_token_file from {} (resolved path: {})",
+                    dynamic_cu_price_api_auth_token_file,
+                    resolved.display()
+                )
+            })?;
+    }
+
     Ok(())
 }
 

@@ -110,6 +110,10 @@ submit_route_compute_unit_limit = { paper = 300000 }
 submit_route_compute_unit_price_micro_lamports = { paper = 1000 }
 submit_dynamic_cu_price_enabled = false
 submit_dynamic_cu_price_percentile = 75
+submit_dynamic_cu_price_api_primary_url = ""
+submit_dynamic_cu_price_api_fallback_url = ""
+submit_dynamic_cu_price_api_auth_token = ""
+submit_dynamic_cu_price_api_auth_token_file = ""
 submit_dynamic_tip_lamports_enabled = false
 submit_dynamic_tip_lamports_multiplier_bps = 10000
 submit_timeout_ms = 3000

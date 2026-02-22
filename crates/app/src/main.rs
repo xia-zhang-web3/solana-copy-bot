@@ -2013,6 +2013,8 @@ mod app_tests {
     fn resolve_execution_adapter_secrets_reads_file_sources() -> Result<()> {
         let auth_path = write_temp_secret_file("auth-token", "token-from-file\n")?;
         let hmac_path = write_temp_secret_file("hmac-secret", "hmac-from-file \n")?;
+        let dynamic_api_auth_path =
+            write_temp_secret_file("dynamic-api-auth", "api-token-file \n")?;
         let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
 
         let mut execution = ExecutionConfig::default();
@@ -2020,13 +2022,20 @@ mod app_tests {
         execution.mode = "adapter_submit_confirm".to_string();
         execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
         execution.submit_adapter_hmac_secret_file = hmac_path.to_string_lossy().to_string();
+        execution.submit_dynamic_cu_price_api_auth_token_file =
+            dynamic_api_auth_path.to_string_lossy().to_string();
 
         resolve_execution_adapter_secrets(&mut execution, config_path.as_path())?;
         assert_eq!(execution.submit_adapter_auth_token, "token-from-file");
         assert_eq!(execution.submit_adapter_hmac_secret, "hmac-from-file");
+        assert_eq!(
+            execution.submit_dynamic_cu_price_api_auth_token,
+            "api-token-file"
+        );
 
         let _ = std::fs::remove_file(auth_path);
         let _ = std::fs::remove_file(hmac_path);
+        let _ = std::fs::remove_file(dynamic_api_auth_path);
         Ok(())
     }
 
@@ -2073,6 +2082,31 @@ mod app_tests {
         );
 
         let _ = std::fs::remove_file(hmac_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_dynamic_api_inline_and_file_conflict() -> Result<()>
+    {
+        let api_token_path = write_temp_secret_file("dynamic-api-conflict", "api-token-file\n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_dynamic_cu_price_api_auth_token = "inline-api-token".to_string();
+        execution.submit_dynamic_cu_price_api_auth_token_file =
+            api_token_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("inline+file dynamic API token conflict must fail");
+        assert!(
+            error.to_string().contains("cannot be set at the same time"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(api_token_path);
         Ok(())
     }
 
@@ -2134,8 +2168,10 @@ mod app_tests {
 
         let auth_path = secrets_dir.join("auth.txt");
         let hmac_path = secrets_dir.join("hmac.txt");
+        let api_token_path = secrets_dir.join("priority_api.token");
         std::fs::write(&auth_path, "auth-rel\n")?;
         std::fs::write(&hmac_path, "hmac-rel\n")?;
+        std::fs::write(&api_token_path, "priority-api-rel\n")?;
 
         let loaded_config_path = config_dir.join("dev.toml");
         let mut execution = ExecutionConfig::default();
@@ -2143,10 +2179,16 @@ mod app_tests {
         execution.mode = "adapter_submit_confirm".to_string();
         execution.submit_adapter_auth_token_file = "../secrets/auth.txt".to_string();
         execution.submit_adapter_hmac_secret_file = "../secrets/hmac.txt".to_string();
+        execution.submit_dynamic_cu_price_api_auth_token_file =
+            "../secrets/priority_api.token".to_string();
 
         resolve_execution_adapter_secrets(&mut execution, loaded_config_path.as_path())?;
         assert_eq!(execution.submit_adapter_auth_token, "auth-rel");
         assert_eq!(execution.submit_adapter_hmac_secret, "hmac-rel");
+        assert_eq!(
+            execution.submit_dynamic_cu_price_api_auth_token,
+            "priority-api-rel"
+        );
 
         let _ = std::fs::remove_dir_all(root);
         Ok(())
@@ -2236,6 +2278,77 @@ mod app_tests {
             error
                 .to_string()
                 .contains("submit_dynamic_cu_price_percentile must be in 1..=100"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_cu_price_api_without_dynamic_policy() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = false;
+        execution.submit_dynamic_cu_price_api_primary_url =
+            "https://priority.example.com/v1/fees".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic cu price api must require dynamic policy");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_cu_price_api_* settings require"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_cu_price_api_fallback_without_primary() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+        execution.submit_dynamic_cu_price_api_fallback_url =
+            "https://priority-fallback.example.com/v1/fees".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic cu price api fallback without primary must fail");
+        assert!(
+            error.to_string().contains("requires non-empty"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_dynamic_cu_price_api_endpoints() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+        execution.submit_dynamic_cu_price_api_primary_url =
+            "https://priority.example.com/v1/fees".to_string();
+        execution.submit_dynamic_cu_price_api_fallback_url =
+            "https://priority.example.com:443/v1/fees".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate dynamic cu price api endpoint identity must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must resolve to distinct endpoints"),
             "unexpected error: {}",
             error
         );

@@ -388,6 +388,24 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_dynamic_cu_price_percentile = submit_dynamic_cu_price_percentile;
     }
+    if let Ok(value) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL")
+    {
+        config.execution.submit_dynamic_cu_price_api_primary_url = value;
+    }
+    if let Ok(value) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_FALLBACK_URL")
+    {
+        config.execution.submit_dynamic_cu_price_api_fallback_url = value;
+    }
+    if let Ok(value) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_AUTH_TOKEN")
+    {
+        config.execution.submit_dynamic_cu_price_api_auth_token = value;
+    }
+    if let Ok(value) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_AUTH_TOKEN_FILE")
+    {
+        config.execution.submit_dynamic_cu_price_api_auth_token_file = value;
+    }
     if let Some(submit_dynamic_tip_lamports_enabled) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED")
             .ok()

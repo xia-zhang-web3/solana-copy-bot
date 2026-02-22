@@ -190,6 +190,56 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
     });
 }
 
+#[test]
+fn load_from_env_applies_dynamic_cu_price_api_overrides() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL",
+                "https://priority.example.com/v1/fees",
+                || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_FALLBACK_URL",
+                        "https://priority-fallback.example.com/v1/fees",
+                        || {
+                            with_env_var(
+                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_AUTH_TOKEN",
+                                "api-token",
+                                || {
+                                    with_env_var(
+                                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_AUTH_TOKEN_FILE",
+                                        "/tmp/priority_api.token",
+                                        || {
+                                            let (cfg, _) = load_from_env_or_default(config_path)
+                                                .expect("load config with dynamic cu api env overrides");
+                                            assert_eq!(
+                                                cfg.execution.submit_dynamic_cu_price_api_primary_url,
+                                                "https://priority.example.com/v1/fees"
+                                            );
+                                            assert_eq!(
+                                                cfg.execution.submit_dynamic_cu_price_api_fallback_url,
+                                                "https://priority-fallback.example.com/v1/fees"
+                                            );
+                                            assert_eq!(
+                                                cfg.execution.submit_dynamic_cu_price_api_auth_token,
+                                                "api-token"
+                                            );
+                                            assert_eq!(
+                                                cfg.execution.submit_dynamic_cu_price_api_auth_token_file,
+                                                "/tmp/priority_api.token"
+                                            );
+                                        },
+                                    );
+                                },
+                            );
+                        },
+                    );
+                },
+            );
+        });
+    });
+}
+
 fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
