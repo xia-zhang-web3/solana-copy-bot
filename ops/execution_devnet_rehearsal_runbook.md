@@ -29,6 +29,17 @@ Arguments:
 1. `24` — execution evidence window in hours.
 2. `60` — recent risk-events window in minutes.
 
+Optional strictness knobs (default `false`):
+
+1. `WINDOWED_SIGNOFF_REQUIRED=true`:
+   1. rehearsal treats nested `execution_windowed_signoff_report.sh` verdict as required gate.
+2. `WINDOWED_SIGNOFF_WINDOWS_CSV=1,6,24`:
+   1. override window set used by nested windowed signoff helper.
+3. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS=true`:
+   1. for windows where dynamic CU policy is enabled, require nested `dynamic_cu_hint_source_verdict=PASS`.
+4. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=true`:
+   1. for windows where dynamic tip policy is enabled, require nested `dynamic_tip_policy_verdict=PASS`.
+
 ## 3) Exit Codes
 
 1. `0` = `GO` (rehearsal gates passed).
@@ -52,8 +63,10 @@ When `OUTPUT_DIR` is set, the script writes:
 1. `execution_devnet_rehearsal_summary_*.txt`
 2. `execution_devnet_rehearsal_preflight_*.txt`
 3. `execution_devnet_rehearsal_go_nogo_*.txt`
-4. `execution_devnet_rehearsal_tests_*.txt`
-5. Nested go/no-go artifacts under `OUTPUT_DIR/go_nogo/`
+4. `execution_devnet_rehearsal_windowed_signoff_*.txt`
+5. `execution_devnet_rehearsal_tests_*.txt`
+6. nested go/no-go artifacts under `OUTPUT_DIR/go_nogo/`
+7. nested windowed-signoff artifacts under `OUTPUT_DIR/windowed_signoff/`
 
 ## 6) Operator Actions by Verdict
 

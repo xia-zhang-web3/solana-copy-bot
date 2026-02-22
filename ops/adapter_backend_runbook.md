@@ -169,4 +169,9 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
 10. Combined rollout evidence helper:
    1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=configs/paper.toml OUTPUT_DIR=state/adapter-rollout ./tools/adapter_rollout_evidence_report.sh 24 60`
    2. helper runs secret rotation readiness + Stage C.5 devnet rehearsal and emits a single `adapter_rollout_verdict` (`GO`/`HOLD`/`NO_GO`),
-   3. attach `artifact_summary` plus captured raw artifacts for audit handoff.
+   3. optional strictness flags can be passed through to rehearsal/windowed signoff:
+      1. `WINDOWED_SIGNOFF_REQUIRED=true`
+      2. `WINDOWED_SIGNOFF_WINDOWS_CSV=1,6,24`
+      3. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS=true`
+      4. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=true`
+   4. attach `artifact_summary` plus captured raw artifacts for audit handoff.
