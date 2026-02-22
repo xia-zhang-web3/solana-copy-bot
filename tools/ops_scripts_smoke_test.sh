@@ -1332,6 +1332,9 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "devnet_rehearsal_verdict: GO"
   assert_contains "$pass_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$pass_output" "dynamic_tip_policy_verdict: SKIP"
+  assert_contains "$pass_output" "primary_route:"
+  assert_contains "$pass_output" "fallback_route:"
+  assert_contains "$pass_output" "confirmed_orders_total:"
   assert_contains "$pass_output" "adapter_rollout_verdict: GO"
   assert_contains "$pass_output" "artifact_summary:"
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
