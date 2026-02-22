@@ -27,6 +27,82 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
+cfg_value() {
+  local section="$1"
+  local key="$2"
+  awk -F'=' -v section="[$section]" -v key="$key" '
+    /^\s*\[/ {
+      in_section = ($0 == section)
+    }
+    in_section {
+      line = $0
+      sub(/#.*/, "", line)
+      left = line
+      sub(/=.*/, "", left)
+      gsub(/[[:space:]]/, "", left)
+      if (left == key) {
+        value = line
+        sub(/^[^=]*=/, "", value)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        gsub(/^"|"$/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$CONFIG_PATH"
+}
+
+cfg_or_env_bool() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local fallback="${4:-false}"
+  local raw=""
+  if [[ -n "${!env_name+x}" ]]; then
+    raw="${!env_name}"
+  else
+    raw="$(cfg_value "$section" "$key")"
+  fi
+  raw="$(trim_string "$raw")"
+  if [[ -z "$raw" ]]; then
+    raw="$fallback"
+  fi
+  normalize_bool_token "$raw"
+}
+
+sum_route_map_values() {
+  local raw_map="$1"
+  python3 - "$raw_map" <<'PY'
+import json
+import sys
+
+raw = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
+if not raw:
+    print(0)
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(raw)
+except Exception:
+    print(0)
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    print(0)
+    raise SystemExit(0)
+
+total = 0
+for value in payload.values():
+    if isinstance(value, bool):
+        total += int(value)
+    elif isinstance(value, int):
+        total += value
+    elif isinstance(value, float):
+        total += int(value)
+print(total)
+PY
+}
+
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
@@ -87,6 +163,58 @@ submit_dynamic_cu_static_fallback_by_route="$(extract_field "submit_dynamic_cu_s
 submit_dynamic_tip_policy_enabled_by_route="$(extract_field "submit_dynamic_tip_policy_enabled_by_route" "$snapshot_output")"
 submit_dynamic_tip_applied_by_route="$(extract_field "submit_dynamic_tip_applied_by_route" "$snapshot_output")"
 submit_dynamic_tip_static_floor_by_route="$(extract_field "submit_dynamic_tip_static_floor_by_route" "$snapshot_output")"
+dynamic_cu_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_cu_price_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED false)"
+dynamic_tip_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_tip_lamports_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED false)"
+
+submit_dynamic_cu_policy_enabled_total="$(sum_route_map_values "${submit_dynamic_cu_policy_enabled_by_route:-}")"
+submit_dynamic_cu_hint_used_total="$(sum_route_map_values "${submit_dynamic_cu_hint_used_by_route:-}")"
+submit_dynamic_cu_price_applied_total="$(sum_route_map_values "${submit_dynamic_cu_price_applied_by_route:-}")"
+submit_dynamic_cu_static_fallback_total="$(sum_route_map_values "${submit_dynamic_cu_static_fallback_by_route:-}")"
+submit_dynamic_tip_policy_enabled_total="$(sum_route_map_values "${submit_dynamic_tip_policy_enabled_by_route:-}")"
+submit_dynamic_tip_applied_total="$(sum_route_map_values "${submit_dynamic_tip_applied_by_route:-}")"
+submit_dynamic_tip_static_floor_total="$(sum_route_map_values "${submit_dynamic_tip_static_floor_by_route:-}")"
+
+dynamic_cu_policy_verdict="SKIP"
+dynamic_cu_policy_reason="dynamic CU-price policy disabled in execution config"
+if [[ "$dynamic_cu_policy_config_enabled" == "true" ]]; then
+  if [[ "$(normalize_bool_token "${execution_batch_sample_available:-false}")" != "true" ]]; then
+    dynamic_cu_policy_verdict="NO_DATA"
+    dynamic_cu_policy_reason="no execution batch sample available in runtime snapshot window"
+  elif (( submit_dynamic_cu_policy_enabled_total == 0 )); then
+    dynamic_cu_policy_verdict="WARN"
+    dynamic_cu_policy_reason="policy enabled but no dynamic CU-price submit attempts observed"
+  elif (( submit_dynamic_cu_price_applied_total > 0 )); then
+    dynamic_cu_policy_verdict="PASS"
+    dynamic_cu_policy_reason="dynamic CU-price applied on at least one submit attempt"
+  elif (( submit_dynamic_cu_hint_used_total > 0 )); then
+    dynamic_cu_policy_verdict="WARN"
+    dynamic_cu_policy_reason="priority-fee hints observed but all attempts stayed on static CU-price floor"
+  else
+    dynamic_cu_policy_verdict="WARN"
+    dynamic_cu_policy_reason="no priority-fee hints observed; submits used static CU-price fallback only"
+  fi
+fi
+
+dynamic_tip_policy_verdict="SKIP"
+dynamic_tip_policy_reason="dynamic tip policy disabled in execution config"
+if [[ "$dynamic_tip_policy_config_enabled" == "true" ]]; then
+  if [[ "$(normalize_bool_token "${execution_batch_sample_available:-false}")" != "true" ]]; then
+    dynamic_tip_policy_verdict="NO_DATA"
+    dynamic_tip_policy_reason="no execution batch sample available in runtime snapshot window"
+  elif (( submit_dynamic_tip_policy_enabled_total == 0 )); then
+    dynamic_tip_policy_verdict="WARN"
+    dynamic_tip_policy_reason="policy enabled but no dynamic tip submit attempts observed"
+  elif (( submit_dynamic_tip_applied_total > 0 )); then
+    dynamic_tip_policy_verdict="PASS"
+    dynamic_tip_policy_reason="dynamic tip applied on at least one submit attempt"
+  elif (( submit_dynamic_tip_static_floor_total > 0 )); then
+    dynamic_tip_policy_verdict="WARN"
+    dynamic_tip_policy_reason="dynamic tip policy active but all attempts stayed on static tip floor"
+  else
+    dynamic_tip_policy_verdict="WARN"
+    dynamic_tip_policy_reason="dynamic tip policy active but no tip-path evidence observed"
+  fi
+fi
 
 # Test-only overrides for smoke validation of verdict precedence branches.
 go_nogo_test_mode="$(normalize_bool_token "${GO_NOGO_TEST_MODE:-false}")"
@@ -162,6 +290,19 @@ submit_dynamic_cu_static_fallback_by_route: ${submit_dynamic_cu_static_fallback_
 submit_dynamic_tip_policy_enabled_by_route: ${submit_dynamic_tip_policy_enabled_by_route:-{}}
 submit_dynamic_tip_applied_by_route: ${submit_dynamic_tip_applied_by_route:-{}}
 submit_dynamic_tip_static_floor_by_route: ${submit_dynamic_tip_static_floor_by_route:-{}}
+dynamic_cu_policy_config_enabled: $dynamic_cu_policy_config_enabled
+dynamic_cu_policy_enabled_total: ${submit_dynamic_cu_policy_enabled_total:-0}
+dynamic_cu_hint_used_total: ${submit_dynamic_cu_hint_used_total:-0}
+dynamic_cu_price_applied_total: ${submit_dynamic_cu_price_applied_total:-0}
+dynamic_cu_static_fallback_total: ${submit_dynamic_cu_static_fallback_total:-0}
+dynamic_cu_policy_verdict: $dynamic_cu_policy_verdict
+dynamic_cu_policy_reason: $dynamic_cu_policy_reason
+dynamic_tip_policy_config_enabled: $dynamic_tip_policy_config_enabled
+dynamic_tip_policy_enabled_total: ${submit_dynamic_tip_policy_enabled_total:-0}
+dynamic_tip_applied_total: ${submit_dynamic_tip_applied_total:-0}
+dynamic_tip_static_floor_total: ${submit_dynamic_tip_static_floor_total:-0}
+dynamic_tip_policy_verdict: $dynamic_tip_policy_verdict
+dynamic_tip_policy_reason: $dynamic_tip_policy_reason
 
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: $overall_go_nogo_reason

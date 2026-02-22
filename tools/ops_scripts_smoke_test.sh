@@ -740,6 +740,10 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "submit_attempted_by_route: {\"rpc\": 3}"
   assert_contains "$go_nogo_output" "submit_dynamic_cu_policy_enabled_by_route: {\"rpc\": 2}"
   assert_contains "$go_nogo_output" "submit_dynamic_tip_static_floor_by_route: {\"rpc\": 1}"
+  assert_contains "$go_nogo_output" "dynamic_cu_policy_config_enabled: false"
+  assert_contains "$go_nogo_output" "dynamic_cu_policy_verdict: SKIP"
+  assert_contains "$go_nogo_output" "dynamic_tip_policy_config_enabled: false"
+  assert_contains "$go_nogo_output" "dynamic_tip_policy_verdict: SKIP"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
 
   echo "[ok] ${label}"
