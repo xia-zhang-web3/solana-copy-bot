@@ -622,6 +622,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 98. top-level rollout orchestrator now captures route/fee signoff evidence in-band (`execution_route_fee_signoff_report.sh`) and can enforce it as required gate via `ROUTE_FEE_SIGNOFF_REQUIRED=true` (windows configurable with `ROUTE_FEE_SIGNOFF_WINDOWS_CSV`), while propagating route/fee signoff verdict, stability fields, and capture hashes in rollout summary artifacts.
 99. Stage C.5 rehearsal helper now also captures nested route/fee signoff evidence (`execution_route_fee_signoff_report.sh`) and can enforce it as required gate via `ROUTE_FEE_SIGNOFF_REQUIRED=true` (`ROUTE_FEE_SIGNOFF_WINDOWS_CSV` configurable), while propagating verdict/stability/hash fields in `tools/execution_devnet_rehearsal.sh` summary and artifacts.
 100. rollout summary now exposes nested rehearsal route/fee signoff fields under explicit `rehearsal_route_fee_*` keys, so operators can distinguish rehearsal-gate evidence from top-level rollout route/fee gate evidence in a single artifact.
+101. route/fee signoff helper now propagates per-window nested go/no-go reason fields (`window_*_overall_go_nogo_reason`) and uses that reason in hard-block summaries (`signoff_reason` for nested `NO_GO`/`HOLD`), with smoke coverage for strict-policy hard-block path (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`) to keep fail-closed diagnostics explicit in multi-window evidence output.
 
 Остается в next-code-queue:
 
