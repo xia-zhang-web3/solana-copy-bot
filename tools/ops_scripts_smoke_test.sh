@@ -1033,24 +1033,28 @@ run_windowed_signoff_report_case() {
       GO_NOGO_TEST_MODE="true" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
       bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
   )"; then
-    echo "expected NO_GO exit for windowed signoff helper when nested overall go/no-go is not GO" >&2
+    echo "expected HOLD exit for windowed signoff helper when strict jito->rpc gate is enabled in non-adapter mode" >&2
     exit 1
   else
     local nogo_exit_code=$?
-    if [[ "$nogo_exit_code" -ne 3 ]]; then
-      echo "expected NO_GO exit code 3 for windowed signoff helper, got $nogo_exit_code" >&2
+    if [[ "$nogo_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for windowed signoff helper, got $nogo_exit_code" >&2
       echo "$nogo_output" >&2
       exit 1
     fi
   fi
-  assert_contains "$nogo_output" "window_24h_overall_go_nogo_verdict: NO_GO"
+  assert_contains "$nogo_output" "window_24h_overall_go_nogo_verdict: HOLD"
   assert_contains "$nogo_output" "window_24h_fee_decomposition_verdict: PASS"
   assert_contains "$nogo_output" "window_24h_route_profile_verdict: PASS"
-  assert_contains "$nogo_output" "window_hard_block_count: 1"
+  assert_contains "$nogo_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$nogo_output" "window_24h_jito_rpc_policy_verdict: SKIP"
+  assert_contains "$nogo_output" "window_24h_jito_rpc_policy_reason:"
+  assert_contains "$nogo_output" "window_hard_block_count: 0"
   assert_contains "$nogo_output" "artifacts_written: false"
-  assert_contains "$nogo_output" "signoff_verdict: NO_GO"
+  assert_contains "$nogo_output" "signoff_verdict: HOLD"
 
   local artifacts_dir="$TMP_DIR/windowed-signoff-artifacts"
   local go_output
@@ -1643,6 +1647,7 @@ run_devnet_rehearsal_case() {
     PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
       RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
       GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
       WINDOWED_SIGNOFF_REQUIRED="true" WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
       WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="true" \
       bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
@@ -1660,6 +1665,9 @@ run_devnet_rehearsal_case() {
   assert_contains "$required_nogo_output" "windowed_signoff_required: true"
   assert_contains "$required_nogo_output" "windowed_signoff_require_dynamic_hint_source_pass: true"
   assert_contains "$required_nogo_output" "windowed_signoff_require_dynamic_tip_policy_pass: true"
+  assert_contains "$required_nogo_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$required_nogo_output" "jito_rpc_policy_verdict: WARN"
+  assert_contains "$required_nogo_output" "jito_rpc_policy_reason:"
   assert_contains "$required_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$required_nogo_output" "artifacts_written: false"
   assert_contains "$required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
@@ -1783,6 +1791,7 @@ run_adapter_rollout_evidence_case() {
       GO_NOGO_TEST_MODE="true" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
       WINDOWED_SIGNOFF_REQUIRED="true" \
       WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
       WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" \
@@ -1802,6 +1811,9 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$windowed_nogo_output" "windowed_signoff_required: true"
   assert_contains "$windowed_nogo_output" "windowed_signoff_require_dynamic_hint_source_pass: true"
   assert_contains "$windowed_nogo_output" "windowed_signoff_require_dynamic_tip_policy_pass: true"
+  assert_contains "$windowed_nogo_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$windowed_nogo_output" "jito_rpc_policy_verdict: WARN"
+  assert_contains "$windowed_nogo_output" "jito_rpc_policy_reason:"
   assert_contains "$windowed_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "artifacts_written: false"
