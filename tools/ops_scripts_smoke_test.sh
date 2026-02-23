@@ -1851,6 +1851,13 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "windowed_signoff_verdict: GO"
   assert_contains "$output" "windowed_signoff_artifact_manifest:"
   assert_contains "$output" "windowed_signoff_summary_sha256:"
+  assert_contains "$output" "route_fee_signoff_required: false"
+  assert_contains "$output" "route_fee_signoff_windows_csv: 1,6,24"
+  assert_contains "$output" "route_fee_signoff_verdict:"
+  assert_contains "$output" "route_fee_signoff_reason:"
+  assert_contains "$output" "route_fee_signoff_artifact_manifest:"
+  assert_contains "$output" "route_fee_signoff_summary_sha256:"
+  assert_contains "$output" "route_fee_signoff_artifacts_written: true"
   assert_contains "$output" "primary_route:"
   assert_contains "$output" "fallback_route:"
   assert_contains "$output" "confirmed_orders_total:"
@@ -1863,6 +1870,7 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "artifact_preflight:"
   assert_contains "$output" "artifact_go_nogo:"
   assert_contains "$output" "artifact_windowed_signoff:"
+  assert_contains "$output" "artifact_route_fee_signoff:"
   assert_contains "$output" "artifact_tests:"
   assert_contains "$output" "artifact_manifest:"
   assert_contains "$output" "summary_sha256:"
@@ -1870,15 +1878,20 @@ run_devnet_rehearsal_case() {
   assert_sha256_field "$output" "preflight_sha256"
   assert_sha256_field "$output" "go_nogo_sha256"
   assert_sha256_field "$output" "windowed_signoff_sha256"
+  assert_sha256_field "$output" "route_fee_signoff_sha256"
   assert_sha256_field "$output" "tests_sha256"
   assert_sha256_field "$output" "go_nogo_nested_capture_sha256"
   assert_sha256_field "$output" "windowed_signoff_nested_capture_sha256"
+  assert_sha256_field "$output" "route_fee_signoff_nested_capture_sha256"
   assert_sha256_field "$output" "go_nogo_summary_sha256"
   assert_sha256_field "$output" "windowed_signoff_summary_sha256"
+  assert_sha256_field "$output" "route_fee_signoff_summary_sha256"
   assert_contains "$output" "go_nogo_artifact_manifest:"
   assert_contains "$output" "go_nogo_summary_sha256:"
   assert_contains "$output" "windowed_signoff_artifact_manifest:"
   assert_contains "$output" "windowed_signoff_summary_sha256:"
+  assert_contains "$output" "route_fee_signoff_artifact_manifest:"
+  assert_contains "$output" "route_fee_signoff_summary_sha256:"
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_summary_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1893,6 +1906,10 @@ run_devnet_rehearsal_case() {
   fi
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_windowed_signoff_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal windowed signoff artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_route_fee_signoff_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal route/fee signoff artifact in $artifacts_dir" >&2
     exit 1
   fi
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_tests_*.txt >/dev/null 2>&1; then
@@ -1913,6 +1930,14 @@ run_devnet_rehearsal_case() {
   fi
   if ! ls "$artifacts_dir"/windowed_signoff/execution_windowed_signoff_captured_*.txt >/dev/null 2>&1; then
     echo "expected nested windowed signoff capture artifact in $artifacts_dir/windowed_signoff" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/route_fee_signoff/execution_route_fee_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested route/fee signoff summary artifact in $artifacts_dir/route_fee_signoff" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/route_fee_signoff/execution_route_fee_signoff_captured_*.txt >/dev/null 2>&1; then
+    echo "expected nested route/fee signoff capture artifact in $artifacts_dir/route_fee_signoff" >&2
     exit 1
   fi
 
@@ -1950,6 +1975,31 @@ run_devnet_rehearsal_case() {
   assert_contains "$required_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$required_nogo_output" "artifacts_written: false"
   assert_contains "$required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+
+  local route_fee_required_nogo_output=""
+  if route_fee_required_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" ROUTE_FEE_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for devnet rehearsal helper when required route/fee signoff returns NO_GO" >&2
+    exit 1
+  else
+    local route_fee_required_nogo_exit_code=$?
+    if [[ "$route_fee_required_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required route/fee signoff branch, got $route_fee_required_nogo_exit_code" >&2
+      echo "$route_fee_required_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_verdict: NO_GO"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_reason: window token must be an integer (got: invalid)"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_windows_csv: 1,invalid"
+  assert_contains "$route_fee_required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_contains "$route_fee_required_nogo_output" "devnet_rehearsal_reason: route/fee signoff returned NO_GO: window token must be an integer (got: invalid)"
   echo "[ok] execution devnet rehearsal helper"
 }
 

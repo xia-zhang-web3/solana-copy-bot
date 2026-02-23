@@ -20,6 +20,11 @@ WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DY
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
+ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
+ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-${GO_NOGO_TEST_MODE:-false}}"
+ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}}"
+ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}}"
 
 if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
   echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
@@ -146,6 +151,10 @@ windowed_signoff_require_dynamic_hint_source_pass_norm="$(normalize_bool_token "
 windowed_signoff_require_dynamic_tip_policy_pass_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS")"
 go_nogo_require_jito_rpc_policy_norm="$(normalize_bool_token "$GO_NOGO_REQUIRE_JITO_RPC_POLICY")"
 go_nogo_require_fastlane_disabled_norm="$(normalize_bool_token "$GO_NOGO_REQUIRE_FASTLANE_DISABLED")"
+route_fee_signoff_required_norm="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_REQUIRED")"
+route_fee_signoff_go_nogo_test_mode_norm="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE")"
+route_fee_signoff_go_nogo_test_fee_override="$(trim_string "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE")"
+route_fee_signoff_go_nogo_test_route_override="$(trim_string "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE")"
 
 execution_enabled_raw="$(cfg_or_env_string execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED)"
 execution_enabled="$(normalize_bool_token "${execution_enabled_raw:-false}")"
@@ -248,6 +257,36 @@ if [[ -n "$windowed_signoff_output_dir" ]]; then
   printf '%s\n' "$windowed_signoff_output" > "$windowed_signoff_nested_capture_path"
 fi
 
+route_fee_signoff_output_dir=""
+if [[ -n "$OUTPUT_DIR" ]]; then
+  route_fee_signoff_output_dir="$OUTPUT_DIR/route_fee_signoff"
+  mkdir -p "$route_fee_signoff_output_dir"
+fi
+
+route_fee_signoff_output=""
+route_fee_signoff_exit_code=0
+if route_fee_signoff_output="$(
+  DB_PATH="${DB_PATH:-}" \
+  CONFIG_PATH="$CONFIG_PATH" \
+  SERVICE="$SERVICE" \
+  GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
+  GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+  GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode_norm" \
+  GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_fee_override" \
+  GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_route_override" \
+  OUTPUT_DIR="$route_fee_signoff_output_dir" \
+  bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+)"; then
+  route_fee_signoff_exit_code=0
+else
+  route_fee_signoff_exit_code=$?
+fi
+route_fee_signoff_nested_capture_path=""
+if [[ -n "$route_fee_signoff_output_dir" ]]; then
+  route_fee_signoff_nested_capture_path="$route_fee_signoff_output_dir/execution_route_fee_signoff_captured_${timestamp_compact}.txt"
+  printf '%s\n' "$route_fee_signoff_output" > "$route_fee_signoff_nested_capture_path"
+fi
+
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
 overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
 dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_policy_verdict" "$go_nogo_output")")"
@@ -292,11 +331,27 @@ windowed_signoff_require_dynamic_tip_policy_pass="$(normalize_bool_token "$(extr
 windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$windowed_signoff_output")")"
 windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$windowed_signoff_output")")"
 windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$windowed_signoff_output")")"
+route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$route_fee_signoff_output")")"
+route_fee_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$route_fee_signoff_output")")"
+route_fee_signoff_windows_csv="$(trim_string "$(extract_field "windows_csv" "$route_fee_signoff_output")")"
+route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
+route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
+route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
+route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_signoff_output")")"
+route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"
+route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_signoff_output")")"
+route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_profile_pass_count" "$route_fee_signoff_output")")"
+route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "fee_decomposition_pass_count" "$route_fee_signoff_output")")"
+route_fee_window_count="$(trim_string "$(extract_field "window_count" "$route_fee_signoff_output")")"
 if [[ "$overall_go_nogo_verdict" == "UNKNOWN" && "$go_nogo_exit_code" -ne 0 && -z "$overall_go_nogo_reason" ]]; then
   overall_go_nogo_reason="execution_go_nogo_report exited with code $go_nogo_exit_code"
 fi
 if [[ "$windowed_signoff_verdict" == "UNKNOWN" && "$windowed_signoff_exit_code" -ne 0 && -z "$windowed_signoff_reason" ]]; then
   windowed_signoff_reason="execution_windowed_signoff_report exited with code $windowed_signoff_exit_code"
+fi
+if [[ "$route_fee_signoff_verdict" == "UNKNOWN" && "$route_fee_signoff_exit_code" -ne 0 && -z "$route_fee_signoff_reason" ]]; then
+  route_fee_signoff_reason="execution_route_fee_signoff_report exited with code $route_fee_signoff_exit_code"
 fi
 if [[ -z "$dynamic_cu_policy_reason" ]]; then
   dynamic_cu_policy_reason="n/a"
@@ -315,6 +370,9 @@ if [[ -z "$fastlane_feature_flag_reason" ]]; then
 fi
 if [[ -z "$windowed_signoff_reason" ]]; then
   windowed_signoff_reason="n/a"
+fi
+if [[ -z "$route_fee_signoff_reason" ]]; then
+  route_fee_signoff_reason="n/a"
 fi
 
 tests_total=0
@@ -376,6 +434,15 @@ elif [[ "$windowed_signoff_required_norm" == "true" && "$windowed_signoff_verdic
 elif [[ "$windowed_signoff_required_norm" == "true" && "$windowed_signoff_verdict" == "HOLD" ]]; then
   devnet_rehearsal_verdict="HOLD"
   devnet_rehearsal_reason="windowed signoff returned HOLD: ${windowed_signoff_reason:-n/a}"
+elif [[ "$route_fee_signoff_required_norm" == "true" && "$route_fee_signoff_verdict" == "UNKNOWN" ]]; then
+  devnet_rehearsal_verdict="NO_GO"
+  devnet_rehearsal_reason="route/fee signoff verdict unknown: ${route_fee_signoff_reason:-n/a}"
+elif [[ "$route_fee_signoff_required_norm" == "true" && "$route_fee_signoff_verdict" == "NO_GO" ]]; then
+  devnet_rehearsal_verdict="NO_GO"
+  devnet_rehearsal_reason="route/fee signoff returned NO_GO: ${route_fee_signoff_reason:-n/a}"
+elif [[ "$route_fee_signoff_required_norm" == "true" && "$route_fee_signoff_verdict" == "HOLD" ]]; then
+  devnet_rehearsal_verdict="HOLD"
+  devnet_rehearsal_reason="route/fee signoff returned HOLD: ${route_fee_signoff_reason:-n/a}"
 elif [[ "$tests_run" != "true" && "$test_mode_norm" != "true" ]]; then
   devnet_rehearsal_verdict="HOLD"
   devnet_rehearsal_reason="targeted regression tests were skipped (RUN_TESTS=false)"
@@ -453,6 +520,21 @@ windowed_signoff_reason: ${windowed_signoff_reason:-n/a}
 windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
 windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
 windowed_signoff_artifacts_written: $windowed_signoff_artifacts_written
+route_fee_signoff_required: $route_fee_signoff_required_norm
+route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
+route_fee_signoff_exit_code: $route_fee_signoff_exit_code
+route_fee_signoff_verdict: ${route_fee_signoff_verdict:-unknown}
+route_fee_signoff_reason: ${route_fee_signoff_reason:-n/a}
+route_fee_signoff_artifact_manifest: ${route_fee_signoff_artifact_manifest:-n/a}
+route_fee_signoff_summary_sha256: ${route_fee_signoff_summary_sha256:-n/a}
+route_fee_signoff_artifacts_written: $route_fee_signoff_artifacts_written
+route_fee_primary_route_stable: ${route_fee_primary_route_stable:-false}
+route_fee_stable_primary_route: ${route_fee_stable_primary_route:-n/a}
+route_fee_fallback_route_stable: ${route_fee_fallback_route_stable:-false}
+route_fee_stable_fallback_route: ${route_fee_stable_fallback_route:-n/a}
+route_fee_route_profile_pass_count: ${route_fee_route_profile_pass_count:-n/a}
+route_fee_fee_decomposition_pass_count: ${route_fee_fee_decomposition_pass_count:-n/a}
+route_fee_window_count: ${route_fee_window_count:-n/a}
 tests_run: $tests_run
 tests_total: $tests_total
 tests_failed: $tests_failed
@@ -475,18 +557,21 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   preflight_path="$OUTPUT_DIR/execution_devnet_rehearsal_preflight_${timestamp_compact}.txt"
   go_nogo_path="$OUTPUT_DIR/execution_devnet_rehearsal_go_nogo_${timestamp_compact}.txt"
   windowed_signoff_path="$OUTPUT_DIR/execution_devnet_rehearsal_windowed_signoff_${timestamp_compact}.txt"
+  route_fee_signoff_path="$OUTPUT_DIR/execution_devnet_rehearsal_route_fee_signoff_${timestamp_compact}.txt"
   tests_path="$OUTPUT_DIR/execution_devnet_rehearsal_tests_${timestamp_compact}.txt"
   manifest_path="$OUTPUT_DIR/execution_devnet_rehearsal_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary_output" > "$summary_path"
   printf '%s\n' "$preflight_output" > "$preflight_path"
   printf '%s\n' "$go_nogo_output" > "$go_nogo_path"
   printf '%s\n' "$windowed_signoff_output" > "$windowed_signoff_path"
+  printf '%s\n' "$route_fee_signoff_output" > "$route_fee_signoff_path"
   printf '%s\n' "$test_log" > "$tests_path"
 
   summary_sha256="$(sha256_file_value "$summary_path")"
   preflight_sha256="$(sha256_file_value "$preflight_path")"
   go_nogo_sha256="$(sha256_file_value "$go_nogo_path")"
   windowed_signoff_sha256="$(sha256_file_value "$windowed_signoff_path")"
+  route_fee_signoff_sha256="$(sha256_file_value "$route_fee_signoff_path")"
   tests_sha256="$(sha256_file_value "$tests_path")"
   if [[ -n "$go_nogo_nested_capture_path" ]]; then
     go_nogo_nested_capture_sha256="$(sha256_file_value "$go_nogo_nested_capture_path")"
@@ -498,14 +583,21 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   else
     windowed_signoff_nested_capture_sha256="n/a"
   fi
+  if [[ -n "$route_fee_signoff_nested_capture_path" ]]; then
+    route_fee_signoff_nested_capture_sha256="$(sha256_file_value "$route_fee_signoff_nested_capture_path")"
+  else
+    route_fee_signoff_nested_capture_sha256="n/a"
+  fi
   cat >"$manifest_path" <<EOF
 summary_sha256: $summary_sha256
 preflight_sha256: $preflight_sha256
 go_nogo_sha256: $go_nogo_sha256
 windowed_signoff_sha256: $windowed_signoff_sha256
+route_fee_signoff_sha256: $route_fee_signoff_sha256
 tests_sha256: $tests_sha256
 go_nogo_nested_capture_sha256: $go_nogo_nested_capture_sha256
 windowed_signoff_nested_capture_sha256: $windowed_signoff_nested_capture_sha256
+route_fee_signoff_nested_capture_sha256: $route_fee_signoff_nested_capture_sha256
 EOF
 
   echo
@@ -514,12 +606,14 @@ EOF
   echo "artifact_preflight: $preflight_path"
   echo "artifact_go_nogo: $go_nogo_path"
   echo "artifact_windowed_signoff: $windowed_signoff_path"
+  echo "artifact_route_fee_signoff: $route_fee_signoff_path"
   echo "artifact_tests: $tests_path"
   echo "artifact_manifest: $manifest_path"
   echo "summary_sha256: $summary_sha256"
   echo "preflight_sha256: $preflight_sha256"
   echo "go_nogo_sha256: $go_nogo_sha256"
   echo "windowed_signoff_sha256: $windowed_signoff_sha256"
+  echo "route_fee_signoff_sha256: $route_fee_signoff_sha256"
   echo "tests_sha256: $tests_sha256"
   if [[ -n "$go_nogo_nested_capture_path" ]]; then
     echo "artifact_go_nogo_nested_capture: $go_nogo_nested_capture_path"
@@ -528,6 +622,10 @@ EOF
   if [[ -n "$windowed_signoff_nested_capture_path" ]]; then
     echo "artifact_windowed_signoff_nested_capture: $windowed_signoff_nested_capture_path"
     echo "windowed_signoff_nested_capture_sha256: $windowed_signoff_nested_capture_sha256"
+  fi
+  if [[ -n "$route_fee_signoff_nested_capture_path" ]]; then
+    echo "artifact_route_fee_signoff_nested_capture: $route_fee_signoff_nested_capture_path"
+    echo "route_fee_signoff_nested_capture_sha256: $route_fee_signoff_nested_capture_sha256"
   fi
 fi
 
