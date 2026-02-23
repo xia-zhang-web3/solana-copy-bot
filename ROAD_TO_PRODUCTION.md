@@ -618,6 +618,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 94. go/no-go helper now supports optional strict route-policy gate (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`) that requires adapter-mode route-profile evidence to resolve as `primary=jito` and `fallback=rpc` (`jito_rpc_policy_verdict=PASS`), and this strictness is propagated through windowed signoff/devnet rehearsal/rollout summaries.
 95. adapter route contract now enforces explicit Fastlane feature-flag gating: `execution.submit_fastlane_enabled` defaults to `false`, and runtime config validation + adapter preflight fail-closed if `fastlane` appears in default/allowed/order/CU-tip-slippage maps without enabling this flag.
 96. go/no-go/windowed/rehearsal/rollout orchestration now supports optional strict Fastlane-disabled gate (`GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`): nested go/no-go requires `execution.submit_fastlane_enabled=false` (`fastlane_feature_flag_verdict=PASS`), and this strictness metadata is propagated through higher-level evidence summaries.
+97. route-profile + fee-decomposition signoff helper added: `tools/execution_route_fee_signoff_report.sh` runs `execution_go_nogo_report.sh` and `execution_fee_calibration_report.sh` across multi-window sets (default `1,6,24`), enforces per-window verdict parity (`route_profile_verdict` and `fee_decomposition_verdict`), checks primary/fallback route stability, and emits a single `signoff_verdict=GO|HOLD|NO_GO` with artifact manifest for next-code-queue evidence packaging.
 
 Остается в next-code-queue:
 

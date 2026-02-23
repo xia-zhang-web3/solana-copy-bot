@@ -177,3 +177,8 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
       5. `GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`
       6. `GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`
    4. attach `artifact_summary` plus captured raw artifacts for audit handoff.
+11. Route/fee signoff helper (for `ROAD_TO_PRODUCTION` next-code-queue items 2/3):
+   1. run `CONFIG_PATH=configs/live.toml OUTPUT_DIR=state/route-fee-signoff ./tools/execution_route_fee_signoff_report.sh 1,6,24 60`
+   2. helper runs both `execution_go_nogo_report.sh` and `execution_fee_calibration_report.sh` per window and enforces parity (`route_profile_verdict` + `fee_decomposition_verdict`),
+   3. expected closure signal for tightening route policy: `signoff_verdict: GO` with stable primary/fallback routes and `route_profile_pass_count == fee_decomposition_pass_count == window_count`,
+   4. attach emitted summary + manifest + per-window captures to the rollout evidence package.

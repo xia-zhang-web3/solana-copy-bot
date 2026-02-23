@@ -1308,6 +1308,59 @@ PY
   echo "[ok] execution windowed signoff helper"
 }
 
+run_execution_route_fee_signoff_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local hold_output
+  if hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected HOLD exit for route/fee signoff helper on paper config" >&2
+    exit 1
+  else
+    hold_status=$?
+  fi
+  if [[ "$hold_status" -ne 2 ]]; then
+    echo "expected HOLD exit code 2 from route/fee signoff helper, got $hold_status" >&2
+    exit 1
+  fi
+  assert_contains "$hold_output" "=== Execution Route/Fee Signoff Summary ==="
+  assert_contains "$hold_output" "window_24h_overall_go_nogo_verdict: HOLD"
+  assert_contains "$hold_output" "window_24h_route_profile_verdict: SKIP"
+  assert_contains "$hold_output" "window_24h_fee_decomposition_verdict: SKIP"
+  assert_contains "$hold_output" "window_24h_route_verdict_parity: true"
+  assert_contains "$hold_output" "window_24h_fee_verdict_parity: true"
+  assert_contains "$hold_output" "go_nogo_require_jito_rpc_policy: false"
+  assert_contains "$hold_output" "go_nogo_require_fastlane_disabled: false"
+  assert_contains "$hold_output" "signoff_verdict: HOLD"
+  assert_contains "$hold_output" "artifacts_written: false"
+
+  local invalid_output
+  if invalid_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24,invalid" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper invalid windows" >&2
+    exit 1
+  else
+    invalid_status=$?
+  fi
+  if [[ "$invalid_status" -ne 3 ]]; then
+    echo "expected NO_GO exit code 3 from route/fee signoff helper invalid windows, got $invalid_status" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_output" "signoff_verdict: NO_GO"
+  assert_contains "$invalid_output" "input_error: window token must be an integer (got: invalid)"
+  echo "[ok] execution route/fee signoff helper"
+}
+
 run_go_nogo_preflight_fail_case() {
   local db_path="$1"
   local fail_cfg="$TMP_DIR/go-nogo-preflight-fail.toml"
@@ -2136,6 +2189,7 @@ main() {
   run_go_nogo_jito_rpc_policy_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_go_nogo_fastlane_disabled_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
+  run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case
   run_go_nogo_preflight_fail_case "$legacy_db"
