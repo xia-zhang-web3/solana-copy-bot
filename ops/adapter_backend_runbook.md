@@ -175,4 +175,5 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
       3. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS=true`
       4. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=true`
       5. `GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`
+      6. `GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`
    4. attach `artifact_summary` plus captured raw artifacts for audit handoff.

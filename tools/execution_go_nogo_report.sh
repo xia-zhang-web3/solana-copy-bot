@@ -216,10 +216,12 @@ dynamic_cu_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_cu_
 dynamic_tip_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_tip_lamports_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED false)"
 dynamic_cu_hint_api_primary_url="$(cfg_or_env_string execution submit_dynamic_cu_price_api_primary_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL "")"
 go_nogo_require_jito_rpc_policy="$(normalize_bool_token "${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}")"
+go_nogo_require_fastlane_disabled="$(normalize_bool_token "${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}")"
 execution_mode_for_go_nogo="$(trim_string "$(cfg_or_env_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE "paper")")"
 if [[ -z "$execution_mode_for_go_nogo" ]]; then
   execution_mode_for_go_nogo="paper"
 fi
+submit_fastlane_enabled="$(cfg_or_env_bool execution submit_fastlane_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED false)"
 dynamic_cu_hint_api_configured="false"
 if [[ -n "$dynamic_cu_hint_api_primary_url" ]]; then
   dynamic_cu_hint_api_configured="true"
@@ -339,6 +341,21 @@ if [[ "$go_nogo_require_jito_rpc_policy" == "true" ]]; then
   fi
 fi
 
+fastlane_feature_flag_verdict="SKIP"
+fastlane_feature_flag_reason="strict fastlane-disabled gate disabled"
+if [[ "$go_nogo_require_fastlane_disabled" == "true" ]]; then
+  if [[ "$execution_mode_for_go_nogo" != "adapter_submit_confirm" ]]; then
+    fastlane_feature_flag_verdict="SKIP"
+    fastlane_feature_flag_reason="strict fastlane-disabled gate requires adapter_submit_confirm mode"
+  elif [[ "$submit_fastlane_enabled" == "true" ]]; then
+    fastlane_feature_flag_verdict="WARN"
+    fastlane_feature_flag_reason="execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  else
+    fastlane_feature_flag_verdict="PASS"
+    fastlane_feature_flag_reason="execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
+  fi
+fi
+
 # Test-only overrides for smoke validation of verdict precedence branches.
 go_nogo_test_mode="$(normalize_bool_token "${GO_NOGO_TEST_MODE:-false}")"
 if [[ "$go_nogo_test_mode" == "true" ]]; then
@@ -361,7 +378,10 @@ elif [[ "$preflight_verdict" == "UNKNOWN" ]]; then
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) ]]; then
+elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_flag_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
 elif [[ "$fee_decomposition_verdict" == "UNKNOWN" || "$route_profile_verdict" == "UNKNOWN" ]]; then
@@ -370,12 +390,18 @@ elif [[ "$fee_decomposition_verdict" == "UNKNOWN" || "$route_profile_verdict" ==
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "WARN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict jito->rpc policy gate not PASS: ${jito_rpc_policy_reason:-n/a}"
+elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_flag_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict fastlane-disabled gate not PASS: ${fastlane_feature_flag_reason:-n/a}"
 elif [[ "$fee_decomposition_verdict" == "WARN" || "$route_profile_verdict" == "WARN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="at least one readiness gate is WARN; rollout escalation required before live enable"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && ( "$jito_rpc_policy_verdict" == "NO_DATA" || "$jito_rpc_policy_verdict" == "SKIP" ) ]]; then
   overall_go_nogo_verdict="HOLD"
   overall_go_nogo_reason="strict jito->rpc policy gate lacks conclusive evidence: ${jito_rpc_policy_reason:-n/a}"
+elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_flag_verdict" == "SKIP" ]]; then
+  overall_go_nogo_verdict="HOLD"
+  overall_go_nogo_reason="strict fastlane-disabled gate lacks conclusive evidence: ${fastlane_feature_flag_reason:-n/a}"
 elif [[ "$fee_decomposition_verdict" == "NO_DATA" || "$route_profile_verdict" == "NO_DATA" ]]; then
   overall_go_nogo_verdict="HOLD"
   overall_go_nogo_reason="insufficient execution evidence in selected time window"
@@ -465,6 +491,10 @@ dynamic_tip_policy_reason: $dynamic_tip_policy_reason
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 jito_rpc_policy_verdict: $jito_rpc_policy_verdict
 jito_rpc_policy_reason: $jito_rpc_policy_reason
+go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
+submit_fastlane_enabled: $submit_fastlane_enabled
+fastlane_feature_flag_verdict: $fastlane_feature_flag_verdict
+fastlane_feature_flag_reason: $fastlane_feature_flag_reason
 
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: $overall_go_nogo_reason

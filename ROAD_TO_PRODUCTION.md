@@ -617,6 +617,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 93. submit fallback hardening now also applies fail-closed allowlist policy to `fastlane -> rpc` transitions (same retryable availability/transport code set as `jito -> rpc`), preventing silent fallback on unclassified retryable submit errors when Fastlane is introduced under feature-flag routing.
 94. go/no-go helper now supports optional strict route-policy gate (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`) that requires adapter-mode route-profile evidence to resolve as `primary=jito` and `fallback=rpc` (`jito_rpc_policy_verdict=PASS`), and this strictness is propagated through windowed signoff/devnet rehearsal/rollout summaries.
 95. adapter route contract now enforces explicit Fastlane feature-flag gating: `execution.submit_fastlane_enabled` defaults to `false`, and runtime config validation + adapter preflight fail-closed if `fastlane` appears in default/allowed/order/CU-tip-slippage maps without enabling this flag.
+96. go/no-go/windowed/rehearsal/rollout orchestration now supports optional strict Fastlane-disabled gate (`GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`): nested go/no-go requires `execution.submit_fastlane_enabled=false` (`fastlane_feature_flag_verdict=PASS`), and this strictness metadata is propagated through higher-level evidence summaries.
 
 Остается в next-code-queue:
 

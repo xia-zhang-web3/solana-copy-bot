@@ -823,6 +823,10 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$go_nogo_output" "jito_rpc_policy_verdict: SKIP"
   assert_contains "$go_nogo_output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
+  assert_contains "$go_nogo_output" "go_nogo_require_fastlane_disabled: false"
+  assert_contains "$go_nogo_output" "submit_fastlane_enabled: false"
+  assert_contains "$go_nogo_output" "fastlane_feature_flag_verdict: SKIP"
+  assert_contains "$go_nogo_output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
   assert_contains "$go_nogo_output" "artifacts_written: false"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
 
@@ -1032,6 +1036,49 @@ run_go_nogo_jito_rpc_policy_gate_case() {
   echo "[ok] go-no-go strict jito/rpc policy gate"
 }
 
+run_go_nogo_fastlane_disabled_gate_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local blocked_output
+  blocked_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$blocked_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$blocked_output" "submit_fastlane_enabled: true"
+  assert_contains "$blocked_output" "fastlane_feature_flag_verdict: WARN"
+  assert_contains "$blocked_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$blocked_output" "overall_go_nogo_verdict: NO_GO"
+  assert_contains "$blocked_output" "overall_go_nogo_reason: strict fastlane-disabled gate not PASS:"
+
+  local pass_output
+  pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$pass_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$pass_output" "submit_fastlane_enabled: false"
+  assert_contains "$pass_output" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$pass_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
+  assert_contains "$pass_output" "overall_go_nogo_verdict: GO"
+  echo "[ok] go-no-go strict fastlane-disabled gate"
+}
+
 run_windowed_signoff_report_case() {
   local db_path="$1"
   local paper_cfg="$2"
@@ -1100,6 +1147,7 @@ run_windowed_signoff_report_case() {
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
       bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
   )"; then
     echo "expected HOLD exit for windowed signoff helper when strict jito->rpc gate is enabled in non-adapter mode" >&2
@@ -1116,8 +1164,11 @@ run_windowed_signoff_report_case() {
   assert_contains "$strict_hold_output" "window_24h_fee_decomposition_verdict: PASS"
   assert_contains "$strict_hold_output" "window_24h_route_profile_verdict: PASS"
   assert_contains "$strict_hold_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$strict_hold_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$strict_hold_output" "window_24h_jito_rpc_policy_verdict: SKIP"
   assert_contains "$strict_hold_output" "window_24h_jito_rpc_policy_reason:"
+  assert_contains "$strict_hold_output" "window_24h_fastlane_feature_flag_verdict: SKIP"
+  assert_contains "$strict_hold_output" "window_24h_fastlane_feature_flag_reason:"
   assert_contains "$strict_hold_output" "window_hard_block_count: 0"
   assert_contains "$strict_hold_output" "artifacts_written: false"
   assert_contains "$strict_hold_output" "signoff_verdict: HOLD"
@@ -1657,6 +1708,10 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$output" "jito_rpc_policy_verdict: SKIP"
   assert_contains "$output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
+  assert_contains "$output" "go_nogo_require_fastlane_disabled: false"
+  assert_contains "$output" "submit_fastlane_enabled: false"
+  assert_contains "$output" "fastlane_feature_flag_verdict: SKIP"
+  assert_contains "$output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
   assert_contains "$output" "windowed_signoff_required: false"
   assert_contains "$output" "windowed_signoff_windows_csv: 1,6,24"
   assert_contains "$output" "windowed_signoff_require_dynamic_hint_source_pass: false"
@@ -1736,6 +1791,7 @@ run_devnet_rehearsal_case() {
       RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
       GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
       WINDOWED_SIGNOFF_REQUIRED="true" WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
       WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="true" \
       bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
@@ -1756,6 +1812,10 @@ run_devnet_rehearsal_case() {
   assert_contains "$required_nogo_output" "go_nogo_require_jito_rpc_policy: true"
   assert_contains "$required_nogo_output" "jito_rpc_policy_verdict: WARN"
   assert_contains "$required_nogo_output" "jito_rpc_policy_reason:"
+  assert_contains "$required_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$required_nogo_output" "submit_fastlane_enabled: false"
+  assert_contains "$required_nogo_output" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$required_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
   assert_contains "$required_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$required_nogo_output" "artifacts_written: false"
   assert_contains "$required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
@@ -1811,6 +1871,10 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$pass_output" "jito_rpc_policy_verdict: SKIP"
   assert_contains "$pass_output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
+  assert_contains "$pass_output" "go_nogo_require_fastlane_disabled: false"
+  assert_contains "$pass_output" "submit_fastlane_enabled: false"
+  assert_contains "$pass_output" "fastlane_feature_flag_verdict: SKIP"
+  assert_contains "$pass_output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
   assert_contains "$pass_output" "windowed_signoff_required: false"
   assert_contains "$pass_output" "windowed_signoff_windows_csv: 1,6,24"
   assert_contains "$pass_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
@@ -1880,6 +1944,7 @@ run_adapter_rollout_evidence_case() {
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
       WINDOWED_SIGNOFF_REQUIRED="true" \
       WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
       WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" \
@@ -1902,6 +1967,10 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$windowed_nogo_output" "go_nogo_require_jito_rpc_policy: true"
   assert_contains "$windowed_nogo_output" "jito_rpc_policy_verdict: WARN"
   assert_contains "$windowed_nogo_output" "jito_rpc_policy_reason:"
+  assert_contains "$windowed_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$windowed_nogo_output" "submit_fastlane_enabled: false"
+  assert_contains "$windowed_nogo_output" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$windowed_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
   assert_contains "$windowed_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "artifacts_written: false"
@@ -2065,6 +2134,7 @@ main() {
   local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
   write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
   run_go_nogo_jito_rpc_policy_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
+  run_go_nogo_fastlane_disabled_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case

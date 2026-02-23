@@ -12,12 +12,14 @@ SERVICE="${SERVICE:-solana-copy-bot}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
+GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$GO_NOGO_REQUIRE_JITO_RPC_POLICY")"
+go_nogo_require_fastlane_disabled="$(normalize_bool_token "$GO_NOGO_REQUIRE_FASTLANE_DISABLED")"
 windowed_signoff_require_dynamic_hint_source_pass="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
 windowed_signoff_require_dynamic_tip_policy_pass="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS")"
 
@@ -86,6 +88,8 @@ declare -a window_dynamic_tip_policy_verdicts=()
 declare -a window_dynamic_tip_policy_reasons=()
 declare -a window_jito_rpc_policy_verdicts=()
 declare -a window_jito_rpc_policy_reasons=()
+declare -a window_fastlane_feature_flag_verdicts=()
+declare -a window_fastlane_feature_flag_reasons=()
 declare -a window_go_nogo_artifacts_written=()
 declare -a window_go_nogo_artifact_manifests=()
 declare -a window_go_nogo_calibration_sha256=()
@@ -138,6 +142,7 @@ if ((${#input_errors[@]} == 0)); then
       CONFIG_PATH="$CONFIG_PATH" \
       SERVICE="$SERVICE" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled" \
       GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
@@ -173,6 +178,8 @@ if ((${#input_errors[@]} == 0)); then
     dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$go_nogo_output")")"
     jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$go_nogo_output")")"
     jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$go_nogo_output")")"
+    fastlane_feature_flag_verdict="$(normalize_gate_verdict "$(extract_field "fastlane_feature_flag_verdict" "$go_nogo_output")")"
+    fastlane_feature_flag_reason="$(trim_string "$(extract_field "fastlane_feature_flag_reason" "$go_nogo_output")")"
     if [[ -z "$dynamic_hint_source_reason" ]]; then
       dynamic_hint_source_reason="n/a"
     fi
@@ -181,6 +188,9 @@ if ((${#input_errors[@]} == 0)); then
     fi
     if [[ -z "$jito_rpc_policy_reason" ]]; then
       jito_rpc_policy_reason="n/a"
+    fi
+    if [[ -z "$fastlane_feature_flag_reason" ]]; then
+      fastlane_feature_flag_reason="n/a"
     fi
 
     capture_path=""
@@ -211,6 +221,8 @@ if ((${#input_errors[@]} == 0)); then
     window_dynamic_tip_policy_reasons+=("$dynamic_tip_policy_reason")
     window_jito_rpc_policy_verdicts+=("$jito_rpc_policy_verdict")
     window_jito_rpc_policy_reasons+=("$jito_rpc_policy_reason")
+    window_fastlane_feature_flag_verdicts+=("$fastlane_feature_flag_verdict")
+    window_fastlane_feature_flag_reasons+=("$fastlane_feature_flag_reason")
     window_go_nogo_artifacts_written+=("$go_nogo_artifacts_written")
     window_go_nogo_artifact_manifests+=("${go_nogo_artifact_manifest:-n/a}")
     window_go_nogo_calibration_sha256+=("${go_nogo_calibration_sha256:-n/a}")
@@ -338,6 +350,7 @@ service: $SERVICE
 windows_csv: $WINDOWS_CSV
 risk_events_minutes: $RISK_EVENTS_MINUTES
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
+go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
 windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass
 windowed_signoff_require_dynamic_tip_policy_pass: $windowed_signoff_require_dynamic_tip_policy_pass
 window_count: $window_total
@@ -374,6 +387,8 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_dynamic_tip_policy_reason: ${window_dynamic_tip_policy_reasons[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_jito_rpc_policy_verdict: ${window_jito_rpc_policy_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_jito_rpc_policy_reason: ${window_jito_rpc_policy_reasons[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_verdict: ${window_fastlane_feature_flag_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_reason: ${window_fastlane_feature_flag_reasons[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifacts_written: ${window_go_nogo_artifacts_written[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifact_manifest: ${window_go_nogo_artifact_manifests[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_calibration_sha256: ${window_go_nogo_calibration_sha256[$idx]}"
