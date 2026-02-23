@@ -349,7 +349,11 @@ elif (( window_total > 0 )) && (( go_nogo_go_count == window_total )) && (( rout
   signoff_reason="all windows GO with PASS route-profile/fee-decomposition verdicts and stable primary/fallback routes"
 elif [[ "$primary_route_stable" != "true" || "$fallback_route_stable" != "true" ]]; then
   signoff_verdict="HOLD"
-  signoff_reason="primary/fallback route changed across windows before full route/fee signoff closure"
+  if [[ -n "$first_non_pass_reason" ]]; then
+    signoff_reason="primary/fallback route changed across windows and at least one window is not PASS: ${first_non_pass_reason}"
+  else
+    signoff_reason="primary/fallback route changed across windows before full route/fee signoff closure"
+  fi
 else
   signoff_verdict="HOLD"
   signoff_reason="${first_non_pass_reason:-at least one window is not yet PASS for route-profile or fee-decomposition signoff}"
