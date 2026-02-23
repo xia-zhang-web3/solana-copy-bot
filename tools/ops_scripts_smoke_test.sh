@@ -1311,6 +1311,7 @@ PY
 run_execution_route_fee_signoff_case() {
   local db_path="$1"
   local config_path="$2"
+  local strict_config_path="$3"
   local hold_output
   if hold_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -1330,6 +1331,7 @@ run_execution_route_fee_signoff_case() {
   fi
   assert_contains "$hold_output" "=== Execution Route/Fee Signoff Summary ==="
   assert_contains "$hold_output" "window_24h_overall_go_nogo_verdict: HOLD"
+  assert_contains "$hold_output" "window_24h_overall_go_nogo_reason:"
   assert_contains "$hold_output" "window_24h_route_profile_verdict: SKIP"
   assert_contains "$hold_output" "window_24h_fee_decomposition_verdict: SKIP"
   assert_contains "$hold_output" "window_24h_route_verdict_parity: true"
@@ -1436,6 +1438,32 @@ run_execution_route_fee_signoff_case() {
   fi
   assert_contains "$invalid_output" "signoff_verdict: NO_GO"
   assert_contains "$invalid_output" "input_error: window token must be an integer (got: invalid)"
+
+  local strict_nogo_output
+  if strict_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper when strict jito/rpc policy is enforced and fails" >&2
+    exit 1
+  else
+    strict_nogo_status=$?
+  fi
+  if [[ "$strict_nogo_status" -ne 3 ]]; then
+    echo "expected NO_GO exit code 3 for strict jito/rpc policy route/fee signoff case, got $strict_nogo_status" >&2
+    exit 1
+  fi
+  assert_contains "$strict_nogo_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$strict_nogo_output" "window_24h_overall_go_nogo_verdict: NO_GO"
+  assert_contains "$strict_nogo_output" "window_24h_overall_go_nogo_reason: strict jito->rpc policy gate not PASS:"
+  assert_contains "$strict_nogo_output" "signoff_verdict: NO_GO"
+  assert_contains "$strict_nogo_output" "signoff_reason: window 24h nested go/no-go verdict is NO_GO: strict jito->rpc policy gate not PASS:"
   echo "[ok] execution route/fee signoff helper"
 }
 
@@ -2507,7 +2535,7 @@ main() {
   run_go_nogo_jito_rpc_policy_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_go_nogo_fastlane_disabled_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
-  run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg"
+  run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case
   run_go_nogo_preflight_fail_case "$legacy_db"

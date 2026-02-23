@@ -95,6 +95,7 @@ declare -a window_ids=()
 declare -a window_go_nogo_exit_codes=()
 declare -a window_calibration_exit_codes=()
 declare -a window_overall_go_nogo_verdicts=()
+declare -a window_overall_go_nogo_reasons=()
 declare -a window_route_profile_verdicts=()
 declare -a window_route_profile_reasons=()
 declare -a window_fee_decomposition_verdicts=()
@@ -126,6 +127,7 @@ fee_decomposition_pass_count=0
 first_unknown_reason=""
 first_non_pass_reason=""
 first_hard_block_reason=""
+first_go_nogo_hold_reason=""
 
 primary_route_stable="true"
 fallback_route_stable="true"
@@ -178,6 +180,7 @@ if ((${#input_errors[@]} == 0)); then
     fi
 
     overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
+    overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
     route_profile_verdict="$(normalize_gate_verdict "$(extract_field "route_profile_verdict" "$go_nogo_output")")"
     route_profile_reason="$(trim_string "$(extract_field "route_profile_reason" "$go_nogo_output")")"
     fee_decomposition_verdict="$(normalize_gate_verdict "$(extract_field "fee_decomposition_verdict" "$go_nogo_output")")"
@@ -206,6 +209,9 @@ if ((${#input_errors[@]} == 0)); then
     if [[ -z "$route_profile_reason" ]]; then
       route_profile_reason="n/a"
     fi
+    if [[ -z "$overall_go_nogo_reason" ]]; then
+      overall_go_nogo_reason="n/a"
+    fi
     if [[ -z "$fee_decomposition_reason" ]]; then
       fee_decomposition_reason="n/a"
     fi
@@ -233,6 +239,7 @@ if ((${#input_errors[@]} == 0)); then
     window_go_nogo_exit_codes+=("$go_nogo_exit_code")
     window_calibration_exit_codes+=("$calibration_exit_code")
     window_overall_go_nogo_verdicts+=("$overall_go_nogo_verdict")
+    window_overall_go_nogo_reasons+=("$overall_go_nogo_reason")
     window_route_profile_verdicts+=("$route_profile_verdict")
     window_route_profile_reasons+=("$route_profile_reason")
     window_fee_decomposition_verdicts+=("$fee_decomposition_verdict")
@@ -283,6 +290,10 @@ if ((${#input_errors[@]} == 0)); then
         ;;
     esac
 
+    if [[ "$overall_go_nogo_verdict" == "HOLD" && -z "$first_go_nogo_hold_reason" ]]; then
+      first_go_nogo_hold_reason="window ${window_hours}h nested go/no-go verdict is HOLD: ${overall_go_nogo_reason:-n/a}"
+    fi
+
     if [[ "$route_profile_verdict" == "PASS" && "$route_verdict_parity" == "true" ]]; then
       route_profile_pass_count=$((route_profile_pass_count + 1))
     elif [[ "$route_profile_verdict" == "UNKNOWN" || "$calibration_route_profile_verdict" == "UNKNOWN" || "$route_verdict_parity" == "false" ]]; then
@@ -320,7 +331,7 @@ if ((${#input_errors[@]} == 0)); then
     fi
 
     if [[ "$overall_go_nogo_verdict" == "NO_GO" ]] && [[ -z "$first_hard_block_reason" ]]; then
-      first_hard_block_reason="window ${window_hours}h nested go/no-go verdict is NO_GO"
+      first_hard_block_reason="window ${window_hours}h nested go/no-go verdict is NO_GO: ${overall_go_nogo_reason:-n/a}"
     fi
   done
 fi
@@ -354,6 +365,9 @@ elif [[ "$primary_route_stable" != "true" || "$fallback_route_stable" != "true" 
   else
     signoff_reason="primary/fallback route changed across windows before full route/fee signoff closure"
   fi
+elif (( go_nogo_hold_count > 0 )); then
+  signoff_verdict="HOLD"
+  signoff_reason="${first_go_nogo_hold_reason:-at least one window nested go/no-go verdict is HOLD}"
 else
   signoff_verdict="HOLD"
   signoff_reason="${first_non_pass_reason:-at least one window is not yet PASS for route-profile or fee-decomposition signoff}"
@@ -386,6 +400,7 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_go_nogo_exit_code: ${window_go_nogo_exit_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_calibration_exit_code: ${window_calibration_exit_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_overall_go_nogo_verdict: ${window_overall_go_nogo_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_overall_go_nogo_reason: ${window_overall_go_nogo_reasons[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_route_profile_verdict: ${window_route_profile_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_route_profile_reason: ${window_route_profile_reasons[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fee_decomposition_verdict: ${window_fee_decomposition_verdicts[$idx]}"
