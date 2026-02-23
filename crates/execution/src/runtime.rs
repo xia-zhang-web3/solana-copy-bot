@@ -1,7 +1,7 @@
 use crate::ExecutionRuntime;
 use std::collections::BTreeMap;
 
-const JITO_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST: &[&str] = &[
+const GUARDED_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST: &[&str] = &[
     "submit_adapter_unavailable",
     "submit_adapter_http_unavailable",
     "submit_adapter_invalid_json",
@@ -46,8 +46,8 @@ impl ExecutionRuntime {
         if current_route == next_route {
             return true;
         }
-        if current_route == "jito" && next_route == "rpc" {
-            return is_allowed_jito_rpc_fallback_error(retryable_error_code);
+        if is_guarded_rpc_fallback_transition(current_route.as_str(), next_route.as_str()) {
+            return is_allowed_guarded_rpc_fallback_error(retryable_error_code);
         }
         true
     }
@@ -101,9 +101,13 @@ fn normalize_route(value: &str) -> Option<String> {
     }
 }
 
-fn is_allowed_jito_rpc_fallback_error(code: &str) -> bool {
+fn is_guarded_rpc_fallback_transition(current_route: &str, next_route: &str) -> bool {
+    matches!(current_route, "jito" | "fastlane") && next_route == "rpc"
+}
+
+fn is_allowed_guarded_rpc_fallback_error(code: &str) -> bool {
     let normalized = code.trim().to_ascii_lowercase();
-    JITO_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST
+    GUARDED_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST
         .iter()
         .any(|allowed| *allowed == normalized)
 }
@@ -135,7 +139,7 @@ mod tests {
     #[test]
     fn jito_rpc_fallback_allowlist_accepts_known_retryable_transport_codes() {
         let runtime = make_jito_rpc_runtime();
-        for code in JITO_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST {
+        for code in GUARDED_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST {
             assert!(
                 runtime.submit_fallback_route_allowed("jito", "rpc", code),
                 "known fallback code should be allowed: {code}"
@@ -153,10 +157,33 @@ mod tests {
     }
 
     #[test]
-    fn fallback_policy_only_applies_to_jito_rpc_transition() {
+    fn fastlane_rpc_fallback_allowlist_accepts_known_retryable_transport_codes() {
+        let runtime = make_jito_rpc_runtime();
+        for code in GUARDED_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST {
+            assert!(
+                runtime.submit_fallback_route_allowed("fastlane", "rpc", code),
+                "known fallback code should be allowed: {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn fastlane_rpc_fallback_rejects_unknown_retryable_codes_fail_closed() {
+        let runtime = make_jito_rpc_runtime();
+        assert!(
+            !runtime.submit_fallback_route_allowed("fastlane", "rpc", "submit_retryable_once"),
+            "unknown retryable code must fail-closed for fastlane->rpc fallback"
+        );
+    }
+
+    #[test]
+    fn fallback_policy_only_applies_to_guarded_rpc_transitions() {
         let runtime = make_jito_rpc_runtime();
         assert!(runtime.submit_fallback_route_allowed("rpc", "jito", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed("rpc", "fastlane", "submit_retryable_once"));
         assert!(runtime.submit_fallback_route_allowed("rpc", "paper", "submit_retryable_once"));
         assert!(runtime.submit_fallback_route_allowed("jito", "jito", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed("fastlane", "fastlane", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed("jito", "fastlane", "submit_retryable_once"));
     }
 }
