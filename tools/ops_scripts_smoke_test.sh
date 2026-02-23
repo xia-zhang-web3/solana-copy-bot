@@ -782,6 +782,9 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$go_nogo_output" "dynamic_tip_policy_config_enabled: false"
   assert_contains "$go_nogo_output" "dynamic_tip_policy_verdict: SKIP"
+  assert_contains "$go_nogo_output" "go_nogo_require_jito_rpc_policy: false"
+  assert_contains "$go_nogo_output" "jito_rpc_policy_verdict: SKIP"
+  assert_contains "$go_nogo_output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
   assert_contains "$go_nogo_output" "artifacts_written: false"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
 
@@ -966,6 +969,29 @@ run_go_nogo_dynamic_hint_source_gate_case() {
   assert_contains "$output" "dynamic_cu_hint_source_verdict: PASS"
   assert_contains "$output" "dynamic_cu_hint_source_reason: external Priority Fee API hints observed"
   echo "[ok] go-no-go dynamic hint source gate"
+}
+
+run_go_nogo_jito_rpc_policy_gate_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$output" "jito_rpc_policy_verdict: WARN"
+  assert_contains "$output" "jito_rpc_policy_reason:"
+  assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
+  assert_contains "$output" "overall_go_nogo_reason: strict jito->rpc policy gate not PASS:"
+  echo "[ok] go-no-go strict jito/rpc policy gate"
 }
 
 run_windowed_signoff_report_case() {
@@ -1536,6 +1562,9 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_contains "$output" "go_nogo_require_jito_rpc_policy: false"
+  assert_contains "$output" "jito_rpc_policy_verdict: SKIP"
+  assert_contains "$output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
   assert_contains "$output" "windowed_signoff_required: false"
   assert_contains "$output" "windowed_signoff_windows_csv: 1,6,24"
   assert_contains "$output" "windowed_signoff_require_dynamic_hint_source_pass: false"
@@ -1683,6 +1712,9 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$pass_output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$pass_output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_contains "$pass_output" "go_nogo_require_jito_rpc_policy: false"
+  assert_contains "$pass_output" "jito_rpc_policy_verdict: SKIP"
+  assert_contains "$pass_output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
   assert_contains "$pass_output" "windowed_signoff_required: false"
   assert_contains "$pass_output" "windowed_signoff_windows_csv: 1,6,24"
   assert_contains "$pass_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
@@ -1932,6 +1964,7 @@ main() {
   run_go_nogo_dynamic_hint_source_gate_case "$legacy_db" "$legacy_cfg"
   local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
   write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
+  run_go_nogo_jito_rpc_policy_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case

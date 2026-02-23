@@ -30,7 +30,7 @@ Arguments:
 2. `60` — recent risk-events window in minutes.
 
 Optional windowed-signoff knobs:
-Defaults: `WINDOWED_SIGNOFF_REQUIRED=false`, `WINDOWED_SIGNOFF_WINDOWS_CSV=1,6,24`, `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS=false`, `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=false`.
+Defaults: `WINDOWED_SIGNOFF_REQUIRED=false`, `WINDOWED_SIGNOFF_WINDOWS_CSV=1,6,24`, `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS=false`, `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=false`, `GO_NOGO_REQUIRE_JITO_RPC_POLICY=false`.
 
 1. `WINDOWED_SIGNOFF_REQUIRED=true`:
    1. rehearsal treats nested `execution_windowed_signoff_report.sh` verdict as required gate.
@@ -40,6 +40,8 @@ Defaults: `WINDOWED_SIGNOFF_REQUIRED=false`, `WINDOWED_SIGNOFF_WINDOWS_CSV=1,6,2
    1. for windows where dynamic CU policy is enabled, require nested `dynamic_cu_hint_source_verdict=PASS`.
 4. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=true`:
    1. for windows where dynamic tip policy is enabled, require nested `dynamic_tip_policy_verdict=PASS`.
+5. `GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`:
+   1. require nested go/no-go to enforce strict route-profile target `primary=jito` and `fallback=rpc` in adapter mode (`jito_rpc_policy_verdict=PASS`).
 
 ## 3) Exit Codes
 

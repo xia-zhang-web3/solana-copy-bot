@@ -615,6 +615,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 91. windowed signoff summary now includes nested go/no-go artifact-chain metadata per window (`window_*_go_nogo_artifact_manifest` and `window_*_go_nogo_{calibration,snapshot,preflight,summary}_sha256`), so multi-window signoff packets can be audited without opening each captured go/no-go output manually.
 92. evidence helpers now emit explicit `artifacts_written` flags even when `OUTPUT_DIR` is unset (`false`), and upstream orchestration summaries propagate nested artifact-write flags (`go_nogo_artifacts_written`, `windowed_signoff_artifacts_written`, `rehearsal_artifacts_written`) so `n/a` hash fields remain auditable as intentional no-export states.
 93. submit fallback hardening now also applies fail-closed allowlist policy to `fastlane -> rpc` transitions (same retryable availability/transport code set as `jito -> rpc`), preventing silent fallback on unclassified retryable submit errors when Fastlane is introduced under feature-flag routing.
+94. go/no-go helper now supports optional strict route-policy gate (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`) that requires adapter-mode route-profile evidence to resolve as `primary=jito` and `fallback=rpc` (`jito_rpc_policy_verdict=PASS`), and this strictness is propagated through windowed signoff/devnet rehearsal/rollout summaries.
 
 Остается в next-code-queue:
 

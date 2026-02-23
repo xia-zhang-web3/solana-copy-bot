@@ -18,6 +18,7 @@ WINDOWED_SIGNOFF_WINDOWS_CSV="${WINDOWED_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 WINDOWED_SIGNOFF_REQUIRED="${WINDOWED_SIGNOFF_REQUIRED:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
+GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -100,6 +101,9 @@ rehearsal_verdict="UNKNOWN"
 rehearsal_reason="execution devnet rehearsal helper not executed"
 preflight_verdict=""
 go_nogo_verdict=""
+go_nogo_require_jito_rpc_policy=""
+jito_rpc_policy_verdict=""
+jito_rpc_policy_reason=""
 dynamic_cu_policy_verdict=""
 dynamic_cu_policy_reason=""
 dynamic_tip_policy_verdict=""
@@ -160,6 +164,7 @@ else
       GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$GO_NOGO_REQUIRE_JITO_RPC_POLICY" \
       WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
       WINDOWED_SIGNOFF_REQUIRED="$WINDOWED_SIGNOFF_REQUIRED" \
       WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" \
@@ -175,6 +180,9 @@ else
   rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
   preflight_verdict="$(trim_string "$(extract_field "preflight_verdict" "$rehearsal_output")")"
   go_nogo_verdict="$(trim_string "$(extract_field "overall_go_nogo_verdict" "$rehearsal_output")")"
+  go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$(extract_field "go_nogo_require_jito_rpc_policy" "$rehearsal_output")")"
+  jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$rehearsal_output")")"
+  jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$rehearsal_output")")"
   dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_policy_verdict" "$rehearsal_output")")"
   dynamic_cu_policy_reason="$(trim_string "$(extract_field "dynamic_cu_policy_reason" "$rehearsal_output")")"
   dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$rehearsal_output")")"
@@ -283,6 +291,9 @@ devnet_rehearsal_reason: ${rehearsal_reason:-n/a}
 devnet_rehearsal_exit_code: $rehearsal_exit_code
 preflight_verdict: ${preflight_verdict:-unknown}
 overall_go_nogo_verdict: ${go_nogo_verdict:-unknown}
+go_nogo_require_jito_rpc_policy: ${go_nogo_require_jito_rpc_policy:-false}
+jito_rpc_policy_verdict: ${jito_rpc_policy_verdict:-unknown}
+jito_rpc_policy_reason: ${jito_rpc_policy_reason:-n/a}
 dynamic_cu_policy_verdict: ${dynamic_cu_policy_verdict:-unknown}
 dynamic_cu_policy_reason: ${dynamic_cu_policy_reason:-n/a}
 dynamic_tip_policy_verdict: ${dynamic_tip_policy_verdict:-unknown}

@@ -18,6 +18,7 @@ WINDOWED_SIGNOFF_WINDOWS_CSV="${WINDOWED_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 WINDOWED_SIGNOFF_REQUIRED="${WINDOWED_SIGNOFF_REQUIRED:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
+GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 
 if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
   echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
@@ -142,6 +143,7 @@ test_mode_norm="$(normalize_bool_token "$DEVNET_REHEARSAL_TEST_MODE")"
 windowed_signoff_required_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRED")"
 windowed_signoff_require_dynamic_hint_source_pass_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
 windowed_signoff_require_dynamic_tip_policy_pass_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS")"
+go_nogo_require_jito_rpc_policy_norm="$(normalize_bool_token "$GO_NOGO_REQUIRE_JITO_RPC_POLICY")"
 
 execution_enabled_raw="$(cfg_or_env_string execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED)"
 execution_enabled="$(normalize_bool_token "${execution_enabled_raw:-false}")"
@@ -195,6 +197,7 @@ go_nogo_exit_code=0
 if go_nogo_output="$(
   CONFIG_PATH="$CONFIG_PATH" \
   SERVICE="$SERVICE" \
+  GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
   GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
   GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
@@ -225,6 +228,7 @@ if windowed_signoff_output="$(
   GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
   GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+  GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
   WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
   WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
   OUTPUT_DIR="$windowed_signoff_output_dir" \
@@ -251,6 +255,9 @@ dynamic_cu_hint_rpc_total="$(trim_string "$(extract_field "dynamic_cu_hint_rpc_t
 dynamic_cu_hint_api_configured="$(trim_string "$(extract_field "dynamic_cu_hint_api_configured" "$go_nogo_output")")"
 dynamic_cu_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$go_nogo_output")")"
 dynamic_cu_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$go_nogo_output")")"
+go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$(extract_field "go_nogo_require_jito_rpc_policy" "$go_nogo_output")")"
+jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$go_nogo_output")")"
+jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$go_nogo_output")")"
 primary_route="$(trim_string "$(extract_field "primary_route" "$go_nogo_output")")"
 fallback_route="$(trim_string "$(extract_field "fallback_route" "$go_nogo_output")")"
 primary_attempted_orders="$(trim_string "$(extract_field "primary_attempted_orders" "$go_nogo_output")")"
@@ -291,6 +298,9 @@ if [[ -z "$dynamic_tip_policy_reason" ]]; then
 fi
 if [[ -z "$dynamic_cu_hint_source_reason" ]]; then
   dynamic_cu_hint_source_reason="n/a"
+fi
+if [[ -z "$jito_rpc_policy_reason" ]]; then
+  jito_rpc_policy_reason="n/a"
 fi
 if [[ -z "$windowed_signoff_reason" ]]; then
   windowed_signoff_reason="n/a"
@@ -396,6 +406,9 @@ dynamic_cu_hint_rpc_total: ${dynamic_cu_hint_rpc_total:-n/a}
 dynamic_cu_hint_api_configured: ${dynamic_cu_hint_api_configured:-false}
 dynamic_cu_hint_source_verdict: ${dynamic_cu_hint_source_verdict:-unknown}
 dynamic_cu_hint_source_reason: ${dynamic_cu_hint_source_reason:-n/a}
+go_nogo_require_jito_rpc_policy: ${go_nogo_require_jito_rpc_policy:-false}
+jito_rpc_policy_verdict: ${jito_rpc_policy_verdict:-unknown}
+jito_rpc_policy_reason: ${jito_rpc_policy_reason:-n/a}
 primary_route: ${primary_route:-n/a}
 fallback_route: ${fallback_route:-n/a}
 primary_attempted_orders: ${primary_attempted_orders:-n/a}
