@@ -1348,6 +1348,7 @@ run_adapter_secret_rotation_report_case() {
   )"
   assert_contains "$pass_output" "=== Adapter Secret Rotation Report ==="
   assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$pass_output" "artifacts_written: true"
   assert_contains "$pass_output" "artifact_report:"
   assert_contains "$pass_output" "artifact_manifest:"
   assert_contains "$pass_output" "report_sha256:"
@@ -1373,6 +1374,7 @@ run_adapter_secret_rotation_report_case() {
       bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh"
   )"
   assert_contains "$duplicate_key_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$duplicate_key_output" "artifacts_written: false"
 
   local quoted_hash_env_path="$TMP_DIR/adapter-rotation-quoted-hash.env"
   cp "$env_path" "$quoted_hash_env_path"
