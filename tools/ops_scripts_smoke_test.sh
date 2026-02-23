@@ -1503,6 +1503,83 @@ run_execution_route_fee_signoff_case() {
   assert_field_equals "$strict_nogo_output" "window_24h_overall_go_nogo_reason_code" "jito_policy_not_pass"
   assert_contains "$strict_nogo_output" "signoff_verdict: NO_GO"
   assert_field_equals "$strict_nogo_output" "signoff_reason_code" "window_hard_block"
+
+  local final_hold_output=""
+  if final_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-hold" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected HOLD exit for final route/fee package helper on paper config" >&2
+    exit 1
+  else
+    local final_hold_status=$?
+    if [[ "$final_hold_status" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 from final route/fee package helper, got $final_hold_status" >&2
+      echo "$final_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_hold_output" "=== Execution Route/Fee Final Evidence Package ==="
+  assert_contains "$final_hold_output" "signoff_verdict: HOLD"
+  assert_contains "$final_hold_output" "final_route_fee_package_verdict: HOLD"
+  assert_contains "$final_hold_output" "signoff_artifacts_written: true"
+  assert_sha256_field "$final_hold_output" "summary_sha256"
+  assert_sha256_field "$final_hold_output" "signoff_capture_sha256"
+  assert_sha256_field "$final_hold_output" "manifest_sha256"
+
+  local final_go_output
+  final_go_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-go" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24" "60"
+  )"
+  assert_contains "$final_go_output" "signoff_verdict: GO"
+  assert_field_equals "$final_go_output" "signoff_reason_code" "test_override"
+  assert_contains "$final_go_output" "final_route_fee_package_verdict: GO"
+  assert_field_equals "$final_go_output" "final_route_fee_package_reason_code" "test_override"
+
+  local final_nogo_output=""
+  if final_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-nogo" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24,invalid" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for final route/fee package helper invalid windows" >&2
+    exit 1
+  else
+    local final_nogo_status=$?
+    if [[ "$final_nogo_status" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 from final route/fee package helper invalid windows, got $final_nogo_status" >&2
+      echo "$final_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_nogo_output" "signoff_verdict: NO_GO"
+  assert_field_equals "$final_nogo_output" "signoff_reason_code" "input_error"
+  assert_contains "$final_nogo_output" "final_route_fee_package_verdict: NO_GO"
+  assert_field_equals "$final_nogo_output" "final_route_fee_package_reason_code" "input_error"
+
   echo "[ok] execution route/fee signoff helper"
 }
 

@@ -191,3 +191,8 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
    2. helper executes `adapter_rollout_evidence_report.sh` with strict-gate defaults enabled (`windowed`, `jito/rpc policy`, `fastlane-disabled`, `route/fee signoff`),
    3. output includes consolidated package verdict (`final_rollout_package_verdict`) and package manifest checksums,
    4. attach both package artifacts and nested rollout artifacts under `OUTPUT_ROOT/rollout/` as the final runtime evidence bundle.
+13. Final route/fee signoff evidence package helper (recommended for next-code-queue items 2/3):
+   1. run `CONFIG_PATH=configs/live.toml OUTPUT_ROOT=state/route-fee-final ./tools/execution_route_fee_final_evidence_report.sh 1,6,24 60`
+   2. helper executes `execution_route_fee_signoff_report.sh` with strict defaults enabled (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`, `GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`) and captures nested artifacts under `OUTPUT_ROOT/route_fee_signoff/`,
+   3. output includes consolidated package verdict (`final_route_fee_package_verdict`) plus checksum manifest for summary/capture/nested signoff artifacts,
+   4. attach package summary + manifest + nested signoff artifacts as the final route-profile/fee-decomposition evidence set.
