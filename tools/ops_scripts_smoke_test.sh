@@ -2310,6 +2310,43 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$route_fee_required_go_output" "adapter_rollout_verdict: GO"
   assert_contains "$route_fee_required_go_output" "adapter_rollout_reason: rotation readiness, devnet rehearsal, and required route/fee signoff gates passed"
 
+  local route_fee_source_split_output=""
+  if route_fee_source_split_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when nested rehearsal route/fee signoff is NO_GO" >&2
+    exit 1
+  else
+    local route_fee_source_split_exit_code=$?
+    if [[ "$route_fee_source_split_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for route/fee source split scenario, got $route_fee_source_split_exit_code" >&2
+      echo "$route_fee_source_split_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_source_split_output" "route_fee_signoff_verdict: GO"
+  assert_contains "$route_fee_source_split_output" "route_fee_signoff_reason: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=GO)"
+  assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_required: true"
+  assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_windows_csv: 1,invalid"
+  assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_verdict: NO_GO"
+  assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_reason: window token must be an integer (got: invalid)"
+  assert_contains "$route_fee_source_split_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_contains "$route_fee_source_split_output" "adapter_rollout_verdict: NO_GO"
+  assert_contains "$route_fee_source_split_output" "adapter_rollout_reason: devnet rehearsal returned NO_GO: route/fee signoff returned NO_GO: window token must be an integer (got: invalid)"
+
   local rehearsal_hold_output=""
   if rehearsal_hold_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
