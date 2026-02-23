@@ -621,6 +621,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 97. route-profile + fee-decomposition signoff helper added: `tools/execution_route_fee_signoff_report.sh` runs `execution_go_nogo_report.sh` and `execution_fee_calibration_report.sh` across multi-window sets (default `1,6,24`), enforces per-window verdict parity (`route_profile_verdict` and `fee_decomposition_verdict`), checks primary/fallback route stability, and emits a single `signoff_verdict=GO|HOLD|NO_GO` with artifact manifest for next-code-queue evidence packaging.
 98. top-level rollout orchestrator now captures route/fee signoff evidence in-band (`execution_route_fee_signoff_report.sh`) and can enforce it as required gate via `ROUTE_FEE_SIGNOFF_REQUIRED=true` (windows configurable with `ROUTE_FEE_SIGNOFF_WINDOWS_CSV`), while propagating route/fee signoff verdict, stability fields, and capture hashes in rollout summary artifacts.
 99. Stage C.5 rehearsal helper now also captures nested route/fee signoff evidence (`execution_route_fee_signoff_report.sh`) and can enforce it as required gate via `ROUTE_FEE_SIGNOFF_REQUIRED=true` (`ROUTE_FEE_SIGNOFF_WINDOWS_CSV` configurable), while propagating verdict/stability/hash fields in `tools/execution_devnet_rehearsal.sh` summary and artifacts.
+100. rollout summary now exposes nested rehearsal route/fee signoff fields under explicit `rehearsal_route_fee_*` keys, so operators can distinguish rehearsal-gate evidence from top-level rollout route/fee gate evidence in a single artifact.
 
 Остается в next-code-queue:
 

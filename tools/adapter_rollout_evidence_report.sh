@@ -156,6 +156,21 @@ rehearsal_artifacts_written="false"
 windowed_signoff_artifact_manifest=""
 windowed_signoff_summary_sha256=""
 windowed_signoff_artifacts_written="false"
+rehearsal_route_fee_signoff_required=""
+rehearsal_route_fee_signoff_windows_csv=""
+rehearsal_route_fee_signoff_verdict=""
+rehearsal_route_fee_signoff_reason=""
+rehearsal_route_fee_signoff_exit_code=""
+rehearsal_route_fee_signoff_artifact_manifest=""
+rehearsal_route_fee_signoff_summary_sha256=""
+rehearsal_route_fee_signoff_artifacts_written="false"
+rehearsal_route_fee_primary_route_stable=""
+rehearsal_route_fee_stable_primary_route=""
+rehearsal_route_fee_fallback_route_stable=""
+rehearsal_route_fee_stable_fallback_route=""
+rehearsal_route_fee_route_profile_pass_count=""
+rehearsal_route_fee_fee_decomposition_pass_count=""
+rehearsal_route_fee_window_count=""
 tests_run=""
 tests_failed=""
 if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
@@ -250,6 +265,21 @@ else
   windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "windowed_signoff_artifact_manifest" "$rehearsal_output")")"
   windowed_signoff_summary_sha256="$(trim_string "$(extract_field "windowed_signoff_summary_sha256" "$rehearsal_output")")"
   windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "windowed_signoff_artifacts_written" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_required="$(normalize_bool_token "$(extract_field "route_fee_signoff_required" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_windows_csv="$(trim_string "$(extract_field "route_fee_signoff_windows_csv" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "route_fee_signoff_verdict" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_reason="$(trim_string "$(extract_field "route_fee_signoff_reason" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_exit_code="$(trim_string "$(extract_field "route_fee_signoff_exit_code" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "route_fee_signoff_artifact_manifest" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "route_fee_signoff_summary_sha256" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "route_fee_signoff_artifacts_written" "$rehearsal_output")")"
+  rehearsal_route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "route_fee_primary_route_stable" "$rehearsal_output")")"
+  rehearsal_route_fee_stable_primary_route="$(trim_string "$(extract_field "route_fee_stable_primary_route" "$rehearsal_output")")"
+  rehearsal_route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "route_fee_fallback_route_stable" "$rehearsal_output")")"
+  rehearsal_route_fee_stable_fallback_route="$(trim_string "$(extract_field "route_fee_stable_fallback_route" "$rehearsal_output")")"
+  rehearsal_route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_fee_route_profile_pass_count" "$rehearsal_output")")"
+  rehearsal_route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "route_fee_fee_decomposition_pass_count" "$rehearsal_output")")"
+  rehearsal_route_fee_window_count="$(trim_string "$(extract_field "route_fee_window_count" "$rehearsal_output")")"
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
   if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
@@ -468,6 +498,21 @@ rehearsal_artifacts_written: $rehearsal_artifacts_written
 windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
 windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
 windowed_signoff_artifacts_written: $windowed_signoff_artifacts_written
+rehearsal_route_fee_signoff_required: ${rehearsal_route_fee_signoff_required:-false}
+rehearsal_route_fee_signoff_windows_csv: ${rehearsal_route_fee_signoff_windows_csv:-n/a}
+rehearsal_route_fee_signoff_verdict: ${rehearsal_route_fee_signoff_verdict:-unknown}
+rehearsal_route_fee_signoff_reason: ${rehearsal_route_fee_signoff_reason:-n/a}
+rehearsal_route_fee_signoff_exit_code: ${rehearsal_route_fee_signoff_exit_code:-3}
+rehearsal_route_fee_signoff_artifact_manifest: ${rehearsal_route_fee_signoff_artifact_manifest:-n/a}
+rehearsal_route_fee_signoff_summary_sha256: ${rehearsal_route_fee_signoff_summary_sha256:-n/a}
+rehearsal_route_fee_signoff_artifacts_written: ${rehearsal_route_fee_signoff_artifacts_written:-false}
+rehearsal_route_fee_primary_route_stable: ${rehearsal_route_fee_primary_route_stable:-false}
+rehearsal_route_fee_stable_primary_route: ${rehearsal_route_fee_stable_primary_route:-n/a}
+rehearsal_route_fee_fallback_route_stable: ${rehearsal_route_fee_fallback_route_stable:-false}
+rehearsal_route_fee_stable_fallback_route: ${rehearsal_route_fee_stable_fallback_route:-n/a}
+rehearsal_route_fee_route_profile_pass_count: ${rehearsal_route_fee_route_profile_pass_count:-n/a}
+rehearsal_route_fee_fee_decomposition_pass_count: ${rehearsal_route_fee_fee_decomposition_pass_count:-n/a}
+rehearsal_route_fee_window_count: ${rehearsal_route_fee_window_count:-n/a}
 tests_run: ${tests_run:-unknown}
 tests_failed: ${tests_failed:-unknown}
 input_error_count: ${#input_errors[@]}
