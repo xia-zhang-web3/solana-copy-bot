@@ -250,6 +250,10 @@ else
 fi
 
 route_fee_signoff_required="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_REQUIRED")"
+route_fee_signoff_go_nogo_test_mode="$(normalize_bool_token "${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-${GO_NOGO_TEST_MODE:-false}}")"
+route_fee_signoff_go_nogo_test_fee_override="$(trim_string "${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}}")"
+route_fee_signoff_go_nogo_test_route_override="$(trim_string "${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}}")"
+route_fee_signoff_test_verdict_override_raw="$(trim_string "${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}")"
 route_fee_signoff_output=""
 route_fee_signoff_exit_code=3
 route_fee_signoff_verdict="UNKNOWN"
@@ -280,6 +284,9 @@ else
       CONFIG_PATH="$CONFIG_PATH" \
       SERVICE="$SERVICE" \
       OUTPUT_DIR="$route_fee_signoff_output_dir" \
+      GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_fee_override" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_route_override" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="$GO_NOGO_REQUIRE_JITO_RPC_POLICY" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$GO_NOGO_REQUIRE_FASTLANE_DISABLED" \
       bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
@@ -306,6 +313,15 @@ else
     route_fee_signoff_reason="unable to classify route/fee signoff verdict (exit=$route_fee_signoff_exit_code)"
   elif [[ -z "$route_fee_signoff_reason" ]]; then
     route_fee_signoff_reason="execution route/fee signoff helper reported $route_fee_signoff_verdict"
+  fi
+fi
+
+if [[ -n "$route_fee_signoff_test_verdict_override_raw" ]]; then
+  if [[ "$route_fee_signoff_go_nogo_test_mode" == "true" ]]; then
+    route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$route_fee_signoff_test_verdict_override_raw")"
+    route_fee_signoff_reason="test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=${route_fee_signoff_test_verdict_override_raw})"
+  else
+    input_errors+=("ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE requires ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE=true")
   fi
 fi
 
