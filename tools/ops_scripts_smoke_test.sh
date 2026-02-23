@@ -1024,8 +1024,36 @@ run_windowed_signoff_report_case() {
   assert_contains "$hold_output" "artifacts_written: false"
   assert_contains "$hold_output" "signoff_verdict: HOLD"
 
-  local nogo_output=""
-  if nogo_output="$(
+  local hard_block_nogo_output=""
+  if hard_block_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$paper_cfg" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for windowed signoff helper when nested overall go/no-go is not GO" >&2
+    exit 1
+  else
+    local hard_block_nogo_exit_code=$?
+    if [[ "$hard_block_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for windowed signoff helper, got $hard_block_nogo_exit_code" >&2
+      echo "$hard_block_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$hard_block_nogo_output" "window_24h_overall_go_nogo_verdict: NO_GO"
+  assert_contains "$hard_block_nogo_output" "window_24h_fee_decomposition_verdict: PASS"
+  assert_contains "$hard_block_nogo_output" "window_24h_route_profile_verdict: PASS"
+  assert_contains "$hard_block_nogo_output" "window_hard_block_count: 1"
+  assert_contains "$hard_block_nogo_output" "artifacts_written: false"
+  assert_contains "$hard_block_nogo_output" "signoff_verdict: NO_GO"
+
+  local strict_hold_output=""
+  if strict_hold_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
       DB_PATH="$db_path" \
       CONFIG_PATH="$paper_cfg" \
@@ -1039,22 +1067,22 @@ run_windowed_signoff_report_case() {
     echo "expected HOLD exit for windowed signoff helper when strict jito->rpc gate is enabled in non-adapter mode" >&2
     exit 1
   else
-    local nogo_exit_code=$?
-    if [[ "$nogo_exit_code" -ne 2 ]]; then
-      echo "expected HOLD exit code 2 for windowed signoff helper, got $nogo_exit_code" >&2
-      echo "$nogo_output" >&2
+    local strict_hold_exit_code=$?
+    if [[ "$strict_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for strict jito/rpc policy windowed signoff case, got $strict_hold_exit_code" >&2
+      echo "$strict_hold_output" >&2
       exit 1
     fi
   fi
-  assert_contains "$nogo_output" "window_24h_overall_go_nogo_verdict: HOLD"
-  assert_contains "$nogo_output" "window_24h_fee_decomposition_verdict: PASS"
-  assert_contains "$nogo_output" "window_24h_route_profile_verdict: PASS"
-  assert_contains "$nogo_output" "go_nogo_require_jito_rpc_policy: true"
-  assert_contains "$nogo_output" "window_24h_jito_rpc_policy_verdict: SKIP"
-  assert_contains "$nogo_output" "window_24h_jito_rpc_policy_reason:"
-  assert_contains "$nogo_output" "window_hard_block_count: 0"
-  assert_contains "$nogo_output" "artifacts_written: false"
-  assert_contains "$nogo_output" "signoff_verdict: HOLD"
+  assert_contains "$strict_hold_output" "window_24h_overall_go_nogo_verdict: HOLD"
+  assert_contains "$strict_hold_output" "window_24h_fee_decomposition_verdict: PASS"
+  assert_contains "$strict_hold_output" "window_24h_route_profile_verdict: PASS"
+  assert_contains "$strict_hold_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$strict_hold_output" "window_24h_jito_rpc_policy_verdict: SKIP"
+  assert_contains "$strict_hold_output" "window_24h_jito_rpc_policy_reason:"
+  assert_contains "$strict_hold_output" "window_hard_block_count: 0"
+  assert_contains "$strict_hold_output" "artifacts_written: false"
+  assert_contains "$strict_hold_output" "signoff_verdict: HOLD"
 
   local artifacts_dir="$TMP_DIR/windowed-signoff-artifacts"
   local go_output
