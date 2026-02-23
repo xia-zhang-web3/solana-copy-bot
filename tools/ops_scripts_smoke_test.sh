@@ -1339,6 +1339,84 @@ run_execution_route_fee_signoff_case() {
   assert_contains "$hold_output" "signoff_verdict: HOLD"
   assert_contains "$hold_output" "artifacts_written: false"
 
+  local artifacts_dir="$TMP_DIR/route-fee-signoff-artifacts"
+  local export_output
+  if export_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$artifacts_dir" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "1,24" "60" 2>&1
+  )"; then
+    echo "expected HOLD exit for route/fee signoff helper export case on paper config" >&2
+    exit 1
+  else
+    export_status=$?
+  fi
+  if [[ "$export_status" -ne 2 ]]; then
+    echo "expected HOLD exit code 2 from route/fee signoff helper export case, got $export_status" >&2
+    exit 1
+  fi
+  assert_contains "$export_output" "window_count: 2"
+  assert_contains "$export_output" "artifacts_written: true"
+  assert_contains "$export_output" "artifact_summary:"
+  assert_contains "$export_output" "artifact_manifest:"
+  assert_contains "$export_output" "window_1h_go_nogo_capture_path:"
+  assert_contains "$export_output" "window_1h_calibration_capture_path:"
+  assert_contains "$export_output" "window_24h_go_nogo_capture_path:"
+  assert_contains "$export_output" "window_24h_calibration_capture_path:"
+  assert_sha256_field "$export_output" "summary_sha256"
+  assert_sha256_field "$export_output" "window_1h_go_nogo_capture_sha256"
+  assert_sha256_field "$export_output" "window_1h_calibration_capture_sha256"
+  assert_sha256_field "$export_output" "window_24h_go_nogo_capture_sha256"
+  assert_sha256_field "$export_output" "window_24h_calibration_capture_sha256"
+  if ! ls "$artifacts_dir"/execution_route_fee_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected route/fee signoff summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_route_fee_signoff_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected route/fee signoff manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_1h/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
+    echo "expected 1h go-no-go capture artifact in $artifacts_dir/window_1h" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_1h/execution_fee_calibration_captured_*.txt >/dev/null 2>&1; then
+    echo "expected 1h calibration capture artifact in $artifacts_dir/window_1h" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_24h/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
+    echo "expected 24h go-no-go capture artifact in $artifacts_dir/window_24h" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_24h/execution_fee_calibration_captured_*.txt >/dev/null 2>&1; then
+    echo "expected 24h calibration capture artifact in $artifacts_dir/window_24h" >&2
+    exit 1
+  fi
+  manifest_path="$(extract_field_value "$export_output" "artifact_manifest")"
+  if [[ -z "$manifest_path" || "$manifest_path" == "n/a" ]]; then
+    echo "expected route/fee signoff manifest path in export output" >&2
+    exit 1
+  fi
+  if ! grep -Fq "window_1h/execution_go_nogo_captured_" "$manifest_path"; then
+    echo "expected window-qualified 1h go-no-go capture entry in manifest $manifest_path" >&2
+    exit 1
+  fi
+  if ! grep -Fq "window_24h/execution_go_nogo_captured_" "$manifest_path"; then
+    echo "expected window-qualified 24h go-no-go capture entry in manifest $manifest_path" >&2
+    exit 1
+  fi
+  if ! grep -Fq "window_1h/execution_fee_calibration_captured_" "$manifest_path"; then
+    echo "expected window-qualified 1h calibration capture entry in manifest $manifest_path" >&2
+    exit 1
+  fi
+  if ! grep -Fq "window_24h/execution_fee_calibration_captured_" "$manifest_path"; then
+    echo "expected window-qualified 24h calibration capture entry in manifest $manifest_path" >&2
+    exit 1
+  fi
+
   local invalid_output
   if invalid_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \

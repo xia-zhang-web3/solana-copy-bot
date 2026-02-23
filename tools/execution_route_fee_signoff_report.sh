@@ -55,6 +55,19 @@ route_is_value() {
   return 0
 }
 
+manifest_entry_path() {
+  local path="$1"
+  if [[ -z "$path" || "$path" == "n/a" ]]; then
+    printf 'n/a'
+    return
+  fi
+  if [[ -n "$OUTPUT_DIR" && "$path" == "$OUTPUT_DIR/"* ]]; then
+    printf '%s' "${path#"$OUTPUT_DIR"/}"
+    return
+  fi
+  printf '%s' "$path"
+}
+
 IFS=',' read -ra raw_windows <<< "$WINDOWS_CSV"
 for raw_token in "${raw_windows[@]}"; do
   token="$(trim_string "$raw_token")"
@@ -336,7 +349,7 @@ elif (( window_total > 0 )) && (( go_nogo_go_count == window_total )) && (( rout
   signoff_reason="all windows GO with PASS route-profile/fee-decomposition verdicts and stable primary/fallback routes"
 elif [[ "$primary_route_stable" != "true" || "$fallback_route_stable" != "true" ]]; then
   signoff_verdict="HOLD"
-  signoff_reason="route-profile windows are PASS but primary/fallback route changed across windows"
+  signoff_reason="primary/fallback route changed across windows before full route/fee signoff closure"
 else
   signoff_verdict="HOLD"
   signoff_reason="${first_non_pass_reason:-at least one window is not yet PASS for route-profile or fee-decomposition signoff}"
@@ -407,17 +420,20 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   printf '%s\n' "$summary_output" >"$summary_path"
   summary_sha256="$(sha256_file_value "$summary_path")"
   {
-    printf '%s  %s\n' "$summary_sha256" "$(basename "$summary_path")"
+    summary_entry_path="$(manifest_entry_path "$summary_path")"
+    printf '%s  %s\n' "$summary_sha256" "$summary_entry_path"
     for idx in "${!window_ids[@]}"; do
       capture_path="${window_go_nogo_capture_paths[$idx]}"
       if [[ "$capture_path" != "n/a" ]]; then
         capture_sha="$(sha256_file_value "$capture_path")"
-        printf '%s  %s\n' "$capture_sha" "$(basename "$capture_path")"
+        capture_entry_path="$(manifest_entry_path "$capture_path")"
+        printf '%s  %s\n' "$capture_sha" "$capture_entry_path"
       fi
       calibration_path="${window_calibration_capture_paths[$idx]}"
       if [[ "$calibration_path" != "n/a" ]]; then
         calibration_sha="$(sha256_file_value "$calibration_path")"
-        printf '%s  %s\n' "$calibration_sha" "$(basename "$calibration_path")"
+        calibration_entry_path="$(manifest_entry_path "$calibration_path")"
+        printf '%s  %s\n' "$calibration_sha" "$calibration_entry_path"
       fi
     done
   } >"$manifest_path"
