@@ -1358,6 +1358,96 @@ mod tests {
     }
 
     #[test]
+    fn process_batch_uses_fastlane_rpc_fallback_route_on_submit_retry() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-submit-route-fastlane-fallback")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-route-submit-fastlane",
+            now,
+            "sig-price-route-submit-fastlane",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4d:w:buy:fastlane".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-route-submit-fastlane".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let routes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "fastlane".to_string(),
+            submit_route_order: vec!["fastlane".to_string(), "rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(RetryableOnceSubmitter::new(routes.clone())),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
+        assert_eq!(
+            first.submit_attempted_by_route.get("fastlane"),
+            Some(&1),
+            "first attempt should use fastlane route"
+        );
+        assert_eq!(
+            first.submit_retry_scheduled_by_route.get("fastlane"),
+            Some(&1),
+            "retry should be scheduled on first fastlane route failure"
+        );
+
+        let second = runtime.process_batch(&store, Utc::now(), None)?;
+        assert_eq!(second.confirmed, 1);
+        assert_eq!(
+            second.submit_attempted_by_route.get("rpc"),
+            Some(&1),
+            "second attempt should use rpc fallback route"
+        );
+        assert_eq!(
+            second.confirm_confirmed_by_route.get("rpc"),
+            Some(&1),
+            "confirmed fallback order should be attributed to rpc route"
+        );
+        let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
+        assert_eq!(
+            observed_routes,
+            vec!["fastlane".to_string(), "rpc".to_string()]
+        );
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s4d_w_buy_fastlane_a1")?
+            .context("fastlane fallback submit should leave order row")?;
+        assert_eq!(order.route, "rpc");
+        assert_eq!(order.status, "execution_confirmed");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_blocks_jito_to_rpc_fallback_for_unclassified_retryable_submit_error(
     ) -> Result<()> {
         let (store, db_path) = make_test_store("batch-submit-route-fallback-blocked")?;
