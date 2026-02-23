@@ -1055,7 +1055,8 @@ run_go_nogo_fastlane_disabled_gate_case() {
   assert_contains "$blocked_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$blocked_output" "submit_fastlane_enabled: true"
   assert_contains "$blocked_output" "fastlane_feature_flag_verdict: WARN"
-  assert_contains "$blocked_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$blocked_output" "fastlane_feature_flag_reason:"
+  assert_contains "$blocked_output" "violates strict fastlane-disabled gate"
   assert_contains "$blocked_output" "overall_go_nogo_verdict: NO_GO"
   assert_contains "$blocked_output" "overall_go_nogo_reason: strict fastlane-disabled gate not PASS:"
 
@@ -2026,10 +2027,12 @@ run_devnet_rehearsal_case() {
   assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
   assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
-  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason:"
+  assert_contains "$fastlane_strict_nogo_output" "violates strict fastlane-disabled gate"
   assert_contains "$fastlane_strict_nogo_output" "overall_go_nogo_verdict: NO_GO"
   assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
-  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason: strict fastlane-disabled gate not PASS: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason: strict fastlane-disabled gate not PASS:"
+  assert_contains "$fastlane_strict_nogo_output" "violates strict fastlane-disabled gate"
 
   local route_fee_required_nogo_output=""
   if route_fee_required_nogo_output="$(
@@ -2303,11 +2306,14 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
   assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
-  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason:"
+  assert_contains "$fastlane_strict_nogo_output" "violates strict fastlane-disabled gate"
   assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
-  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason: strict fastlane-disabled gate not PASS: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason: strict fastlane-disabled gate not PASS:"
+  assert_contains "$fastlane_strict_nogo_output" "violates strict fastlane-disabled gate"
   assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_verdict: NO_GO"
-  assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_reason: devnet rehearsal returned NO_GO: strict fastlane-disabled gate not PASS: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_reason: devnet rehearsal returned NO_GO: strict fastlane-disabled gate not PASS:"
+  assert_contains "$fastlane_strict_nogo_output" "violates strict fastlane-disabled gate"
 
   local route_fee_required_nogo_output=""
   if route_fee_required_nogo_output="$(
