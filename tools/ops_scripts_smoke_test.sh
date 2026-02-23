@@ -2357,6 +2357,43 @@ run_adapter_rollout_evidence_case() {
   assert_field_equals "$final_nested_isolation_output" "final_rollout_package_verdict" "NO_GO"
   assert_field_equals "$final_nested_isolation_output" "final_rollout_package_reason_code" "rehearsal_no_go"
 
+  local final_hold_output=""
+  if final_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/adapter-rollout-final-package-hold" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="HOLD" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for final rollout package helper when required top-level route/fee signoff is HOLD" >&2
+    exit 1
+  else
+    local final_hold_exit_code=$?
+    if [[ "$final_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for final rollout package helper, got $final_hold_exit_code" >&2
+      echo "$final_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$final_hold_output" "rollout_verdict" "HOLD"
+  assert_field_equals "$final_hold_output" "rollout_reason_code" "route_fee_signoff_hold"
+  assert_field_equals "$final_hold_output" "final_rollout_package_verdict" "HOLD"
+  assert_field_equals "$final_hold_output" "final_rollout_package_reason_code" "route_fee_signoff_hold"
+
   local windowed_nogo_output=""
   if windowed_nogo_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
