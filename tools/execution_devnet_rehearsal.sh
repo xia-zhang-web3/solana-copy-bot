@@ -301,6 +301,7 @@ dynamic_cu_hint_rpc_total="$(trim_string "$(extract_field "dynamic_cu_hint_rpc_t
 dynamic_cu_hint_api_configured="$(trim_string "$(extract_field "dynamic_cu_hint_api_configured" "$go_nogo_output")")"
 dynamic_cu_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$go_nogo_output")")"
 dynamic_cu_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$go_nogo_output")")"
+dynamic_cu_hint_source_reason_code="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason_code" "$go_nogo_output")")"
 go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$(extract_field "go_nogo_require_jito_rpc_policy" "$go_nogo_output")")"
 jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$go_nogo_output")")"
 jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$go_nogo_output")")"
@@ -338,6 +339,7 @@ windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256"
 windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$windowed_signoff_output")")"
 route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$route_fee_signoff_output")")"
 route_fee_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$route_fee_signoff_output")")"
+route_fee_signoff_reason_code="$(trim_string "$(extract_field "signoff_reason_code" "$route_fee_signoff_output")")"
 route_fee_signoff_windows_csv="$(trim_string "$(extract_field "windows_csv" "$route_fee_signoff_output")")"
 route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
 route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
@@ -362,6 +364,7 @@ if [[ -n "$route_fee_signoff_test_verdict_override_raw" ]]; then
   if [[ "$route_fee_signoff_go_nogo_test_mode_norm" == "true" ]]; then
     route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$route_fee_signoff_test_verdict_override_raw")"
     route_fee_signoff_reason="test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=${route_fee_signoff_test_verdict_override_raw})"
+    route_fee_signoff_reason_code="test_override"
   else
     config_errors+=("ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE requires ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE=true")
   fi
@@ -374,6 +377,9 @@ if [[ -z "$dynamic_tip_policy_reason" ]]; then
 fi
 if [[ -z "$dynamic_cu_hint_source_reason" ]]; then
   dynamic_cu_hint_source_reason="n/a"
+fi
+if [[ -z "${dynamic_cu_hint_source_reason_code:-}" ]]; then
+  dynamic_cu_hint_source_reason_code="n/a"
 fi
 if [[ -z "$jito_rpc_policy_reason" ]]; then
   jito_rpc_policy_reason="n/a"
@@ -392,6 +398,9 @@ if [[ -z "$windowed_signoff_reason" ]]; then
 fi
 if [[ -z "$route_fee_signoff_reason" ]]; then
   route_fee_signoff_reason="n/a"
+fi
+if [[ -z "${route_fee_signoff_reason_code:-}" ]]; then
+  route_fee_signoff_reason_code="n/a"
 fi
 
 tests_total=0
@@ -519,6 +528,7 @@ dynamic_cu_hint_rpc_total: ${dynamic_cu_hint_rpc_total:-n/a}
 dynamic_cu_hint_api_configured: ${dynamic_cu_hint_api_configured:-false}
 dynamic_cu_hint_source_verdict: ${dynamic_cu_hint_source_verdict:-unknown}
 dynamic_cu_hint_source_reason: ${dynamic_cu_hint_source_reason:-n/a}
+dynamic_cu_hint_source_reason_code: ${dynamic_cu_hint_source_reason_code:-n/a}
 go_nogo_require_jito_rpc_policy: ${go_nogo_require_jito_rpc_policy:-false}
 jito_rpc_policy_verdict: ${jito_rpc_policy_verdict:-unknown}
 jito_rpc_policy_reason: ${jito_rpc_policy_reason:-n/a}
@@ -562,6 +572,7 @@ route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 route_fee_signoff_exit_code: $route_fee_signoff_exit_code
 route_fee_signoff_verdict: ${route_fee_signoff_verdict:-unknown}
 route_fee_signoff_reason: ${route_fee_signoff_reason:-n/a}
+route_fee_signoff_reason_code: ${route_fee_signoff_reason_code:-n/a}
 route_fee_signoff_artifact_manifest: ${route_fee_signoff_artifact_manifest:-n/a}
 route_fee_signoff_summary_sha256: ${route_fee_signoff_summary_sha256:-n/a}
 route_fee_signoff_artifacts_written: $route_fee_signoff_artifacts_written

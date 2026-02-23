@@ -260,34 +260,43 @@ fi
 
 dynamic_cu_hint_source_verdict="SKIP"
 dynamic_cu_hint_source_reason="dynamic CU-price policy disabled in execution config"
+dynamic_cu_hint_source_reason_code="policy_disabled"
 if [[ "$dynamic_cu_policy_config_enabled" == "true" ]]; then
   if [[ "$(normalize_bool_token "${execution_batch_sample_available:-false}")" != "true" ]]; then
     dynamic_cu_hint_source_verdict="NO_DATA"
     dynamic_cu_hint_source_reason="no execution batch sample available in runtime snapshot window"
+    dynamic_cu_hint_source_reason_code="no_execution_batch_sample"
   elif (( submit_dynamic_cu_hint_used_total == 0 )); then
     dynamic_cu_hint_source_verdict="WARN"
     dynamic_cu_hint_source_reason="no dynamic CU-price hints observed in submit attempts"
+    dynamic_cu_hint_source_reason_code="hint_not_used"
   elif [[ "$dynamic_cu_hint_api_configured" == "true" ]]; then
     if (( submit_dynamic_cu_hint_api_total > 0 )); then
       dynamic_cu_hint_source_verdict="PASS"
       dynamic_cu_hint_source_reason="external Priority Fee API hints observed"
+      dynamic_cu_hint_source_reason_code="api_hints_observed"
     elif (( submit_dynamic_cu_hint_rpc_total > 0 )); then
       dynamic_cu_hint_source_verdict="WARN"
       dynamic_cu_hint_source_reason="external Priority Fee API configured but only RPC fallback hints observed"
+      dynamic_cu_hint_source_reason_code="api_configured_rpc_only"
     else
       dynamic_cu_hint_source_verdict="WARN"
       dynamic_cu_hint_source_reason="dynamic CU-price hints observed but source split counters are missing"
+      dynamic_cu_hint_source_reason_code="source_split_missing"
     fi
   else
     if (( submit_dynamic_cu_hint_rpc_total > 0 )); then
       dynamic_cu_hint_source_verdict="PASS"
       dynamic_cu_hint_source_reason="RPC priority-fee hints observed (external API not configured)"
+      dynamic_cu_hint_source_reason_code="rpc_hints_observed"
     elif (( submit_dynamic_cu_hint_api_total > 0 )); then
       dynamic_cu_hint_source_verdict="WARN"
       dynamic_cu_hint_source_reason="API hint counters observed while external Priority Fee API is not configured"
+      dynamic_cu_hint_source_reason_code="api_counters_without_api_config"
     else
       dynamic_cu_hint_source_verdict="WARN"
       dynamic_cu_hint_source_reason="hint source split counters are missing despite hint usage"
+      dynamic_cu_hint_source_reason_code="source_split_missing_no_api"
     fi
   fi
 fi
@@ -504,6 +513,7 @@ dynamic_cu_hint_rpc_total: ${submit_dynamic_cu_hint_rpc_total:-0}
 dynamic_cu_hint_api_configured: ${dynamic_cu_hint_api_configured:-false}
 dynamic_cu_hint_source_verdict: $dynamic_cu_hint_source_verdict
 dynamic_cu_hint_source_reason: $dynamic_cu_hint_source_reason
+dynamic_cu_hint_source_reason_code: $dynamic_cu_hint_source_reason_code
 dynamic_cu_price_applied_total: ${submit_dynamic_cu_price_applied_total:-0}
 dynamic_cu_static_fallback_total: ${submit_dynamic_cu_static_fallback_total:-0}
 dynamic_cu_policy_verdict: $dynamic_cu_policy_verdict

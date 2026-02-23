@@ -745,6 +745,45 @@ assert_sha256_field() {
   fi
 }
 
+assert_field_equals() {
+  local text="$1"
+  local key="$2"
+  local expected="$3"
+  local value
+  value="$(extract_field_value "$text" "$key")"
+  if [[ "$value" != "$expected" ]]; then
+    echo "expected $key to equal '$expected', got '$value'" >&2
+    exit 1
+  fi
+}
+
+assert_field_non_empty() {
+  local text="$1"
+  local key="$2"
+  local value
+  value="$(extract_field_value "$text" "$key")"
+  if [[ -z "$value" ]]; then
+    echo "expected $key to be non-empty" >&2
+    exit 1
+  fi
+}
+
+assert_field_in() {
+  local text="$1"
+  local key="$2"
+  shift 2
+  local value
+  value="$(extract_field_value "$text" "$key")"
+  local expected=""
+  for expected in "$@"; do
+    if [[ "$value" == "$expected" ]]; then
+      return 0
+    fi
+  done
+  echo "expected $key to match one of: $*, got '$value'" >&2
+  exit 1
+}
+
 run_ops_scripts_for_db() {
   local label="$1"
   local db_path="$2"
@@ -815,20 +854,18 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$go_nogo_output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$go_nogo_output" "dynamic_cu_hint_source_verdict: SKIP"
-  assert_contains "$go_nogo_output" "dynamic_cu_hint_source_reason: dynamic CU-price policy disabled in execution config"
+  assert_field_equals "$go_nogo_output" "dynamic_cu_hint_source_reason_code" "policy_disabled"
   assert_contains "$go_nogo_output" "dynamic_cu_policy_config_enabled: false"
   assert_contains "$go_nogo_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$go_nogo_output" "dynamic_tip_policy_config_enabled: false"
   assert_contains "$go_nogo_output" "dynamic_tip_policy_verdict: SKIP"
   assert_contains "$go_nogo_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$go_nogo_output" "jito_rpc_policy_verdict: SKIP"
-  assert_contains "$go_nogo_output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
-  assert_contains "$go_nogo_output" "jito_rpc_policy_reason_code: gate_disabled"
+  assert_field_equals "$go_nogo_output" "jito_rpc_policy_reason_code" "gate_disabled"
   assert_contains "$go_nogo_output" "go_nogo_require_fastlane_disabled: false"
   assert_contains "$go_nogo_output" "submit_fastlane_enabled: false"
   assert_contains "$go_nogo_output" "fastlane_feature_flag_verdict: SKIP"
-  assert_contains "$go_nogo_output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
-  assert_contains "$go_nogo_output" "fastlane_feature_flag_reason_code: gate_disabled"
+  assert_field_equals "$go_nogo_output" "fastlane_feature_flag_reason_code" "gate_disabled"
   assert_contains "$go_nogo_output" "artifacts_written: false"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
 
@@ -988,7 +1025,7 @@ run_go_nogo_unknown_precedence_case() {
   assert_contains "$output" "fee_decomposition_verdict: UNKNOWN"
   assert_contains "$output" "route_profile_verdict: SKIP"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$output" "overall_go_nogo_reason_code: readiness_gate_unknown"
+  assert_field_equals "$output" "overall_go_nogo_reason_code" "readiness_gate_unknown"
   echo "[ok] go-no-go UNKNOWN precedence"
 }
 
@@ -1011,7 +1048,7 @@ run_go_nogo_dynamic_hint_source_gate_case() {
   assert_contains "$output" "dynamic_cu_hint_api_total: 1"
   assert_contains "$output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$output" "dynamic_cu_hint_source_verdict: PASS"
-  assert_contains "$output" "dynamic_cu_hint_source_reason: external Priority Fee API hints observed"
+  assert_field_equals "$output" "dynamic_cu_hint_source_reason_code" "api_hints_observed"
   echo "[ok] go-no-go dynamic hint source gate"
 }
 
@@ -1032,9 +1069,9 @@ run_go_nogo_jito_rpc_policy_gate_case() {
   )"
   assert_contains "$output" "go_nogo_require_jito_rpc_policy: true"
   assert_contains "$output" "jito_rpc_policy_verdict: WARN"
-  assert_contains "$output" "jito_rpc_policy_reason:"
+  assert_field_in "$output" "jito_rpc_policy_reason_code" "target_mismatch" "route_profile_not_pass"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$output" "overall_go_nogo_reason_code: jito_policy_not_pass"
+  assert_field_equals "$output" "overall_go_nogo_reason_code" "jito_policy_not_pass"
   echo "[ok] go-no-go strict jito/rpc policy gate"
 }
 
@@ -1057,9 +1094,9 @@ run_go_nogo_fastlane_disabled_gate_case() {
   assert_contains "$blocked_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$blocked_output" "submit_fastlane_enabled: true"
   assert_contains "$blocked_output" "fastlane_feature_flag_verdict: WARN"
-  assert_contains "$blocked_output" "fastlane_feature_flag_reason_code: fastlane_enabled"
+  assert_field_equals "$blocked_output" "fastlane_feature_flag_reason_code" "fastlane_enabled"
   assert_contains "$blocked_output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$blocked_output" "overall_go_nogo_reason_code: fastlane_policy_not_pass"
+  assert_field_equals "$blocked_output" "overall_go_nogo_reason_code" "fastlane_policy_not_pass"
 
   local pass_output
   pass_output="$(
@@ -1076,8 +1113,7 @@ run_go_nogo_fastlane_disabled_gate_case() {
   assert_contains "$pass_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$pass_output" "submit_fastlane_enabled: false"
   assert_contains "$pass_output" "fastlane_feature_flag_verdict: PASS"
-  assert_contains "$pass_output" "fastlane_feature_flag_reason_code: fastlane_disabled"
-  assert_contains "$pass_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
+  assert_field_equals "$pass_output" "fastlane_feature_flag_reason_code" "fastlane_disabled"
   assert_contains "$pass_output" "overall_go_nogo_verdict: GO"
   echo "[ok] go-no-go strict fastlane-disabled gate"
 }
@@ -1169,9 +1205,9 @@ run_windowed_signoff_report_case() {
   assert_contains "$strict_hold_output" "go_nogo_require_jito_rpc_policy: true"
   assert_contains "$strict_hold_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$strict_hold_output" "window_24h_jito_rpc_policy_verdict: SKIP"
-  assert_contains "$strict_hold_output" "window_24h_jito_rpc_policy_reason:"
+  assert_field_equals "$strict_hold_output" "window_24h_jito_rpc_policy_reason_code" "requires_adapter_mode"
   assert_contains "$strict_hold_output" "window_24h_fastlane_feature_flag_verdict: SKIP"
-  assert_contains "$strict_hold_output" "window_24h_fastlane_feature_flag_reason:"
+  assert_field_equals "$strict_hold_output" "window_24h_fastlane_feature_flag_reason_code" "requires_adapter_mode"
   assert_contains "$strict_hold_output" "window_hard_block_count: 0"
   assert_contains "$strict_hold_output" "artifacts_written: false"
   assert_contains "$strict_hold_output" "signoff_verdict: HOLD"
@@ -1334,7 +1370,7 @@ run_execution_route_fee_signoff_case() {
   fi
   assert_contains "$hold_output" "=== Execution Route/Fee Signoff Summary ==="
   assert_contains "$hold_output" "window_24h_overall_go_nogo_verdict: HOLD"
-  assert_contains "$hold_output" "window_24h_overall_go_nogo_reason:"
+  assert_field_equals "$hold_output" "window_24h_overall_go_nogo_reason_code" "readiness_gate_skip"
   assert_contains "$hold_output" "window_24h_route_profile_verdict: SKIP"
   assert_contains "$hold_output" "window_24h_fee_decomposition_verdict: SKIP"
   assert_contains "$hold_output" "window_24h_route_verdict_parity: true"
@@ -1464,9 +1500,9 @@ run_execution_route_fee_signoff_case() {
   assert_contains "$strict_nogo_output" "go_nogo_require_jito_rpc_policy: true"
   assert_contains "$strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$strict_nogo_output" "window_24h_overall_go_nogo_verdict: NO_GO"
-  assert_contains "$strict_nogo_output" "window_24h_overall_go_nogo_reason_code: jito_policy_not_pass"
+  assert_field_equals "$strict_nogo_output" "window_24h_overall_go_nogo_reason_code" "jito_policy_not_pass"
   assert_contains "$strict_nogo_output" "signoff_verdict: NO_GO"
-  assert_contains "$strict_nogo_output" "signoff_reason_code: window_hard_block"
+  assert_field_equals "$strict_nogo_output" "signoff_reason_code" "window_hard_block"
   echo "[ok] execution route/fee signoff helper"
 }
 
@@ -1481,7 +1517,7 @@ run_go_nogo_preflight_fail_case() {
   )"
   assert_contains "$output" "preflight_verdict: FAIL"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$output" "overall_go_nogo_reason_code: preflight_fail"
+  assert_field_equals "$output" "overall_go_nogo_reason_code" "preflight_fail"
   echo "[ok] go-no-go preflight fail gate"
 }
 
@@ -1867,15 +1903,14 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_field_equals "$output" "dynamic_cu_hint_source_reason_code" "policy_disabled"
   assert_contains "$output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$output" "jito_rpc_policy_verdict: SKIP"
-  assert_contains "$output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
-  assert_contains "$output" "jito_rpc_policy_reason_code: gate_disabled"
+  assert_field_equals "$output" "jito_rpc_policy_reason_code" "gate_disabled"
   assert_contains "$output" "go_nogo_require_fastlane_disabled: false"
   assert_contains "$output" "submit_fastlane_enabled: false"
   assert_contains "$output" "fastlane_feature_flag_verdict: SKIP"
-  assert_contains "$output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
-  assert_contains "$output" "fastlane_feature_flag_reason_code: gate_disabled"
+  assert_field_equals "$output" "fastlane_feature_flag_reason_code" "gate_disabled"
   assert_contains "$output" "windowed_signoff_required: false"
   assert_contains "$output" "windowed_signoff_windows_csv: 1,6,24"
   assert_contains "$output" "windowed_signoff_require_dynamic_hint_source_pass: false"
@@ -1887,7 +1922,7 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "route_fee_signoff_required: false"
   assert_contains "$output" "route_fee_signoff_windows_csv: 1,6,24"
   assert_contains "$output" "route_fee_signoff_verdict:"
-  assert_contains "$output" "route_fee_signoff_reason:"
+  assert_field_non_empty "$output" "route_fee_signoff_reason_code"
   assert_contains "$output" "route_fee_signoff_artifact_manifest:"
   assert_contains "$output" "route_fee_signoff_summary_sha256:"
   assert_contains "$output" "route_fee_signoff_artifacts_written: true"
@@ -2000,12 +2035,11 @@ run_devnet_rehearsal_case() {
   assert_contains "$required_nogo_output" "windowed_signoff_require_dynamic_tip_policy_pass: true"
   assert_contains "$required_nogo_output" "go_nogo_require_jito_rpc_policy: true"
   assert_contains "$required_nogo_output" "jito_rpc_policy_verdict: WARN"
-  assert_contains "$required_nogo_output" "jito_rpc_policy_reason:"
+  assert_field_in "$required_nogo_output" "jito_rpc_policy_reason_code" "target_mismatch" "route_profile_not_pass"
   assert_contains "$required_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$required_nogo_output" "submit_fastlane_enabled: false"
   assert_contains "$required_nogo_output" "fastlane_feature_flag_verdict: PASS"
-  assert_contains "$required_nogo_output" "fastlane_feature_flag_reason_code: fastlane_disabled"
-  assert_contains "$required_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
+  assert_field_equals "$required_nogo_output" "fastlane_feature_flag_reason_code" "fastlane_disabled"
   assert_contains "$required_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$required_nogo_output" "artifacts_written: false"
   assert_contains "$required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
@@ -2032,10 +2066,10 @@ run_devnet_rehearsal_case() {
   assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
   assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
-  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason_code: fastlane_enabled"
+  assert_field_equals "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason_code" "fastlane_enabled"
   assert_contains "$fastlane_strict_nogo_output" "overall_go_nogo_verdict: NO_GO"
   assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
-  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason_code: go_nogo_no_go"
+  assert_field_equals "$fastlane_strict_nogo_output" "devnet_rehearsal_reason_code" "go_nogo_no_go"
 
   local route_fee_required_nogo_output=""
   if route_fee_required_nogo_output="$(
@@ -2057,10 +2091,10 @@ run_devnet_rehearsal_case() {
   fi
   assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_required: true"
   assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_verdict: NO_GO"
-  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_reason: window token must be an integer (got: invalid)"
+  assert_field_equals "$route_fee_required_nogo_output" "route_fee_signoff_reason_code" "input_error"
   assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_windows_csv: 1,invalid"
   assert_contains "$route_fee_required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
-  assert_contains "$route_fee_required_nogo_output" "devnet_rehearsal_reason: route/fee signoff returned NO_GO: window token must be an integer (got: invalid)"
+  assert_field_equals "$route_fee_required_nogo_output" "devnet_rehearsal_reason_code" "route_fee_signoff_no_go"
 
   local route_fee_required_hold_output=""
   if route_fee_required_hold_output="$(
@@ -2083,9 +2117,9 @@ run_devnet_rehearsal_case() {
   fi
   assert_contains "$route_fee_required_hold_output" "route_fee_signoff_required: true"
   assert_contains "$route_fee_required_hold_output" "route_fee_signoff_verdict: HOLD"
-  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_reason: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=HOLD)"
+  assert_field_equals "$route_fee_required_hold_output" "route_fee_signoff_reason_code" "test_override"
   assert_contains "$route_fee_required_hold_output" "devnet_rehearsal_verdict: HOLD"
-  assert_contains "$route_fee_required_hold_output" "devnet_rehearsal_reason: route/fee signoff returned HOLD: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=HOLD)"
+  assert_field_equals "$route_fee_required_hold_output" "devnet_rehearsal_reason_code" "route_fee_signoff_hold"
 
   local route_fee_required_go_output
   route_fee_required_go_output="$(
@@ -2098,9 +2132,9 @@ run_devnet_rehearsal_case() {
   )"
   assert_contains "$route_fee_required_go_output" "route_fee_signoff_required: true"
   assert_contains "$route_fee_required_go_output" "route_fee_signoff_verdict: GO"
-  assert_contains "$route_fee_required_go_output" "route_fee_signoff_reason: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=GO)"
+  assert_field_equals "$route_fee_required_go_output" "route_fee_signoff_reason_code" "test_override"
   assert_contains "$route_fee_required_go_output" "devnet_rehearsal_verdict: GO"
-  assert_contains "$route_fee_required_go_output" "devnet_rehearsal_reason: test mode override active (RUN_TESTS=false, DEVNET_REHEARSAL_TEST_MODE=true)"
+  assert_field_equals "$route_fee_required_go_output" "devnet_rehearsal_reason_code" "test_mode_override"
   echo "[ok] execution devnet rehearsal helper"
 }
 
@@ -2150,18 +2184,17 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$pass_output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$pass_output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_field_equals "$pass_output" "dynamic_cu_hint_source_reason_code" "policy_disabled"
   assert_contains "$pass_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$pass_output" "jito_rpc_policy_verdict: SKIP"
-  assert_contains "$pass_output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
-  assert_contains "$pass_output" "jito_rpc_policy_reason_code: gate_disabled"
+  assert_field_equals "$pass_output" "jito_rpc_policy_reason_code" "gate_disabled"
   assert_contains "$pass_output" "go_nogo_require_fastlane_disabled: false"
   assert_contains "$pass_output" "submit_fastlane_enabled: false"
   assert_contains "$pass_output" "fastlane_feature_flag_verdict: SKIP"
-  assert_contains "$pass_output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
-  assert_contains "$pass_output" "fastlane_feature_flag_reason_code: gate_disabled"
+  assert_field_equals "$pass_output" "fastlane_feature_flag_reason_code" "gate_disabled"
   assert_contains "$pass_output" "route_fee_signoff_required: false"
   assert_contains "$pass_output" "route_fee_signoff_verdict:"
-  assert_contains "$pass_output" "route_fee_signoff_reason:"
+  assert_field_non_empty "$pass_output" "route_fee_signoff_reason_code"
   assert_contains "$pass_output" "route_fee_signoff_windows_csv: 1,6,24"
   assert_contains "$pass_output" "route_fee_signoff_artifact_manifest:"
   assert_contains "$pass_output" "route_fee_signoff_summary_sha256:"
@@ -2177,7 +2210,7 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "rehearsal_route_fee_signoff_required: false"
   assert_contains "$pass_output" "rehearsal_route_fee_signoff_windows_csv: 1,6,24"
   assert_contains "$pass_output" "rehearsal_route_fee_signoff_verdict:"
-  assert_contains "$pass_output" "rehearsal_route_fee_signoff_reason:"
+  assert_field_non_empty "$pass_output" "rehearsal_route_fee_signoff_reason_code"
   assert_contains "$pass_output" "rehearsal_route_fee_signoff_artifact_manifest:"
   assert_contains "$pass_output" "rehearsal_route_fee_signoff_summary_sha256:"
   assert_contains "$pass_output" "rehearsal_route_fee_signoff_artifacts_written: true"
@@ -2272,12 +2305,11 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$windowed_nogo_output" "windowed_signoff_require_dynamic_tip_policy_pass: true"
   assert_contains "$windowed_nogo_output" "go_nogo_require_jito_rpc_policy: true"
   assert_contains "$windowed_nogo_output" "jito_rpc_policy_verdict: WARN"
-  assert_contains "$windowed_nogo_output" "jito_rpc_policy_reason:"
+  assert_field_in "$windowed_nogo_output" "jito_rpc_policy_reason_code" "target_mismatch" "route_profile_not_pass"
   assert_contains "$windowed_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$windowed_nogo_output" "submit_fastlane_enabled: false"
   assert_contains "$windowed_nogo_output" "fastlane_feature_flag_verdict: PASS"
-  assert_contains "$windowed_nogo_output" "fastlane_feature_flag_reason_code: fastlane_disabled"
-  assert_contains "$windowed_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
+  assert_field_equals "$windowed_nogo_output" "fastlane_feature_flag_reason_code" "fastlane_disabled"
   assert_contains "$windowed_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "artifacts_written: false"
@@ -2312,11 +2344,11 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
   assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
-  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason_code: fastlane_enabled"
+  assert_field_equals "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason_code" "fastlane_enabled"
   assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
-  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason_code: go_nogo_no_go"
+  assert_field_equals "$fastlane_strict_nogo_output" "devnet_rehearsal_reason_code" "go_nogo_no_go"
   assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_verdict: NO_GO"
-  assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_reason_code: rehearsal_no_go"
+  assert_field_equals "$fastlane_strict_nogo_output" "adapter_rollout_reason_code" "rehearsal_no_go"
 
   local route_fee_required_nogo_output=""
   if route_fee_required_nogo_output="$(
@@ -2346,10 +2378,10 @@ run_adapter_rollout_evidence_case() {
   fi
   assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_required: true"
   assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_verdict: NO_GO"
-  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_reason: window token must be an integer (got: invalid)"
+  assert_field_equals "$route_fee_required_nogo_output" "route_fee_signoff_reason_code" "input_error"
   assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_windows_csv: 1,invalid"
   assert_contains "$route_fee_required_nogo_output" "adapter_rollout_verdict: NO_GO"
-  assert_contains "$route_fee_required_nogo_output" "adapter_rollout_reason: required route/fee signoff returned NO_GO:"
+  assert_field_equals "$route_fee_required_nogo_output" "adapter_rollout_reason_code" "route_fee_signoff_no_go"
 
   local route_fee_required_hold_output=""
   if route_fee_required_hold_output="$(
@@ -2380,10 +2412,10 @@ run_adapter_rollout_evidence_case() {
   fi
   assert_contains "$route_fee_required_hold_output" "route_fee_signoff_required: true"
   assert_contains "$route_fee_required_hold_output" "route_fee_signoff_verdict: HOLD"
-  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_reason: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=HOLD)"
+  assert_field_equals "$route_fee_required_hold_output" "route_fee_signoff_reason_code" "test_override"
   assert_contains "$route_fee_required_hold_output" "devnet_rehearsal_verdict: GO"
   assert_contains "$route_fee_required_hold_output" "adapter_rollout_verdict: HOLD"
-  assert_contains "$route_fee_required_hold_output" "adapter_rollout_reason: required route/fee signoff returned HOLD:"
+  assert_field_equals "$route_fee_required_hold_output" "adapter_rollout_reason_code" "route_fee_signoff_hold"
 
   local route_fee_required_go_output
   route_fee_required_go_output="$(
@@ -2404,10 +2436,10 @@ run_adapter_rollout_evidence_case() {
   )"
   assert_contains "$route_fee_required_go_output" "route_fee_signoff_required: true"
   assert_contains "$route_fee_required_go_output" "route_fee_signoff_verdict: GO"
-  assert_contains "$route_fee_required_go_output" "route_fee_signoff_reason: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=GO)"
+  assert_field_equals "$route_fee_required_go_output" "route_fee_signoff_reason_code" "test_override"
   assert_contains "$route_fee_required_go_output" "devnet_rehearsal_verdict: GO"
   assert_contains "$route_fee_required_go_output" "adapter_rollout_verdict: GO"
-  assert_contains "$route_fee_required_go_output" "adapter_rollout_reason: rotation readiness, devnet rehearsal, and required route/fee signoff gates passed"
+  assert_field_equals "$route_fee_required_go_output" "adapter_rollout_reason_code" "gates_pass_with_route_fee"
 
   local route_fee_source_split_output=""
   if route_fee_source_split_output="$(
@@ -2437,14 +2469,14 @@ run_adapter_rollout_evidence_case() {
     fi
   fi
   assert_contains "$route_fee_source_split_output" "route_fee_signoff_verdict: GO"
-  assert_contains "$route_fee_source_split_output" "route_fee_signoff_reason: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=GO)"
+  assert_field_equals "$route_fee_source_split_output" "route_fee_signoff_reason_code" "test_override"
   assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_required: true"
   assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_windows_csv: 1,invalid"
   assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_verdict: NO_GO"
-  assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_reason: window token must be an integer (got: invalid)"
+  assert_field_equals "$route_fee_source_split_output" "rehearsal_route_fee_signoff_reason_code" "input_error"
   assert_contains "$route_fee_source_split_output" "devnet_rehearsal_verdict: NO_GO"
   assert_contains "$route_fee_source_split_output" "adapter_rollout_verdict: NO_GO"
-  assert_contains "$route_fee_source_split_output" "adapter_rollout_reason: devnet rehearsal returned NO_GO: route/fee signoff returned NO_GO: window token must be an integer (got: invalid)"
+  assert_field_equals "$route_fee_source_split_output" "adapter_rollout_reason_code" "rehearsal_no_go"
 
   local rehearsal_hold_output=""
   if rehearsal_hold_output="$(
