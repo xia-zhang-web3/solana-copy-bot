@@ -2270,6 +2270,56 @@ run_adapter_rollout_evidence_case() {
     exit 1
   fi
 
+  local final_artifacts_dir="$TMP_DIR/adapter-rollout-final-package"
+  local final_output
+  final_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$final_artifacts_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" 24 60
+  )"
+  assert_contains "$final_output" "=== Adapter Rollout Final Evidence Package ==="
+  assert_field_equals "$final_output" "rollout_verdict" "GO"
+  assert_field_equals "$final_output" "rollout_reason_code" "gates_pass"
+  assert_field_equals "$final_output" "final_rollout_package_verdict" "GO"
+  assert_field_equals "$final_output" "final_rollout_package_reason_code" "gates_pass"
+  assert_contains "$final_output" "artifacts_written: true"
+  assert_contains "$final_output" "rollout_artifacts_written: true"
+  assert_field_non_empty "$final_output" "rollout_artifact_summary"
+  assert_field_non_empty "$final_output" "rollout_artifact_manifest"
+  assert_sha256_field "$final_output" "summary_sha256"
+  assert_sha256_field "$final_output" "rollout_capture_sha256"
+  assert_sha256_field "$final_output" "manifest_sha256"
+  if ! ls "$final_artifacts_dir"/adapter_rollout_final_evidence_summary_*.txt >/dev/null 2>&1; then
+    echo "expected final rollout package summary artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/adapter_rollout_final_evidence_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected final rollout package manifest artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/adapter_rollout_evidence_captured_*.txt >/dev/null 2>&1; then
+    echo "expected final rollout package captured rollout artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/rollout/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested rollout summary artifact in $final_artifacts_dir/rollout" >&2
+    exit 1
+  fi
+
   local windowed_nogo_output=""
   if windowed_nogo_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \

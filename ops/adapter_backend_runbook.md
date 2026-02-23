@@ -186,3 +186,8 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
    2. helper runs both `execution_go_nogo_report.sh` and `execution_fee_calibration_report.sh` per window and enforces parity (`route_profile_verdict` + `fee_decomposition_verdict`),
    3. expected closure signal for tightening route policy: `signoff_verdict: GO` with stable primary/fallback routes and `route_profile_pass_count == fee_decomposition_pass_count == window_count`,
    4. attach emitted summary + manifest + per-window captures to the rollout evidence package.
+12. Final rollout evidence package helper (recommended before production handoff):
+   1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=configs/live.toml OUTPUT_ROOT=state/adapter-rollout-final ./tools/adapter_rollout_final_evidence_report.sh 24 60`
+   2. helper executes `adapter_rollout_evidence_report.sh` with strict-gate defaults enabled (`windowed`, `jito/rpc policy`, `fastlane-disabled`, `route/fee signoff`),
+   3. output includes consolidated package verdict (`final_rollout_package_verdict`) and package manifest checksums,
+   4. attach both package artifacts and nested rollout artifacts under `OUTPUT_ROOT/rollout/` as the final runtime evidence bundle.
