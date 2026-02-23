@@ -1478,6 +1478,28 @@ run_execution_route_fee_signoff_case() {
   assert_contains "$invalid_output" "signoff_verdict: NO_GO"
   assert_contains "$invalid_output" "input_error: window token must be an integer (got: invalid)"
 
+  local override_without_test_mode_output
+  if override_without_test_mode_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper when test override is set without GO_NOGO_TEST_MODE=true" >&2
+    exit 1
+  else
+    override_without_test_mode_status=$?
+  fi
+  if [[ "$override_without_test_mode_status" -ne 3 ]]; then
+    echo "expected NO_GO exit code 3 from route/fee signoff helper override-without-test-mode case, got $override_without_test_mode_status" >&2
+    exit 1
+  fi
+  assert_contains "$override_without_test_mode_output" "signoff_verdict: NO_GO"
+  assert_contains "$override_without_test_mode_output" "input_error: route fee signoff test verdict override requires GO_NOGO_TEST_MODE=true"
+
   local strict_nogo_output
   if strict_nogo_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \

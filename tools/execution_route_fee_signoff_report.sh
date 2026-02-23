@@ -13,12 +13,14 @@ CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}"
 ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$GO_NOGO_REQUIRE_JITO_RPC_POLICY")"
 go_nogo_require_fastlane_disabled="$(normalize_bool_token "$GO_NOGO_REQUIRE_FASTLANE_DISABLED")"
+go_nogo_test_mode_norm="$(normalize_bool_token "$GO_NOGO_TEST_MODE")"
 route_fee_signoff_test_verdict_override_raw="$(trim_string "$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE")"
 route_fee_signoff_test_verdict_override_norm="$(normalize_go_nogo_verdict "$route_fee_signoff_test_verdict_override_raw")"
 
@@ -31,6 +33,9 @@ fi
 
 if [[ -n "$route_fee_signoff_test_verdict_override_raw" && "$route_fee_signoff_test_verdict_override_norm" == "UNKNOWN" ]]; then
   input_errors+=("route fee signoff test verdict override must be GO, HOLD, or NO_GO (got: $route_fee_signoff_test_verdict_override_raw)")
+fi
+if [[ -n "$route_fee_signoff_test_verdict_override_raw" && "$go_nogo_test_mode_norm" != "true" ]]; then
+  input_errors+=("route fee signoff test verdict override requires GO_NOGO_TEST_MODE=true")
 fi
 
 if [[ ! -f "$CONFIG_PATH" ]]; then
@@ -163,7 +168,7 @@ if ((${#input_errors[@]} == 0)); then
       SERVICE="$SERVICE" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled" \
-      GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
+      GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
       OUTPUT_DIR="$go_nogo_output_dir" \
@@ -395,7 +400,7 @@ else
   signoff_reason_code="window_not_pass"
 fi
 
-if [[ -n "$route_fee_signoff_test_verdict_override_raw" && "$route_fee_signoff_test_verdict_override_norm" != "UNKNOWN" ]]; then
+if [[ -n "$route_fee_signoff_test_verdict_override_raw" && "$route_fee_signoff_test_verdict_override_norm" != "UNKNOWN" && "$go_nogo_test_mode_norm" == "true" && ${#input_errors[@]} -eq 0 ]]; then
   signoff_verdict="$route_fee_signoff_test_verdict_override_norm"
   signoff_reason="route/fee signoff test override applied"
   signoff_reason_code="test_override"
@@ -409,6 +414,7 @@ windows_csv: $WINDOWS_CSV
 risk_events_minutes: $RISK_EVENTS_MINUTES
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
+go_nogo_test_mode: $go_nogo_test_mode_norm
 route_fee_signoff_test_verdict_override: ${route_fee_signoff_test_verdict_override_raw:-n/a}
 window_count: ${#window_ids[@]}
 go_nogo_go_count: $go_nogo_go_count
