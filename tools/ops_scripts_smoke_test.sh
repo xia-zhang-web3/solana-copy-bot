@@ -2000,6 +2000,46 @@ run_devnet_rehearsal_case() {
   assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_windows_csv: 1,invalid"
   assert_contains "$route_fee_required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   assert_contains "$route_fee_required_nogo_output" "devnet_rehearsal_reason: route/fee signoff returned NO_GO: window token must be an integer (got: invalid)"
+
+  local route_fee_required_hold_output=""
+  if route_fee_required_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="HOLD" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for devnet rehearsal helper when required route/fee signoff returns HOLD" >&2
+    exit 1
+  else
+    local route_fee_required_hold_exit_code=$?
+    if [[ "$route_fee_required_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for required route/fee signoff HOLD branch, got $route_fee_required_hold_exit_code" >&2
+      echo "$route_fee_required_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_verdict: HOLD"
+  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_reason: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=HOLD)"
+  assert_contains "$route_fee_required_hold_output" "devnet_rehearsal_verdict: HOLD"
+  assert_contains "$route_fee_required_hold_output" "devnet_rehearsal_reason: route/fee signoff returned HOLD: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=HOLD)"
+
+  local route_fee_required_go_output
+  route_fee_required_go_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
+  )"
+  assert_contains "$route_fee_required_go_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_go_output" "route_fee_signoff_verdict: GO"
+  assert_contains "$route_fee_required_go_output" "route_fee_signoff_reason: test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=GO)"
+  assert_contains "$route_fee_required_go_output" "devnet_rehearsal_verdict: GO"
+  assert_contains "$route_fee_required_go_output" "devnet_rehearsal_reason: test mode override active (RUN_TESTS=false, DEVNET_REHEARSAL_TEST_MODE=true)"
   echo "[ok] execution devnet rehearsal helper"
 }
 

@@ -25,6 +25,7 @@ ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-${GO_NOGO_TEST_MODE:-false}}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}}"
+ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
 
 if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
   echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
@@ -155,6 +156,7 @@ route_fee_signoff_required_norm="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_REQU
 route_fee_signoff_go_nogo_test_mode_norm="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE")"
 route_fee_signoff_go_nogo_test_fee_override="$(trim_string "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE")"
 route_fee_signoff_go_nogo_test_route_override="$(trim_string "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE")"
+route_fee_signoff_test_verdict_override_raw="$(trim_string "$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE")"
 
 execution_enabled_raw="$(cfg_or_env_string execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED)"
 execution_enabled="$(normalize_bool_token "${execution_enabled_raw:-false}")"
@@ -352,6 +354,14 @@ if [[ "$windowed_signoff_verdict" == "UNKNOWN" && "$windowed_signoff_exit_code" 
 fi
 if [[ "$route_fee_signoff_verdict" == "UNKNOWN" && "$route_fee_signoff_exit_code" -ne 0 && -z "$route_fee_signoff_reason" ]]; then
   route_fee_signoff_reason="execution_route_fee_signoff_report exited with code $route_fee_signoff_exit_code"
+fi
+if [[ -n "$route_fee_signoff_test_verdict_override_raw" ]]; then
+  if [[ "$route_fee_signoff_go_nogo_test_mode_norm" == "true" ]]; then
+    route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$route_fee_signoff_test_verdict_override_raw")"
+    route_fee_signoff_reason="test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=${route_fee_signoff_test_verdict_override_raw})"
+  else
+    config_errors+=("ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE requires ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE=true")
+  fi
 fi
 if [[ -z "$dynamic_cu_policy_reason" ]]; then
   dynamic_cu_policy_reason="n/a"
