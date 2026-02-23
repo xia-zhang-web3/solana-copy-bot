@@ -2502,6 +2502,69 @@ mod app_tests {
     }
 
     #[test]
+    fn validate_execution_runtime_contract_rejects_fastlane_routes_when_feature_flag_disabled() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_fastlane_enabled = false;
+        execution.default_route = "fastlane".to_string();
+        execution.submit_allowed_routes = vec!["fastlane".to_string(), "rpc".to_string()];
+        execution.submit_route_order = vec!["fastlane".to_string(), "rpc".to_string()];
+        execution.submit_route_max_slippage_bps =
+            BTreeMap::from([("fastlane".to_string(), 50.0), ("rpc".to_string(), 50.0)]);
+        execution.submit_route_tip_lamports =
+            BTreeMap::from([("fastlane".to_string(), 10_000), ("rpc".to_string(), 0)]);
+        execution.submit_route_compute_unit_limit = BTreeMap::from([
+            ("fastlane".to_string(), 300_000),
+            ("rpc".to_string(), 300_000),
+        ]);
+        execution.submit_route_compute_unit_price_micro_lamports =
+            BTreeMap::from([("fastlane".to_string(), 1_500), ("rpc".to_string(), 1_000)]);
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("fastlane route policy must be blocked when feature flag is disabled");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.submit_fastlane_enabled must be true"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_allows_fastlane_routes_when_feature_flag_enabled() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_fastlane_enabled = true;
+        execution.default_route = "fastlane".to_string();
+        execution.submit_allowed_routes = vec!["fastlane".to_string(), "rpc".to_string()];
+        execution.submit_route_order = vec!["fastlane".to_string(), "rpc".to_string()];
+        execution.submit_route_max_slippage_bps =
+            BTreeMap::from([("fastlane".to_string(), 50.0), ("rpc".to_string(), 50.0)]);
+        execution.submit_route_tip_lamports =
+            BTreeMap::from([("fastlane".to_string(), 10_000), ("rpc".to_string(), 0)]);
+        execution.submit_route_compute_unit_limit = BTreeMap::from([
+            ("fastlane".to_string(), 300_000),
+            ("rpc".to_string(), 300_000),
+        ]);
+        execution.submit_route_compute_unit_price_micro_lamports =
+            BTreeMap::from([("fastlane".to_string(), 1_500), ("rpc".to_string(), 1_000)]);
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+
+        validate_execution_runtime_contract(&execution, "paper")
+            .expect("fastlane route policy should pass when feature flag is enabled");
+    }
+
+    #[test]
     fn validate_execution_runtime_contract_rejects_duplicate_primary_and_fallback_adapter_endpoint()
     {
         let mut execution = ExecutionConfig::default();

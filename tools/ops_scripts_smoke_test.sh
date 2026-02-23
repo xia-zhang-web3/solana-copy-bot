@@ -281,6 +281,44 @@ submit_adapter_auth_token = "token-inline"
 EOF
 }
 
+write_config_adapter_preflight_fastlane_routes() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[system]
+env = "prod-eu"
+
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+enabled = true
+mode = "adapter_submit_confirm"
+execution_signer_pubkey = "Signer1111111111111111111111111111111111"
+rpc_http_url = "https://rpc.primary.local"
+submit_adapter_http_url = "https://adapter.primary.local/submit"
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = true
+default_route = "fastlane"
+submit_allowed_routes = ["fastlane", "rpc"]
+submit_route_order = ["fastlane", "rpc"]
+submit_route_max_slippage_bps = { fastlane = 50.0, rpc = 40.0 }
+submit_route_tip_lamports = { fastlane = 10000, rpc = 0 }
+submit_route_compute_unit_limit = { fastlane = 300000, rpc = 300000 }
+submit_route_compute_unit_price_micro_lamports = { fastlane = 1500, rpc = 1000 }
+pretrade_max_priority_fee_lamports = 2000
+submit_adapter_auth_token = "token-inline"
+EOF
+}
+
 write_config_adapter_preflight_missing_secret_file() {
   local config_path="$1"
   local db_path="$2"
@@ -1240,6 +1278,7 @@ run_adapter_preflight_case() {
   local fail_cfg="$TMP_DIR/adapter-preflight-fail.toml"
   local missing_map_cfg="$TMP_DIR/adapter-preflight-missing-map.toml"
   local invalid_route_order_cfg="$TMP_DIR/adapter-preflight-invalid-route-order.toml"
+  local fastlane_cfg="$TMP_DIR/adapter-preflight-fastlane.toml"
   local missing_secret_cfg="$TMP_DIR/adapter-preflight-missing-secret.toml"
   local tip_above_max_cfg="$TMP_DIR/adapter-preflight-tip-above-max.toml"
   local default_cu_limit_too_low_cfg="$TMP_DIR/adapter-preflight-default-cu-limit-too-low.toml"
@@ -1249,6 +1288,8 @@ run_adapter_preflight_case() {
   local invalid_route_order_output
   local missing_secret_output
   local env_override_output
+  local fastlane_disabled_output
+  local fastlane_enabled_output
   local tip_above_max_output
   local default_cu_limit_too_low_output
   local route_price_exceeds_pretrade_output
@@ -1311,6 +1352,25 @@ run_adapter_preflight_case() {
   fi
   assert_contains "$invalid_route_order_output" "preflight_verdict: FAIL"
   assert_contains "$invalid_route_order_output" "execution.submit_route_order route=rpc must be present in execution.submit_allowed_routes"
+
+  write_config_adapter_preflight_fastlane_routes "$fastlane_cfg" "$db_path"
+  if fastlane_disabled_output="$(
+    CONFIG_PATH="$fastlane_cfg" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure when fastlane route is configured while submit_fastlane_enabled=false" >&2
+    exit 1
+  fi
+  assert_contains "$fastlane_disabled_output" "preflight_verdict: FAIL"
+  assert_contains "$fastlane_disabled_output" "execution.submit_fastlane_enabled must be true"
+
+  fastlane_enabled_output="$(
+    CONFIG_PATH="$fastlane_cfg" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh"
+  )"
+  assert_contains "$fastlane_enabled_output" "preflight_verdict: PASS"
+  assert_contains "$fastlane_enabled_output" "submit_fastlane_enabled: true"
 
   write_config_adapter_preflight_missing_secret_file "$missing_secret_cfg" "$db_path"
   if missing_secret_output="$(

@@ -304,6 +304,13 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_adapter_require_policy_echo = submit_adapter_require_policy_echo;
     }
+    if let Some(submit_fastlane_enabled) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.submit_fastlane_enabled = submit_fastlane_enabled;
+    }
     if let Ok(submit_allowed_routes_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES")
     {

@@ -47,6 +47,7 @@ pub(crate) fn validate_execution_runtime_contract(
             submit_dynamic_cu_price_api_auth_configured = !config.submit_dynamic_cu_price_api_auth_token.trim().is_empty(),
             submit_dynamic_tip_lamports_enabled = config.submit_dynamic_tip_lamports_enabled,
             submit_dynamic_tip_lamports_multiplier_bps = config.submit_dynamic_tip_lamports_multiplier_bps,
+            submit_fastlane_enabled = config.submit_fastlane_enabled,
             submit_adapter_contract_version = %config.submit_adapter_contract_version,
             submit_adapter_require_policy_echo = config.submit_adapter_require_policy_echo,
             pretrade_require_token_account = config.pretrade_require_token_account,
@@ -386,6 +387,9 @@ fn validate_routes_contract(config: &ExecutionConfig, env: &str, mode: &str) -> 
         }
     }
     if mode == "adapter_submit_confirm" {
+        if !config.submit_fastlane_enabled {
+            validate_fastlane_disabled_route_contract(default_route.as_str(), config)?;
+        }
         let find_route_cap = |route: &str| -> Option<f64> {
             config
                 .submit_route_max_slippage_bps
@@ -603,6 +607,76 @@ fn is_valid_contract_version_token(value: &str) -> bool {
     value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn is_fastlane_route(route: &str) -> bool {
+    route.trim().eq_ignore_ascii_case("fastlane")
+}
+
+fn validate_fastlane_disabled_route_contract(
+    default_route: &str,
+    config: &ExecutionConfig,
+) -> Result<()> {
+    if is_fastlane_route(default_route) {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when execution.default_route=fastlane"
+        ));
+    }
+    if config
+        .submit_allowed_routes
+        .iter()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_allowed_routes"
+        ));
+    }
+    if config
+        .submit_route_order
+        .iter()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_order"
+        ));
+    }
+    if config
+        .submit_route_max_slippage_bps
+        .keys()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_max_slippage_bps"
+        ));
+    }
+    if config
+        .submit_route_tip_lamports
+        .keys()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_tip_lamports"
+        ));
+    }
+    if config
+        .submit_route_compute_unit_limit
+        .keys()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_compute_unit_limit"
+        ));
+    }
+    if config
+        .submit_route_compute_unit_price_micro_lamports
+        .keys()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_compute_unit_price_micro_lamports"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_unique_normalized_route_list(values: &[String], field_name: &str) -> Result<()> {

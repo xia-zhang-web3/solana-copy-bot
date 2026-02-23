@@ -240,6 +240,23 @@ fn load_from_env_applies_dynamic_cu_price_api_overrides() {
     });
 }
 
+#[test]
+fn load_from_env_applies_submit_fastlane_enabled_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED",
+                "true",
+                || {
+                    let (cfg, _) = load_from_env_or_default(config_path)
+                        .expect("load config with submit fastlane env override");
+                    assert!(cfg.execution.submit_fastlane_enabled);
+                },
+            );
+        });
+    });
+}
+
 fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
