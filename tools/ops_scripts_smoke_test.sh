@@ -2320,6 +2320,43 @@ run_adapter_rollout_evidence_case() {
     exit 1
   fi
 
+  local final_nested_isolation_output=""
+  if final_nested_isolation_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/adapter-rollout-final-package-isolation" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for final rollout package helper when nested rehearsal route/fee signoff is invalid" >&2
+    exit 1
+  else
+    local final_nested_isolation_exit_code=$?
+    if [[ "$final_nested_isolation_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for final rollout package nested override isolation, got $final_nested_isolation_exit_code" >&2
+      echo "$final_nested_isolation_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$final_nested_isolation_output" "rollout_verdict" "NO_GO"
+  assert_field_equals "$final_nested_isolation_output" "rollout_reason_code" "rehearsal_no_go"
+  assert_field_equals "$final_nested_isolation_output" "final_rollout_package_verdict" "NO_GO"
+  assert_field_equals "$final_nested_isolation_output" "final_rollout_package_reason_code" "rehearsal_no_go"
+
   local windowed_nogo_output=""
   if windowed_nogo_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
