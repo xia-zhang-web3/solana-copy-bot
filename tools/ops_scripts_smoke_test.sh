@@ -2004,6 +2004,33 @@ run_devnet_rehearsal_case() {
   assert_contains "$required_nogo_output" "artifacts_written: false"
   assert_contains "$required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
 
+  local fastlane_strict_nogo_output=""
+  if fastlane_strict_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for devnet rehearsal helper when strict fastlane-disabled gate is violated" >&2
+    exit 1
+  else
+    local fastlane_strict_nogo_exit_code=$?
+    if [[ "$fastlane_strict_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for strict fastlane-disabled rehearsal branch, got $fastlane_strict_nogo_exit_code" >&2
+      echo "$fastlane_strict_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "overall_go_nogo_verdict: NO_GO"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason: strict fastlane-disabled gate not PASS: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+
   local route_fee_required_nogo_output=""
   if route_fee_required_nogo_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
@@ -2246,6 +2273,41 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "artifacts_written: false"
   assert_contains "$windowed_nogo_output" "adapter_rollout_verdict: NO_GO"
+
+  local fastlane_strict_nogo_output=""
+  if fastlane_strict_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when strict fastlane-disabled gate is violated" >&2
+    exit 1
+  else
+    local fastlane_strict_rollout_nogo_exit_code=$?
+    if [[ "$fastlane_strict_rollout_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for strict fastlane-disabled rollout branch, got $fastlane_strict_rollout_nogo_exit_code" >&2
+      echo "$fastlane_strict_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason: strict fastlane-disabled gate not PASS: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_verdict: NO_GO"
+  assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_reason: devnet rehearsal returned NO_GO: strict fastlane-disabled gate not PASS: execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
 
   local route_fee_required_nogo_output=""
   if route_fee_required_nogo_output="$(
