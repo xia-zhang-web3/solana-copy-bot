@@ -2006,6 +2006,14 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "submit_fastlane_enabled: false"
   assert_contains "$pass_output" "fastlane_feature_flag_verdict: SKIP"
   assert_contains "$pass_output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
+  assert_contains "$pass_output" "route_fee_signoff_required: false"
+  assert_contains "$pass_output" "route_fee_signoff_verdict:"
+  assert_contains "$pass_output" "route_fee_signoff_reason:"
+  assert_contains "$pass_output" "route_fee_signoff_windows_csv: 1,6,24"
+  assert_contains "$pass_output" "route_fee_signoff_artifact_manifest:"
+  assert_contains "$pass_output" "route_fee_signoff_summary_sha256:"
+  assert_contains "$pass_output" "route_fee_signoff_artifacts_written: true"
+  assert_contains "$pass_output" "route_fee_window_count:"
   assert_contains "$pass_output" "windowed_signoff_required: false"
   assert_contains "$pass_output" "windowed_signoff_windows_csv: 1,6,24"
   assert_contains "$pass_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
@@ -2024,16 +2032,19 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "artifacts_written: true"
   assert_contains "$pass_output" "adapter_rollout_verdict: GO"
   assert_contains "$pass_output" "artifact_summary:"
+  assert_contains "$pass_output" "artifact_route_fee_signoff_capture:"
   assert_contains "$pass_output" "artifact_manifest:"
   assert_contains "$pass_output" "summary_sha256:"
   assert_sha256_field "$pass_output" "summary_sha256"
   assert_sha256_field "$pass_output" "rotation_capture_sha256"
   assert_sha256_field "$pass_output" "rehearsal_capture_sha256"
+  assert_sha256_field "$pass_output" "route_fee_signoff_capture_sha256"
   assert_sha256_field "$pass_output" "rotation_report_sha256"
   assert_sha256_field "$pass_output" "rehearsal_summary_sha256"
   assert_sha256_field "$pass_output" "rehearsal_preflight_sha256"
   assert_sha256_field "$pass_output" "rehearsal_go_nogo_sha256"
   assert_sha256_field "$pass_output" "rehearsal_tests_sha256"
+  assert_sha256_field "$pass_output" "route_fee_signoff_summary_sha256"
   assert_sha256_field "$pass_output" "windowed_signoff_summary_sha256"
   assert_sha256_field "$pass_output" "go_nogo_calibration_sha256"
   assert_sha256_field "$pass_output" "go_nogo_snapshot_sha256"
@@ -2051,6 +2062,10 @@ run_adapter_rollout_evidence_case() {
   fi
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_captured_*.txt >/dev/null 2>&1; then
     echo "expected adapter rollout rehearsal capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_route_fee_signoff_captured_*.txt >/dev/null 2>&1; then
+    echo "expected adapter rollout route/fee signoff capture artifact in $artifacts_dir" >&2
     exit 1
   fi
   if ! ls "$artifacts_dir"/rehearsal/windowed_signoff/execution_windowed_signoff_summary_*.txt >/dev/null 2>&1; then
@@ -2106,6 +2121,39 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "artifacts_written: false"
   assert_contains "$windowed_nogo_output" "adapter_rollout_verdict: NO_GO"
+
+  local route_fee_required_nogo_output=""
+  if route_fee_required_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when required route/fee signoff returns NO_GO" >&2
+    exit 1
+  else
+    local route_fee_required_nogo_exit_code=$?
+    if [[ "$route_fee_required_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required route/fee signoff rollout branch, got $route_fee_required_nogo_exit_code" >&2
+      echo "$route_fee_required_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_verdict: NO_GO"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_reason: window token must be an integer (got: invalid)"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_windows_csv: 1,invalid"
+  assert_contains "$route_fee_required_nogo_output" "adapter_rollout_verdict: NO_GO"
+  assert_contains "$route_fee_required_nogo_output" "adapter_rollout_reason: required route/fee signoff returned NO_GO:"
 
   local rehearsal_hold_output=""
   if rehearsal_hold_output="$(

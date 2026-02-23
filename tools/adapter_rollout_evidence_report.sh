@@ -20,6 +20,8 @@ WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DY
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
+ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -40,10 +42,12 @@ fi
 
 rotation_output_dir=""
 rehearsal_output_dir=""
+route_fee_signoff_output_dir=""
 if [[ -n "$OUTPUT_DIR" ]]; then
   rotation_output_dir="$OUTPUT_DIR/rotation"
   rehearsal_output_dir="$OUTPUT_DIR/rehearsal"
-  mkdir -p "$rotation_output_dir" "$rehearsal_output_dir"
+  route_fee_signoff_output_dir="$OUTPUT_DIR/route_fee_signoff"
+  mkdir -p "$rotation_output_dir" "$rehearsal_output_dir" "$route_fee_signoff_output_dir"
 fi
 
 rotation_output=""
@@ -245,6 +249,66 @@ else
   fi
 fi
 
+route_fee_signoff_required="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_REQUIRED")"
+route_fee_signoff_output=""
+route_fee_signoff_exit_code=3
+route_fee_signoff_verdict="UNKNOWN"
+route_fee_signoff_reason="execution route/fee signoff helper not executed"
+route_fee_signoff_windows_csv=""
+route_fee_signoff_artifact_manifest=""
+route_fee_signoff_summary_sha256=""
+route_fee_signoff_artifacts_written="false"
+route_fee_primary_route_stable=""
+route_fee_stable_primary_route=""
+route_fee_fallback_route_stable=""
+route_fee_stable_fallback_route=""
+route_fee_route_profile_pass_count=""
+route_fee_fee_decomposition_pass_count=""
+route_fee_window_count=""
+if [[ ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+  route_fee_signoff_exit_code=3
+  route_fee_signoff_verdict="NO_GO"
+  route_fee_signoff_reason="invalid risk events window for route/fee signoff"
+elif [[ ! -f "$CONFIG_PATH" ]]; then
+  route_fee_signoff_exit_code=3
+  route_fee_signoff_verdict="NO_GO"
+  route_fee_signoff_reason="config file not found: $CONFIG_PATH"
+else
+  if route_fee_signoff_output="$(
+    PATH="$PATH" \
+      DB_PATH="${DB_PATH:-}" \
+      CONFIG_PATH="$CONFIG_PATH" \
+      SERVICE="$SERVICE" \
+      OUTPUT_DIR="$route_fee_signoff_output_dir" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$GO_NOGO_REQUIRE_JITO_RPC_POLICY" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$GO_NOGO_REQUIRE_FASTLANE_DISABLED" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+  )"; then
+    route_fee_signoff_exit_code=0
+  else
+    route_fee_signoff_exit_code=$?
+  fi
+
+  route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$route_fee_signoff_output")")"
+  route_fee_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$route_fee_signoff_output")")"
+  route_fee_signoff_windows_csv="$(trim_string "$(extract_field "windows_csv" "$route_fee_signoff_output")")"
+  route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
+  route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
+  route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+  route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
+  route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_signoff_output")")"
+  route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"
+  route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_signoff_output")")"
+  route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_profile_pass_count" "$route_fee_signoff_output")")"
+  route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "fee_decomposition_pass_count" "$route_fee_signoff_output")")"
+  route_fee_window_count="$(trim_string "$(extract_field "window_count" "$route_fee_signoff_output")")"
+  if [[ "$route_fee_signoff_verdict" == "UNKNOWN" ]]; then
+    route_fee_signoff_reason="unable to classify route/fee signoff verdict (exit=$route_fee_signoff_exit_code)"
+  elif [[ -z "$route_fee_signoff_reason" ]]; then
+    route_fee_signoff_reason="execution route/fee signoff helper reported $route_fee_signoff_verdict"
+  fi
+fi
+
 adapter_rollout_verdict="NO_GO"
 adapter_rollout_reason="unrecognized rollout gate state"
 if ((${#input_errors[@]} > 0)); then
@@ -262,16 +326,28 @@ elif [[ "$rehearsal_verdict" == "NO_GO" ]]; then
 elif [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="devnet rehearsal verdict unknown; fail-closed"
-elif [[ "$rotation_verdict" == "WARN" || "$rehearsal_verdict" == "HOLD" ]]; then
+elif [[ "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "UNKNOWN" ]]; then
+  adapter_rollout_verdict="NO_GO"
+  adapter_rollout_reason="required route/fee signoff verdict unknown; fail-closed"
+elif [[ "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "NO_GO" ]]; then
+  adapter_rollout_verdict="NO_GO"
+  adapter_rollout_reason="required route/fee signoff returned NO_GO: ${route_fee_signoff_reason:-n/a}"
+elif [[ "$rotation_verdict" == "WARN" || "$rehearsal_verdict" == "HOLD" || ( "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "HOLD" ) ]]; then
   adapter_rollout_verdict="HOLD"
   if [[ "$rotation_verdict" == "WARN" ]]; then
     adapter_rollout_reason="rotation readiness returned WARN: ${rotation_reason:-n/a}"
-  else
+  elif [[ "$rehearsal_verdict" == "HOLD" ]]; then
     adapter_rollout_reason="devnet rehearsal returned HOLD: ${rehearsal_reason:-n/a}"
+  else
+    adapter_rollout_reason="required route/fee signoff returned HOLD: ${route_fee_signoff_reason:-n/a}"
   fi
-elif [[ "$rotation_verdict" == "PASS" && "$rehearsal_verdict" == "GO" ]]; then
+elif [[ "$rotation_verdict" == "PASS" && "$rehearsal_verdict" == "GO" && ( "$route_fee_signoff_required" != "true" || "$route_fee_signoff_verdict" == "GO" ) ]]; then
   adapter_rollout_verdict="GO"
-  adapter_rollout_reason="rotation readiness and devnet rehearsal gates passed"
+  if [[ "$route_fee_signoff_required" == "true" ]]; then
+    adapter_rollout_reason="rotation readiness, devnet rehearsal, and required route/fee signoff gates passed"
+  else
+    adapter_rollout_reason="rotation readiness and devnet rehearsal gates passed"
+  fi
 fi
 
 artifacts_written="false"
@@ -308,6 +384,21 @@ go_nogo_require_fastlane_disabled: ${go_nogo_require_fastlane_disabled:-false}
 submit_fastlane_enabled: ${submit_fastlane_enabled:-false}
 fastlane_feature_flag_verdict: ${fastlane_feature_flag_verdict:-unknown}
 fastlane_feature_flag_reason: ${fastlane_feature_flag_reason:-n/a}
+route_fee_signoff_required: $route_fee_signoff_required
+route_fee_signoff_verdict: ${route_fee_signoff_verdict:-unknown}
+route_fee_signoff_reason: ${route_fee_signoff_reason:-n/a}
+route_fee_signoff_exit_code: ${route_fee_signoff_exit_code:-3}
+route_fee_signoff_windows_csv: ${route_fee_signoff_windows_csv:-n/a}
+route_fee_signoff_artifact_manifest: ${route_fee_signoff_artifact_manifest:-n/a}
+route_fee_signoff_summary_sha256: ${route_fee_signoff_summary_sha256:-n/a}
+route_fee_signoff_artifacts_written: $route_fee_signoff_artifacts_written
+route_fee_primary_route_stable: ${route_fee_primary_route_stable:-false}
+route_fee_stable_primary_route: ${route_fee_stable_primary_route:-n/a}
+route_fee_fallback_route_stable: ${route_fee_fallback_route_stable:-false}
+route_fee_stable_fallback_route: ${route_fee_stable_fallback_route:-n/a}
+route_fee_route_profile_pass_count: ${route_fee_route_profile_pass_count:-n/a}
+route_fee_fee_decomposition_pass_count: ${route_fee_fee_decomposition_pass_count:-n/a}
+route_fee_window_count: ${route_fee_window_count:-n/a}
 dynamic_cu_policy_verdict: ${dynamic_cu_policy_verdict:-unknown}
 dynamic_cu_policy_reason: ${dynamic_cu_policy_reason:-n/a}
 dynamic_tip_policy_verdict: ${dynamic_tip_policy_verdict:-unknown}
@@ -373,18 +464,22 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   summary_path="$OUTPUT_DIR/adapter_rollout_evidence_summary_${timestamp_compact}.txt"
   rotation_capture_path="$OUTPUT_DIR/adapter_secret_rotation_captured_${timestamp_compact}.txt"
   rehearsal_capture_path="$OUTPUT_DIR/execution_devnet_rehearsal_captured_${timestamp_compact}.txt"
+  route_fee_signoff_capture_path="$OUTPUT_DIR/execution_route_fee_signoff_captured_${timestamp_compact}.txt"
   manifest_path="$OUTPUT_DIR/adapter_rollout_evidence_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary_output" >"$summary_path"
   printf '%s\n' "$rotation_output" >"$rotation_capture_path"
   printf '%s\n' "$rehearsal_output" >"$rehearsal_capture_path"
+  printf '%s\n' "$route_fee_signoff_output" >"$route_fee_signoff_capture_path"
 
   summary_sha256="$(sha256_file_value "$summary_path")"
   rotation_capture_sha256="$(sha256_file_value "$rotation_capture_path")"
   rehearsal_capture_sha256="$(sha256_file_value "$rehearsal_capture_path")"
+  route_fee_signoff_capture_sha256="$(sha256_file_value "$route_fee_signoff_capture_path")"
   cat >"$manifest_path" <<EOF
 summary_sha256: $summary_sha256
 rotation_capture_sha256: $rotation_capture_sha256
 rehearsal_capture_sha256: $rehearsal_capture_sha256
+route_fee_signoff_capture_sha256: $route_fee_signoff_capture_sha256
 EOF
 
   echo
@@ -392,10 +487,12 @@ EOF
   echo "artifact_summary: $summary_path"
   echo "artifact_rotation_capture: $rotation_capture_path"
   echo "artifact_rehearsal_capture: $rehearsal_capture_path"
+  echo "artifact_route_fee_signoff_capture: $route_fee_signoff_capture_path"
   echo "artifact_manifest: $manifest_path"
   echo "summary_sha256: $summary_sha256"
   echo "rotation_capture_sha256: $rotation_capture_sha256"
   echo "rehearsal_capture_sha256: $rehearsal_capture_sha256"
+  echo "route_fee_signoff_capture_sha256: $route_fee_signoff_capture_sha256"
 fi
 
 case "$adapter_rollout_verdict" in

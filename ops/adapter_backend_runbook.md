@@ -176,6 +176,8 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
       4. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=true`
       5. `GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`
       6. `GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`
+      7. `ROUTE_FEE_SIGNOFF_REQUIRED=true`
+      8. `ROUTE_FEE_SIGNOFF_WINDOWS_CSV=1,6,24`
    4. attach `artifact_summary` plus captured raw artifacts for audit handoff.
 11. Route/fee signoff helper (for `ROAD_TO_PRODUCTION` next-code-queue items 2/3):
    1. run `CONFIG_PATH=configs/live.toml OUTPUT_DIR=state/route-fee-signoff ./tools/execution_route_fee_signoff_report.sh 1,6,24 60`
