@@ -730,23 +730,6 @@ extract_field_value() {
   '
 }
 
-assert_field_contains() {
-  local text="$1"
-  local key="$2"
-  local needle="$3"
-  local value
-  value="$(extract_field_value "$text" "$key")"
-  if [[ -z "$value" ]]; then
-    echo "expected non-empty field missing: $key" >&2
-    exit 1
-  fi
-  if ! grep -Fq "$needle" <<<"$value"; then
-    echo "expected field $key to contain: $needle" >&2
-    echo "actual $key: $value" >&2
-    exit 1
-  fi
-}
-
 assert_sha256_field() {
   local text="$1"
   local key="$2"
@@ -840,10 +823,12 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$go_nogo_output" "jito_rpc_policy_verdict: SKIP"
   assert_contains "$go_nogo_output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
+  assert_contains "$go_nogo_output" "jito_rpc_policy_reason_code: gate_disabled"
   assert_contains "$go_nogo_output" "go_nogo_require_fastlane_disabled: false"
   assert_contains "$go_nogo_output" "submit_fastlane_enabled: false"
   assert_contains "$go_nogo_output" "fastlane_feature_flag_verdict: SKIP"
   assert_contains "$go_nogo_output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
+  assert_contains "$go_nogo_output" "fastlane_feature_flag_reason_code: gate_disabled"
   assert_contains "$go_nogo_output" "artifacts_written: false"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
 
@@ -1072,7 +1057,7 @@ run_go_nogo_fastlane_disabled_gate_case() {
   assert_contains "$blocked_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$blocked_output" "submit_fastlane_enabled: true"
   assert_contains "$blocked_output" "fastlane_feature_flag_verdict: WARN"
-  assert_field_contains "$blocked_output" "fastlane_feature_flag_reason" "violates strict fastlane-disabled gate"
+  assert_contains "$blocked_output" "fastlane_feature_flag_reason_code: fastlane_enabled"
   assert_contains "$blocked_output" "overall_go_nogo_verdict: NO_GO"
   assert_contains "$blocked_output" "overall_go_nogo_reason: strict fastlane-disabled gate not PASS:"
 
@@ -1091,6 +1076,7 @@ run_go_nogo_fastlane_disabled_gate_case() {
   assert_contains "$pass_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$pass_output" "submit_fastlane_enabled: false"
   assert_contains "$pass_output" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$pass_output" "fastlane_feature_flag_reason_code: fastlane_disabled"
   assert_contains "$pass_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
   assert_contains "$pass_output" "overall_go_nogo_verdict: GO"
   echo "[ok] go-no-go strict fastlane-disabled gate"
@@ -1884,10 +1870,12 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$output" "jito_rpc_policy_verdict: SKIP"
   assert_contains "$output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
+  assert_contains "$output" "jito_rpc_policy_reason_code: gate_disabled"
   assert_contains "$output" "go_nogo_require_fastlane_disabled: false"
   assert_contains "$output" "submit_fastlane_enabled: false"
   assert_contains "$output" "fastlane_feature_flag_verdict: SKIP"
   assert_contains "$output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
+  assert_contains "$output" "fastlane_feature_flag_reason_code: gate_disabled"
   assert_contains "$output" "windowed_signoff_required: false"
   assert_contains "$output" "windowed_signoff_windows_csv: 1,6,24"
   assert_contains "$output" "windowed_signoff_require_dynamic_hint_source_pass: false"
@@ -2016,6 +2004,7 @@ run_devnet_rehearsal_case() {
   assert_contains "$required_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$required_nogo_output" "submit_fastlane_enabled: false"
   assert_contains "$required_nogo_output" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$required_nogo_output" "fastlane_feature_flag_reason_code: fastlane_disabled"
   assert_contains "$required_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
   assert_contains "$required_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$required_nogo_output" "artifacts_written: false"
@@ -2043,11 +2032,10 @@ run_devnet_rehearsal_case() {
   assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
   assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
-  assert_field_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason" "violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason_code: fastlane_enabled"
   assert_contains "$fastlane_strict_nogo_output" "overall_go_nogo_verdict: NO_GO"
   assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
-  assert_field_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason" "strict fastlane-disabled gate not PASS:"
-  assert_field_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason" "violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason_code: go_nogo_no_go"
 
   local route_fee_required_nogo_output=""
   if route_fee_required_nogo_output="$(
@@ -2165,10 +2153,12 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$pass_output" "jito_rpc_policy_verdict: SKIP"
   assert_contains "$pass_output" "jito_rpc_policy_reason: strict jito->rpc policy gate disabled"
+  assert_contains "$pass_output" "jito_rpc_policy_reason_code: gate_disabled"
   assert_contains "$pass_output" "go_nogo_require_fastlane_disabled: false"
   assert_contains "$pass_output" "submit_fastlane_enabled: false"
   assert_contains "$pass_output" "fastlane_feature_flag_verdict: SKIP"
   assert_contains "$pass_output" "fastlane_feature_flag_reason: strict fastlane-disabled gate disabled"
+  assert_contains "$pass_output" "fastlane_feature_flag_reason_code: gate_disabled"
   assert_contains "$pass_output" "route_fee_signoff_required: false"
   assert_contains "$pass_output" "route_fee_signoff_verdict:"
   assert_contains "$pass_output" "route_fee_signoff_reason:"
@@ -2286,6 +2276,7 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$windowed_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$windowed_nogo_output" "submit_fastlane_enabled: false"
   assert_contains "$windowed_nogo_output" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$windowed_nogo_output" "fastlane_feature_flag_reason_code: fastlane_disabled"
   assert_contains "$windowed_nogo_output" "fastlane_feature_flag_reason: execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
   assert_contains "$windowed_nogo_output" "windowed_signoff_verdict: NO_GO"
   assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
@@ -2321,13 +2312,11 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
   assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
-  assert_field_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason" "violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason_code: fastlane_enabled"
   assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
-  assert_field_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason" "strict fastlane-disabled gate not PASS:"
-  assert_field_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason" "violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_reason_code: go_nogo_no_go"
   assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_verdict: NO_GO"
-  assert_field_contains "$fastlane_strict_nogo_output" "adapter_rollout_reason" "devnet rehearsal returned NO_GO: strict fastlane-disabled gate not PASS:"
-  assert_field_contains "$fastlane_strict_nogo_output" "adapter_rollout_reason" "violates strict fastlane-disabled gate"
+  assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_reason_code: rehearsal_no_go"
 
   local route_fee_required_nogo_output=""
   if route_fee_required_nogo_output="$(

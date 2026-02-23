@@ -315,44 +315,55 @@ fi
 
 jito_rpc_policy_verdict="SKIP"
 jito_rpc_policy_reason="strict jito->rpc policy gate disabled"
+jito_rpc_policy_reason_code="gate_disabled"
 if [[ "$go_nogo_require_jito_rpc_policy" == "true" ]]; then
   if [[ "$execution_mode_for_go_nogo" != "adapter_submit_confirm" ]]; then
     jito_rpc_policy_verdict="SKIP"
     jito_rpc_policy_reason="strict jito->rpc policy gate requires adapter_submit_confirm mode"
+    jito_rpc_policy_reason_code="requires_adapter_mode"
   elif [[ "$route_profile_verdict" == "UNKNOWN" ]]; then
     jito_rpc_policy_verdict="UNKNOWN"
     jito_rpc_policy_reason="route profile verdict unknown; unable to classify strict jito->rpc policy gate"
+    jito_rpc_policy_reason_code="route_profile_unknown"
   elif [[ "$route_profile_verdict" == "NO_DATA" ]]; then
     jito_rpc_policy_verdict="NO_DATA"
     jito_rpc_policy_reason="route profile has no data; strict jito->rpc policy gate cannot be evaluated"
+    jito_rpc_policy_reason_code="route_profile_no_data"
   elif [[ "$route_profile_verdict" != "PASS" ]]; then
     jito_rpc_policy_verdict="WARN"
     jito_rpc_policy_reason="route profile gate is not PASS (${route_profile_verdict}); strict jito->rpc target not met"
+    jito_rpc_policy_reason_code="route_profile_not_pass"
   else
     primary_route_normalized="$(normalize_route_token "${primary_route:-}")"
     fallback_route_normalized="$(normalize_route_token "${fallback_route:-}")"
     if [[ "$primary_route_normalized" == "jito" && "$fallback_route_normalized" == "rpc" ]]; then
       jito_rpc_policy_verdict="PASS"
       jito_rpc_policy_reason="route profile confirms jito primary with rpc fallback"
+      jito_rpc_policy_reason_code="target_met"
     else
       jito_rpc_policy_verdict="WARN"
       jito_rpc_policy_reason="route profile primary/fallback mismatch for strict jito->rpc target (observed primary=${primary_route_normalized:-<none>}, fallback=${fallback_route_normalized:-<none>})"
+      jito_rpc_policy_reason_code="target_mismatch"
     fi
   fi
 fi
 
 fastlane_feature_flag_verdict="SKIP"
 fastlane_feature_flag_reason="strict fastlane-disabled gate disabled"
+fastlane_feature_flag_reason_code="gate_disabled"
 if [[ "$go_nogo_require_fastlane_disabled" == "true" ]]; then
   if [[ "$execution_mode_for_go_nogo" != "adapter_submit_confirm" ]]; then
     fastlane_feature_flag_verdict="SKIP"
     fastlane_feature_flag_reason="strict fastlane-disabled gate requires adapter_submit_confirm mode"
+    fastlane_feature_flag_reason_code="requires_adapter_mode"
   elif [[ "$submit_fastlane_enabled" == "true" ]]; then
     fastlane_feature_flag_verdict="WARN"
     fastlane_feature_flag_reason="execution.submit_fastlane_enabled=true violates strict fastlane-disabled gate"
+    fastlane_feature_flag_reason_code="fastlane_enabled"
   else
     fastlane_feature_flag_verdict="PASS"
     fastlane_feature_flag_reason="execution.submit_fastlane_enabled=false satisfies strict fastlane-disabled gate"
+    fastlane_feature_flag_reason_code="fastlane_disabled"
   fi
 fi
 
@@ -491,10 +502,12 @@ dynamic_tip_policy_reason: $dynamic_tip_policy_reason
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 jito_rpc_policy_verdict: $jito_rpc_policy_verdict
 jito_rpc_policy_reason: $jito_rpc_policy_reason
+jito_rpc_policy_reason_code: $jito_rpc_policy_reason_code
 go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
 submit_fastlane_enabled: $submit_fastlane_enabled
 fastlane_feature_flag_verdict: $fastlane_feature_flag_verdict
 fastlane_feature_flag_reason: $fastlane_feature_flag_reason
+fastlane_feature_flag_reason_code: $fastlane_feature_flag_reason_code
 
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: $overall_go_nogo_reason

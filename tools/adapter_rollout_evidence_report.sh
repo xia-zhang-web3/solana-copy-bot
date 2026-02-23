@@ -115,10 +115,13 @@ go_nogo_verdict=""
 go_nogo_require_jito_rpc_policy=""
 jito_rpc_policy_verdict=""
 jito_rpc_policy_reason=""
+jito_rpc_policy_reason_code=""
 go_nogo_require_fastlane_disabled=""
 submit_fastlane_enabled=""
 fastlane_feature_flag_verdict=""
 fastlane_feature_flag_reason=""
+fastlane_feature_flag_reason_code=""
+rehearsal_reason_code=""
 dynamic_cu_policy_verdict=""
 dynamic_cu_policy_reason=""
 dynamic_tip_policy_verdict=""
@@ -215,15 +218,18 @@ else
 
   rehearsal_verdict="$(normalize_rehearsal_verdict "$(extract_field "devnet_rehearsal_verdict" "$rehearsal_output")")"
   rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
+  rehearsal_reason_code="$(trim_string "$(extract_field "devnet_rehearsal_reason_code" "$rehearsal_output")")"
   preflight_verdict="$(trim_string "$(extract_field "preflight_verdict" "$rehearsal_output")")"
   go_nogo_verdict="$(trim_string "$(extract_field "overall_go_nogo_verdict" "$rehearsal_output")")"
   go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$(extract_field "go_nogo_require_jito_rpc_policy" "$rehearsal_output")")"
   jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$rehearsal_output")")"
   jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$rehearsal_output")")"
+  jito_rpc_policy_reason_code="$(trim_string "$(extract_field "jito_rpc_policy_reason_code" "$rehearsal_output")")"
   go_nogo_require_fastlane_disabled="$(normalize_bool_token "$(extract_field "go_nogo_require_fastlane_disabled" "$rehearsal_output")")"
   submit_fastlane_enabled="$(normalize_bool_token "$(extract_field "submit_fastlane_enabled" "$rehearsal_output")")"
   fastlane_feature_flag_verdict="$(normalize_gate_verdict "$(extract_field "fastlane_feature_flag_verdict" "$rehearsal_output")")"
   fastlane_feature_flag_reason="$(trim_string "$(extract_field "fastlane_feature_flag_reason" "$rehearsal_output")")"
+  fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$rehearsal_output")")"
   dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_policy_verdict" "$rehearsal_output")")"
   dynamic_cu_policy_reason="$(trim_string "$(extract_field "dynamic_cu_policy_reason" "$rehearsal_output")")"
   dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$rehearsal_output")")"
@@ -369,42 +375,55 @@ fi
 
 adapter_rollout_verdict="NO_GO"
 adapter_rollout_reason="unrecognized rollout gate state"
+adapter_rollout_reason_code="unrecognized_state"
 if ((${#input_errors[@]} > 0)); then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="${input_errors[0]}"
+  adapter_rollout_reason_code="input_error"
 elif [[ "$rotation_verdict" == "FAIL" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="rotation readiness failed: ${rotation_reason:-n/a}"
+  adapter_rollout_reason_code="rotation_fail"
 elif [[ "$rotation_verdict" == "UNKNOWN" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="rotation readiness verdict unknown; fail-closed"
+  adapter_rollout_reason_code="rotation_unknown"
 elif [[ "$rehearsal_verdict" == "NO_GO" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="devnet rehearsal returned NO_GO: ${rehearsal_reason:-n/a}"
+  adapter_rollout_reason_code="rehearsal_no_go"
 elif [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="devnet rehearsal verdict unknown; fail-closed"
+  adapter_rollout_reason_code="rehearsal_unknown"
 elif [[ "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "UNKNOWN" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="required route/fee signoff verdict unknown; fail-closed"
+  adapter_rollout_reason_code="route_fee_signoff_unknown"
 elif [[ "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "NO_GO" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="required route/fee signoff returned NO_GO: ${route_fee_signoff_reason:-n/a}"
+  adapter_rollout_reason_code="route_fee_signoff_no_go"
 elif [[ "$rotation_verdict" == "WARN" || "$rehearsal_verdict" == "HOLD" || ( "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "HOLD" ) ]]; then
   adapter_rollout_verdict="HOLD"
   if [[ "$rotation_verdict" == "WARN" ]]; then
     adapter_rollout_reason="rotation readiness returned WARN: ${rotation_reason:-n/a}"
+    adapter_rollout_reason_code="rotation_warn"
   elif [[ "$rehearsal_verdict" == "HOLD" ]]; then
     adapter_rollout_reason="devnet rehearsal returned HOLD: ${rehearsal_reason:-n/a}"
+    adapter_rollout_reason_code="rehearsal_hold"
   else
     adapter_rollout_reason="required route/fee signoff returned HOLD: ${route_fee_signoff_reason:-n/a}"
+    adapter_rollout_reason_code="route_fee_signoff_hold"
   fi
 elif [[ "$rotation_verdict" == "PASS" && "$rehearsal_verdict" == "GO" && ( "$route_fee_signoff_required" != "true" || "$route_fee_signoff_verdict" == "GO" ) ]]; then
   adapter_rollout_verdict="GO"
   if [[ "$route_fee_signoff_required" == "true" ]]; then
     adapter_rollout_reason="rotation readiness, devnet rehearsal, and required route/fee signoff gates passed"
+    adapter_rollout_reason_code="gates_pass_with_route_fee"
   else
     adapter_rollout_reason="rotation readiness and devnet rehearsal gates passed"
+    adapter_rollout_reason_code="gates_pass"
   fi
 fi
 
@@ -432,16 +451,19 @@ rotation_artifacts_written: $rotation_artifacts_written
 
 devnet_rehearsal_verdict: $rehearsal_verdict
 devnet_rehearsal_reason: ${rehearsal_reason:-n/a}
+devnet_rehearsal_reason_code: ${rehearsal_reason_code:-n/a}
 devnet_rehearsal_exit_code: $rehearsal_exit_code
 preflight_verdict: ${preflight_verdict:-unknown}
 overall_go_nogo_verdict: ${go_nogo_verdict:-unknown}
 go_nogo_require_jito_rpc_policy: ${go_nogo_require_jito_rpc_policy:-false}
 jito_rpc_policy_verdict: ${jito_rpc_policy_verdict:-unknown}
 jito_rpc_policy_reason: ${jito_rpc_policy_reason:-n/a}
+jito_rpc_policy_reason_code: ${jito_rpc_policy_reason_code:-n/a}
 go_nogo_require_fastlane_disabled: ${go_nogo_require_fastlane_disabled:-false}
 submit_fastlane_enabled: ${submit_fastlane_enabled:-false}
 fastlane_feature_flag_verdict: ${fastlane_feature_flag_verdict:-unknown}
 fastlane_feature_flag_reason: ${fastlane_feature_flag_reason:-n/a}
+fastlane_feature_flag_reason_code: ${fastlane_feature_flag_reason_code:-n/a}
 route_fee_signoff_required: $route_fee_signoff_required
 route_fee_signoff_verdict: ${route_fee_signoff_verdict:-unknown}
 route_fee_signoff_reason: ${route_fee_signoff_reason:-n/a}
@@ -521,6 +543,7 @@ input_error_count: ${#input_errors[@]}
 
 adapter_rollout_verdict: $adapter_rollout_verdict
 adapter_rollout_reason: $adapter_rollout_reason
+adapter_rollout_reason_code: $adapter_rollout_reason_code
 artifacts_written: $artifacts_written
 EOF
 )"

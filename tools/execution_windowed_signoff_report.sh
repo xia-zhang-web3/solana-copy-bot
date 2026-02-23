@@ -88,8 +88,10 @@ declare -a window_dynamic_tip_policy_verdicts=()
 declare -a window_dynamic_tip_policy_reasons=()
 declare -a window_jito_rpc_policy_verdicts=()
 declare -a window_jito_rpc_policy_reasons=()
+declare -a window_jito_rpc_policy_reason_codes=()
 declare -a window_fastlane_feature_flag_verdicts=()
 declare -a window_fastlane_feature_flag_reasons=()
+declare -a window_fastlane_feature_flag_reason_codes=()
 declare -a window_go_nogo_artifacts_written=()
 declare -a window_go_nogo_artifact_manifests=()
 declare -a window_go_nogo_calibration_sha256=()
@@ -178,8 +180,10 @@ if ((${#input_errors[@]} == 0)); then
     dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$go_nogo_output")")"
     jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$go_nogo_output")")"
     jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$go_nogo_output")")"
+    jito_rpc_policy_reason_code="$(trim_string "$(extract_field "jito_rpc_policy_reason_code" "$go_nogo_output")")"
     fastlane_feature_flag_verdict="$(normalize_gate_verdict "$(extract_field "fastlane_feature_flag_verdict" "$go_nogo_output")")"
     fastlane_feature_flag_reason="$(trim_string "$(extract_field "fastlane_feature_flag_reason" "$go_nogo_output")")"
+    fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$go_nogo_output")")"
     if [[ -z "$dynamic_hint_source_reason" ]]; then
       dynamic_hint_source_reason="n/a"
     fi
@@ -189,8 +193,14 @@ if ((${#input_errors[@]} == 0)); then
     if [[ -z "$jito_rpc_policy_reason" ]]; then
       jito_rpc_policy_reason="n/a"
     fi
+    if [[ -z "$jito_rpc_policy_reason_code" ]]; then
+      jito_rpc_policy_reason_code="n/a"
+    fi
     if [[ -z "$fastlane_feature_flag_reason" ]]; then
       fastlane_feature_flag_reason="n/a"
+    fi
+    if [[ -z "$fastlane_feature_flag_reason_code" ]]; then
+      fastlane_feature_flag_reason_code="n/a"
     fi
 
     capture_path=""
@@ -221,8 +231,10 @@ if ((${#input_errors[@]} == 0)); then
     window_dynamic_tip_policy_reasons+=("$dynamic_tip_policy_reason")
     window_jito_rpc_policy_verdicts+=("$jito_rpc_policy_verdict")
     window_jito_rpc_policy_reasons+=("$jito_rpc_policy_reason")
+    window_jito_rpc_policy_reason_codes+=("$jito_rpc_policy_reason_code")
     window_fastlane_feature_flag_verdicts+=("$fastlane_feature_flag_verdict")
     window_fastlane_feature_flag_reasons+=("$fastlane_feature_flag_reason")
+    window_fastlane_feature_flag_reason_codes+=("$fastlane_feature_flag_reason_code")
     window_go_nogo_artifacts_written+=("$go_nogo_artifacts_written")
     window_go_nogo_artifact_manifests+=("${go_nogo_artifact_manifest:-n/a}")
     window_go_nogo_calibration_sha256+=("${go_nogo_calibration_sha256:-n/a}")
@@ -387,8 +399,10 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_dynamic_tip_policy_reason: ${window_dynamic_tip_policy_reasons[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_jito_rpc_policy_verdict: ${window_jito_rpc_policy_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_jito_rpc_policy_reason: ${window_jito_rpc_policy_reasons[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_jito_rpc_policy_reason_code: ${window_jito_rpc_policy_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_verdict: ${window_fastlane_feature_flag_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_reason: ${window_fastlane_feature_flag_reasons[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_reason_code: ${window_fastlane_feature_flag_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifacts_written: ${window_go_nogo_artifacts_written[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifact_manifest: ${window_go_nogo_artifact_manifests[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_calibration_sha256: ${window_go_nogo_calibration_sha256[$idx]}"

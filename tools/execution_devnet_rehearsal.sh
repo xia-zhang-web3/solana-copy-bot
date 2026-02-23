@@ -303,10 +303,12 @@ dynamic_cu_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_s
 go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$(extract_field "go_nogo_require_jito_rpc_policy" "$go_nogo_output")")"
 jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$go_nogo_output")")"
 jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$go_nogo_output")")"
+jito_rpc_policy_reason_code="$(trim_string "$(extract_field "jito_rpc_policy_reason_code" "$go_nogo_output")")"
 go_nogo_require_fastlane_disabled="$(normalize_bool_token "$(extract_field "go_nogo_require_fastlane_disabled" "$go_nogo_output")")"
 submit_fastlane_enabled="$(normalize_bool_token "$(extract_field "submit_fastlane_enabled" "$go_nogo_output")")"
 fastlane_feature_flag_verdict="$(normalize_gate_verdict "$(extract_field "fastlane_feature_flag_verdict" "$go_nogo_output")")"
 fastlane_feature_flag_reason="$(trim_string "$(extract_field "fastlane_feature_flag_reason" "$go_nogo_output")")"
+fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$go_nogo_output")")"
 primary_route="$(trim_string "$(extract_field "primary_route" "$go_nogo_output")")"
 fallback_route="$(trim_string "$(extract_field "fallback_route" "$go_nogo_output")")"
 primary_attempted_orders="$(trim_string "$(extract_field "primary_attempted_orders" "$go_nogo_output")")"
@@ -375,8 +377,14 @@ fi
 if [[ -z "$jito_rpc_policy_reason" ]]; then
   jito_rpc_policy_reason="n/a"
 fi
+if [[ -z "$jito_rpc_policy_reason_code" ]]; then
+  jito_rpc_policy_reason_code="n/a"
+fi
 if [[ -z "$fastlane_feature_flag_reason" ]]; then
   fastlane_feature_flag_reason="n/a"
+fi
+if [[ -z "$fastlane_feature_flag_reason_code" ]]; then
+  fastlane_feature_flag_reason_code="n/a"
 fi
 if [[ -z "$windowed_signoff_reason" ]]; then
   windowed_signoff_reason="n/a"
@@ -420,48 +428,63 @@ fi
 
 devnet_rehearsal_verdict="GO"
 devnet_rehearsal_reason="all Stage C.5 gates passed"
+devnet_rehearsal_reason_code="all_gates_passed"
 if ((${#config_errors[@]} > 0)); then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="${config_errors[0]}"
+  devnet_rehearsal_reason_code="config_error"
 elif [[ "$preflight_verdict" != "PASS" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="adapter preflight not PASS (${preflight_verdict}): ${preflight_reason:-n/a}"
+  devnet_rehearsal_reason_code="preflight_not_pass"
 elif [[ "$overall_go_nogo_verdict" == "UNKNOWN" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="go/no-go verdict unknown: ${overall_go_nogo_reason:-n/a}"
+  devnet_rehearsal_reason_code="go_nogo_unknown"
 elif [[ "$overall_go_nogo_verdict" == "NO_GO" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="${overall_go_nogo_reason:-go/no-go returned NO_GO}"
+  devnet_rehearsal_reason_code="go_nogo_no_go"
 elif [[ "$overall_go_nogo_verdict" == "HOLD" ]]; then
   devnet_rehearsal_verdict="HOLD"
   devnet_rehearsal_reason="${overall_go_nogo_reason:-go/no-go returned HOLD}"
+  devnet_rehearsal_reason_code="go_nogo_hold"
 elif [[ "$windowed_signoff_required_norm" == "true" && "$windowed_signoff_verdict" == "UNKNOWN" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="windowed signoff verdict unknown: ${windowed_signoff_reason:-n/a}"
+  devnet_rehearsal_reason_code="windowed_signoff_unknown"
 elif [[ "$windowed_signoff_required_norm" == "true" && "$windowed_signoff_verdict" == "NO_GO" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="windowed signoff returned NO_GO: ${windowed_signoff_reason:-n/a}"
+  devnet_rehearsal_reason_code="windowed_signoff_no_go"
 elif [[ "$windowed_signoff_required_norm" == "true" && "$windowed_signoff_verdict" == "HOLD" ]]; then
   devnet_rehearsal_verdict="HOLD"
   devnet_rehearsal_reason="windowed signoff returned HOLD: ${windowed_signoff_reason:-n/a}"
+  devnet_rehearsal_reason_code="windowed_signoff_hold"
 elif [[ "$route_fee_signoff_required_norm" == "true" && "$route_fee_signoff_verdict" == "UNKNOWN" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="route/fee signoff verdict unknown: ${route_fee_signoff_reason:-n/a}"
+  devnet_rehearsal_reason_code="route_fee_signoff_unknown"
 elif [[ "$route_fee_signoff_required_norm" == "true" && "$route_fee_signoff_verdict" == "NO_GO" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="route/fee signoff returned NO_GO: ${route_fee_signoff_reason:-n/a}"
+  devnet_rehearsal_reason_code="route_fee_signoff_no_go"
 elif [[ "$route_fee_signoff_required_norm" == "true" && "$route_fee_signoff_verdict" == "HOLD" ]]; then
   devnet_rehearsal_verdict="HOLD"
   devnet_rehearsal_reason="route/fee signoff returned HOLD: ${route_fee_signoff_reason:-n/a}"
+  devnet_rehearsal_reason_code="route_fee_signoff_hold"
 elif [[ "$tests_run" != "true" && "$test_mode_norm" != "true" ]]; then
   devnet_rehearsal_verdict="HOLD"
   devnet_rehearsal_reason="targeted regression tests were skipped (RUN_TESTS=false)"
+  devnet_rehearsal_reason_code="tests_skipped"
 elif ((tests_failed > 0)); then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="targeted regression tests failed: ${tests_failed}/${tests_total}"
+  devnet_rehearsal_reason_code="tests_failed"
 elif [[ "$tests_run" != "true" && "$test_mode_norm" == "true" ]]; then
   devnet_rehearsal_verdict="GO"
   devnet_rehearsal_reason="test mode override active (RUN_TESTS=false, DEVNET_REHEARSAL_TEST_MODE=true)"
+  devnet_rehearsal_reason_code="test_mode_override"
 fi
 
 artifacts_written="false"
@@ -497,10 +520,12 @@ dynamic_cu_hint_source_reason: ${dynamic_cu_hint_source_reason:-n/a}
 go_nogo_require_jito_rpc_policy: ${go_nogo_require_jito_rpc_policy:-false}
 jito_rpc_policy_verdict: ${jito_rpc_policy_verdict:-unknown}
 jito_rpc_policy_reason: ${jito_rpc_policy_reason:-n/a}
+jito_rpc_policy_reason_code: ${jito_rpc_policy_reason_code:-n/a}
 go_nogo_require_fastlane_disabled: ${go_nogo_require_fastlane_disabled:-false}
 submit_fastlane_enabled: ${submit_fastlane_enabled:-false}
 fastlane_feature_flag_verdict: ${fastlane_feature_flag_verdict:-unknown}
 fastlane_feature_flag_reason: ${fastlane_feature_flag_reason:-n/a}
+fastlane_feature_flag_reason_code: ${fastlane_feature_flag_reason_code:-n/a}
 primary_route: ${primary_route:-n/a}
 fallback_route: ${fallback_route:-n/a}
 primary_attempted_orders: ${primary_attempted_orders:-n/a}
@@ -550,6 +575,7 @@ tests_total: $tests_total
 tests_failed: $tests_failed
 devnet_rehearsal_verdict: $devnet_rehearsal_verdict
 devnet_rehearsal_reason: $devnet_rehearsal_reason
+devnet_rehearsal_reason_code: $devnet_rehearsal_reason_code
 artifacts_written: $artifacts_written
 EOF
 )"
