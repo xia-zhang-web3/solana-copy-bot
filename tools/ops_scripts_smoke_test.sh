@@ -988,7 +988,7 @@ run_go_nogo_unknown_precedence_case() {
   assert_contains "$output" "fee_decomposition_verdict: UNKNOWN"
   assert_contains "$output" "route_profile_verdict: SKIP"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$output" "overall_go_nogo_reason: unable to classify readiness gate verdicts from tool output"
+  assert_contains "$output" "overall_go_nogo_reason_code: readiness_gate_unknown"
   echo "[ok] go-no-go UNKNOWN precedence"
 }
 
@@ -1034,7 +1034,7 @@ run_go_nogo_jito_rpc_policy_gate_case() {
   assert_contains "$output" "jito_rpc_policy_verdict: WARN"
   assert_contains "$output" "jito_rpc_policy_reason:"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$output" "overall_go_nogo_reason: strict jito->rpc policy gate not PASS:"
+  assert_contains "$output" "overall_go_nogo_reason_code: jito_policy_not_pass"
   echo "[ok] go-no-go strict jito/rpc policy gate"
 }
 
@@ -1059,7 +1059,7 @@ run_go_nogo_fastlane_disabled_gate_case() {
   assert_contains "$blocked_output" "fastlane_feature_flag_verdict: WARN"
   assert_contains "$blocked_output" "fastlane_feature_flag_reason_code: fastlane_enabled"
   assert_contains "$blocked_output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$blocked_output" "overall_go_nogo_reason: strict fastlane-disabled gate not PASS:"
+  assert_contains "$blocked_output" "overall_go_nogo_reason_code: fastlane_policy_not_pass"
 
   local pass_output
   pass_output="$(
@@ -1464,9 +1464,9 @@ run_execution_route_fee_signoff_case() {
   assert_contains "$strict_nogo_output" "go_nogo_require_jito_rpc_policy: true"
   assert_contains "$strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
   assert_contains "$strict_nogo_output" "window_24h_overall_go_nogo_verdict: NO_GO"
-  assert_contains "$strict_nogo_output" "window_24h_overall_go_nogo_reason: strict jito->rpc policy gate not PASS:"
+  assert_contains "$strict_nogo_output" "window_24h_overall_go_nogo_reason_code: jito_policy_not_pass"
   assert_contains "$strict_nogo_output" "signoff_verdict: NO_GO"
-  assert_contains "$strict_nogo_output" "signoff_reason: window 24h nested go/no-go verdict is NO_GO: strict jito->rpc policy gate not PASS:"
+  assert_contains "$strict_nogo_output" "signoff_reason_code: window_hard_block"
   echo "[ok] execution route/fee signoff helper"
 }
 
@@ -1481,7 +1481,7 @@ run_go_nogo_preflight_fail_case() {
   )"
   assert_contains "$output" "preflight_verdict: FAIL"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$output" "overall_go_nogo_reason: adapter preflight failed:"
+  assert_contains "$output" "overall_go_nogo_reason_code: preflight_fail"
   echo "[ok] go-no-go preflight fail gate"
 }
 

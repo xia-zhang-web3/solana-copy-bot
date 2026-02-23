@@ -71,6 +71,7 @@ fi
 declare -a window_ids=()
 declare -a window_go_nogo_exit_codes=()
 declare -a window_overall_verdicts=()
+declare -a window_overall_reason_codes=()
 declare -a window_fee_verdicts=()
 declare -a window_route_verdicts=()
 declare -a window_primary_routes=()
@@ -157,6 +158,7 @@ if ((${#input_errors[@]} == 0)); then
     fi
 
     overall_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
+    overall_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
     fee_verdict="$(normalize_gate_verdict "$(extract_field "fee_decomposition_verdict" "$go_nogo_output")")"
     route_verdict="$(normalize_gate_verdict "$(extract_field "route_profile_verdict" "$go_nogo_output")")"
     primary_route="$(trim_string "$(extract_field "primary_route" "$go_nogo_output")")"
@@ -214,6 +216,7 @@ if ((${#input_errors[@]} == 0)); then
     window_ids+=("$window_hours")
     window_go_nogo_exit_codes+=("$go_nogo_exit_code")
     window_overall_verdicts+=("$overall_verdict")
+    window_overall_reason_codes+=("${overall_reason_code:-n/a}")
     window_fee_verdicts+=("$fee_verdict")
     window_route_verdicts+=("$route_verdict")
     window_primary_routes+=("$primary_route")
@@ -331,26 +334,34 @@ fi
 
 signoff_verdict="NO_GO"
 signoff_reason="unrecognized signoff gate state"
+signoff_reason_code="unrecognized_state"
 if ((${#input_errors[@]} > 0)); then
   signoff_verdict="NO_GO"
   signoff_reason="${input_errors[0]}"
+  signoff_reason_code="input_error"
 elif ((window_unknown_count > 0)); then
   signoff_verdict="NO_GO"
   signoff_reason="${first_unknown_reason:-unknown window verdict state}"
+  signoff_reason_code="window_unknown"
 elif ((window_hard_block_count > 0)); then
   signoff_verdict="NO_GO"
   signoff_reason="${first_non_pass_reason:-at least one window is blocked by overall go/no-go state}"
+  signoff_reason_code="window_hard_block"
 elif ((window_pass_count == window_total)) && [[ "$primary_route_stable" == "true" ]] && [[ "$fallback_route_stable" == "true" ]]; then
   signoff_verdict="GO"
   signoff_reason="all windows GO with PASS fee/route gates and stable primary/fallback routes"
+  signoff_reason_code="all_windows_pass_stable_routes"
 else
   signoff_verdict="HOLD"
   if [[ "$primary_route_stable" != "true" ]]; then
     signoff_reason="primary route is not stable across windows"
+    signoff_reason_code="primary_route_unstable"
   elif [[ "$fallback_route_stable" != "true" ]]; then
     signoff_reason="fallback route is not stable across windows"
+    signoff_reason_code="fallback_route_unstable"
   else
     signoff_reason="${first_non_pass_reason:-at least one window did not pass fee/route readiness gates}"
+    signoff_reason_code="window_not_pass"
   fi
 fi
 
@@ -382,6 +393,7 @@ for idx in "${!window_ids[@]}"; do
   window_id="${window_ids[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_exit_code: ${window_go_nogo_exit_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_overall_go_nogo_verdict: ${window_overall_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_overall_go_nogo_reason_code: ${window_overall_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fee_decomposition_verdict: ${window_fee_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_route_profile_verdict: ${window_route_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_primary_route: ${window_primary_routes[$idx]}"
@@ -414,6 +426,7 @@ done
 summary_output+=$'\n'
 summary_output+=$'\n'"signoff_verdict: $signoff_verdict"
 summary_output+=$'\n'"signoff_reason: $signoff_reason"
+summary_output+=$'\n'"signoff_reason_code: $signoff_reason_code"
 
 echo "$summary_output"
 if ((${#input_errors[@]} > 0)); then

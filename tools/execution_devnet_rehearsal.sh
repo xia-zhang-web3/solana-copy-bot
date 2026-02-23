@@ -291,6 +291,7 @@ fi
 
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
 overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
+overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
 dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_policy_verdict" "$go_nogo_output")")"
 dynamic_cu_policy_reason="$(trim_string "$(extract_field "dynamic_cu_policy_reason" "$go_nogo_output")")"
 dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$go_nogo_output")")"
@@ -508,6 +509,7 @@ preflight_verdict: $preflight_verdict
 preflight_reason: ${preflight_reason:-n/a}
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: ${overall_go_nogo_reason:-n/a}
+overall_go_nogo_reason_code: ${overall_go_nogo_reason_code:-n/a}
 dynamic_cu_policy_verdict: $dynamic_cu_policy_verdict
 dynamic_cu_policy_reason: $dynamic_cu_policy_reason
 dynamic_tip_policy_verdict: $dynamic_tip_policy_verdict

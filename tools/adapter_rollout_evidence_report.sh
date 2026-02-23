@@ -112,6 +112,7 @@ rehearsal_verdict="UNKNOWN"
 rehearsal_reason="execution devnet rehearsal helper not executed"
 preflight_verdict=""
 go_nogo_verdict=""
+go_nogo_reason_code=""
 go_nogo_require_jito_rpc_policy=""
 jito_rpc_policy_verdict=""
 jito_rpc_policy_reason=""
@@ -221,6 +222,7 @@ else
   rehearsal_reason_code="$(trim_string "$(extract_field "devnet_rehearsal_reason_code" "$rehearsal_output")")"
   preflight_verdict="$(trim_string "$(extract_field "preflight_verdict" "$rehearsal_output")")"
   go_nogo_verdict="$(trim_string "$(extract_field "overall_go_nogo_verdict" "$rehearsal_output")")"
+  go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$rehearsal_output")")"
   go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$(extract_field "go_nogo_require_jito_rpc_policy" "$rehearsal_output")")"
   jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$rehearsal_output")")"
   jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$rehearsal_output")")"
@@ -455,6 +457,7 @@ devnet_rehearsal_reason_code: ${rehearsal_reason_code:-n/a}
 devnet_rehearsal_exit_code: $rehearsal_exit_code
 preflight_verdict: ${preflight_verdict:-unknown}
 overall_go_nogo_verdict: ${go_nogo_verdict:-unknown}
+overall_go_nogo_reason_code: ${go_nogo_reason_code:-n/a}
 go_nogo_require_jito_rpc_policy: ${go_nogo_require_jito_rpc_policy:-false}
 jito_rpc_policy_verdict: ${jito_rpc_policy_verdict:-unknown}
 jito_rpc_policy_reason: ${jito_rpc_policy_reason:-n/a}

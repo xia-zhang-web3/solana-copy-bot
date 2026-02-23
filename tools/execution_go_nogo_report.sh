@@ -380,48 +380,63 @@ fi
 
 overall_go_nogo_verdict="HOLD"
 overall_go_nogo_reason="readiness gates are not in final pass state yet"
+overall_go_nogo_reason_code="readiness_not_final"
 if [[ "$preflight_verdict" == "FAIL" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="adapter preflight failed: ${preflight_reason:-unknown preflight failure}"
+  overall_go_nogo_reason_code="preflight_fail"
 elif [[ "$preflight_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify adapter preflight verdict; fail-closed"
+  overall_go_nogo_reason_code="preflight_unknown"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
+  overall_go_nogo_reason_code="jito_policy_unknown"
 elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_flag_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
+  overall_go_nogo_reason_code="fastlane_policy_unknown"
 elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
+  overall_go_nogo_reason_code="all_required_gates_pass"
 elif [[ "$fee_decomposition_verdict" == "UNKNOWN" || "$route_profile_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify readiness gate verdicts from tool output"
+  overall_go_nogo_reason_code="readiness_gate_unknown"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "WARN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict jito->rpc policy gate not PASS: ${jito_rpc_policy_reason:-n/a}"
+  overall_go_nogo_reason_code="jito_policy_not_pass"
 elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_flag_verdict" == "WARN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict fastlane-disabled gate not PASS: ${fastlane_feature_flag_reason:-n/a}"
+  overall_go_nogo_reason_code="fastlane_policy_not_pass"
 elif [[ "$fee_decomposition_verdict" == "WARN" || "$route_profile_verdict" == "WARN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="at least one readiness gate is WARN; rollout escalation required before live enable"
+  overall_go_nogo_reason_code="readiness_gate_warn"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && ( "$jito_rpc_policy_verdict" == "NO_DATA" || "$jito_rpc_policy_verdict" == "SKIP" ) ]]; then
   overall_go_nogo_verdict="HOLD"
   overall_go_nogo_reason="strict jito->rpc policy gate lacks conclusive evidence: ${jito_rpc_policy_reason:-n/a}"
+  overall_go_nogo_reason_code="jito_policy_inconclusive"
 elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_flag_verdict" == "SKIP" ]]; then
   overall_go_nogo_verdict="HOLD"
   overall_go_nogo_reason="strict fastlane-disabled gate lacks conclusive evidence: ${fastlane_feature_flag_reason:-n/a}"
+  overall_go_nogo_reason_code="fastlane_policy_inconclusive"
 elif [[ "$fee_decomposition_verdict" == "NO_DATA" || "$route_profile_verdict" == "NO_DATA" ]]; then
   overall_go_nogo_verdict="HOLD"
   overall_go_nogo_reason="insufficient execution evidence in selected time window"
+  overall_go_nogo_reason_code="readiness_gate_no_data"
 elif [[ "$fee_decomposition_verdict" == "SKIP" || "$route_profile_verdict" == "SKIP" ]]; then
   overall_go_nogo_verdict="HOLD"
   overall_go_nogo_reason="execution mode is not adapter_submit_confirm; live readiness gates skipped"
+  overall_go_nogo_reason_code="readiness_gate_skip"
 else
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unrecognized go/no-go gate state; fail-closed"
+  overall_go_nogo_reason_code="unrecognized_state"
 fi
 
 artifacts_written="false"
@@ -511,6 +526,7 @@ fastlane_feature_flag_reason_code: $fastlane_feature_flag_reason_code
 
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: $overall_go_nogo_reason
+overall_go_nogo_reason_code: $overall_go_nogo_reason_code
 artifacts_written: $artifacts_written
 EOF
 )"

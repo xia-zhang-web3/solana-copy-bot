@@ -96,6 +96,7 @@ declare -a window_go_nogo_exit_codes=()
 declare -a window_calibration_exit_codes=()
 declare -a window_overall_go_nogo_verdicts=()
 declare -a window_overall_go_nogo_reasons=()
+declare -a window_overall_go_nogo_reason_codes=()
 declare -a window_route_profile_verdicts=()
 declare -a window_route_profile_reasons=()
 declare -a window_fee_decomposition_verdicts=()
@@ -181,6 +182,7 @@ if ((${#input_errors[@]} == 0)); then
 
     overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
     overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
+    overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
     route_profile_verdict="$(normalize_gate_verdict "$(extract_field "route_profile_verdict" "$go_nogo_output")")"
     route_profile_reason="$(trim_string "$(extract_field "route_profile_reason" "$go_nogo_output")")"
     fee_decomposition_verdict="$(normalize_gate_verdict "$(extract_field "fee_decomposition_verdict" "$go_nogo_output")")"
@@ -212,6 +214,9 @@ if ((${#input_errors[@]} == 0)); then
     if [[ -z "$overall_go_nogo_reason" ]]; then
       overall_go_nogo_reason="n/a"
     fi
+    if [[ -z "$overall_go_nogo_reason_code" ]]; then
+      overall_go_nogo_reason_code="n/a"
+    fi
     if [[ -z "$fee_decomposition_reason" ]]; then
       fee_decomposition_reason="n/a"
     fi
@@ -240,6 +245,7 @@ if ((${#input_errors[@]} == 0)); then
     window_calibration_exit_codes+=("$calibration_exit_code")
     window_overall_go_nogo_verdicts+=("$overall_go_nogo_verdict")
     window_overall_go_nogo_reasons+=("$overall_go_nogo_reason")
+    window_overall_go_nogo_reason_codes+=("$overall_go_nogo_reason_code")
     window_route_profile_verdicts+=("$route_profile_verdict")
     window_route_profile_reasons+=("$route_profile_reason")
     window_fee_decomposition_verdicts+=("$fee_decomposition_verdict")
@@ -345,32 +351,41 @@ fi
 
 signoff_verdict="NO_GO"
 signoff_reason="unrecognized route/fee signoff state"
+signoff_reason_code="unrecognized_state"
 
 if ((${#input_errors[@]} > 0)); then
   signoff_verdict="NO_GO"
   signoff_reason="${input_errors[0]}"
+  signoff_reason_code="input_error"
 elif (( unknown_count > 0 )); then
   signoff_verdict="NO_GO"
   signoff_reason="${first_unknown_reason:-unknown verdict state detected}"
+  signoff_reason_code="window_unknown"
 elif (( go_nogo_no_go_count > 0 )); then
   signoff_verdict="NO_GO"
   signoff_reason="${first_hard_block_reason:-at least one window returned NO_GO}"
+  signoff_reason_code="window_hard_block"
 elif (( window_total > 0 )) && (( go_nogo_go_count == window_total )) && (( route_profile_pass_count == window_total )) && (( fee_decomposition_pass_count == window_total )) && [[ "$primary_route_stable" == "true" && "$fallback_route_stable" == "true" ]]; then
   signoff_verdict="GO"
   signoff_reason="all windows GO with PASS route-profile/fee-decomposition verdicts and stable primary/fallback routes"
+  signoff_reason_code="all_windows_pass_stable_routes"
 elif [[ "$primary_route_stable" != "true" || "$fallback_route_stable" != "true" ]]; then
   signoff_verdict="HOLD"
   if [[ -n "$first_non_pass_reason" ]]; then
     signoff_reason="primary/fallback route changed across windows and at least one window is not PASS: ${first_non_pass_reason}"
+    signoff_reason_code="routes_unstable_window_not_pass"
   else
     signoff_reason="primary/fallback route changed across windows before full route/fee signoff closure"
+    signoff_reason_code="routes_unstable"
   fi
 elif (( go_nogo_hold_count > 0 )); then
   signoff_verdict="HOLD"
   signoff_reason="${first_go_nogo_hold_reason:-at least one window nested go/no-go verdict is HOLD}"
+  signoff_reason_code="nested_go_nogo_hold"
 else
   signoff_verdict="HOLD"
   signoff_reason="${first_non_pass_reason:-at least one window is not yet PASS for route-profile or fee-decomposition signoff}"
+  signoff_reason_code="window_not_pass"
 fi
 
 summary_output="=== Execution Route/Fee Signoff Summary ===
@@ -393,7 +408,8 @@ fallback_route_stable: $fallback_route_stable
 stable_fallback_route: $stable_fallback_route
 unknown_count: $unknown_count
 signoff_verdict: $signoff_verdict
-signoff_reason: $signoff_reason"
+signoff_reason: $signoff_reason
+signoff_reason_code: $signoff_reason_code"
 
 for idx in "${!window_ids[@]}"; do
   window_id="${window_ids[$idx]}"
@@ -401,6 +417,7 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_calibration_exit_code: ${window_calibration_exit_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_overall_go_nogo_verdict: ${window_overall_go_nogo_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_overall_go_nogo_reason: ${window_overall_go_nogo_reasons[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_overall_go_nogo_reason_code: ${window_overall_go_nogo_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_route_profile_verdict: ${window_route_profile_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_route_profile_reason: ${window_route_profile_reasons[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fee_decomposition_verdict: ${window_fee_decomposition_verdicts[$idx]}"
