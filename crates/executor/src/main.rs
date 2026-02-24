@@ -437,7 +437,7 @@ impl ExecutorConfig {
             return Err(anyhow!(
                 "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC must be >= {} (derived from request_timeout_ms={}, route fallback topology, send_rpc topology, and submit signature verify settings)",
                 min_claim_ttl_sec,
-                request_timeout_ms
+                request_timeout_ms.max(500)
             ));
         }
 
@@ -470,6 +470,7 @@ fn min_claim_ttl_sec_for_submit_path(
     route_backends: &HashMap<String, RouteBackend>,
     submit_signature_verify: Option<&SubmitSignatureVerifyConfig>,
 ) -> u64 {
+    let effective_request_timeout_ms = request_timeout_ms.max(500);
     let submit_hops = route_backends
         .values()
         .map(|backend| backend.endpoint_chain(UpstreamAction::Submit).len() as u64)
@@ -500,7 +501,7 @@ fn min_claim_ttl_sec_for_submit_path(
         .saturating_add(send_rpc_hops)
         .saturating_add(verify_hops)
         .max(1);
-    let budget_ms = request_timeout_ms
+    let budget_ms = effective_request_timeout_ms
         .saturating_mul(total_hops)
         .saturating_add(verify_wait_ms)
         .saturating_add(CLAIM_TTL_SAFETY_PADDING_MS);
@@ -2271,6 +2272,28 @@ mod tests {
         };
         let ttl = min_claim_ttl_sec_for_submit_path(2_000, &route_backends, Some(&verify));
         assert_eq!(ttl, 22);
+    }
+
+    #[test]
+    fn min_claim_ttl_sec_for_submit_path_applies_500ms_runtime_floor() {
+        let mut route_backends = HashMap::new();
+        route_backends.insert(
+            "rpc".to_string(),
+            RouteBackend {
+                submit_url: "https://submit.primary".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "https://simulate.primary".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let ttl = min_claim_ttl_sec_for_submit_path(100, &route_backends, None);
+        assert_eq!(ttl, 2);
     }
 
     #[test]
