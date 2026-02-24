@@ -30,6 +30,7 @@ mod idempotency;
 mod route_backend;
 mod route_policy;
 mod send_rpc;
+mod simulate_response;
 mod submit_payload;
 mod submit_response;
 mod submit_transport;
@@ -50,6 +51,10 @@ use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_policy::apply_submit_tip_policy;
 use crate::route_policy::requires_submit_fastlane_enabled;
 use crate::send_rpc::send_signed_transaction_via_rpc;
+use crate::simulate_response::{
+    build_simulate_success_payload, resolve_simulate_response_detail,
+    validate_simulate_response_route_and_contract, SimulateResponseValidationError,
+};
 use crate::submit_response::{
     resolve_submit_response_submitted_at, validate_submit_response_request_identity,
     validate_submit_response_route_and_contract, SubmitResponseValidationError,
@@ -1105,57 +1110,21 @@ async fn handle_simulate(
         UpstreamOutcome::Success => {}
     }
 
-    // route echo can come from upstream; mismatch remains fail-closed.
-    if let Some(response_route) = backend_response
-        .get("route")
-        .and_then(Value::as_str)
-        .map(normalize_route)
-    {
-        if response_route != route {
-            return Err(Reject::terminal(
-                "simulation_route_mismatch",
-                format!(
-                    "upstream route={} does not match requested route={}",
-                    response_route, route
-                ),
-            ));
-        }
-    }
+    validate_simulate_response_route_and_contract(
+        &backend_response,
+        route.as_str(),
+        state.config.contract_version.as_str(),
+    )
+    .map_err(map_simulate_response_validation_error_to_reject)?;
 
-    if let Some(version) = backend_response
-        .get("contract_version")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if version != state.config.contract_version {
-            return Err(Reject::terminal(
-                "simulation_contract_version_mismatch",
-                format!(
-                    "upstream contract_version={} does not match expected={}",
-                    version, state.config.contract_version
-                ),
-            ));
-        }
-    }
+    let detail = resolve_simulate_response_detail(&backend_response, "adapter_simulation_ok");
 
-    let detail = backend_response
-        .get("detail")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("adapter_simulation_ok")
-        .to_string();
-
-    Ok(json!({
-        "status": "ok",
-        "ok": true,
-        "accepted": true,
-        "route": route,
-        "contract_version": state.config.contract_version,
-        "request_id": request.request_id,
-        "detail": detail
-    }))
+    Ok(build_simulate_success_payload(
+        route.as_str(),
+        state.config.contract_version.as_str(),
+        request.request_id.as_str(),
+        detail.as_str(),
+    ))
 }
 
 async fn handle_submit(
@@ -1640,6 +1609,33 @@ fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
         FeeHintError::FieldExceedsI64 { field, value } => Reject::terminal(
             "submit_adapter_invalid_response",
             format!("{}={} exceeds i64::MAX", field, value),
+        ),
+    }
+}
+
+fn map_simulate_response_validation_error_to_reject(
+    error: SimulateResponseValidationError,
+) -> Reject {
+    match error {
+        SimulateResponseValidationError::RouteMismatch {
+            response_route,
+            expected_route,
+        } => Reject::terminal(
+            "simulation_route_mismatch",
+            format!(
+                "upstream route={} does not match requested route={}",
+                response_route, expected_route
+            ),
+        ),
+        SimulateResponseValidationError::ContractVersionMismatch {
+            response_contract_version,
+            expected_contract_version,
+        } => Reject::terminal(
+            "simulation_contract_version_mismatch",
+            format!(
+                "upstream contract_version={} does not match expected={}",
+                response_contract_version, expected_contract_version
+            ),
         ),
     }
 }
@@ -2722,6 +2718,36 @@ mod tests {
             .await
             .expect_err("empty signal_id must fail");
         assert_eq!(reject.code, "invalid_signal_id");
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_rejects_upstream_route_mismatch() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"route":"jito"}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-route-mismatch-1".to_string(),
+            signal_id: "signal-route-mismatch-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = br#"{"action":"simulate","contract_version":"v1","request_id":"request-route-mismatch-1","signal_id":"signal-route-mismatch-1","side":"buy","token":"11111111111111111111111111111111","notional_sol":1.0,"signal_ts":"2026-02-24T12:00:00Z","route":"rpc","dry_run":true}"#;
+        let reject = handle_simulate(&state, &request, raw_body.as_slice())
+            .await
+            .expect_err("upstream route mismatch must reject");
+        assert_eq!(reject.code, "simulation_route_mismatch");
+        let _ = upstream_handle.join();
     }
 
     #[tokio::test]

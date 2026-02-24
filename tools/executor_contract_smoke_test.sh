@@ -60,6 +60,7 @@ contract_guard_tests=(
   "resolve_signer_source_config_rejects_keypair_pubkey_mismatch"
   "handle_simulate_rejects_empty_request_id"
   "handle_simulate_rejects_empty_signal_id"
+  "handle_simulate_rejects_upstream_route_mismatch"
   "validate_fastlane_route_policy_enforces_feature_gate"
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
   "parse_route_allowlist_rejects_unknown_route"
@@ -88,6 +89,7 @@ contract_guard_tests=(
   "submit_transport_extract_rejects_missing_artifacts"
   "submit_response_resolve_submitted_at_rejects_invalid_rfc3339"
   "submit_payload_includes_tip_policy_when_present"
+  "simulate_response_validation_rejects_route_mismatch"
   "upstream_outcome_rejects_unknown_status"
 )
 
