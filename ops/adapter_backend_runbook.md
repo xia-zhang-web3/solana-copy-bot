@@ -167,7 +167,7 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
    2. expected `rotation_readiness_verdict: PASS` (or `WARN` only for non-blocking permission hardening),
    3. attach emitted `artifact_report` file to ops evidence package.
 10. Combined rollout evidence helper:
-   1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=configs/paper.toml OUTPUT_DIR=state/adapter-rollout ./tools/adapter_rollout_evidence_report.sh 24 60`
+   1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=/etc/solana-copy-bot/live.server.toml OUTPUT_DIR=state/adapter-rollout ./tools/adapter_rollout_evidence_report.sh 24 60`
    2. helper runs secret rotation readiness + Stage C.5 devnet rehearsal and emits a single `adapter_rollout_verdict` (`GO`/`HOLD`/`NO_GO`),
    3. optional strictness flags can be passed through to rehearsal/windowed signoff:
       1. `WINDOWED_SIGNOFF_REQUIRED=true`

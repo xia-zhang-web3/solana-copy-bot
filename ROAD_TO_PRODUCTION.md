@@ -29,9 +29,9 @@ Owner: copybot runtime team
 | --- | --- | --- | --- |
 | Yellowstone primary runtime | Done | runtime-ops | 2026-02-19 |
 | Watchdog script/policy in repo | Done | runtime-ops | 2026-02-18 |
-| Watchdog systemd deploy on server | In progress | runtime-ops | 2026-02-20 |
-| Post-cutover 1h/6h/24h evidence | In progress | runtime-ops | 2026-02-20 |
-| 7-day observation closure | Pending | runtime-ops | 2026-02-26 |
+| Watchdog systemd deploy on server | Done | runtime-ops | 2026-02-24 |
+| Post-cutover 1h/6h/24h evidence | Done | runtime-ops | 2026-02-24 |
+| 7-day observation closure | Done | runtime-ops | 2026-02-24 |
 | Execution runtime (paper lifecycle) | Done | execution-dev | 2026-02-19 |
 | Execution runtime (live submit path) | In progress | execution-dev | 2026-03-09 |
 | Execution safety hardening (audit batch #1) | Done | execution-dev | 2026-02-19 |
@@ -40,9 +40,9 @@ Owner: copybot runtime team
 
 ### 2.1 Сквозной phase tracker (A→Live)
 
-| Фаза | Цель | Статус на 2026-02-19 | Главный блокер выхода |
+| Фаза | Цель | Статус на 2026-02-24 | Главный блокер выхода |
 | --- | --- | --- | --- |
-| A | Закрыть Yellowstone migration observation | In progress | systemd watchdog deploy + 1h/6h/24h evidence + 7-day window |
+| A | Закрыть Yellowstone migration observation | Done | закрыт; evidence архивирован (`ops/yellowstone_observation_closure_2026-02-24.md`) |
 | B | Закрыть security/ops baseline до первого submit | In progress | key policy + alert delivery + rollback drill |
 | C | Поднять execution core MVP | In progress | закрыть live submit-path + real tx policy (CU-limit/CU-price + route slippage bounds) |
 | C.5 | Пройти devnet dress rehearsal | In progress | собрать Stage C.5 evidence через `tools/execution_devnet_rehearsal.sh` + устранить P0/P1 по отчету |
@@ -52,11 +52,12 @@ Owner: copybot runtime team
 | G | Стабилизировать controlled live (first 7-14 days) | Pending | нулевые P0 и подтвержденная reconcile-дисциплина |
 | H | Перейти в standard live / steady-state ops | Pending | signed go-live + runbook completeness + ownership handoff |
 
-Фактический прогресс на 2026-02-19:
+Фактический прогресс на 2026-02-24:
 
 1. Закрыты safety-gates `R2P-06` и `R2P-16` (runtime BUY-gate).
 2. Execution baseline поднят: `R2P-08` и `R2P-09` закрыты; `R2P-10`/`R2P-11` в прогрессе (paper lifecycle + recovery + risk gates готовы).
 3. До real-money submit остаются code-only блокеры: live signed-tx backend за адаптерным контрактом + калибровка route-профилей под реальные market regimes.
+4. Stage A закрыт: watchdog server deploy + post-cutover evidence + observation closure архивированы (`ops/yellowstone_observation_closure_2026-02-24.md`).
 
 ## 3) Критичная правда по сроку "завтра торговать"
 
@@ -395,12 +396,14 @@ Exit criteria Stage H:
 ## 6) Детальный backlog "что за чем внедряем"
 
 `R2P-01` — Watchdog deployment on server  
+Status: ✅ Done (2026-02-24)  
 Depends on: none  
-Artifacts: `systemctl status`, timer logs, failover drill logs
+Artifacts: `systemctl status`, timer logs, failover drill logs (`ops/yellowstone_observation_closure_2026-02-24.md`)
 
 `R2P-02` — Migration evidence pack  
+Status: ✅ Done (2026-02-24)  
 Depends on: R2P-01  
-Artifacts: 1h/6h/24h reports, 7-day summary, replay waiver note
+Artifacts: 1h/6h/24h reports + observation summary + replay waiver note (`ops/yellowstone_observation_closure_2026-02-24.md`)
 
 `R2P-03` — Key management baseline  
 Depends on: none  

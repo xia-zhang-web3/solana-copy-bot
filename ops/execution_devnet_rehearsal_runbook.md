@@ -19,7 +19,7 @@ This runbook executes the Stage C.5 rehearsal gate from `ROAD_TO_PRODUCTION.md` 
 ```bash
 cd /var/www/solana-copy-bot
 OUTPUT_DIR="state/devnet_rehearsal_$(date -u +%Y%m%dT%H%M%SZ)" \
-CONFIG_PATH="configs/paper.toml" \
+CONFIG_PATH="/etc/solana-copy-bot/live.server.toml" \
 SERVICE="solana-copy-bot" \
 ./tools/execution_devnet_rehearsal.sh 24 60
 ```
@@ -111,7 +111,7 @@ When Stage C.5 evidence must be attached together with adapter secret-rotation r
 
 ```bash
 ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env \
-CONFIG_PATH=configs/paper.toml \
+CONFIG_PATH=/etc/solana-copy-bot/live.server.toml \
 OUTPUT_DIR="state/adapter-rollout-$(date -u +%Y%m%dT%H%M%SZ)" \
 ./tools/adapter_rollout_evidence_report.sh 24 60
 ```
