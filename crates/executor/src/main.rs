@@ -2704,6 +2704,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_fallback_without_primary_url() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([36u8; 64]);
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = None;
+            backend.send_rpc_fallback_url =
+                Some("http://127.0.0.1:1/send-rpc-fallback".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+            .await
+            .expect_err("fallback-only send RPC topology must fail closed");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "adapter_send_rpc_not_configured");
+        assert!(
+            reject
+                .detail
+                .contains("fallback URL but missing primary send RPC URL"),
+            "detail={}",
+            reject.detail
+        );
+    }
+
+    #[tokio::test]
     async fn send_signed_transaction_via_rpc_accepts_already_processed_error() {
         let (signed_tx_base64, expected_signature) =
             test_signed_tx_base64_with_signature([34u8; 64]);

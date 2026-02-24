@@ -46,6 +46,17 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         )
     })?;
 
+    if backend.send_rpc_url.is_none() && backend.send_rpc_fallback_url.is_some() {
+        return Err(Reject::terminal(
+            "adapter_send_rpc_not_configured",
+            format!(
+                "route={} has send RPC fallback URL but missing primary send RPC URL (set COPYBOT_EXECUTOR_ROUTE_{}_SEND_RPC_URL or COPYBOT_EXECUTOR_SEND_RPC_URL)",
+                route,
+                route.to_ascii_uppercase()
+            ),
+        ));
+    }
+
     let endpoints = backend.send_rpc_endpoint_chain();
     if endpoints.is_empty() {
         return Err(Reject::terminal(
