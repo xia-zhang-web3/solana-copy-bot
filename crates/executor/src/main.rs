@@ -8,11 +8,9 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
-use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::Sha256;
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
@@ -24,6 +22,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod auth_crypto;
 mod http_utils;
 mod fee_hints;
 mod common_contract;
@@ -44,6 +43,7 @@ mod submit_verify;
 mod tx_build;
 mod upstream_outcome;
 
+use crate::auth_crypto::{compute_hmac_signature_hex, constant_time_eq};
 use crate::fee_hints::{
     parse_response_fee_hint_fields, resolve_fee_hints, FeeHintError, FeeHintFieldParseError,
     FeeHintInputs,
@@ -1923,34 +1923,6 @@ fn is_valid_contract_version_token(value: &str) -> bool {
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
 }
 
-fn compute_hmac_signature_hex(key: &[u8], payload: &[u8]) -> Result<String> {
-    type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(key).context("invalid HMAC key")?;
-    mac.update(payload);
-    Ok(to_hex_lower(mac.finalize().into_bytes().as_slice()))
-}
-
-fn to_hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut mismatch = 0u8;
-    for (l, r) in left.iter().zip(right.iter()) {
-        mismatch |= l ^ r;
-    }
-    mismatch == 0
-}
-
 fn resolve_signer_source_config(
     source_raw: Option<&str>,
     keypair_file_raw: Option<&str>,
@@ -2096,13 +2068,6 @@ mod tests {
     }
 
     #[test]
-    fn constant_time_eq_checks_content() {
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"ab"));
-    }
-
-    #[test]
     fn parse_route_allowlist_normalizes() {
         let routes = parse_route_allowlist("RPC, jito ,fastlane".to_string()).unwrap();
         assert!(routes.contains("rpc"));
@@ -2209,11 +2174,6 @@ mod tests {
         let (effective, policy_code) = apply_submit_tip_policy("jito", 12_345);
         assert_eq!(effective, 12_345);
         assert_eq!(policy_code, None);
-    }
-
-    #[test]
-    fn to_hex_lower_matches_expected() {
-        assert_eq!(to_hex_lower(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
     }
 
     #[test]
