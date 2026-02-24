@@ -154,15 +154,15 @@ Reject response:
 Runtime guarded allowlist содержит коды нескольких слоев. Для executor плана границы такие:
 
 1. Executor-emitted reject codes:
-   1. executor должен эмитить собственные коды с префиксом `executor_` (например `executor_build_failed`, `executor_blockhash_expired`, `executor_route_rejected`),
-   2. retryability задается полем `retryable` в reject payload.
+   1. executor SHOULD эмитить собственные коды с префиксом `executor_` (например `executor_build_failed`, `executor_blockhash_expired`, `executor_route_rejected`) для pure business logic,
+   2. compatibility transport codes (`upstream_*`, `send_rpc_*`, `submit_adapter_*`) допускаются в forwarding/broadcast path для adapter/runtime interoperability,
+   3. retryability задается полем `retryable` в reject payload.
 2. Adapter-generated transport/forwarding codes:
    1. `upstream_*` коды генерируются adapter при транспортных/HTTP проблемах между adapter и executor,
    2. `send_rpc_*` коды генерируются adapter в его signed-tx broadcast path,
    3. `submit_adapter_*` коды формируются на runtime/adapter boundary.
 3. Runtime fallback allowlist использует adapter-layer classification, а не “сырые” executor code names.
-4. Executor MUST NOT эмитить `upstream_*` или `send_rpc_*` как собственные domain-коды, чтобы не смешивать границы ответственности.
-5. Cross-route guarded fallback policy (`jito|fastlane -> rpc`) intentionally:
+4. Cross-route guarded fallback policy (`jito|fastlane -> rpc`) intentionally:
    1. разрешается только по adapter-layer transport/service-class событиям (`upstream_*`/`send_rpc_*`),
    2. `executor_*` retryable коды не предназначены для автоматического guarded cross-route switch; они обрабатываются как business-level retry/reject по политике caller.
 

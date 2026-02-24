@@ -44,8 +44,9 @@ Signer source policy:
 Auth policy:
 
 1. Fail-closed by default.
-2. Must provide Bearer (`COPYBOT_EXECUTOR_BEARER_TOKEN[_FILE]`) or HMAC pair (`COPYBOT_EXECUTOR_HMAC_KEY_ID` + `COPYBOT_EXECUTOR_HMAC_SECRET[_FILE]`).
-3. Unauthenticated mode allowed only with explicit override:
+2. Must provide Bearer (`COPYBOT_EXECUTOR_BEARER_TOKEN[_FILE]`).
+3. HMAC (`COPYBOT_EXECUTOR_HMAC_KEY_ID` + `COPYBOT_EXECUTOR_HMAC_SECRET[_FILE]`) is optional additional guard, not a Bearer replacement.
+4. Unauthenticated mode allowed only with explicit override:
    1. `COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true`
 
 ## 3) Local Run

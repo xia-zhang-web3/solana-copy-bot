@@ -51,4 +51,15 @@ pass "master plan sections present"
 cargo test -p copybot-executor -q >/dev/null
 pass "copybot-executor tests pass"
 
+contract_guard_tests=(
+  "simulate_reject_status_is_http_200_for_retryable_and_terminal"
+  "require_authenticated_mode_fails_closed_by_default"
+  "resolve_signer_source_config_rejects_keypair_pubkey_mismatch"
+)
+
+for test_name in "${contract_guard_tests[@]}"; do
+  cargo test -p copybot-executor -q "$test_name" >/dev/null
+done
+pass "contract guard tests pass"
+
 echo "executor contract smoke: PASS"

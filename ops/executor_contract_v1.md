@@ -123,12 +123,16 @@ Reject MUST include:
 
 ## 5.1 Executor-emitted domain codes
 
-1. Executor emits only its own domain codes (`executor_*` recommended prefix).
+1. Executor SHOULD use its own domain codes (`executor_*` prefix) for pure executor business logic.
 2. Executor retryability is expressed via `retryable`.
+3. Compatibility transport/forwarding codes are allowed for adapter/runtime interoperability:
+   1. `upstream_*`
+   2. `send_rpc_*`
+   3. `submit_adapter_*`
 
 ## 5.2 Adapter-generated transport codes
 
-Codes below are adapter-layer and are NOT emitted by executor domain logic:
+Codes below are adapter-layer in runtime semantics and also used as compatibility classes by executor forwarding path:
 
 1. `upstream_*`
 2. `send_rpc_*`
@@ -142,7 +146,7 @@ Intentional policy:
 
 1. `executor_*` retryable codes are business-level.
 2. They do not by themselves grant guarded cross-route fallback.
-3. Guarded fallback is triggered by adapter-layer transport/service classification.
+3. Guarded fallback is triggered by adapter-layer transport/service classification (`upstream_*`/`send_rpc_*` compatibility classes).
 
 ## 6) Solana Execution Semantics
 

@@ -32,14 +32,14 @@ use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
 use crate::send_rpc::send_signed_transaction_via_rpc;
+#[cfg(test)]
+use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 use crate::submit_verify::{
     parse_submit_signature_verify_config, submit_signature_verification_to_json,
     verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
 };
 #[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
-#[cfg(test)]
-use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 
 const TIP_MAX_LAMPORTS: u64 = 100_000_000;
 const CU_LIMIT_MIN: u32 = 1;
@@ -113,7 +113,8 @@ impl SignerSource {
 impl AdapterConfig {
     fn from_env() -> Result<Self> {
         let bind_addr = parse_socket_addr(
-            env::var("COPYBOT_EXECUTOR_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string()),
+            env::var("COPYBOT_EXECUTOR_BIND_ADDR")
+                .unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string()),
         )?;
 
         let contract_version = env::var("COPYBOT_EXECUTOR_CONTRACT_VERSION")
@@ -140,6 +141,7 @@ impl AdapterConfig {
             optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_SOURCE").as_deref(),
             optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE").as_deref(),
             optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID").as_deref(),
+            signer_pubkey.as_str(),
         )?;
 
         let route_allowlist = parse_route_allowlist(
@@ -389,16 +391,14 @@ impl AdapterConfig {
                 "COPYBOT_EXECUTOR_HMAC_TTL_SEC must be in 5..=300 when HMAC auth is enabled"
             ));
         }
-        require_authenticated_mode(
-            bearer_token.as_deref(),
-            hmac_key_id.as_deref(),
-            allow_unauthenticated,
-        )?;
+        require_authenticated_mode(bearer_token.as_deref(), allow_unauthenticated)?;
 
         let request_timeout_ms =
             parse_u64_env("COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;
-        let max_notional_sol =
-            parse_f64_env("COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL", DEFAULT_MAX_NOTIONAL_SOL)?;
+        let max_notional_sol = parse_f64_env(
+            "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
+            DEFAULT_MAX_NOTIONAL_SOL,
+        )?;
         if !max_notional_sol.is_finite() || max_notional_sol <= 0.0 {
             return Err(anyhow!(
                 "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL must be finite and > 0"
@@ -581,7 +581,7 @@ impl Side {
 struct SimulateRequest {
     action: Option<String>,
     contract_version: Option<String>,
-    request_id: Option<String>,
+    request_id: String,
     signal_id: String,
     side: String,
     token: String,
@@ -749,7 +749,7 @@ async fn simulate(
     match handle_simulate(&state, &request, raw_body.as_ref()).await {
         Ok(value) => (StatusCode::OK, Json(value)),
         Err(reject) => (
-            simulate_http_status_for_reject(&reject),
+            StatusCode::OK,
             Json(reject_to_json(
                 &reject,
                 None,
@@ -838,6 +838,18 @@ async fn handle_simulate(
     }
     parse_rfc3339_utc(request.signal_ts.as_str())
         .ok_or_else(|| Reject::terminal("invalid_signal_ts", "signal_ts must be RFC3339"))?;
+    if request.request_id.trim().is_empty() {
+        return Err(Reject::terminal(
+            "invalid_request_id",
+            "request_id must be non-empty",
+        ));
+    }
+    if request.signal_id.trim().is_empty() {
+        return Err(Reject::terminal(
+            "invalid_signal_id",
+            "signal_id must be non-empty",
+        ));
+    }
 
     let route = normalize_route(request.route.as_str());
     debug!(
@@ -900,7 +912,7 @@ async fn handle_simulate(
         "accepted": true,
         "route": route,
         "contract_version": state.config.contract_version,
-        "request_id": request.request_id.clone().unwrap_or_default(),
+        "request_id": request.request_id,
         "detail": detail
     }))
 }
@@ -931,6 +943,12 @@ async fn handle_submit(
         return Err(Reject::terminal(
             "invalid_request_id",
             "request_id must be non-empty",
+        ));
+    }
+    if request.signal_id.trim().is_empty() {
+        return Err(Reject::terminal(
+            "invalid_signal_id",
+            "signal_id must be non-empty",
         ));
     }
     if !request.slippage_bps.is_finite() || request.slippage_bps <= 0.0 {
@@ -965,7 +983,7 @@ async fn handle_submit(
     if request.tip_lamports > 0 && !state.config.allow_nonzero_tip {
         return Err(Reject::terminal(
             "tip_not_supported",
-            "non-zero tip_lamports is disabled in adapter config",
+            "non-zero tip_lamports is disabled in executor config",
         ));
     }
     if !(CU_LIMIT_MIN..=CU_LIMIT_MAX).contains(&request.compute_budget.cu_limit) {
@@ -1496,7 +1514,7 @@ fn validate_common_contract(
         return Err(Reject::terminal(
             "notional_too_high",
             format!(
-                "notional_sol={} exceeds adapter max_notional_sol={}",
+                "notional_sol={} exceeds executor max_notional_sol={}",
                 notional_sol, state.config.max_notional_sol
             ),
         ));
@@ -1540,12 +1558,8 @@ fn reject_to_json(reject: &Reject, client_order_id: Option<&str>, contract_versi
     payload
 }
 
-fn simulate_http_status_for_reject(reject: &Reject) -> StatusCode {
-    if reject.retryable {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::OK
-    }
+fn simulate_http_status_for_reject(_reject: &Reject) -> StatusCode {
+    StatusCode::OK
 }
 
 fn parse_socket_addr(value: String) -> Result<SocketAddr> {
@@ -1774,14 +1788,19 @@ fn resolve_signer_source_config(
     source_raw: Option<&str>,
     keypair_file_raw: Option<&str>,
     kms_key_id_raw: Option<&str>,
+    signer_pubkey: &str,
 ) -> Result<SignerSource> {
     let source = source_raw
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("file")
         .to_ascii_lowercase();
-    let keypair_file = keypair_file_raw.map(str::trim).filter(|value| !value.is_empty());
-    let kms_key_id = kms_key_id_raw.map(str::trim).filter(|value| !value.is_empty());
+    let keypair_file = keypair_file_raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let kms_key_id = kms_key_id_raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     match source.as_str() {
         "file" => {
@@ -1795,7 +1814,7 @@ fn resolve_signer_source_config(
                     "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must be set when COPYBOT_EXECUTOR_SIGNER_SOURCE=file"
                 )
             })?;
-            validate_signer_keypair_file(keypair_file)?;
+            validate_signer_keypair_file(keypair_file, signer_pubkey)?;
             Ok(SignerSource::File)
         }
         "kms" => {
@@ -1822,7 +1841,7 @@ fn resolve_signer_source_config(
     }
 }
 
-fn validate_signer_keypair_file(path: &str) -> Result<()> {
+fn validate_signer_keypair_file(path: &str, signer_pubkey: &str) -> Result<()> {
     let raw = fs::read_to_string(path).with_context(|| {
         format!(
             "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE not found/readable path={}",
@@ -1846,20 +1865,40 @@ fn validate_signer_keypair_file(path: &str) -> Result<()> {
             path
         ));
     }
+    let keypair_bytes: Vec<u8> = serde_json::from_str(raw.trim()).with_context(|| {
+        format!(
+            "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must be JSON array with 64 u8 values path={}",
+            path
+        )
+    })?;
+    if keypair_bytes.len() != 64 {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must contain 64-byte keypair, got {} path={}",
+            keypair_bytes.len(),
+            path
+        ));
+    }
+    let derived_pubkey = bs58::encode(&keypair_bytes[32..64]).into_string();
+    if derived_pubkey != signer_pubkey.trim() {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE pubkey mismatch: file_pubkey={} expected_pubkey={}",
+            derived_pubkey,
+            signer_pubkey.trim()
+        ));
+    }
     Ok(())
 }
 
 fn require_authenticated_mode(
     bearer_token: Option<&str>,
-    hmac_key_id: Option<&str>,
     allow_unauthenticated: bool,
 ) -> Result<()> {
     if allow_unauthenticated {
         return Ok(());
     }
-    if bearer_token.is_none() && hmac_key_id.is_none() {
+    if bearer_token.is_none() {
         return Err(anyhow!(
-            "executor auth is required: set COPYBOT_EXECUTOR_BEARER_TOKEN or HMAC pair (COPYBOT_EXECUTOR_HMAC_KEY_ID/COPYBOT_EXECUTOR_HMAC_SECRET); or explicitly set COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true for controlled non-production setups"
+            "executor auth is required: set COPYBOT_EXECUTOR_BEARER_TOKEN (or *_FILE); optionally add HMAC pair for dual auth. For controlled local setups only, set COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true"
         ));
     }
     Ok(())
@@ -1957,8 +1996,13 @@ mod tests {
 
     #[test]
     fn resolve_signer_source_config_requires_file_source_materials() {
-        let error = resolve_signer_source_config(Some("file"), None, None)
-            .expect_err("file source requires keypair file");
+        let error = resolve_signer_source_config(
+            Some("file"),
+            None,
+            None,
+            "11111111111111111111111111111111",
+        )
+        .expect_err("file source requires keypair file");
         assert!(error
             .to_string()
             .contains("COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must be set"));
@@ -1966,11 +2010,12 @@ mod tests {
 
     #[test]
     fn resolve_signer_source_config_rejects_kms_key_for_file_source() {
-        let path = write_temp_secret_file("[1,2,3]");
+        let path = write_temp_signer_keypair_file([0u8; 32]);
         let error = resolve_signer_source_config(
             Some("file"),
             Some(path.to_str().expect("utf8 path")),
             Some("kms-key-id"),
+            "11111111111111111111111111111111",
         )
         .expect_err("kms key id must be empty for file source");
         assert!(error
@@ -1981,15 +2026,25 @@ mod tests {
 
     #[test]
     fn resolve_signer_source_config_accepts_kms_source() {
-        let source = resolve_signer_source_config(Some("kms"), None, Some("projects/p/keys/k"))
-            .expect("kms source should validate");
+        let source = resolve_signer_source_config(
+            Some("kms"),
+            None,
+            Some("projects/p/keys/k"),
+            "11111111111111111111111111111111",
+        )
+        .expect("kms source should validate");
         assert_eq!(source, SignerSource::Kms);
     }
 
     #[test]
     fn resolve_signer_source_config_rejects_kms_without_key_id() {
-        let error = resolve_signer_source_config(Some("kms"), None, None)
-            .expect_err("kms source requires key id");
+        let error = resolve_signer_source_config(
+            Some("kms"),
+            None,
+            None,
+            "11111111111111111111111111111111",
+        )
+        .expect_err("kms source requires key id");
         assert!(error
             .to_string()
             .contains("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID must be set"));
@@ -1997,8 +2052,13 @@ mod tests {
 
     #[test]
     fn resolve_signer_source_config_rejects_unknown_source() {
-        let error = resolve_signer_source_config(Some("vault"), None, None)
-            .expect_err("unknown source must fail");
+        let error = resolve_signer_source_config(
+            Some("vault"),
+            None,
+            None,
+            "11111111111111111111111111111111",
+        )
+        .expect_err("unknown source must fail");
         assert!(error
             .to_string()
             .contains("COPYBOT_EXECUTOR_SIGNER_SOURCE must be one of: file,kms"));
@@ -2009,7 +2069,7 @@ mod tests {
     fn resolve_signer_source_config_rejects_non_restrictive_keypair_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = write_temp_secret_file("[1,2,3]");
+        let path = write_temp_signer_keypair_file([0u8; 32]);
         let mut perms = stdfs::metadata(&path)
             .expect("stat temp secret")
             .permissions();
@@ -2019,11 +2079,26 @@ mod tests {
             Some("file"),
             Some(path.to_str().expect("utf8 path")),
             None,
+            "11111111111111111111111111111111",
         )
         .expect_err("broad keypair file permissions must fail");
         assert!(error
             .to_string()
             .contains("must use owner-only permissions"));
+        cleanup_temp_secret_file(path);
+    }
+
+    #[test]
+    fn resolve_signer_source_config_rejects_keypair_pubkey_mismatch() {
+        let path = write_temp_signer_keypair_file([1u8; 32]);
+        let error = resolve_signer_source_config(
+            Some("file"),
+            Some(path.to_str().expect("utf8 path")),
+            None,
+            "11111111111111111111111111111111",
+        )
+        .expect_err("keypair pubkey mismatch must fail");
+        assert!(error.to_string().contains("pubkey mismatch"));
         cleanup_temp_secret_file(path);
     }
 
@@ -2179,10 +2254,9 @@ mod tests {
 
     #[test]
     fn require_authenticated_mode_fails_closed_by_default() {
-        assert!(require_authenticated_mode(None, None, false).is_err());
-        assert!(require_authenticated_mode(Some("token"), None, false).is_ok());
-        assert!(require_authenticated_mode(None, Some("kid"), false).is_ok());
-        assert!(require_authenticated_mode(None, None, true).is_ok());
+        assert!(require_authenticated_mode(None, false).is_err());
+        assert!(require_authenticated_mode(Some("token"), false).is_ok());
+        assert!(require_authenticated_mode(None, true).is_ok());
     }
 
     #[tokio::test]
@@ -2222,13 +2296,79 @@ mod tests {
             .expect("correct bearer token should pass");
     }
 
+    #[tokio::test]
+    async fn handle_simulate_rejects_empty_request_id() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "   ".to_string(),
+            signal_id: "signal-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let reject = handle_simulate(&state, &request, b"{}")
+            .await
+            .expect_err("empty request_id must fail");
+        assert_eq!(reject.code, "invalid_request_id");
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_rejects_empty_signal_id() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-1".to_string(),
+            signal_id: " ".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let reject = handle_simulate(&state, &request, b"{}")
+            .await
+            .expect_err("empty signal_id must fail");
+        assert_eq!(reject.code, "invalid_signal_id");
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_empty_signal_id() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let request = SubmitRequest {
+            contract_version: Some("v1".to_string()),
+            signal_id: " ".to_string(),
+            client_order_id: "client-1".to_string(),
+            request_id: "request-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            slippage_bps: 50.0,
+            route_slippage_cap_bps: 50.0,
+            tip_lamports: 0,
+            compute_budget: ComputeBudgetRequest {
+                cu_limit: 300_000,
+                cu_price_micro_lamports: 1_000,
+            },
+        };
+        let reject = handle_submit(&state, &request, b"{}")
+            .await
+            .expect_err("empty signal_id must fail");
+        assert_eq!(reject.code, "invalid_signal_id");
+    }
+
     #[test]
-    fn simulate_status_is_503_for_retryable_reject() {
+    fn simulate_reject_status_is_http_200_for_retryable_and_terminal() {
         let reject = Reject::retryable("busy", "upstream temporary issue");
-        assert_eq!(
-            simulate_http_status_for_reject(&reject),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
+        assert_eq!(simulate_http_status_for_reject(&reject), StatusCode::OK);
         let reject = Reject::terminal("invalid", "bad request");
         assert_eq!(simulate_http_status_for_reject(&reject), StatusCode::OK);
     }
@@ -2979,6 +3119,13 @@ mod tests {
             stdfs::set_permissions(&path, perms).expect("set temp secret perms");
         }
         path
+    }
+
+    fn write_temp_signer_keypair_file(pubkey_bytes: [u8; 32]) -> PathBuf {
+        let mut bytes = vec![0u8; 64];
+        bytes[32..64].copy_from_slice(&pubkey_bytes);
+        let json = serde_json::to_string(&bytes).expect("serialize keypair json");
+        write_temp_secret_file(json.as_str())
     }
 
     fn cleanup_temp_secret_file(path: PathBuf) {
