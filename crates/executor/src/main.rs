@@ -1560,6 +1560,10 @@ fn parse_optional_non_negative_u64_field(
 
 fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
     match error {
+        FeeHintError::DerivedPriorityFeeExceedsU64 { .. } => Reject::terminal(
+            "fee_overflow",
+            "derived priority fee exceeds u64 range",
+        ),
         FeeHintError::OverflowBasePlusPriority => {
             Reject::terminal("fee_overflow", "base+priority fee overflow")
         }

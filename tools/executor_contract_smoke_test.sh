@@ -61,6 +61,7 @@ contract_guard_tests=(
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
+  "resolve_fee_hints_rejects_derived_priority_fee_overflow"
 )
 
 for test_name in "${contract_guard_tests[@]}"; do

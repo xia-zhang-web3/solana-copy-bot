@@ -19,6 +19,9 @@ pub(crate) struct ResolvedFeeHints {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FeeHintError {
+    DerivedPriorityFeeExceedsU64 {
+        value: u128,
+    },
     OverflowBasePlusPriority,
     NetworkFeeMismatch {
         network_fee_lamports: u64,
@@ -31,9 +34,10 @@ pub(crate) enum FeeHintError {
 }
 
 pub(crate) fn resolve_fee_hints(inputs: FeeHintInputs) -> Result<ResolvedFeeHints, FeeHintError> {
-    let default_priority_fee = ((inputs.request_cu_limit as u128)
-        .saturating_mul(inputs.request_cu_price_micro_lamports as u128)
-        / 1_000_000u128) as u64;
+    let default_priority_fee = derive_priority_fee_lamports(
+        inputs.request_cu_limit,
+        inputs.request_cu_price_micro_lamports,
+    )?;
     let base_fee_lamports = inputs
         .response_base_fee_lamports
         .unwrap_or(inputs.default_base_fee_lamports);
@@ -79,6 +83,16 @@ pub(crate) fn resolve_fee_hints(inputs: FeeHintInputs) -> Result<ResolvedFeeHint
         priority_fee_lamports,
         ata_create_rent_lamports: inputs.response_ata_create_rent_lamports,
     })
+}
+
+fn derive_priority_fee_lamports(
+    cu_limit: u32,
+    cu_price_micro_lamports: u64,
+) -> Result<u64, FeeHintError> {
+    let lamports_u128 =
+        (cu_limit as u128).saturating_mul(cu_price_micro_lamports as u128) / 1_000_000u128;
+    u64::try_from(lamports_u128)
+        .map_err(|_| FeeHintError::DerivedPriorityFeeExceedsU64 { value: lamports_u128 })
 }
 
 #[cfg(test)]
@@ -148,5 +162,25 @@ mod tests {
                 value: i64::MAX as u64 + 1,
             }
         );
+    }
+
+    #[test]
+    fn resolve_fee_hints_rejects_derived_priority_fee_overflow() {
+        let error = resolve_fee_hints(FeeHintInputs {
+            response_network_fee_lamports: None,
+            response_base_fee_lamports: None,
+            response_priority_fee_lamports: None,
+            response_ata_create_rent_lamports: None,
+            request_cu_limit: u32::MAX,
+            request_cu_price_micro_lamports: u64::MAX,
+            default_base_fee_lamports: 5_000,
+        })
+        .expect_err("derived priority fee must not truncate to u64");
+        match error {
+            FeeHintError::DerivedPriorityFeeExceedsU64 { value } => {
+                assert!(value > u64::MAX as u128);
+            }
+            _ => panic!("unexpected error variant: {:?}", error),
+        }
     }
 }
