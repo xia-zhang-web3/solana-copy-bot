@@ -5,13 +5,14 @@ use tracing::warn;
 
 use crate::{
     http_utils::{classify_request_error, redacted_endpoint_label},
-    validate_signature_like, AppState, Reject,
+    validate_signature_like, AppState, Reject, SubmitDeadline,
 };
 
 pub(crate) async fn send_signed_transaction_via_rpc(
     state: &AppState,
     route: &str,
     signed_tx_base64: &str,
+    submit_deadline: Option<&SubmitDeadline>,
 ) -> std::result::Result<String, Reject> {
     let backend = state.config.route_backends.get(route).ok_or_else(|| {
         Reject::terminal(
@@ -86,6 +87,10 @@ pub(crate) async fn send_signed_transaction_via_rpc(
             ]
         });
         let mut request = state.http.post(*url).json(&payload);
+        if let Some(deadline) = submit_deadline {
+            let remaining = deadline.remaining_timeout("send_rpc")?;
+            request = request.timeout(remaining);
+        }
         if let Some(token) = *auth_token {
             request = request.bearer_auth(token);
         }

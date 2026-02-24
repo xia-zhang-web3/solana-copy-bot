@@ -18,7 +18,7 @@ use std::{
     env, fs,
     net::SocketAddr,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -61,6 +61,7 @@ const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
+const DEFAULT_SUBMIT_TOTAL_BUDGET_MS: u64 = 7_000;
 const DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC: u64 = 60;
 const CLAIM_TTL_SAFETY_PADDING_MS: u64 = 1_000;
 const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
@@ -89,6 +90,7 @@ struct ExecutorConfig {
     hmac_secret: Option<String>,
     hmac_ttl_sec: u64,
     request_timeout_ms: u64,
+    submit_total_budget_ms: u64,
     idempotency_db_path: String,
     idempotency_claim_ttl_sec: u64,
     max_notional_sol: f64,
@@ -399,6 +401,17 @@ impl ExecutorConfig {
 
         let request_timeout_ms =
             parse_u64_env("COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;
+        let submit_total_budget_ms = parse_u64_env(
+            "COPYBOT_EXECUTOR_SUBMIT_TOTAL_BUDGET_MS",
+            default_submit_total_budget_ms(request_timeout_ms),
+        )?;
+        let min_submit_budget_ms = request_timeout_ms.max(500);
+        if submit_total_budget_ms < min_submit_budget_ms {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_SUBMIT_TOTAL_BUDGET_MS must be >= {} (effective request timeout floor)",
+                min_submit_budget_ms
+            ));
+        }
         let idempotency_db_path = env::var("COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH")
             .unwrap_or_else(|_| "state/executor_idempotency.sqlite3".to_string())
             .trim()
@@ -456,6 +469,7 @@ impl ExecutorConfig {
             hmac_secret,
             hmac_ttl_sec,
             request_timeout_ms,
+            submit_total_budget_ms,
             idempotency_db_path,
             idempotency_claim_ttl_sec,
             max_notional_sol,
@@ -506,6 +520,54 @@ fn min_claim_ttl_sec_for_submit_path(
         .saturating_add(verify_wait_ms)
         .saturating_add(CLAIM_TTL_SAFETY_PADDING_MS);
     (budget_ms.saturating_add(999) / 1000).max(1)
+}
+
+fn default_submit_total_budget_ms(request_timeout_ms: u64) -> u64 {
+    request_timeout_ms
+        .max(500)
+        .saturating_mul(3)
+        .saturating_add(1_000)
+        .max(DEFAULT_SUBMIT_TOTAL_BUDGET_MS)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SubmitDeadline {
+    started_at: Instant,
+    total_budget_ms: u64,
+}
+
+impl SubmitDeadline {
+    fn new(total_budget_ms: u64) -> Self {
+        Self {
+            started_at: Instant::now(),
+            total_budget_ms: total_budget_ms.max(1),
+        }
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        let millis = self.started_at.elapsed().as_millis();
+        if millis > u128::from(u64::MAX) {
+            u64::MAX
+        } else {
+            millis as u64
+        }
+    }
+
+    fn remaining_timeout(&self, stage: &str) -> std::result::Result<Duration, Reject> {
+        let elapsed_ms = self.elapsed_ms();
+        if elapsed_ms >= self.total_budget_ms {
+            return Err(Reject::retryable(
+                "executor_submit_timeout_budget_exceeded",
+                format!(
+                    "submit timeout budget exceeded before stage={} elapsed_ms={} budget_ms={}",
+                    stage, elapsed_ms, self.total_budget_ms
+                ),
+            ));
+        }
+        Ok(Duration::from_millis(
+            self.total_budget_ms.saturating_sub(elapsed_ms).max(1),
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -817,6 +879,7 @@ async fn main() -> Result<()> {
         submit_fastlane_enabled = state.config.submit_fastlane_enabled,
         idempotency_db_path = %state.config.idempotency_db_path,
         idempotency_claim_ttl_sec = state.config.idempotency_claim_ttl_sec,
+        submit_total_budget_ms = state.config.submit_total_budget_ms,
         submit_signature_verify_enabled = state.config.submit_signature_verify.is_some(),
         submit_signature_verify_strict = state
             .config
@@ -1008,8 +1071,14 @@ async fn handle_simulate(
         signal_id = %request.signal_id,
         "handling simulate request"
     );
-    let backend_response =
-        forward_to_upstream(state, route.as_str(), UpstreamAction::Simulate, raw_body).await?;
+    let backend_response = forward_to_upstream(
+        state,
+        route.as_str(),
+        UpstreamAction::Simulate,
+        raw_body,
+        None,
+    )
+    .await?;
     match parse_upstream_outcome(&backend_response, "simulation_rejected") {
         UpstreamOutcome::Reject(reject) => return Err(reject),
         UpstreamOutcome::Success => {}
@@ -1180,6 +1249,7 @@ async fn handle_submit(
         client_order_id = %request.client_order_id,
         "handling submit request"
     );
+    let submit_deadline = SubmitDeadline::new(state.config.submit_total_budget_ms);
     let _submit_claim_guard = match state.idempotency.load_cached_or_claim_submit(
         request.client_order_id.as_str(),
         request.request_id.as_str(),
@@ -1217,6 +1287,7 @@ async fn handle_submit(
         route.as_str(),
         UpstreamAction::Submit,
         forward_body.as_slice(),
+        Some(&submit_deadline),
     )
     .await?;
     match parse_upstream_outcome(&backend_response, "submit_adapter_rejected") {
@@ -1279,7 +1350,9 @@ async fn handle_submit(
         })?;
         (value.to_string(), "upstream_signature")
     } else if let Some(value) = signed_tx_base64 {
-        let signature = send_signed_transaction_via_rpc(state, route.as_str(), value).await?;
+        let signature =
+            send_signed_transaction_via_rpc(state, route.as_str(), value, Some(&submit_deadline))
+                .await?;
         (signature, "adapter_send_rpc")
     } else {
         return Err(Reject::retryable(
@@ -1288,8 +1361,13 @@ async fn handle_submit(
         ));
     };
 
-    let submit_signature_verify =
-        verify_submitted_signature_visibility(state, route.as_str(), tx_signature.as_str()).await?;
+    let submit_signature_verify = verify_submitted_signature_visibility(
+        state,
+        route.as_str(),
+        tx_signature.as_str(),
+        Some(&submit_deadline),
+    )
+    .await?;
 
     if let Some(response_client_order_id) = backend_response
         .get("client_order_id")
@@ -1442,6 +1520,7 @@ async fn forward_to_upstream(
     route: &str,
     action: UpstreamAction,
     raw_body: &[u8],
+    submit_deadline: Option<&SubmitDeadline>,
 ) -> std::result::Result<Value, Reject> {
     let backend = state.config.route_backends.get(route).ok_or_else(|| {
         Reject::terminal(
@@ -1469,6 +1548,13 @@ async fn forward_to_upstream(
             .post(*url)
             .header("content-type", "application/json")
             .body(raw_body.to_vec());
+        if let Some(deadline) = submit_deadline {
+            let remaining = deadline.remaining_timeout(match action {
+                UpstreamAction::Simulate => "upstream_simulate",
+                UpstreamAction::Submit => "upstream_submit",
+            })?;
+            request = request.timeout(remaining);
+        }
         let selected_auth_token = backend.auth_token_for_attempt(action, attempt_idx);
         if let Some(token) = selected_auth_token {
             request = request.bearer_auth(token);
@@ -2760,7 +2846,7 @@ mod tests {
             return;
         };
         let state = test_state(url.as_str());
-        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}")
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
             .await
             .expect_err("503 upstream should be retryable");
         assert!(reject.retryable);
@@ -2788,7 +2874,7 @@ mod tests {
             "http://127.0.0.1:1/upstream",
             Some(fallback_url.as_str()),
         );
-        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}")
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
             .await
             .expect("fallback should succeed after primary send error");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
@@ -2816,7 +2902,7 @@ mod tests {
             primary_url.as_str(),
             Some(fallback_url.as_str()),
         );
-        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}")
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
             .await
             .expect("fallback should succeed after retryable status");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
@@ -2838,7 +2924,7 @@ mod tests {
             primary_url.as_str(),
             Some("http://127.0.0.1:1/upstream"),
         );
-        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}")
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
             .await
             .expect_err("terminal status should short-circuit");
         assert!(!reject.retryable);
@@ -2873,7 +2959,7 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}")
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
             .await
             .expect("fallback with dedicated token should succeed");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
@@ -2903,7 +2989,8 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let signature = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+        let signature =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
             .await
             .expect("send RPC should return tx signature");
         assert_eq!(signature, rpc_signature);
@@ -2935,7 +3022,8 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+        let reject =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
             .await
             .expect_err("mismatched send RPC signature must fail");
         assert!(!reject.retryable);
@@ -2974,7 +3062,8 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let signature = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+        let signature =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
             .await
             .expect("fallback send RPC with dedicated auth token should succeed");
         assert_eq!(signature, expected_signature);
@@ -3001,7 +3090,8 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+        let reject =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
             .await
             .expect_err("fallback-only send RPC topology must fail closed");
         assert!(!reject.retryable);
@@ -3038,7 +3128,8 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let signature = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+        let signature =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
             .await
             .expect("already processed error should resolve to expected signature");
         assert_eq!(signature, expected_signature);
@@ -3071,7 +3162,8 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+        let reject =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
             .await
             .expect_err("unknown send RPC error payload should be terminal");
         assert!(!reject.retryable);
@@ -3533,7 +3625,8 @@ mod tests {
             vec![verify_url.as_str()],
             true,
         );
-        let result = verify_submitted_signature_visibility(&state, "rpc", signature.as_str()).await;
+        let result =
+            verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None).await;
         let Ok(SubmitSignatureVerification::Seen {
             confirmation_status,
         }) = result
@@ -3561,7 +3654,8 @@ mod tests {
             vec![verify_url.as_str()],
             false,
         );
-        let result = verify_submitted_signature_visibility(&state, "rpc", signature.as_str()).await;
+        let result =
+            verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None).await;
         let Ok(SubmitSignatureVerification::Unseen { reason }) = result else {
             panic!("expected unseen verification result");
         };
@@ -3590,7 +3684,7 @@ mod tests {
             vec![verify_url.as_str()],
             true,
         );
-        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str())
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None)
             .await
             .expect_err("strict mode must reject unseen signature");
         assert!(reject.retryable);
@@ -3616,7 +3710,7 @@ mod tests {
             vec![verify_url.as_str()],
             false,
         );
-        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str())
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None)
             .await
             .expect_err("on-chain err must be terminal reject");
         assert!(!reject.retryable);
@@ -3695,6 +3789,7 @@ mod tests {
             hmac_secret: None,
             hmac_ttl_sec: 30,
             request_timeout_ms: 2_000,
+            submit_total_budget_ms: default_submit_total_budget_ms(2_000),
             idempotency_db_path: ":memory:".to_string(),
             idempotency_claim_ttl_sec: DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC,
             max_notional_sol: 10.0,

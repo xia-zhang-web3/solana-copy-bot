@@ -8,7 +8,7 @@ use crate::{
     http_utils::{
         classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
     },
-    optional_non_empty_env, parse_bool_env, parse_u64_env, AppState, Reject,
+    optional_non_empty_env, parse_bool_env, parse_u64_env, AppState, Reject, SubmitDeadline,
     DEFAULT_SUBMIT_VERIFY_ATTEMPTS, DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
 };
 
@@ -31,6 +31,7 @@ pub(crate) async fn verify_submitted_signature_visibility(
     state: &AppState,
     route: &str,
     tx_signature: &str,
+    submit_deadline: Option<&SubmitDeadline>,
 ) -> std::result::Result<SubmitSignatureVerification, Reject> {
     let Some(config) = state.config.submit_signature_verify.as_ref() else {
         return Ok(SubmitSignatureVerification::Skipped);
@@ -46,7 +47,12 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 "method": "getSignatureStatuses",
                 "params": [[tx_signature], {"searchTransactionHistory": true}]
             });
-            let response = match state.http.post(endpoint).json(&payload).send().await {
+            let mut request = state.http.post(endpoint).json(&payload);
+            if let Some(deadline) = submit_deadline {
+                let remaining = deadline.remaining_timeout("submit_verify")?;
+                request = request.timeout(remaining);
+            }
+            let response = match request.send().await {
                 Ok(value) => value,
                 Err(error) => {
                     last_reason = format!(
@@ -117,7 +123,19 @@ pub(crate) async fn verify_submitted_signature_visibility(
             });
         }
         if attempt_idx + 1 < config.attempts {
-            sleep(Duration::from_millis(config.interval_ms)).await;
+            if let Some(deadline) = submit_deadline {
+                let remaining = deadline.remaining_timeout("submit_verify_sleep")?;
+                let remaining_ms = remaining.as_millis().min(u128::from(u64::MAX)) as u64;
+                if remaining_ms == 0 {
+                    return Err(Reject::retryable(
+                        "executor_submit_timeout_budget_exceeded",
+                        "submit timeout budget exceeded before submit verification retry sleep",
+                    ));
+                }
+                sleep(Duration::from_millis(config.interval_ms.min(remaining_ms))).await;
+            } else {
+                sleep(Duration::from_millis(config.interval_ms)).await;
+            }
         }
     }
 
