@@ -23,6 +23,7 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod auth_crypto;
+mod auth_mode;
 mod contract_version;
 mod env_parsing;
 mod http_utils;
@@ -49,6 +50,7 @@ mod upstream_forward;
 mod upstream_outcome;
 
 use crate::auth_crypto::{compute_hmac_signature_hex, constant_time_eq};
+use crate::auth_mode::require_authenticated_mode;
 use crate::contract_version::is_valid_contract_version_token;
 use crate::env_parsing::{
     non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_u64_env,
@@ -1644,21 +1646,6 @@ fn get_required_header<'a>(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| Reject::terminal(err_code, format!("missing header {}", key)))
-}
-
-fn require_authenticated_mode(
-    bearer_token: Option<&str>,
-    allow_unauthenticated: bool,
-) -> Result<()> {
-    if allow_unauthenticated {
-        return Ok(());
-    }
-    if bearer_token.is_none() {
-        return Err(anyhow!(
-            "executor auth is required: set COPYBOT_EXECUTOR_BEARER_TOKEN (or *_FILE); optionally add HMAC pair for dual auth. For controlled local setups only, set COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true"
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
