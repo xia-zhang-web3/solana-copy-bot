@@ -36,6 +36,7 @@ mod route_allowlist;
 mod route_backend;
 mod route_normalization;
 mod route_policy;
+mod reject_mapping;
 mod send_rpc;
 mod secret_source;
 mod signer_source;
@@ -57,10 +58,9 @@ use crate::env_parsing::{
     non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_u64_env,
 };
 use crate::fee_hints::{
-    parse_response_fee_hint_fields, resolve_fee_hints, FeeHintError, FeeHintFieldParseError,
-    FeeHintInputs,
+    parse_response_fee_hint_fields, resolve_fee_hints, FeeHintInputs,
 };
-use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs, CommonContractValidationError};
+use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
 use crate::http_utils::{endpoint_identity, validate_endpoint_url};
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
@@ -68,6 +68,15 @@ use crate::rfc3339_time::parse_rfc3339_utc;
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_normalization::normalize_route;
+use crate::reject_mapping::{
+    map_common_contract_validation_error_to_reject, map_compute_budget_validation_error_to_reject,
+    map_fee_hint_error_to_reject, map_fee_hint_field_parse_error_to_reject,
+    map_forward_payload_build_error_to_reject, map_idempotency_error_to_reject,
+    map_parsed_upstream_reject, map_simulate_response_validation_error_to_reject,
+    map_slippage_validation_error_to_reject, map_submit_response_validation_error_to_reject,
+    map_submit_tip_policy_error_to_reject, map_submit_transport_artifact_error_to_reject,
+    reject_to_json, simulate_http_status_for_reject,
+};
 use crate::secret_source::resolve_secret_source;
 #[cfg(test)]
 use crate::secret_source::secret_file_has_restrictive_permissions;
@@ -76,12 +85,11 @@ use crate::signer_source::{resolve_signer_source_config, SignerSource};
 use crate::route_policy::apply_submit_tip_policy;
 use crate::send_rpc::send_signed_transaction_via_rpc;
 use crate::simulate_response::{
-    build_simulate_success_payload, resolve_simulate_response_detail,
-    validate_simulate_response_route_and_contract, SimulateResponseValidationError,
+    build_simulate_success_payload, resolve_simulate_response_detail, validate_simulate_response_route_and_contract,
 };
 use crate::submit_response::{
     resolve_submit_response_submitted_at, validate_submit_response_request_identity,
-    validate_submit_response_route_and_contract, SubmitResponseValidationError,
+    validate_submit_response_route_and_contract,
 };
 use crate::submit_deadline::SubmitDeadline;
 use crate::submit_budget::{
@@ -89,12 +97,10 @@ use crate::submit_budget::{
 };
 use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_transport::{
-    extract_submit_transport_artifact, SubmitTransportArtifact, SubmitTransportArtifactError,
+    extract_submit_transport_artifact, SubmitTransportArtifact,
 };
 use crate::upstream_forward::forward_to_upstream;
-use crate::upstream_outcome::{
-    parse_upstream_outcome, ParsedUpstreamReject, UpstreamOutcome,
-};
+use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
 #[cfg(test)]
 use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 use crate::submit_verify::{
@@ -102,10 +108,8 @@ use crate::submit_verify::{
     verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
 };
 use crate::tx_build::{
-    build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports,
-    validate_submit_compute_budget, ComputeBudgetBounds, ComputeBudgetValidationError,
-    validate_submit_slippage_policy, ForwardPayloadBuildError, SlippageValidationError,
-    SubmitTipPolicyError,
+    build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports, validate_submit_compute_budget,
+    validate_submit_slippage_policy, ComputeBudgetBounds,
 };
 #[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
@@ -693,10 +697,10 @@ struct SubmitRequest {
 }
 
 #[derive(Debug, Clone)]
-struct Reject {
-    retryable: bool,
-    code: String,
-    detail: String,
+pub(crate) struct Reject {
+    pub(crate) retryable: bool,
+    pub(crate) code: String,
+    pub(crate) detail: String,
 }
 
 struct SubmitClaimGuard {
@@ -742,7 +746,7 @@ impl Drop for SubmitClaimGuard {
 }
 
 impl Reject {
-    fn terminal(code: impl Into<String>, detail: impl Into<String>) -> Self {
+    pub(crate) fn terminal(code: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
             retryable: false,
             code: code.into(),
@@ -750,7 +754,7 @@ impl Reject {
         }
     }
 
-    fn retryable(code: impl Into<String>, detail: impl Into<String>) -> Self {
+    pub(crate) fn retryable(code: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
             retryable: true,
             code: code.into(),
@@ -1292,291 +1296,6 @@ fn validate_common_contract(
         max_notional_sol: state.config.max_notional_sol,
     })
     .map_err(map_common_contract_validation_error_to_reject)
-}
-
-fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
-    match error {
-        FeeHintError::DerivedPriorityFeeExceedsU64 { .. } => Reject::terminal(
-            "fee_overflow",
-            "derived priority fee exceeds u64 range",
-        ),
-        FeeHintError::OverflowBasePlusPriority => {
-            Reject::terminal("fee_overflow", "base+priority fee overflow")
-        }
-        FeeHintError::NetworkFeeMismatch {
-            network_fee_lamports,
-            derived_network_fee_lamports,
-        } => Reject::terminal(
-            "submit_adapter_invalid_response",
-            format!(
-                "network_fee_lamports={} does not match base+priority={}",
-                network_fee_lamports, derived_network_fee_lamports
-            ),
-        ),
-        FeeHintError::FieldExceedsI64 { field, value } => Reject::terminal(
-            "submit_adapter_invalid_response",
-            format!("{}={} exceeds i64::MAX", field, value),
-        ),
-    }
-}
-
-fn map_common_contract_validation_error_to_reject(error: CommonContractValidationError) -> Reject {
-    match error {
-        CommonContractValidationError::ContractVersionMissing => Reject::terminal(
-            "contract_version_missing",
-            "contract_version must be provided",
-        ),
-        CommonContractValidationError::ContractVersionMismatch {
-            contract_version,
-            expected_contract_version,
-        } => Reject::terminal(
-            "contract_version_mismatch",
-            format!(
-                "contract_version={} does not match expected={}",
-                contract_version, expected_contract_version
-            ),
-        ),
-        CommonContractValidationError::RouteNotAllowed { route } => Reject::terminal(
-            "route_not_allowed",
-            format!("route={} is not allowed", route),
-        ),
-        CommonContractValidationError::FastlaneNotEnabled => Reject::terminal(
-            "fastlane_not_enabled",
-            "route=fastlane requires COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=true",
-        ),
-        CommonContractValidationError::InvalidSide => {
-            Reject::terminal("invalid_side", "side must be buy|sell")
-        }
-        CommonContractValidationError::InvalidTokenEmpty => {
-            Reject::terminal("invalid_token", "token must be non-empty")
-        }
-        CommonContractValidationError::InvalidTokenShape { error } => {
-            Reject::terminal("invalid_token", error)
-        }
-        CommonContractValidationError::InvalidNotional => Reject::terminal(
-            "invalid_notional_sol",
-            "notional_sol must be finite and > 0",
-        ),
-        CommonContractValidationError::NotionalTooHigh {
-            notional_sol,
-            max_notional_sol,
-        } => Reject::terminal(
-            "notional_too_high",
-            format!(
-                "notional_sol={} exceeds executor max_notional_sol={}",
-                notional_sol, max_notional_sol
-            ),
-        ),
-    }
-}
-
-fn map_simulate_response_validation_error_to_reject(
-    error: SimulateResponseValidationError,
-) -> Reject {
-    match error {
-        SimulateResponseValidationError::RouteMismatch {
-            response_route,
-            expected_route,
-        } => Reject::terminal(
-            "simulation_route_mismatch",
-            format!(
-                "upstream route={} does not match requested route={}",
-                response_route, expected_route
-            ),
-        ),
-        SimulateResponseValidationError::ContractVersionMismatch {
-            response_contract_version,
-            expected_contract_version,
-        } => Reject::terminal(
-            "simulation_contract_version_mismatch",
-            format!(
-                "upstream contract_version={} does not match expected={}",
-                response_contract_version, expected_contract_version
-            ),
-        ),
-    }
-}
-
-fn map_parsed_upstream_reject(reject: ParsedUpstreamReject) -> Reject {
-    if reject.retryable {
-        Reject::retryable(reject.code, reject.detail)
-    } else {
-        Reject::terminal(reject.code, reject.detail)
-    }
-}
-
-fn map_fee_hint_field_parse_error_to_reject(error: FeeHintFieldParseError) -> Reject {
-    match error {
-        FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent { field } => {
-            Reject::terminal(
-                "submit_adapter_invalid_response",
-                format!("{} must be non-negative integer when present", field),
-            )
-        }
-    }
-}
-
-fn map_idempotency_error_to_reject(error: anyhow::Error) -> Reject {
-    Reject::retryable(
-        "idempotency_store_unavailable",
-        format!("idempotency store unavailable: {}", error),
-    )
-}
-
-fn map_submit_tip_policy_error_to_reject(error: SubmitTipPolicyError) -> Reject {
-    match error {
-        SubmitTipPolicyError::TipExceedsMax {
-            tip_lamports: _,
-            max_lamports,
-        } => Reject::terminal(
-            "invalid_tip_lamports",
-            format!("tip_lamports exceeds max {}", max_lamports),
-        ),
-        SubmitTipPolicyError::TipNotAllowed { .. } => Reject::terminal(
-            "tip_not_supported",
-            "non-zero tip_lamports is disabled in executor config",
-        ),
-    }
-}
-
-fn map_slippage_validation_error_to_reject(error: SlippageValidationError) -> Reject {
-    match error {
-        SlippageValidationError::SlippageOutOfRange { .. } => Reject::terminal(
-            "invalid_slippage_bps",
-            "slippage_bps must be finite and > 0",
-        ),
-        SlippageValidationError::RouteCapOutOfRange { .. } => Reject::terminal(
-            "invalid_route_slippage_cap_bps",
-            "route_slippage_cap_bps must be finite and > 0",
-        ),
-        SlippageValidationError::ExceedsRouteCap {
-            slippage_bps,
-            route_slippage_cap_bps,
-        } => Reject::terminal(
-            "slippage_exceeds_route_cap",
-            format!(
-                "slippage_bps={} exceeds route_slippage_cap_bps={}",
-                slippage_bps, route_slippage_cap_bps
-            ),
-        ),
-    }
-}
-
-fn map_compute_budget_validation_error_to_reject(error: ComputeBudgetValidationError) -> Reject {
-    match error {
-        ComputeBudgetValidationError::CuLimitOutOfRange { min, max, .. } => Reject::terminal(
-            "invalid_compute_budget",
-            format!("compute_budget.cu_limit must be in {}..={}", min, max),
-        ),
-        ComputeBudgetValidationError::CuPriceOutOfRange { min, max, .. } => Reject::terminal(
-            "invalid_compute_budget",
-            format!(
-                "compute_budget.cu_price_micro_lamports must be in {}..={}",
-                min, max
-            ),
-        ),
-    }
-}
-
-fn map_submit_transport_artifact_error_to_reject(error: SubmitTransportArtifactError) -> Reject {
-    match error {
-        SubmitTransportArtifactError::InvalidUpstreamSignature { error } => Reject::retryable(
-            "submit_adapter_invalid_response",
-            format!("upstream tx_signature is not valid base58 signature: {}", error),
-        ),
-        SubmitTransportArtifactError::MissingSubmitArtifact => Reject::retryable(
-            "submit_adapter_invalid_response",
-            "upstream response missing tx_signature and signed_tx_base64",
-        ),
-    }
-}
-
-fn map_submit_response_validation_error_to_reject(error: SubmitResponseValidationError) -> Reject {
-    match error {
-        SubmitResponseValidationError::RouteMismatch {
-            response_route,
-            expected_route,
-        } => Reject::terminal(
-            "submit_adapter_route_mismatch",
-            format!(
-                "upstream route={} does not match requested route={}",
-                response_route, expected_route
-            ),
-        ),
-        SubmitResponseValidationError::ContractVersionMismatch {
-            response_contract_version,
-            expected_contract_version,
-        } => Reject::terminal(
-            "submit_adapter_contract_version_mismatch",
-            format!(
-                "upstream contract_version={} does not match expected={}",
-                response_contract_version, expected_contract_version
-            ),
-        ),
-        SubmitResponseValidationError::ClientOrderIdMismatch {
-            response_client_order_id,
-            expected_client_order_id,
-        } => Reject::terminal(
-            "submit_adapter_client_order_id_mismatch",
-            format!(
-                "upstream client_order_id={} does not match expected client_order_id={}",
-                response_client_order_id, expected_client_order_id
-            ),
-        ),
-        SubmitResponseValidationError::RequestIdMismatch {
-            response_request_id,
-            expected_request_id,
-        } => Reject::terminal(
-            "submit_adapter_request_id_mismatch",
-            format!(
-                "upstream request_id={} does not match expected request_id={}",
-                response_request_id, expected_request_id
-            ),
-        ),
-        SubmitResponseValidationError::SubmittedAtMustBeNonEmptyRfc3339 => Reject::terminal(
-            "submit_adapter_invalid_response",
-            "submitted_at must be non-empty RFC3339 string",
-        ),
-        SubmitResponseValidationError::SubmittedAtInvalidRfc3339 { raw } => Reject::terminal(
-            "submit_adapter_invalid_response",
-            format!("submitted_at is not valid RFC3339: {}", raw),
-        ),
-    }
-}
-
-fn map_forward_payload_build_error_to_reject(error: ForwardPayloadBuildError) -> Reject {
-    match error {
-        ForwardPayloadBuildError::InvalidJson(detail) => {
-            Reject::terminal("invalid_request_body", detail)
-        }
-        ForwardPayloadBuildError::RootNotObject => Reject::terminal(
-            "invalid_request_body",
-            "submit request body must be JSON object",
-        ),
-        ForwardPayloadBuildError::Encode(detail) => {
-            Reject::terminal("invalid_request_body", detail)
-        }
-    }
-}
-
-fn reject_to_json(reject: &Reject, client_order_id: Option<&str>, contract_version: &str) -> Value {
-    let mut payload = json!({
-        "status": "reject",
-        "ok": false,
-        "accepted": false,
-        "retryable": reject.retryable,
-        "code": reject.code,
-        "detail": reject.detail,
-        "contract_version": contract_version,
-    });
-    if let Some(client_order_id) = client_order_id {
-        payload["client_order_id"] = Value::String(client_order_id.to_string());
-    }
-    payload
-}
-
-fn simulate_http_status_for_reject(_reject: &Reject) -> StatusCode {
-    StatusCode::OK
 }
 
 fn parse_socket_addr(value: String) -> Result<SocketAddr> {
