@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::Deserialize;
@@ -29,6 +29,7 @@ mod fee_hints;
 mod common_contract;
 mod idempotency;
 mod key_validation;
+mod rfc3339_time;
 mod route_allowlist;
 mod route_backend;
 mod route_normalization;
@@ -53,6 +54,7 @@ use crate::http_utils::{
 };
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
+use crate::rfc3339_time::parse_rfc3339_utc;
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_normalization::normalize_route;
@@ -1913,12 +1915,6 @@ fn get_required_header<'a>(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| Reject::terminal(err_code, format!("missing header {}", key)))
-}
-
-fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value.trim())
-        .ok()
-        .map(|value| value.with_timezone(&Utc))
 }
 
 fn is_valid_contract_version_token(value: &str) -> bool {

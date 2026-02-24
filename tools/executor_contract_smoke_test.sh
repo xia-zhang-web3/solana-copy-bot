@@ -91,6 +91,7 @@ contract_guard_tests=(
   "resolve_fee_hints_rejects_derived_priority_fee_overflow"
   "parse_response_fee_hint_fields_rejects_invalid_field_type"
   "submit_transport_extract_rejects_missing_artifacts"
+  "parse_rfc3339_utc_parses_valid_timestamp"
   "submit_response_resolve_submitted_at_rejects_invalid_rfc3339"
   "submit_payload_includes_tip_policy_when_present"
   "simulate_response_validation_rejects_route_mismatch"

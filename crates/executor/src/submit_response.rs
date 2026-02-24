@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use crate::route_normalization::normalize_route;
+use crate::rfc3339_time::parse_rfc3339_utc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SubmitResponseValidationError {
@@ -112,12 +113,6 @@ pub(crate) fn resolve_submit_response_submitted_at(
     parse_rfc3339_utc(raw).ok_or_else(|| SubmitResponseValidationError::SubmittedAtInvalidRfc3339 {
         raw: raw.to_string(),
     })
-}
-
-fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value.trim())
-        .ok()
-        .map(|value| value.with_timezone(&Utc))
 }
 
 #[cfg(test)]
