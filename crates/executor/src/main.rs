@@ -59,7 +59,7 @@ mod upstream_outcome;
 use crate::auth_mode::require_authenticated_mode;
 use crate::auth_verifier::AuthVerifier;
 use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
-use crate::contract_version::is_valid_contract_version_token;
+use crate::contract_version::parse_contract_version;
 use crate::env_parsing::{
     non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_socket_addr_str,
     parse_u64_env,
@@ -179,18 +179,9 @@ impl ExecutorConfig {
         let bind_addr =
             parse_socket_addr_str("COPYBOT_EXECUTOR_BIND_ADDR", bind_addr_raw.as_str())?;
 
-        let contract_version = env::var("COPYBOT_EXECUTOR_CONTRACT_VERSION")
-            .unwrap_or_else(|_| "v1".to_string())
-            .trim()
-            .to_string();
-        if contract_version.is_empty()
-            || contract_version.len() > 64
-            || !is_valid_contract_version_token(&contract_version)
-        {
-            return Err(anyhow!(
-                "COPYBOT_EXECUTOR_CONTRACT_VERSION must be non-empty token [A-Za-z0-9._-], len<=64"
-            ));
-        }
+        let contract_version_raw =
+            env::var("COPYBOT_EXECUTOR_CONTRACT_VERSION").unwrap_or_else(|_| "v1".to_string());
+        let contract_version = parse_contract_version(contract_version_raw.as_str())?;
 
         let signer_pubkey = non_empty_env("COPYBOT_EXECUTOR_SIGNER_PUBKEY")?;
         validate_pubkey_like(signer_pubkey.as_str()).map_err(|error| {
