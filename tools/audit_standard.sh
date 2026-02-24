@@ -42,19 +42,25 @@ collect_changed_files() {
 }
 
 package_for_crate() {
-  case "$1" in
-    adapter) printf 'copybot-adapter' ;;
-    app) printf 'copybot-app' ;;
-    config) printf 'copybot-config' ;;
-    core-types) printf 'copybot-core-types' ;;
-    discovery) printf 'copybot-discovery' ;;
-    execution) printf 'copybot-execution' ;;
-    executor) printf 'copybot-executor' ;;
-    ingestion) printf 'copybot-ingestion' ;;
-    shadow) printf 'copybot-shadow' ;;
-    storage) printf 'copybot-storage' ;;
-    *) printf '' ;;
-  esac
+  local crate_name="$1"
+  local manifest_path="$ROOT_DIR/crates/$crate_name/Cargo.toml"
+
+  if [[ ! -f "$manifest_path" ]]; then
+    printf ''
+    return
+  fi
+
+  awk '
+    /^\[package\]/ { in_package = 1; next }
+    /^\[/ { if (in_package) exit }
+    in_package && /^[[:space:]]*name[[:space:]]*=/ {
+      line = $0
+      sub(/^[[:space:]]*name[[:space:]]*=[[:space:]]*"/, "", line)
+      sub(/".*$/, "", line)
+      print line
+      exit
+    }
+  ' "$manifest_path"
 }
 
 add_unique_package() {
