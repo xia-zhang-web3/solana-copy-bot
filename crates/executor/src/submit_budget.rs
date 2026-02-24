@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::{route_backend::{RouteBackend, UpstreamAction}, submit_verify::SubmitSignatureVerifyConfig};
+use crate::{
+    route_backend::{RouteBackend, UpstreamAction},
+    submit_verify_config::SubmitSignatureVerifyConfig,
+};
 
 pub(crate) const DEFAULT_SUBMIT_TOTAL_BUDGET_MS: u64 = 7_000;
 const CLAIM_TTL_SAFETY_PADDING_MS: u64 = 1_000;
