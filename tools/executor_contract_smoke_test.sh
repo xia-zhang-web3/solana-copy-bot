@@ -63,6 +63,7 @@ contract_guard_tests=(
   "handle_simulate_rejects_upstream_route_mismatch"
   "validate_fastlane_route_policy_enforces_feature_gate"
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
+  "common_contract_validation_rejects_invalid_side"
   "parse_route_allowlist_rejects_unknown_route"
   "key_validation_accepts_pubkey_and_signature_shapes"
   "normalize_route_trims_and_lowercases"

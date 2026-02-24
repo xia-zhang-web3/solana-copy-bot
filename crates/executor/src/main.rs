@@ -26,6 +26,7 @@ use tracing_subscriber::EnvFilter;
 
 mod http_utils;
 mod fee_hints;
+mod common_contract;
 mod idempotency;
 mod key_validation;
 mod route_backend;
@@ -45,6 +46,7 @@ use crate::fee_hints::{
     parse_response_fee_hint_fields, resolve_fee_hints, FeeHintError, FeeHintFieldParseError,
     FeeHintInputs,
 };
+use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs, CommonContractValidationError};
 use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
@@ -698,22 +700,6 @@ impl AuthVerifier {
         }
 
         Ok(())
-    }
-}
-
-#[derive(Debug)]
-enum Side {
-    Buy,
-    Sell,
-}
-
-impl Side {
-    fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "buy" => Some(Self::Buy),
-            "sell" => Some(Self::Sell),
-            _ => None,
-        }
     }
 }
 
@@ -1492,65 +1478,18 @@ fn validate_common_contract(
     token: &str,
     notional_sol: f64,
 ) -> std::result::Result<(), Reject> {
-    let contract_version = request_contract_version
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            Reject::terminal(
-                "contract_version_missing",
-                "contract_version must be provided",
-            )
-        })?;
-    if contract_version != state.config.contract_version {
-        return Err(Reject::terminal(
-            "contract_version_mismatch",
-            format!(
-                "contract_version={} does not match expected={}",
-                contract_version, state.config.contract_version
-            ),
-        ));
-    }
-
-    let route = normalize_route(route);
-    if !state.config.route_allowlist.contains(route.as_str()) {
-        return Err(Reject::terminal(
-            "route_not_allowed",
-            format!("route={} is not allowed", route),
-        ));
-    }
-    if requires_submit_fastlane_enabled(route.as_str()) && !state.config.submit_fastlane_enabled {
-        return Err(Reject::terminal(
-            "fastlane_not_enabled",
-            "route=fastlane requires COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=true",
-        ));
-    }
-
-    if Side::parse(side).is_none() {
-        return Err(Reject::terminal("invalid_side", "side must be buy|sell"));
-    }
-    if token.trim().is_empty() {
-        return Err(Reject::terminal("invalid_token", "token must be non-empty"));
-    }
-    validate_pubkey_like(token.trim())
-        .map_err(|error| Reject::terminal("invalid_token", error.to_string()))?;
-
-    if !notional_sol.is_finite() || notional_sol <= 0.0 {
-        return Err(Reject::terminal(
-            "invalid_notional_sol",
-            "notional_sol must be finite and > 0",
-        ));
-    }
-    if notional_sol > state.config.max_notional_sol {
-        return Err(Reject::terminal(
-            "notional_too_high",
-            format!(
-                "notional_sol={} exceeds executor max_notional_sol={}",
-                notional_sol, state.config.max_notional_sol
-            ),
-        ));
-    }
-
-    Ok(())
+    validate_common_contract_inputs(CommonContractInputs {
+        request_contract_version,
+        expected_contract_version: state.config.contract_version.as_str(),
+        route,
+        route_allowlist: &state.config.route_allowlist,
+        submit_fastlane_enabled: state.config.submit_fastlane_enabled,
+        side,
+        token,
+        notional_sol,
+        max_notional_sol: state.config.max_notional_sol,
+    })
+    .map_err(map_common_contract_validation_error_to_reject)
 }
 
 fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
@@ -1575,6 +1514,56 @@ fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
         FeeHintError::FieldExceedsI64 { field, value } => Reject::terminal(
             "submit_adapter_invalid_response",
             format!("{}={} exceeds i64::MAX", field, value),
+        ),
+    }
+}
+
+fn map_common_contract_validation_error_to_reject(error: CommonContractValidationError) -> Reject {
+    match error {
+        CommonContractValidationError::ContractVersionMissing => Reject::terminal(
+            "contract_version_missing",
+            "contract_version must be provided",
+        ),
+        CommonContractValidationError::ContractVersionMismatch {
+            contract_version,
+            expected_contract_version,
+        } => Reject::terminal(
+            "contract_version_mismatch",
+            format!(
+                "contract_version={} does not match expected={}",
+                contract_version, expected_contract_version
+            ),
+        ),
+        CommonContractValidationError::RouteNotAllowed { route } => Reject::terminal(
+            "route_not_allowed",
+            format!("route={} is not allowed", route),
+        ),
+        CommonContractValidationError::FastlaneNotEnabled => Reject::terminal(
+            "fastlane_not_enabled",
+            "route=fastlane requires COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=true",
+        ),
+        CommonContractValidationError::InvalidSide => {
+            Reject::terminal("invalid_side", "side must be buy|sell")
+        }
+        CommonContractValidationError::InvalidTokenEmpty => {
+            Reject::terminal("invalid_token", "token must be non-empty")
+        }
+        CommonContractValidationError::InvalidTokenShape { error } => {
+            Reject::terminal("invalid_token", error)
+        }
+        CommonContractValidationError::InvalidNotional => Reject::terminal(
+            "invalid_notional_sol",
+            "notional_sol must be finite and > 0",
+        ),
+        CommonContractValidationError::NotionalTooHigh {
+            notional_sol,
+            max_notional_sol,
+        } => Reject::terminal(
+            "notional_too_high",
+            format!(
+                "notional_sol={} exceeds executor max_notional_sol={}",
+                notional_sol, max_notional_sol
+            ),
         ),
     }
 }
