@@ -58,6 +58,8 @@ contract_guard_tests=(
   "simulate_reject_status_is_http_200_for_retryable_and_terminal"
   "require_authenticated_mode_fails_closed_by_default"
   "resolve_signer_source_config_rejects_keypair_pubkey_mismatch"
+  "resolve_secret_source_rejects_inline_and_file_conflict"
+  "resolve_secret_source_reads_trimmed_file"
   "handle_simulate_rejects_empty_request_id"
   "handle_simulate_rejects_empty_signal_id"
   "handle_simulate_rejects_upstream_route_mismatch"

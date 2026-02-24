@@ -36,6 +36,7 @@ mod route_backend;
 mod route_normalization;
 mod route_policy;
 mod send_rpc;
+mod secret_source;
 mod simulate_response;
 mod submit_deadline;
 mod submit_payload;
@@ -64,6 +65,7 @@ use crate::rfc3339_time::parse_rfc3339_utc;
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_normalization::normalize_route;
+use crate::secret_source::{resolve_secret_source, secret_file_has_restrictive_permissions};
 #[cfg(test)]
 use crate::route_policy::apply_submit_tip_policy;
 use crate::send_rpc::send_signed_transaction_via_rpc;
@@ -1790,74 +1792,6 @@ fn parse_socket_addr(value: String) -> Result<SocketAddr> {
         .trim()
         .parse::<SocketAddr>()
         .map_err(|error| anyhow!("invalid COPYBOT_EXECUTOR_BIND_ADDR: {}", error))
-}
-
-fn resolve_secret_source(
-    inline_name: &str,
-    inline_value: Option<&str>,
-    file_name: &str,
-    file_value: Option<&str>,
-) -> Result<Option<String>> {
-    let inline_secret = inline_value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    let file_path = file_value.map(str::trim).filter(|value| !value.is_empty());
-
-    if inline_secret.is_some() && file_path.is_some() {
-        return Err(anyhow!(
-            "{} and {} cannot both be set",
-            inline_name,
-            file_name
-        ));
-    }
-
-    if let Some(path) = file_path {
-        let secret = read_trimmed_secret_file(path)
-            .with_context(|| format!("{} invalid file source path={}", file_name, path))?;
-        return Ok(Some(secret));
-    }
-
-    Ok(inline_secret)
-}
-
-fn read_trimmed_secret_file(path: &str) -> Result<String> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("secret file not found/readable path={}", path))?;
-    match secret_file_has_restrictive_permissions(path) {
-        Ok(false) => {
-            warn!(
-                path = %path,
-                "secret file permissions are broader than recommended; expected owner-only access (e.g. 0600/0400)"
-            );
-        }
-        Ok(true) => {}
-        Err(error) => {
-            warn!(
-                path = %path,
-                error = %error,
-                "unable to inspect secret file permissions"
-            );
-        }
-    }
-    let secret = raw.trim().to_string();
-    if secret.is_empty() {
-        return Err(anyhow!("secret file is empty path={}", path));
-    }
-    Ok(secret)
-}
-
-#[cfg(unix)]
-fn secret_file_has_restrictive_permissions(path: &str) -> Result<bool> {
-    use std::os::unix::fs::PermissionsExt;
-    let metadata =
-        fs::metadata(path).with_context(|| format!("secret file stat failed path={}", path))?;
-    Ok((metadata.permissions().mode() & 0o077) == 0)
-}
-
-#[cfg(not(unix))]
-fn secret_file_has_restrictive_permissions(_path: &str) -> Result<bool> {
-    Ok(true)
 }
 
 fn get_required_header<'a>(
