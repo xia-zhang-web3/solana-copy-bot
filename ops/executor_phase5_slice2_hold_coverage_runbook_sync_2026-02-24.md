@@ -14,8 +14,7 @@
 
 ## Regression Pack (quick/standard)
 
-1. `bash -n tools/ops_scripts_smoke_test.sh ops/adapter_backend_runbook.md ops/execution_devnet_rehearsal_runbook.md ROAD_TO_PRODUCTION.md` — PASS
+1. `bash -n tools/ops_scripts_smoke_test.sh` — PASS
 2. `bash tools/executor_contract_smoke_test.sh` — PASS
 3. From previously started smoke run, new case reached and passed before abort:
    1. `[ok] executor rollout/final evidence helpers`
-
