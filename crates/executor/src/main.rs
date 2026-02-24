@@ -56,19 +56,20 @@ const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
 
 #[derive(Clone)]
 struct AppState {
-    config: AdapterConfig,
+    config: ExecutorConfig,
     http: Client,
     auth: Arc<AuthVerifier>,
 }
 
 #[derive(Clone)]
-struct AdapterConfig {
+struct ExecutorConfig {
     bind_addr: SocketAddr,
     contract_version: String,
     signer_pubkey: String,
     signer_source: SignerSource,
     signer_keypair_file: Option<String>,
     signer_kms_key_id: Option<String>,
+    submit_fastlane_enabled: bool,
     route_allowlist: HashSet<String>,
     route_backends: HashMap<String, RouteBackend>,
     bearer_token: Option<String>,
@@ -110,7 +111,7 @@ impl SignerSource {
     }
 }
 
-impl AdapterConfig {
+impl ExecutorConfig {
     fn from_env() -> Result<Self> {
         let bind_addr = parse_socket_addr(
             env::var("COPYBOT_EXECUTOR_BIND_ADDR")
@@ -143,16 +144,19 @@ impl AdapterConfig {
             optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID").as_deref(),
             signer_pubkey.as_str(),
         )?;
+        let submit_fastlane_enabled =
+            parse_bool_env("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED", false);
 
         let route_allowlist = parse_route_allowlist(
             env::var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST")
-                .unwrap_or_else(|_| "paper,rpc,fastlane,jito".to_string()),
+                .unwrap_or_else(|_| "paper,rpc,jito".to_string()),
         )?;
         if route_allowlist.is_empty() {
             return Err(anyhow!(
                 "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST must contain at least one route"
             ));
         }
+        validate_fastlane_route_policy(&route_allowlist, submit_fastlane_enabled)?;
 
         let default_submit = optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL");
         let default_submit_fallback =
@@ -414,6 +418,7 @@ impl AdapterConfig {
             signer_source,
             signer_keypair_file: optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE"),
             signer_kms_key_id: optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID"),
+            submit_fastlane_enabled,
             route_allowlist,
             route_backends,
             bearer_token,
@@ -443,7 +448,7 @@ struct HmacConfig {
 }
 
 impl AuthVerifier {
-    fn new(config: &AdapterConfig) -> Self {
+    fn new(config: &ExecutorConfig) -> Self {
         let hmac = match (&config.hmac_key_id, &config.hmac_secret) {
             (Some(key_id), Some(secret)) => Some(HmacConfig {
                 key_id: key_id.clone(),
@@ -660,7 +665,7 @@ async fn main() -> Result<()> {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
-    let config = AdapterConfig::from_env()?;
+    let config = ExecutorConfig::from_env()?;
     let http = Client::builder()
         .timeout(Duration::from_millis(config.request_timeout_ms.max(500)))
         .build()
@@ -683,6 +688,7 @@ async fn main() -> Result<()> {
         signer_keypair_file_configured = state.config.signer_keypair_file.is_some(),
         contract_version = %state.config.contract_version,
         routes = ?state.config.route_allowlist,
+        submit_fastlane_enabled = state.config.submit_fastlane_enabled,
         submit_signature_verify_enabled = state.config.submit_signature_verify.is_some(),
         submit_signature_verify_strict = state
             .config
@@ -708,6 +714,7 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
         "signer_source": state.config.signer_source.as_str(),
         "signer_kms_key_id_configured": state.config.signer_kms_key_id.is_some(),
         "signer_keypair_file_configured": state.config.signer_keypair_file.is_some(),
+        "submit_fastlane_enabled": state.config.submit_fastlane_enabled,
         "signer_pubkey": state.config.signer_pubkey,
         "routes": state.config.route_allowlist,
     }))
@@ -1494,6 +1501,12 @@ fn validate_common_contract(
             format!("route={} is not allowed", route),
         ));
     }
+    if route == "fastlane" && !state.config.submit_fastlane_enabled {
+        return Err(Reject::terminal(
+            "fastlane_not_enabled",
+            "route=fastlane requires COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=true",
+        ));
+    }
 
     if Side::parse(side).is_none() {
         return Err(Reject::terminal("invalid_side", "side must be buy|sell"));
@@ -1697,6 +1710,18 @@ fn parse_route_allowlist(csv: String) -> Result<HashSet<String>> {
         routes.insert(route);
     }
     Ok(routes)
+}
+
+fn validate_fastlane_route_policy(
+    route_allowlist: &HashSet<String>,
+    submit_fastlane_enabled: bool,
+) -> Result<()> {
+    if !submit_fastlane_enabled && route_allowlist.contains("fastlane") {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false"
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_route(value: &str) -> String {
@@ -1942,6 +1967,13 @@ mod tests {
         assert!(routes.contains("jito"));
         assert!(routes.contains("fastlane"));
         assert_eq!(routes.len(), 3);
+    }
+
+    #[test]
+    fn validate_fastlane_route_policy_enforces_feature_gate() {
+        let routes = parse_route_allowlist("rpc,fastlane".to_string()).unwrap();
+        assert!(validate_fastlane_route_policy(&routes, false).is_err());
+        assert!(validate_fastlane_route_policy(&routes, true).is_ok());
     }
 
     #[test]
@@ -2895,13 +2927,14 @@ mod tests {
                 send_rpc_fallback_auth_token: None,
             },
         );
-        let config = AdapterConfig {
+        let config = ExecutorConfig {
             bind_addr: "127.0.0.1:8080".parse().expect("valid bind"),
             contract_version: "v1".to_string(),
             signer_pubkey: "11111111111111111111111111111111".to_string(),
             signer_source: SignerSource::File,
             signer_keypair_file: Some("/tmp/copybot-executor-test-keypair.json".to_string()),
             signer_kms_key_id: None,
+            submit_fastlane_enabled: false,
             route_allowlist,
             route_backends,
             bearer_token: None,

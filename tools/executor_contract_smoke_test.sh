@@ -55,6 +55,9 @@ contract_guard_tests=(
   "simulate_reject_status_is_http_200_for_retryable_and_terminal"
   "require_authenticated_mode_fails_closed_by_default"
   "resolve_signer_source_config_rejects_keypair_pubkey_mismatch"
+  "handle_simulate_rejects_empty_request_id"
+  "handle_simulate_rejects_empty_signal_id"
+  "validate_fastlane_route_policy_enforces_feature_gate"
 )
 
 for test_name in "${contract_guard_tests[@]}"; do

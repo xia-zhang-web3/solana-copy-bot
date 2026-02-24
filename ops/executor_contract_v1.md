@@ -171,6 +171,7 @@ Route-specific slippage/tip semantics:
 2. `tip_lamports`:
    1. `jito|fastlane` routes apply tip according to route instruction model,
    2. `rpc` route treats tip as non-applicable (ignored or coerced to zero by policy with explicit trace).
+3. `fastlane` route MUST be explicitly enabled by executor feature flag (`COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=true`); otherwise requests to `fastlane` are terminal rejects.
 
 ## 6.2 Blockhash lifecycle
 
