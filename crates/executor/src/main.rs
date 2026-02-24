@@ -35,7 +35,10 @@ mod submit_transport;
 mod submit_verify;
 mod tx_build;
 
-use crate::fee_hints::{resolve_fee_hints, FeeHintError, FeeHintInputs};
+use crate::fee_hints::{
+    parse_response_fee_hint_fields, resolve_fee_hints, FeeHintError, FeeHintFieldParseError,
+    FeeHintInputs,
+};
 use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
@@ -1323,20 +1326,14 @@ async fn handle_submit(
     let submitted_at = resolve_submit_response_submitted_at(&backend_response, Utc::now())
         .map_err(map_submit_response_validation_error_to_reject)?;
 
-    let ata_create_rent_lamports =
-        parse_optional_non_negative_u64_field(&backend_response, "ata_create_rent_lamports")?;
-    let response_network_fee =
-        parse_optional_non_negative_u64_field(&backend_response, "network_fee_lamports")?;
-    let response_base_fee =
-        parse_optional_non_negative_u64_field(&backend_response, "base_fee_lamports")?;
-    let response_priority_fee =
-        parse_optional_non_negative_u64_field(&backend_response, "priority_fee_lamports")?;
+    let parsed_response_fee_hints = parse_response_fee_hint_fields(&backend_response)
+        .map_err(map_fee_hint_field_parse_error_to_reject)?;
 
     let resolved_fee_hints = resolve_fee_hints(FeeHintInputs {
-        response_network_fee_lamports: response_network_fee,
-        response_base_fee_lamports: response_base_fee,
-        response_priority_fee_lamports: response_priority_fee,
-        response_ata_create_rent_lamports: ata_create_rent_lamports,
+        response_network_fee_lamports: parsed_response_fee_hints.network_fee_lamports,
+        response_base_fee_lamports: parsed_response_fee_hints.base_fee_lamports,
+        response_priority_fee_lamports: parsed_response_fee_hints.priority_fee_lamports,
+        response_ata_create_rent_lamports: parsed_response_fee_hints.ata_create_rent_lamports,
         request_cu_limit: request.compute_budget.cu_limit,
         request_cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
         default_base_fee_lamports: DEFAULT_BASE_FEE_LAMPORTS,
@@ -1698,25 +1695,6 @@ fn validate_common_contract(
     Ok(())
 }
 
-fn parse_optional_non_negative_u64_field(
-    body: &Value,
-    field: &str,
-) -> std::result::Result<Option<u64>, Reject> {
-    let Some(value) = body.get(field) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    if let Some(parsed) = value.as_u64() {
-        return Ok(Some(parsed));
-    }
-    Err(Reject::terminal(
-        "submit_adapter_invalid_response",
-        format!("{} must be non-negative integer when present", field),
-    ))
-}
-
 fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
     match error {
         FeeHintError::DerivedPriorityFeeExceedsU64 { .. } => Reject::terminal(
@@ -1740,6 +1718,17 @@ fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
             "submit_adapter_invalid_response",
             format!("{}={} exceeds i64::MAX", field, value),
         ),
+    }
+}
+
+fn map_fee_hint_field_parse_error_to_reject(error: FeeHintFieldParseError) -> Reject {
+    match error {
+        FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent { field } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!("{} must be non-negative integer when present", field),
+            )
+        }
     }
 }
 
@@ -3361,6 +3350,58 @@ mod tests {
         assert_eq!(reject.code, "submit_adapter_invalid_response");
         assert!(
             reject.detail.contains("submitted_at is not valid RFC3339"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_invalid_fee_hint_field_type_from_upstream_response() {
+        let signature = bs58::encode([24u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","network_fee_lamports":"5300"}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-invalid-fee-field-1",
+            "client_order_id": "client-order-invalid-fee-field-1",
+            "request_id": "request-invalid-fee-field-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("invalid fee hint field type should reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("network_fee_lamports must be non-negative integer when present"),
             "unexpected detail: {}",
             reject.detail
         );

@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FeeHintInputs {
     pub(crate) response_network_fee_lamports: Option<u64>,
@@ -7,6 +9,14 @@ pub(crate) struct FeeHintInputs {
     pub(crate) request_cu_limit: u32,
     pub(crate) request_cu_price_micro_lamports: u64,
     pub(crate) default_base_fee_lamports: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ParsedResponseFeeHints {
+    pub(crate) network_fee_lamports: Option<u64>,
+    pub(crate) base_fee_lamports: Option<u64>,
+    pub(crate) priority_fee_lamports: Option<u64>,
+    pub(crate) ata_create_rent_lamports: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +41,30 @@ pub(crate) enum FeeHintError {
         field: &'static str,
         value: u64,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FeeHintFieldParseError {
+    FieldMustBeNonNegativeIntegerWhenPresent {
+        field: &'static str,
+    },
+}
+
+pub(crate) fn parse_response_fee_hint_fields(
+    body: &Value,
+) -> Result<ParsedResponseFeeHints, FeeHintFieldParseError> {
+    Ok(ParsedResponseFeeHints {
+        network_fee_lamports: parse_optional_non_negative_u64_field(body, "network_fee_lamports")?,
+        base_fee_lamports: parse_optional_non_negative_u64_field(body, "base_fee_lamports")?,
+        priority_fee_lamports: parse_optional_non_negative_u64_field(
+            body,
+            "priority_fee_lamports",
+        )?,
+        ata_create_rent_lamports: parse_optional_non_negative_u64_field(
+            body,
+            "ata_create_rent_lamports",
+        )?,
+    })
 }
 
 pub(crate) fn resolve_fee_hints(inputs: FeeHintInputs) -> Result<ResolvedFeeHints, FeeHintError> {
@@ -85,6 +119,22 @@ pub(crate) fn resolve_fee_hints(inputs: FeeHintInputs) -> Result<ResolvedFeeHint
     })
 }
 
+fn parse_optional_non_negative_u64_field(
+    body: &Value,
+    field: &'static str,
+) -> Result<Option<u64>, FeeHintFieldParseError> {
+    let Some(value) = body.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    if let Some(parsed) = value.as_u64() {
+        return Ok(Some(parsed));
+    }
+    Err(FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent { field })
+}
+
 fn derive_priority_fee_lamports(
     cu_limit: u32,
     cu_price_micro_lamports: u64,
@@ -97,7 +147,41 @@ fn derive_priority_fee_lamports(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_fee_hints, FeeHintError, FeeHintInputs, ResolvedFeeHints};
+    use super::{
+        parse_response_fee_hint_fields, resolve_fee_hints, FeeHintError, FeeHintFieldParseError,
+        FeeHintInputs, ParsedResponseFeeHints, ResolvedFeeHints,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn parse_response_fee_hint_fields_accepts_missing_values() {
+        let body = json!({});
+        let parsed = parse_response_fee_hint_fields(&body).expect("missing values are optional");
+        assert_eq!(
+            parsed,
+            ParsedResponseFeeHints {
+                network_fee_lamports: None,
+                base_fee_lamports: None,
+                priority_fee_lamports: None,
+                ata_create_rent_lamports: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_response_fee_hint_fields_rejects_invalid_field_type() {
+        let body = json!({
+            "network_fee_lamports": "5000"
+        });
+        let error =
+            parse_response_fee_hint_fields(&body).expect_err("string value must be rejected");
+        assert_eq!(
+            error,
+            FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent {
+                field: "network_fee_lamports",
+            }
+        );
+    }
 
     #[test]
     fn resolve_fee_hints_uses_defaults_when_response_hints_missing() {

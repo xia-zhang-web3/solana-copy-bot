@@ -71,6 +71,7 @@ contract_guard_tests=(
   "handle_submit_rejects_slippage_exceeding_route_cap"
   "handle_submit_rejects_when_upstream_missing_transport_artifacts"
   "handle_submit_rejects_invalid_submitted_at_in_upstream_response"
+  "handle_submit_rejects_invalid_fee_hint_field_type_from_upstream_response"
   "handle_submit_returns_cached_response_for_duplicate_client_order_id"
   "handle_submit_rejects_parallel_duplicate_client_order_id_in_flight"
   "handle_submit_returns_canonical_cached_response_when_store_conflicts"
@@ -83,6 +84,7 @@ contract_guard_tests=(
   "send_signed_transaction_via_rpc_treats_blockhash_expired_payload_as_terminal"
   "send_signed_transaction_via_rpc_rejects_fallback_without_primary_url"
   "resolve_fee_hints_rejects_derived_priority_fee_overflow"
+  "parse_response_fee_hint_fields_rejects_invalid_field_type"
   "submit_transport_extract_rejects_missing_artifacts"
   "submit_response_resolve_submitted_at_rejects_invalid_rfc3339"
 )
