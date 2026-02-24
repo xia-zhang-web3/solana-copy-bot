@@ -29,6 +29,7 @@ mod fee_hints;
 mod common_contract;
 mod idempotency;
 mod key_validation;
+mod route_allowlist;
 mod route_backend;
 mod route_normalization;
 mod route_policy;
@@ -52,11 +53,11 @@ use crate::http_utils::{
 };
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
+use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_normalization::normalize_route;
 #[cfg(test)]
 use crate::route_policy::apply_submit_tip_policy;
-use crate::route_policy::requires_submit_fastlane_enabled;
 use crate::send_rpc::send_signed_transaction_via_rpc;
 use crate::simulate_response::{
     build_simulate_success_payload, resolve_simulate_response_detail,
@@ -104,7 +105,6 @@ const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
 const DEFAULT_SUBMIT_TOTAL_BUDGET_MS: u64 = 7_000;
 const DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC: u64 = 60;
 const CLAIM_TTL_SAFETY_PADDING_MS: u64 = 1_000;
-const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
 
 #[derive(Clone)]
 struct AppState {
@@ -1900,40 +1900,6 @@ fn parse_bool_env(name: &str, default: bool) -> bool {
         ),
         Err(_) => default,
     }
-}
-
-fn parse_route_allowlist(csv: String) -> Result<HashSet<String>> {
-    let mut routes = HashSet::new();
-    for raw in csv.split(',') {
-        let route = normalize_route(raw);
-        if route.is_empty() {
-            continue;
-        }
-        if !KNOWN_ROUTES.iter().any(|known| *known == route) {
-            return Err(anyhow!(
-                "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains unsupported route={} (supported: paper,rpc,jito,fastlane)",
-                route
-            ));
-        }
-        routes.insert(route);
-    }
-    Ok(routes)
-}
-
-fn validate_fastlane_route_policy(
-    route_allowlist: &HashSet<String>,
-    submit_fastlane_enabled: bool,
-) -> Result<()> {
-    if !submit_fastlane_enabled {
-        for route in route_allowlist {
-            if requires_submit_fastlane_enabled(route.as_str()) {
-                return Err(anyhow!(
-                    "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false"
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn get_required_header<'a>(
