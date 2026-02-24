@@ -178,21 +178,27 @@ impl SubmitIdempotencyStore {
         Ok(changed > 0)
     }
 
-    pub(crate) fn release_submit_claim(&self, client_order_id: &str) -> Result<()> {
+    pub(crate) fn release_submit_claim(
+        &self,
+        client_order_id: &str,
+        request_id: &str,
+    ) -> Result<bool> {
         let key = client_order_id.trim();
-        if key.is_empty() {
-            return Ok(());
+        let req = request_id.trim();
+        if key.is_empty() || req.is_empty() {
+            return Ok(false);
         }
         let conn = self
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?;
-        conn.execute(
-            "DELETE FROM executor_submit_idempotency_claims WHERE client_order_id = ?1",
-            params![key],
-        )
-        .context("idempotency claim release failed")?;
-        Ok(())
+        let removed = conn
+            .execute(
+                "DELETE FROM executor_submit_idempotency_claims WHERE client_order_id = ?1 AND request_id = ?2",
+                params![key, req],
+            )
+            .context("idempotency claim release failed")?;
+        Ok(removed > 0)
     }
 }
 
@@ -337,7 +343,7 @@ mod tests {
             .store_submit_response("order-claim-1", "req-1", &response)
             .expect("store response");
         store
-            .release_submit_claim("order-claim-1")
+            .release_submit_claim("order-claim-1", "req-1")
             .expect("release claim");
 
         let third = store
@@ -347,6 +353,40 @@ mod tests {
             SubmitClaimOutcome::Cached(value) => assert_eq!(value, response),
             _ => panic!("expected cached outcome"),
         }
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn release_claim_requires_request_id_owner_match() {
+        let db_path = temp_db_path();
+        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
+            .expect("open store");
+
+        let first = store
+            .load_cached_or_claim_submit("order-claim-owner-1", "req-owner-1", 30)
+            .expect("first claim");
+        assert!(matches!(first, SubmitClaimOutcome::Claimed));
+
+        let removed_wrong = store
+            .release_submit_claim("order-claim-owner-1", "req-owner-2")
+            .expect("wrong owner release");
+        assert!(!removed_wrong);
+
+        let second = store
+            .load_cached_or_claim_submit("order-claim-owner-1", "req-owner-3", 30)
+            .expect("second claim");
+        assert!(matches!(second, SubmitClaimOutcome::InFlight));
+
+        let removed_right = store
+            .release_submit_claim("order-claim-owner-1", "req-owner-1")
+            .expect("right owner release");
+        assert!(removed_right);
+
+        let third = store
+            .load_cached_or_claim_submit("order-claim-owner-1", "req-owner-3", 30)
+            .expect("third claim");
+        assert!(matches!(third, SubmitClaimOutcome::Claimed));
 
         let _ = std::fs::remove_file(db_path);
     }

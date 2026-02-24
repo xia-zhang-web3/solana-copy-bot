@@ -416,6 +416,14 @@ impl ExecutorConfig {
                 "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC must be > 0"
             ));
         }
+        let min_claim_ttl_sec = (request_timeout_ms.saturating_add(999) / 1000).max(1);
+        if idempotency_claim_ttl_sec < min_claim_ttl_sec {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC must be >= {} (derived from COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS={})",
+                min_claim_ttl_sec,
+                request_timeout_ms
+            ));
+        }
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -648,13 +656,15 @@ struct Reject {
 struct SubmitClaimGuard {
     idempotency: Arc<SubmitIdempotencyStore>,
     client_order_id: String,
+    request_id: String,
 }
 
 impl SubmitClaimGuard {
-    fn new(idempotency: Arc<SubmitIdempotencyStore>, client_order_id: &str) -> Self {
+    fn new(idempotency: Arc<SubmitIdempotencyStore>, client_order_id: &str, request_id: &str) -> Self {
         Self {
             idempotency,
             client_order_id: client_order_id.trim().to_string(),
+            request_id: request_id.trim().to_string(),
         }
     }
 }
@@ -663,10 +673,11 @@ impl Drop for SubmitClaimGuard {
     fn drop(&mut self) {
         if let Err(error) = self
             .idempotency
-            .release_submit_claim(self.client_order_id.as_str())
+            .release_submit_claim(self.client_order_id.as_str(), self.request_id.as_str())
         {
             warn!(
                 client_order_id = %self.client_order_id,
+                request_id = %self.request_id,
                 error = %error,
                 "failed to release idempotency submit claim"
             );
@@ -1126,7 +1137,11 @@ async fn handle_submit(
             return Ok(cached_response);
         }
         Ok(SubmitClaimOutcome::Claimed) => {
-            SubmitClaimGuard::new(state.idempotency.clone(), request.client_order_id.as_str())
+            SubmitClaimGuard::new(
+                state.idempotency.clone(),
+                request.client_order_id.as_str(),
+                request.request_id.as_str(),
+            )
         }
         Ok(SubmitClaimOutcome::InFlight) => {
             return Err(Reject::retryable(
@@ -1349,6 +1364,17 @@ async fn handle_submit(
             client_order_id = %request.client_order_id,
             "idempotency row already exists; keeping first stored response"
         );
+        let canonical = state
+            .idempotency
+            .load_submit_response(request.client_order_id.as_str())
+            .map_err(map_idempotency_error_to_reject)?
+            .ok_or_else(|| {
+                Reject::retryable(
+                    "idempotency_store_unavailable",
+                    "idempotency conflict detected but canonical response missing",
+                )
+            })?;
+        return Ok(canonical);
     }
     Ok(response)
 }
@@ -3123,6 +3149,88 @@ mod tests {
             second_result.expect_err("second submit should reject while first in flight");
         assert!(second_reject.retryable);
         assert_eq!(second_reject.code, "submit_in_flight");
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_returns_canonical_cached_response_when_store_conflicts() {
+        let upstream_signature = bs58::encode([21u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}"}}"#,
+            upstream_signature
+        );
+        let Some((upstream_url, upstream_handle)) = spawn_one_shot_upstream_raw_with_delay(
+            200,
+            "application/json",
+            upstream_body.as_str(),
+            250,
+        ) else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let state_inject = state.clone();
+        let client_order_id = "client-order-idempotent-overlap-1".to_string();
+        let canonical = json!({
+            "status": "ok",
+            "ok": true,
+            "accepted": true,
+            "route": "rpc",
+            "contract_version": "v1",
+            "client_order_id": client_order_id,
+            "request_id": "request-canonical-1",
+            "tx_signature": bs58::encode([22u8; 64]).into_string(),
+            "submit_transport": "upstream_signature",
+            "submitted_at": "2026-02-24T00:00:00Z",
+            "network_fee_lamports": 5300,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 300,
+            "ata_create_rent_lamports": 0
+        });
+
+        let inject_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            state_inject
+                .idempotency
+                .store_submit_response(
+                    "client-order-idempotent-overlap-1",
+                    "request-canonical-1",
+                    &canonical,
+                )
+                .expect("inject canonical response");
+        });
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-idempotent-overlap-1",
+            "client_order_id": "client-order-idempotent-overlap-1",
+            "request_id": "request-idempotent-overlap-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("submit should return canonical cached response");
+        assert_eq!(
+            response.get("request_id").and_then(Value::as_str),
+            Some("request-canonical-1")
+        );
+        let _ = inject_handle.join();
         let _ = upstream_handle.join();
     }
 
