@@ -91,6 +91,7 @@ contract_guard_tests=(
   "request_ingress_verify_auth_or_reject_returns_auth_reject_payload"
   "response_envelope_wraps_success_payload_with_http_200"
   "response_envelope_reject_includes_client_order_id_when_provided"
+  "reject_builders_set_retryable_flag"
   "healthz_payload_top_level_status_is_ok_when_store_ok"
   "healthz_payload_build_includes_expected_fields"
   "healthz_payload_routes_alias_matches_enabled_routes"

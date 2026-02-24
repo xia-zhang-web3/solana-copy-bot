@@ -32,6 +32,7 @@ mod http_utils;
 mod idempotency;
 mod key_validation;
 mod request_ingress;
+mod reject;
 mod reject_mapping;
 mod request_validation;
 mod request_types;
@@ -72,6 +73,7 @@ use crate::http_utils::{endpoint_identity, validate_endpoint_url};
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
 use crate::request_ingress::{parse_json_or_reject, verify_auth_or_reject};
+pub(crate) use crate::reject::Reject;
 use crate::response_envelope::success_or_reject_to_http;
 use crate::reject_mapping::{
     map_common_contract_validation_error_to_reject, map_compute_budget_validation_error_to_reject,
@@ -524,31 +526,6 @@ impl ExecutorConfig {
             allow_nonzero_tip,
             submit_signature_verify,
         })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Reject {
-    pub(crate) retryable: bool,
-    pub(crate) code: String,
-    pub(crate) detail: String,
-}
-
-impl Reject {
-    pub(crate) fn terminal(code: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self {
-            retryable: false,
-            code: code.into(),
-            detail: detail.into(),
-        }
-    }
-
-    pub(crate) fn retryable(code: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self {
-            retryable: true,
-            code: code.into(),
-            detail: detail.into(),
-        }
     }
 }
 
