@@ -29,6 +29,16 @@ pub(crate) enum ComputeBudgetValidationError {
     CuPriceOutOfRange { min: u64, max: u64, value: u64 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SlippageValidationError {
+    SlippageOutOfRange { value: f64 },
+    RouteCapOutOfRange { value: f64 },
+    ExceedsRouteCap {
+        slippage_bps: f64,
+        route_slippage_cap_bps: f64,
+    },
+}
+
 pub(crate) fn resolve_submit_tip_lamports(
     route: &str,
     requested_tip_lamports: u64,
@@ -100,12 +110,37 @@ pub(crate) fn validate_submit_compute_budget(
     Ok(())
 }
 
+pub(crate) fn validate_submit_slippage_policy(
+    slippage_bps: f64,
+    route_slippage_cap_bps: f64,
+    epsilon: f64,
+) -> Result<(), SlippageValidationError> {
+    if !slippage_bps.is_finite() || slippage_bps <= 0.0 {
+        return Err(SlippageValidationError::SlippageOutOfRange {
+            value: slippage_bps,
+        });
+    }
+    if !route_slippage_cap_bps.is_finite() || route_slippage_cap_bps <= 0.0 {
+        return Err(SlippageValidationError::RouteCapOutOfRange {
+            value: route_slippage_cap_bps,
+        });
+    }
+    if slippage_bps - route_slippage_cap_bps > epsilon {
+        return Err(SlippageValidationError::ExceedsRouteCap {
+            slippage_bps,
+            route_slippage_cap_bps,
+        });
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         build_submit_forward_payload, resolve_submit_tip_lamports, validate_submit_compute_budget,
-        ComputeBudgetBounds, ComputeBudgetValidationError, ForwardPayloadBuildError,
-        SubmitTipPolicyError,
+        validate_submit_slippage_policy, ComputeBudgetBounds, ComputeBudgetValidationError,
+        ForwardPayloadBuildError, SlippageValidationError, SubmitTipPolicyError,
     };
 
     #[test]
@@ -210,6 +245,45 @@ mod tests {
                 min: 1,
                 max: 10_000_000,
                 value: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn tx_build_slippage_accepts_valid_values() {
+        let result = validate_submit_slippage_policy(10.0, 10.0, 1e-6);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn tx_build_slippage_rejects_invalid_slippage_input() {
+        let error = validate_submit_slippage_policy(0.0, 10.0, 1e-6)
+            .expect_err("must reject non-positive slippage");
+        assert_eq!(
+            error,
+            SlippageValidationError::SlippageOutOfRange { value: 0.0 }
+        );
+    }
+
+    #[test]
+    fn tx_build_slippage_rejects_invalid_route_cap_input() {
+        let error = validate_submit_slippage_policy(10.0, 0.0, 1e-6)
+            .expect_err("must reject non-positive route cap");
+        assert_eq!(
+            error,
+            SlippageValidationError::RouteCapOutOfRange { value: 0.0 }
+        );
+    }
+
+    #[test]
+    fn tx_build_slippage_rejects_slippage_above_route_cap() {
+        let error = validate_submit_slippage_policy(25.0, 20.0, 1e-6)
+            .expect_err("must reject slippage above cap");
+        assert_eq!(
+            error,
+            SlippageValidationError::ExceedsRouteCap {
+                slippage_bps: 25.0,
+                route_slippage_cap_bps: 20.0,
             }
         );
     }

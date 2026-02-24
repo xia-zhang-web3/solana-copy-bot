@@ -52,7 +52,8 @@ use crate::submit_verify::{
 use crate::tx_build::{
     build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports,
     validate_submit_compute_budget, ComputeBudgetBounds, ComputeBudgetValidationError,
-    ForwardPayloadBuildError, SubmitTipPolicyError,
+    validate_submit_slippage_policy, ForwardPayloadBuildError, SlippageValidationError,
+    SubmitTipPolicyError,
 };
 #[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
@@ -1179,29 +1180,12 @@ async fn handle_submit(
             "signal_id must be non-empty",
         ));
     }
-    if !request.slippage_bps.is_finite() || request.slippage_bps <= 0.0 {
-        return Err(Reject::terminal(
-            "invalid_slippage_bps",
-            "slippage_bps must be finite and > 0",
-        ));
-    }
-    if !request.route_slippage_cap_bps.is_finite() || request.route_slippage_cap_bps <= 0.0 {
-        return Err(Reject::terminal(
-            "invalid_route_slippage_cap_bps",
-            "route_slippage_cap_bps must be finite and > 0",
-        ));
-    }
-    // Keep same tolerance as execution submitter echo checks to avoid float drift false rejects.
-    // This checks only that caller did not exceed route cap.
-    if request.slippage_bps - request.route_slippage_cap_bps > POLICY_FLOAT_EPSILON {
-        return Err(Reject::terminal(
-            "slippage_exceeds_route_cap",
-            format!(
-                "slippage_bps={} exceeds route_slippage_cap_bps={}",
-                request.slippage_bps, request.route_slippage_cap_bps
-            ),
-        ));
-    }
+    validate_submit_slippage_policy(
+        request.slippage_bps,
+        request.route_slippage_cap_bps,
+        POLICY_FLOAT_EPSILON,
+    )
+    .map_err(map_slippage_validation_error_to_reject)?;
     let route = normalize_route(request.route.as_str());
     let (effective_tip_lamports, tip_policy_code) = resolve_submit_tip_lamports(
         route.as_str(),
@@ -1858,6 +1842,29 @@ fn map_submit_tip_policy_error_to_reject(error: SubmitTipPolicyError) -> Reject 
         SubmitTipPolicyError::TipNotAllowed { .. } => Reject::terminal(
             "tip_not_supported",
             "non-zero tip_lamports is disabled in executor config",
+        ),
+    }
+}
+
+fn map_slippage_validation_error_to_reject(error: SlippageValidationError) -> Reject {
+    match error {
+        SlippageValidationError::SlippageOutOfRange { .. } => Reject::terminal(
+            "invalid_slippage_bps",
+            "slippage_bps must be finite and > 0",
+        ),
+        SlippageValidationError::RouteCapOutOfRange { .. } => Reject::terminal(
+            "invalid_route_slippage_cap_bps",
+            "route_slippage_cap_bps must be finite and > 0",
+        ),
+        SlippageValidationError::ExceedsRouteCap {
+            slippage_bps,
+            route_slippage_cap_bps,
+        } => Reject::terminal(
+            "slippage_exceeds_route_cap",
+            format!(
+                "slippage_bps={} exceeds route_slippage_cap_bps={}",
+                slippage_bps, route_slippage_cap_bps
+            ),
         ),
     }
 }
@@ -3782,6 +3789,74 @@ mod tests {
             reject.detail,
             "compute_budget.cu_price_micro_lamports must be in 1..=10000000"
         );
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_slippage_bps_out_of_range() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-invalid-slippage",
+            "client_order_id": "client-order-invalid-slippage",
+            "request_id": "request-invalid-slippage",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 0.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("invalid slippage must reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_slippage_bps");
+        assert_eq!(reject.detail, "slippage_bps must be finite and > 0");
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_slippage_exceeding_route_cap() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-slippage-cap",
+            "client_order_id": "client-order-slippage-cap",
+            "request_id": "request-slippage-cap",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 25.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("slippage above cap must reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "slippage_exceeds_route_cap");
+        assert!(reject
+            .detail
+            .contains("slippage_bps=25 exceeds route_slippage_cap_bps=20"));
     }
 
     #[tokio::test]
