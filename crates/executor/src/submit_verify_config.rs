@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 
 use crate::{
+    env_parsing::{optional_non_empty_env, parse_bool_env, parse_u64_env},
     http_utils::{endpoint_identity, validate_endpoint_url},
-    optional_non_empty_env, parse_bool_env, parse_u64_env, DEFAULT_SUBMIT_VERIFY_ATTEMPTS,
-    DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
+    DEFAULT_SUBMIT_VERIFY_ATTEMPTS, DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
 };
 
 #[derive(Clone, Debug)]
