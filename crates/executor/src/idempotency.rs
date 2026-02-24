@@ -63,12 +63,21 @@ impl SubmitIdempotencyStore {
         Ok(Some(parsed))
     }
 
+    pub(crate) fn probe(&self) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?;
+        conn.query_row("SELECT 1", [], |_| Ok(()))
+            .context("idempotency probe query failed")
+    }
+
     pub(crate) fn store_submit_response(
         &self,
         client_order_id: &str,
         request_id: &str,
         response: &Value,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let response_json =
             serde_json::to_string(response).context("serialize idempotency response failed")?;
         let now = Utc::now().to_rfc3339();
@@ -76,7 +85,8 @@ impl SubmitIdempotencyStore {
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?;
-        conn.execute(
+        let changed = conn
+            .execute(
             r#"
             INSERT INTO executor_submit_idempotency (
                 client_order_id,
@@ -85,15 +95,12 @@ impl SubmitIdempotencyStore {
                 created_at_utc,
                 updated_at_utc
             ) VALUES (?1, ?2, ?3, ?4, ?4)
-            ON CONFLICT(client_order_id) DO UPDATE SET
-                request_id = excluded.request_id,
-                response_json = excluded.response_json,
-                updated_at_utc = excluded.updated_at_utc
+            ON CONFLICT(client_order_id) DO NOTHING
             "#,
             params![client_order_id, request_id, response_json, now],
         )
-        .context("idempotency upsert failed")?;
-        Ok(())
+        .context("idempotency insert failed")?;
+        Ok(changed > 0)
     }
 }
 
@@ -179,6 +186,37 @@ mod tests {
             .expect("load response")
             .expect("cached response");
         assert_eq!(loaded, response);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn store_does_not_overwrite_existing_response() {
+        let db_path = temp_db_path();
+        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
+            .expect("open store");
+        let original = json!({
+            "status": "ok",
+            "client_order_id": "order-immutable-1",
+            "tx_signature": "sig-original"
+        });
+        let duplicate = json!({
+            "status": "ok",
+            "client_order_id": "order-immutable-1",
+            "tx_signature": "sig-duplicate"
+        });
+        let inserted = store
+            .store_submit_response("order-immutable-1", "req-1", &original)
+            .expect("first store");
+        assert!(inserted);
+        let inserted_again = store
+            .store_submit_response("order-immutable-1", "req-2", &duplicate)
+            .expect("second store");
+        assert!(!inserted_again);
+        let loaded = store
+            .load_submit_response("order-immutable-1")
+            .expect("load response")
+            .expect("cached response");
+        assert_eq!(loaded, original);
         let _ = std::fs::remove_file(db_path);
     }
 }

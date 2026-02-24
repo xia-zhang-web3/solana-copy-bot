@@ -69,6 +69,7 @@ struct AppState {
     http: Client,
     auth: Arc<AuthVerifier>,
     idempotency: Arc<SubmitIdempotencyStore>,
+    in_flight_submit_keys: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone)]
@@ -633,6 +634,40 @@ struct Reject {
     detail: String,
 }
 
+struct SubmitInFlightGuard {
+    keys: Arc<std::sync::Mutex<HashSet<String>>>,
+    key: String,
+}
+
+impl SubmitInFlightGuard {
+    fn acquire(
+        keys: Arc<std::sync::Mutex<HashSet<String>>>,
+        client_order_id: &str,
+    ) -> std::result::Result<Self, Reject> {
+        let key = client_order_id.trim().to_string();
+        let mut locked = keys
+            .lock()
+            .map_err(|_| Reject::retryable("submit_in_flight", "in-flight mutex poisoned"))?;
+        if locked.contains(&key) {
+            return Err(Reject::retryable(
+                "submit_in_flight",
+                format!("client_order_id={} is already being processed", key),
+            ));
+        }
+        locked.insert(key.clone());
+        drop(locked);
+        Ok(Self { keys, key })
+    }
+}
+
+impl Drop for SubmitInFlightGuard {
+    fn drop(&mut self) {
+        if let Ok(mut locked) = self.keys.lock() {
+            locked.remove(&self.key);
+        }
+    }
+}
+
 impl Reject {
     fn terminal(code: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
@@ -688,6 +723,7 @@ async fn main() -> Result<()> {
         http,
         auth,
         idempotency,
+        in_flight_submit_keys: Arc::new(std::sync::Mutex::new(HashSet::new())),
     };
 
     let router = Router::new()
@@ -724,6 +760,16 @@ async fn main() -> Result<()> {
 }
 
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
+    let idempotency_store_status = match state.idempotency.probe() {
+        Ok(()) => "ok",
+        Err(error) => {
+            warn!(
+                error = %error,
+                "idempotency store probe failed in healthz"
+            );
+            "degraded"
+        }
+    };
     Json(json!({
         "status": "ok",
         "contract_version": state.config.contract_version,
@@ -732,7 +778,7 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
         "signer_kms_key_id_configured": state.config.signer_kms_key_id.is_some(),
         "signer_keypair_file_configured": state.config.signer_keypair_file.is_some(),
         "submit_fastlane_enabled": state.config.submit_fastlane_enabled,
-        "idempotency_store_status": "ok",
+        "idempotency_store_status": idempotency_store_status,
         "signer_pubkey": state.config.signer_pubkey,
         "routes": state.config.route_allowlist,
     }))
@@ -1067,6 +1113,10 @@ async fn handle_submit(
         );
         return Ok(cached_response);
     }
+    let _in_flight_guard = SubmitInFlightGuard::acquire(
+        state.in_flight_submit_keys.clone(),
+        request.client_order_id.as_str(),
+    )?;
     let backend_response = forward_to_upstream(
         state,
         route.as_str(),
@@ -1253,17 +1303,29 @@ async fn handle_submit(
     }
     response["submit_signature_verify"] =
         submit_signature_verification_to_json(&submit_signature_verify);
-    if let Err(error) = state.idempotency.store_submit_response(
-        request.client_order_id.as_str(),
-        request.request_id.as_str(),
-        &response,
-    ) {
+    let inserted = state
+        .idempotency
+        .store_submit_response(
+            request.client_order_id.as_str(),
+            request.request_id.as_str(),
+            &response,
+        )
+        .map_err(|error| {
+            warn!(
+                route = %route,
+                signal_id = %request.signal_id,
+                client_order_id = %request.client_order_id,
+                error = %error,
+                "failed to persist submit idempotency record"
+            );
+            map_idempotency_error_to_reject(error)
+        })?;
+    if !inserted {
         warn!(
             route = %route,
             signal_id = %request.signal_id,
             client_order_id = %request.client_order_id,
-            error = %error,
-            "failed to persist submit idempotency record; returning success response"
+            "idempotency row already exists; keeping first stored response"
         );
     }
     Ok(response)
@@ -2982,6 +3044,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_rejects_parallel_duplicate_client_order_id_in_flight() {
+        let signature = bs58::encode([19u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}"}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) = spawn_one_shot_upstream_raw_with_delay(
+            200,
+            "application/json",
+            upstream_body.as_str(),
+            200,
+        ) else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-idempotent-inflight-1",
+            "client_order_id": "client-order-idempotent-inflight-1",
+            "request_id": "request-idempotent-inflight-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let first_submit = async {
+            handle_submit(&state, &request, raw_body_bytes.as_slice()).await
+        };
+        let second_submit = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            handle_submit(&state, &request, raw_body_bytes.as_slice()).await
+        };
+
+        let (first_result, second_result) = tokio::join!(first_submit, second_submit);
+        let first_response = first_result.expect("first submit should succeed");
+        assert_eq!(
+            first_response.get("tx_signature").and_then(Value::as_str),
+            Some(signature.as_str())
+        );
+        let second_reject =
+            second_result.expect_err("second submit should reject while first in flight");
+        assert!(second_reject.retryable);
+        assert_eq!(second_reject.code, "submit_in_flight");
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_forces_rpc_tip_to_zero_and_emits_trace() {
         let signature = bs58::encode([15u8; 64]).into_string();
         let Some((upstream_url, upstream_handle)) =
@@ -3350,6 +3473,7 @@ mod tests {
             http,
             auth,
             idempotency,
+            in_flight_submit_keys: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
 
@@ -3379,6 +3503,49 @@ mod tests {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut request_buf = [0u8; 8192];
                 let _ = stream.read(&mut request_buf);
+                let response = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    reason,
+                    content_type,
+                    response_body.len(),
+                    response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn spawn_one_shot_upstream_raw_with_delay(
+        status: u16,
+        content_type: &str,
+        body: &str,
+        delay_ms: u64,
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let response_body = body.to_string();
+        let content_type = content_type.to_string();
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            _ => "Unknown",
+        }
+        .to_string();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let _ = stream.read(&mut request_buf);
+                thread::sleep(Duration::from_millis(delay_ms));
                 let response = format!(
                     "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status,
