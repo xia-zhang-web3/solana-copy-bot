@@ -26,6 +26,7 @@ use tracing_subscriber::EnvFilter;
 
 mod http_utils;
 mod fee_hints;
+mod route_backend;
 mod route_policy;
 mod send_rpc;
 mod submit_verify;
@@ -34,6 +35,7 @@ use crate::fee_hints::{resolve_fee_hints, FeeHintError, FeeHintInputs};
 use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
+use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_policy::{apply_submit_tip_policy, requires_submit_fastlane_enabled};
 use crate::send_rpc::send_signed_transaction_via_rpc;
 #[cfg(test)]
@@ -84,20 +86,6 @@ struct ExecutorConfig {
     max_notional_sol: f64,
     allow_nonzero_tip: bool,
     submit_signature_verify: Option<SubmitSignatureVerifyConfig>,
-}
-
-#[derive(Clone, Debug)]
-struct RouteBackend {
-    submit_url: String,
-    submit_fallback_url: Option<String>,
-    simulate_url: String,
-    simulate_fallback_url: Option<String>,
-    primary_auth_token: Option<String>,
-    fallback_auth_token: Option<String>,
-    send_rpc_url: Option<String>,
-    send_rpc_fallback_url: Option<String>,
-    send_rpc_primary_auth_token: Option<String>,
-    send_rpc_fallback_auth_token: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1229,21 +1217,6 @@ async fn handle_submit(
     Ok(response)
 }
 
-#[derive(Clone, Copy)]
-enum UpstreamAction {
-    Simulate,
-    Submit,
-}
-
-impl UpstreamAction {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Simulate => "simulate",
-            Self::Submit => "submit",
-        }
-    }
-}
-
 async fn forward_to_upstream(
     state: &AppState,
     route: &str,
@@ -1257,21 +1230,7 @@ async fn forward_to_upstream(
         )
     })?;
 
-    let mut endpoints = Vec::with_capacity(2);
-    match action {
-        UpstreamAction::Simulate => {
-            endpoints.push(backend.simulate_url.as_str());
-            if let Some(url) = backend.simulate_fallback_url.as_deref() {
-                endpoints.push(url);
-            }
-        }
-        UpstreamAction::Submit => {
-            endpoints.push(backend.submit_url.as_str());
-            if let Some(url) = backend.submit_fallback_url.as_deref() {
-                endpoints.push(url);
-            }
-        }
-    }
+    let endpoints = backend.endpoint_chain(action);
 
     let mut last_retryable: Option<Reject> = None;
     for (attempt_idx, url) in endpoints.iter().enumerate() {
@@ -1290,11 +1249,7 @@ async fn forward_to_upstream(
             .post(*url)
             .header("content-type", "application/json")
             .body(raw_body.to_vec());
-        let selected_auth_token = if attempt_idx == 0 {
-            backend.primary_auth_token.as_deref()
-        } else {
-            backend.fallback_auth_token.as_deref()
-        };
+        let selected_auth_token = backend.auth_token_for_attempt(action, attempt_idx);
         if let Some(token) = selected_auth_token {
             request = request.bearer_auth(token);
         }
