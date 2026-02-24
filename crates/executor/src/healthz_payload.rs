@@ -33,6 +33,7 @@ pub(crate) fn build_healthz_payload(inputs: HealthzPayloadInputs<'_>) -> Value {
         "submit_fastlane_enabled": inputs.submit_fastlane_enabled,
         "idempotency_store_status": inputs.idempotency_store_status,
         "signer_pubkey": inputs.signer_pubkey,
+        // Backward-compat alias for existing preflight/reporting consumers.
         "routes": inputs.enabled_routes,
     })
 }
@@ -82,5 +83,37 @@ mod tests {
             payload.get("idempotency_store_status").and_then(Value::as_str),
             Some("ok")
         );
+    }
+
+    #[test]
+    fn healthz_payload_routes_alias_matches_enabled_routes() {
+        let route_allowlist = routes(&["rpc", "jito"]);
+        let payload = build_healthz_payload(HealthzPayloadInputs {
+            contract_version: "v1",
+            enabled_routes: &route_allowlist,
+            signer_source: "file",
+            signer_kms_key_id_configured: false,
+            signer_keypair_file_configured: true,
+            submit_fastlane_enabled: false,
+            idempotency_store_status: "ok",
+            signer_pubkey: "11111111111111111111111111111111",
+        });
+        let enabled_routes: std::collections::HashSet<String> = payload
+            .get("enabled_routes")
+            .and_then(Value::as_array)
+            .expect("enabled_routes must be array")
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect();
+        let routes_alias: std::collections::HashSet<String> = payload
+            .get("routes")
+            .and_then(Value::as_array)
+            .expect("routes alias must be array")
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(enabled_routes, routes_alias);
     }
 }

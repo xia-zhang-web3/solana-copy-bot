@@ -665,6 +665,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 137. executor ingress helper extraction completed: duplicated ingress handling for `/simulate` and `/submit` (`auth verify -> reject_to_json`, `invalid_json` parse rejection) moved from `main.rs` into shared module `crates/executor/src/request_ingress.rs` (`verify_auth_or_reject`, `parse_json_or_reject`) with unchanged HTTP/JSON reject contract and added direct module guard coverage in contract smoke.
 138. executor response-envelope extraction completed: duplicated endpoint-level result wrapping (`Result<Value, Reject> -> HTTP 200 JSON`) moved from `main.rs` into shared module `crates/executor/src/response_envelope.rs` (`success_or_reject_to_http`), preserving reject payload semantics including optional `client_order_id` propagation for `/submit`.
 139. executor healthz-payload extraction completed: `/healthz` JSON assembly moved from `main.rs` into shared module `crates/executor/src/healthz_payload.rs` (`build_healthz_payload`, `top_level_healthz_status`) with unchanged field set/status semantics (`ok` vs `degraded`) and added direct module guard coverage in contract smoke.
+140. executor healthz alias semantics documented in code: `routes` field is explicitly retained as backward-compat alias of `enabled_routes` for existing preflight/report consumers, and module test coverage now asserts alias equality (`healthz_payload_routes_alias_matches_enabled_routes`) to prevent accidental drift.
 
 Остается в next-code-queue:
 
