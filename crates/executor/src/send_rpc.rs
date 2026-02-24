@@ -5,7 +5,7 @@ use tracing::warn;
 
 use crate::{
     http_utils::{classify_request_error, redacted_endpoint_label},
-    submit_deadline::SubmitDeadline, validate_signature_like, AppState, Reject,
+    key_validation::validate_signature_like, submit_deadline::SubmitDeadline, AppState, Reject,
 };
 
 pub(crate) async fn send_signed_transaction_via_rpc(

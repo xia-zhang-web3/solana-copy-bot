@@ -64,6 +64,7 @@ contract_guard_tests=(
   "validate_fastlane_route_policy_enforces_feature_gate"
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
   "parse_route_allowlist_rejects_unknown_route"
+  "key_validation_accepts_pubkey_and_signature_shapes"
   "normalize_route_trims_and_lowercases"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"

@@ -27,6 +27,7 @@ use tracing_subscriber::EnvFilter;
 mod http_utils;
 mod fee_hints;
 mod idempotency;
+mod key_validation;
 mod route_backend;
 mod route_normalization;
 mod route_policy;
@@ -48,6 +49,7 @@ use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
+use crate::key_validation::{validate_pubkey_like, validate_signature_like};
 use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_normalization::normalize_route;
 #[cfg(test)]
@@ -1996,34 +1998,6 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         mismatch |= l ^ r;
     }
     mismatch == 0
-}
-
-fn validate_pubkey_like(value: &str) -> Result<()> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow!("value is empty"));
-    }
-    let decoded = bs58::decode(trimmed)
-        .into_vec()
-        .map_err(|error| anyhow!("invalid base58: {}", error))?;
-    if decoded.len() != 32 {
-        return Err(anyhow!("decoded pubkey length must be 32 bytes"));
-    }
-    Ok(())
-}
-
-fn validate_signature_like(value: &str) -> Result<()> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow!("value is empty"));
-    }
-    let decoded = bs58::decode(trimmed)
-        .into_vec()
-        .map_err(|error| anyhow!("invalid base58: {}", error))?;
-    if decoded.len() != 64 {
-        return Err(anyhow!("decoded signature length must be 64 bytes"));
-    }
-    Ok(())
 }
 
 fn resolve_signer_source_config(

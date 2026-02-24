@@ -1,4 +1,5 @@
 use serde_json::Value;
+use crate::key_validation::validate_signature_like;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SubmitTransportArtifact {
@@ -27,7 +28,7 @@ pub(crate) fn extract_submit_transport_artifact(
         .filter(|value| !value.is_empty());
 
     if let Some(value) = upstream_tx_signature {
-        crate::validate_signature_like(value).map_err(|error| {
+        validate_signature_like(value).map_err(|error| {
             SubmitTransportArtifactError::InvalidUpstreamSignature {
                 error: error.to_string(),
             }
