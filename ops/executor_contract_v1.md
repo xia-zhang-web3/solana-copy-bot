@@ -40,7 +40,7 @@ Required fields:
 7. `token`
 8. `notional_sol`
 9. `signal_ts` (RFC3339)
-10. `route`
+10. `route` (`paper|rpc|jito|fastlane`)
 
 ## 3.2 `/submit` request
 
@@ -54,7 +54,7 @@ Required fields:
 6. `token`
 7. `notional_sol`
 8. `signal_ts` (RFC3339)
-9. `route`
+9. `route` (`paper|rpc|jito|fastlane`)
 10. `slippage_bps`
 11. `route_slippage_cap_bps`
 12. `tip_lamports`

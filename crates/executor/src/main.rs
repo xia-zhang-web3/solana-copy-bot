@@ -59,6 +59,7 @@ const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
+const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
 
 #[derive(Clone)]
 struct AppState {
@@ -1724,6 +1725,12 @@ fn parse_route_allowlist(csv: String) -> Result<HashSet<String>> {
         if route.is_empty() {
             continue;
         }
+        if !KNOWN_ROUTES.iter().any(|known| *known == route) {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains unsupported route={} (supported: paper,rpc,jito,fastlane)",
+                route
+            ));
+        }
         routes.insert(route);
     }
     Ok(routes)
@@ -1988,6 +1995,19 @@ mod tests {
         assert!(routes.contains("jito"));
         assert!(routes.contains("fastlane"));
         assert_eq!(routes.len(), 3);
+    }
+
+    #[test]
+    fn parse_route_allowlist_rejects_unknown_route() {
+        let error = parse_route_allowlist("rpc,unknown_route".to_string())
+            .expect_err("unknown route must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported route=unknown_route"),
+            "error={}",
+            error
+        );
     }
 
     #[test]
