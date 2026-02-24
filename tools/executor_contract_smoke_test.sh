@@ -70,6 +70,8 @@ contract_guard_tests=(
   "key_validation_accepts_pubkey_and_signature_shapes"
   "constant_time_eq_checks_content"
   "to_hex_lower_matches_expected"
+  "parse_bool_token_accepts_true_forms"
+  "parse_bool_token_rejects_false_forms"
   "normalize_route_trims_and_lowercases"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"

@@ -24,6 +24,7 @@ use tracing_subscriber::EnvFilter;
 
 mod auth_crypto;
 mod contract_version;
+mod env_parsing;
 mod http_utils;
 mod fee_hints;
 mod common_contract;
@@ -46,6 +47,9 @@ mod upstream_outcome;
 
 use crate::auth_crypto::{compute_hmac_signature_hex, constant_time_eq};
 use crate::contract_version::is_valid_contract_version_token;
+use crate::env_parsing::{
+    non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_u64_env,
+};
 use crate::fee_hints::{
     parse_response_fee_hint_fields, resolve_fee_hints, FeeHintError, FeeHintFieldParseError,
     FeeHintInputs,
@@ -1788,26 +1792,6 @@ fn parse_socket_addr(value: String) -> Result<SocketAddr> {
         .map_err(|error| anyhow!("invalid COPYBOT_EXECUTOR_BIND_ADDR: {}", error))
 }
 
-fn non_empty_env(name: &str) -> Result<String> {
-    env::var(name)
-        .map_err(|_| anyhow!("{} must be set", name))
-        .map(|value| value.trim().to_string())
-        .and_then(|value| {
-            if value.is_empty() {
-                Err(anyhow!("{} must be non-empty", name))
-            } else {
-                Ok(value)
-            }
-        })
-}
-
-fn optional_non_empty_env(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
 fn resolve_secret_source(
     inline_name: &str,
     inline_value: Option<&str>,
@@ -1874,36 +1858,6 @@ fn secret_file_has_restrictive_permissions(path: &str) -> Result<bool> {
 #[cfg(not(unix))]
 fn secret_file_has_restrictive_permissions(_path: &str) -> Result<bool> {
     Ok(true)
-}
-
-fn parse_u64_env(name: &str, default: u64) -> Result<u64> {
-    match env::var(name) {
-        Ok(raw) => raw
-            .trim()
-            .parse::<u64>()
-            .map_err(|error| anyhow!("{} must be u64: {}", name, error)),
-        Err(_) => Ok(default),
-    }
-}
-
-fn parse_f64_env(name: &str, default: f64) -> Result<f64> {
-    match env::var(name) {
-        Ok(raw) => raw
-            .trim()
-            .parse::<f64>()
-            .map_err(|error| anyhow!("{} must be f64: {}", name, error)),
-        Err(_) => Ok(default),
-    }
-}
-
-fn parse_bool_env(name: &str, default: bool) -> bool {
-    match env::var(name) {
-        Ok(raw) => matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => default,
-    }
 }
 
 fn get_required_header<'a>(
