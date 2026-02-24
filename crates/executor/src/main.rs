@@ -83,9 +83,7 @@ use crate::reject_mapping::{
 #[cfg(test)]
 use crate::reject_mapping::simulate_http_status_for_reject;
 use crate::request_validation::{
-    validate_non_empty_client_order_id, validate_non_empty_request_id,
-    validate_non_empty_signal_id, validate_signal_ts_rfc3339, validate_simulate_action,
-    validate_simulate_dry_run,
+    validate_simulate_request_basics, validate_submit_request_identity,
 };
 use crate::request_types::{ComputeBudgetRequest, SimulateRequest, SubmitRequest};
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
@@ -717,15 +715,14 @@ async fn handle_simulate(
         max_notional_sol: state.config.max_notional_sol,
     })
     .map_err(map_common_contract_validation_error_to_reject)?;
-    validate_simulate_action(request.action.as_deref())
-        .map_err(map_request_validation_error_to_reject)?;
-    validate_simulate_dry_run(request.dry_run).map_err(map_request_validation_error_to_reject)?;
-    validate_signal_ts_rfc3339(request.signal_ts.as_str())
-        .map_err(map_request_validation_error_to_reject)?;
-    validate_non_empty_request_id(request.request_id.as_str())
-        .map_err(map_request_validation_error_to_reject)?;
-    validate_non_empty_signal_id(request.signal_id.as_str())
-        .map_err(map_request_validation_error_to_reject)?;
+    validate_simulate_request_basics(
+        request.action.as_deref(),
+        request.dry_run,
+        request.signal_ts.as_str(),
+        request.request_id.as_str(),
+        request.signal_id.as_str(),
+    )
+    .map_err(map_request_validation_error_to_reject)?;
 
     let route = normalize_route(request.route.as_str());
     debug!(
@@ -780,14 +777,13 @@ async fn handle_submit(
         max_notional_sol: state.config.max_notional_sol,
     })
     .map_err(map_common_contract_validation_error_to_reject)?;
-    validate_signal_ts_rfc3339(request.signal_ts.as_str())
-        .map_err(map_request_validation_error_to_reject)?;
-    validate_non_empty_client_order_id(request.client_order_id.as_str())
-        .map_err(map_request_validation_error_to_reject)?;
-    validate_non_empty_request_id(request.request_id.as_str())
-        .map_err(map_request_validation_error_to_reject)?;
-    validate_non_empty_signal_id(request.signal_id.as_str())
-        .map_err(map_request_validation_error_to_reject)?;
+    validate_submit_request_identity(
+        request.signal_ts.as_str(),
+        request.client_order_id.as_str(),
+        request.request_id.as_str(),
+        request.signal_id.as_str(),
+    )
+    .map_err(map_request_validation_error_to_reject)?;
     validate_submit_slippage_policy(
         request.slippage_bps,
         request.route_slippage_cap_bps,

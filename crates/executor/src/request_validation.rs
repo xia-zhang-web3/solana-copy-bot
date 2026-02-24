@@ -62,12 +62,41 @@ pub(crate) fn validate_non_empty_client_order_id(
     Ok(())
 }
 
+pub(crate) fn validate_simulate_request_basics(
+    action: Option<&str>,
+    dry_run: Option<bool>,
+    signal_ts: &str,
+    request_id: &str,
+    signal_id: &str,
+) -> Result<(), RequestValidationError> {
+    validate_simulate_action(action)?;
+    validate_simulate_dry_run(dry_run)?;
+    validate_signal_ts_rfc3339(signal_ts)?;
+    validate_non_empty_request_id(request_id)?;
+    validate_non_empty_signal_id(signal_id)?;
+    Ok(())
+}
+
+pub(crate) fn validate_submit_request_identity(
+    signal_ts: &str,
+    client_order_id: &str,
+    request_id: &str,
+    signal_id: &str,
+) -> Result<(), RequestValidationError> {
+    validate_signal_ts_rfc3339(signal_ts)?;
+    validate_non_empty_client_order_id(client_order_id)?;
+    validate_non_empty_request_id(request_id)?;
+    validate_non_empty_signal_id(signal_id)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         validate_non_empty_client_order_id, validate_non_empty_request_id,
         validate_non_empty_signal_id, validate_signal_ts_rfc3339, validate_simulate_action,
-        validate_simulate_dry_run, RequestValidationError,
+        validate_simulate_dry_run, validate_simulate_request_basics,
+        validate_submit_request_identity, RequestValidationError,
     };
 
     #[test]
@@ -105,6 +134,54 @@ mod tests {
     fn request_validation_rejects_empty_client_order_id() {
         let error = validate_non_empty_client_order_id("\t")
             .expect_err("must reject empty client_order_id");
+        assert_eq!(error, RequestValidationError::InvalidClientOrderId);
+    }
+
+    #[test]
+    fn request_validation_validate_simulate_request_basics_accepts_valid_inputs() {
+        validate_simulate_request_basics(
+            Some("simulate"),
+            Some(true),
+            "2026-02-24T00:00:00Z",
+            "request-1",
+            "signal-1",
+        )
+        .expect("valid simulate basics must pass");
+    }
+
+    #[test]
+    fn request_validation_validate_simulate_request_basics_rejects_invalid_action_first() {
+        let error = validate_simulate_request_basics(
+            Some("submit"),
+            Some(true),
+            "2026-02-24T00:00:00Z",
+            "request-1",
+            "signal-1",
+        )
+        .expect_err("invalid action must reject");
+        assert_eq!(error, RequestValidationError::InvalidAction);
+    }
+
+    #[test]
+    fn request_validation_validate_submit_request_identity_accepts_valid_inputs() {
+        validate_submit_request_identity(
+            "2026-02-24T00:00:00Z",
+            "client-1",
+            "request-1",
+            "signal-1",
+        )
+        .expect("valid submit identity fields must pass");
+    }
+
+    #[test]
+    fn request_validation_validate_submit_request_identity_rejects_empty_client_order_id() {
+        let error = validate_submit_request_identity(
+            "2026-02-24T00:00:00Z",
+            " ",
+            "request-1",
+            "signal-1",
+        )
+        .expect_err("empty client_order_id must reject");
         assert_eq!(error, RequestValidationError::InvalidClientOrderId);
     }
 }
