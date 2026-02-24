@@ -86,6 +86,7 @@ contract_guard_tests=(
   "claim_flow_returns_claimed_inflight_then_cached"
   "release_claim_requires_request_id_owner_match"
   "min_claim_ttl_sec_for_submit_path_applies_500ms_runtime_floor"
+  "route_backend_send_rpc_endpoint_chain_checked_rejects_fallback_without_primary"
   "send_signed_transaction_via_rpc_treats_blockhash_expired_payload_as_terminal"
   "send_signed_transaction_via_rpc_rejects_fallback_without_primary_url"
   "resolve_fee_hints_rejects_derived_priority_fee_overflow"

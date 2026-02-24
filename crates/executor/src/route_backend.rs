@@ -12,6 +12,11 @@ pub(crate) struct RouteBackend {
     pub(crate) send_rpc_fallback_auth_token: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SendRpcEndpointChainError {
+    FallbackWithoutPrimary,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum UpstreamAction {
     Simulate,
@@ -68,11 +73,20 @@ impl RouteBackend {
         }
         endpoints
     }
+
+    pub(crate) fn send_rpc_endpoint_chain_checked(
+        &self,
+    ) -> Result<Vec<(&str, Option<&str>)>, SendRpcEndpointChainError> {
+        if self.send_rpc_url.is_none() && self.send_rpc_fallback_url.is_some() {
+            return Err(SendRpcEndpointChainError::FallbackWithoutPrimary);
+        }
+        Ok(self.send_rpc_endpoint_chain())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RouteBackend, UpstreamAction};
+    use super::{RouteBackend, SendRpcEndpointChainError, UpstreamAction};
 
     fn sample_backend() -> RouteBackend {
         RouteBackend {
@@ -136,5 +150,17 @@ mod tests {
         assert_eq!(chain[0].1, Some("send-primary-token"));
         assert_eq!(chain[1].0, "https://send-rpc.fallback");
         assert_eq!(chain[1].1, Some("send-fallback-token"));
+    }
+
+    #[test]
+    fn route_backend_send_rpc_endpoint_chain_checked_rejects_fallback_without_primary() {
+        let mut backend = sample_backend();
+        backend.send_rpc_url = None;
+        backend.send_rpc_fallback_url = Some("https://send-rpc.fallback".to_string());
+
+        let error = backend
+            .send_rpc_endpoint_chain_checked()
+            .expect_err("fallback without primary must reject");
+        assert_eq!(error, SendRpcEndpointChainError::FallbackWithoutPrimary);
     }
 }
