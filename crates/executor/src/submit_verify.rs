@@ -162,26 +162,6 @@ pub(crate) async fn verify_submitted_signature_visibility(
     })
 }
 
-pub(crate) fn submit_signature_verification_to_json(value: &SubmitSignatureVerification) -> Value {
-    match value {
-        SubmitSignatureVerification::Skipped => json!({
-            "enabled": false,
-        }),
-        SubmitSignatureVerification::Seen {
-            confirmation_status,
-        } => json!({
-            "enabled": true,
-            "seen": true,
-            "confirmation_status": confirmation_status,
-        }),
-        SubmitSignatureVerification::Unseen { reason } => json!({
-            "enabled": true,
-            "seen": false,
-            "reason": reason,
-        }),
-    }
-}
-
 pub(crate) fn parse_submit_signature_verify_config() -> Result<Option<SubmitSignatureVerifyConfig>>
 {
     let primary = optional_non_empty_env("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL");

@@ -52,6 +52,7 @@ mod submit_payload;
 mod submit_response;
 mod submit_transport;
 mod submit_verify;
+mod submit_verify_payload;
 mod tx_build;
 mod upstream_forward;
 mod upstream_outcome;
@@ -112,9 +113,10 @@ use crate::submit_transport::{extract_submit_transport_artifact, SubmitTransport
 #[cfg(test)]
 use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 use crate::submit_verify::{
-    parse_submit_signature_verify_config, submit_signature_verification_to_json,
-    verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
+    parse_submit_signature_verify_config, verify_submitted_signature_visibility,
+    SubmitSignatureVerifyConfig,
 };
+use crate::submit_verify_payload::submit_signature_verification_to_json;
 use crate::tx_build::{
     build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports,
     validate_submit_compute_budget, validate_submit_slippage_policy, ComputeBudgetBounds,

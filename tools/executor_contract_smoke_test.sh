@@ -122,6 +122,7 @@ contract_guard_tests=(
   "parse_rfc3339_utc_parses_valid_timestamp"
   "submit_response_resolve_submitted_at_rejects_invalid_rfc3339"
   "submit_payload_includes_tip_policy_when_present"
+  "submit_verify_payload_serializes_seen_shape"
   "simulate_response_validation_rejects_route_mismatch"
   "submit_deadline_remaining_timeout_rejects_when_budget_exhausted"
   "upstream_outcome_rejects_unknown_status"
