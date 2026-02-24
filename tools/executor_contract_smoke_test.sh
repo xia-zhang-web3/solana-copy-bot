@@ -66,6 +66,7 @@ contract_guard_tests=(
   "handle_submit_rejects_parallel_duplicate_client_order_id_in_flight"
   "store_persists_across_store_reopen"
   "store_does_not_overwrite_existing_response"
+  "claim_flow_returns_claimed_inflight_then_cached"
   "send_signed_transaction_via_rpc_rejects_fallback_without_primary_url"
   "resolve_fee_hints_rejects_derived_priority_fee_overflow"
 )

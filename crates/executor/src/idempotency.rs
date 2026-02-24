@@ -8,6 +8,12 @@ pub(crate) struct SubmitIdempotencyStore {
     conn: Mutex<Connection>,
 }
 
+pub(crate) enum SubmitClaimOutcome {
+    Claimed,
+    Cached(Value),
+    InFlight,
+}
+
 impl SubmitIdempotencyStore {
     pub(crate) fn open(path: &str) -> Result<Self> {
         let trimmed = path.trim();
@@ -34,6 +40,13 @@ impl SubmitIdempotencyStore {
             );
             CREATE INDEX IF NOT EXISTS idx_executor_submit_idempotency_request_id
                 ON executor_submit_idempotency(request_id);
+            CREATE TABLE IF NOT EXISTS executor_submit_idempotency_claims (
+                client_order_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                claimed_at_unix INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_executor_submit_idempotency_claims_claimed_at
+                ON executor_submit_idempotency_claims(claimed_at_unix);
             "#,
         )
         .context("initialize idempotency schema failed")?;
@@ -61,6 +74,68 @@ impl SubmitIdempotencyStore {
         let parsed: Value =
             serde_json::from_str(&raw_json).context("idempotency cached response is invalid JSON")?;
         Ok(Some(parsed))
+    }
+
+    pub(crate) fn load_cached_or_claim_submit(
+        &self,
+        client_order_id: &str,
+        request_id: &str,
+        claim_ttl_sec: u64,
+    ) -> Result<SubmitClaimOutcome> {
+        let key = client_order_id.trim();
+        if key.is_empty() {
+            return Err(anyhow::anyhow!("client_order_id must be non-empty"));
+        }
+        let req = request_id.trim();
+        if req.is_empty() {
+            return Err(anyhow::anyhow!("request_id must be non-empty"));
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?;
+
+        let now_unix = Utc::now().timestamp();
+        let ttl = i64::try_from(claim_ttl_sec).unwrap_or(i64::MAX).max(1);
+        let stale_before = now_unix.saturating_sub(ttl);
+        conn.execute(
+            "DELETE FROM executor_submit_idempotency_claims WHERE claimed_at_unix <= ?1",
+            params![stale_before],
+        )
+        .context("idempotency stale claim cleanup failed")?;
+
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT response_json FROM executor_submit_idempotency WHERE client_order_id = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("idempotency lookup query failed")?;
+        if let Some(raw_json) = raw {
+            let parsed: Value = serde_json::from_str(&raw_json)
+                .context("idempotency cached response is invalid JSON")?;
+            return Ok(SubmitClaimOutcome::Cached(parsed));
+        }
+
+        let inserted = conn
+            .execute(
+                r#"
+                INSERT INTO executor_submit_idempotency_claims (
+                    client_order_id,
+                    request_id,
+                    claimed_at_unix
+                ) VALUES (?1, ?2, ?3)
+                ON CONFLICT(client_order_id) DO NOTHING
+                "#,
+                params![key, req, now_unix],
+            )
+            .context("idempotency claim insert failed")?;
+        if inserted > 0 {
+            Ok(SubmitClaimOutcome::Claimed)
+        } else {
+            Ok(SubmitClaimOutcome::InFlight)
+        }
     }
 
     pub(crate) fn probe(&self) -> Result<()> {
@@ -102,6 +177,23 @@ impl SubmitIdempotencyStore {
         .context("idempotency insert failed")?;
         Ok(changed > 0)
     }
+
+    pub(crate) fn release_submit_claim(&self, client_order_id: &str) -> Result<()> {
+        let key = client_order_id.trim();
+        if key.is_empty() {
+            return Ok(());
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?;
+        conn.execute(
+            "DELETE FROM executor_submit_idempotency_claims WHERE client_order_id = ?1",
+            params![key],
+        )
+        .context("idempotency claim release failed")?;
+        Ok(())
+    }
 }
 
 fn ensure_parent_dir(path: &str) -> Result<()> {
@@ -118,7 +210,7 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::SubmitIdempotencyStore;
+    use super::{SubmitClaimOutcome, SubmitIdempotencyStore};
     use serde_json::json;
     use std::{
         path::PathBuf,
@@ -217,6 +309,45 @@ mod tests {
             .expect("load response")
             .expect("cached response");
         assert_eq!(loaded, original);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn claim_flow_returns_claimed_inflight_then_cached() {
+        let db_path = temp_db_path();
+        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
+            .expect("open store");
+
+        let first = store
+            .load_cached_or_claim_submit("order-claim-1", "req-1", 30)
+            .expect("first claim");
+        assert!(matches!(first, SubmitClaimOutcome::Claimed));
+
+        let second = store
+            .load_cached_or_claim_submit("order-claim-1", "req-2", 30)
+            .expect("second claim");
+        assert!(matches!(second, SubmitClaimOutcome::InFlight));
+
+        let response = json!({
+            "status": "ok",
+            "client_order_id": "order-claim-1",
+            "tx_signature": "sig-claim-1"
+        });
+        store
+            .store_submit_response("order-claim-1", "req-1", &response)
+            .expect("store response");
+        store
+            .release_submit_claim("order-claim-1")
+            .expect("release claim");
+
+        let third = store
+            .load_cached_or_claim_submit("order-claim-1", "req-3", 30)
+            .expect("third claim");
+        match third {
+            SubmitClaimOutcome::Cached(value) => assert_eq!(value, response),
+            _ => panic!("expected cached outcome"),
+        }
+
         let _ = std::fs::remove_file(db_path);
     }
 }

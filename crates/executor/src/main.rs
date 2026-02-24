@@ -36,7 +36,7 @@ use crate::fee_hints::{resolve_fee_hints, FeeHintError, FeeHintInputs};
 use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
-use crate::idempotency::SubmitIdempotencyStore;
+use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_policy::{apply_submit_tip_policy, requires_submit_fastlane_enabled};
 use crate::send_rpc::send_signed_transaction_via_rpc;
@@ -61,6 +61,7 @@ const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
+const DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC: u64 = 60;
 const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
 
 #[derive(Clone)]
@@ -69,7 +70,6 @@ struct AppState {
     http: Client,
     auth: Arc<AuthVerifier>,
     idempotency: Arc<SubmitIdempotencyStore>,
-    in_flight_submit_keys: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone)]
@@ -89,6 +89,7 @@ struct ExecutorConfig {
     hmac_ttl_sec: u64,
     request_timeout_ms: u64,
     idempotency_db_path: String,
+    idempotency_claim_ttl_sec: u64,
     max_notional_sol: f64,
     allow_nonzero_tip: bool,
     submit_signature_verify: Option<SubmitSignatureVerifyConfig>,
@@ -406,6 +407,15 @@ impl ExecutorConfig {
                 "COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH must be non-empty"
             ));
         }
+        let idempotency_claim_ttl_sec = parse_u64_env(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC",
+            DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC,
+        )?;
+        if idempotency_claim_ttl_sec == 0 {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC must be > 0"
+            ));
+        }
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -434,6 +444,7 @@ impl ExecutorConfig {
             hmac_ttl_sec,
             request_timeout_ms,
             idempotency_db_path,
+            idempotency_claim_ttl_sec,
             max_notional_sol,
             allow_nonzero_tip,
             submit_signature_verify,
@@ -634,36 +645,31 @@ struct Reject {
     detail: String,
 }
 
-struct SubmitInFlightGuard {
-    keys: Arc<std::sync::Mutex<HashSet<String>>>,
-    key: String,
+struct SubmitClaimGuard {
+    idempotency: Arc<SubmitIdempotencyStore>,
+    client_order_id: String,
 }
 
-impl SubmitInFlightGuard {
-    fn acquire(
-        keys: Arc<std::sync::Mutex<HashSet<String>>>,
-        client_order_id: &str,
-    ) -> std::result::Result<Self, Reject> {
-        let key = client_order_id.trim().to_string();
-        let mut locked = keys
-            .lock()
-            .map_err(|_| Reject::retryable("submit_in_flight", "in-flight mutex poisoned"))?;
-        if locked.contains(&key) {
-            return Err(Reject::retryable(
-                "submit_in_flight",
-                format!("client_order_id={} is already being processed", key),
-            ));
+impl SubmitClaimGuard {
+    fn new(idempotency: Arc<SubmitIdempotencyStore>, client_order_id: &str) -> Self {
+        Self {
+            idempotency,
+            client_order_id: client_order_id.trim().to_string(),
         }
-        locked.insert(key.clone());
-        drop(locked);
-        Ok(Self { keys, key })
     }
 }
 
-impl Drop for SubmitInFlightGuard {
+impl Drop for SubmitClaimGuard {
     fn drop(&mut self) {
-        if let Ok(mut locked) = self.keys.lock() {
-            locked.remove(&self.key);
+        if let Err(error) = self
+            .idempotency
+            .release_submit_claim(self.client_order_id.as_str())
+        {
+            warn!(
+                client_order_id = %self.client_order_id,
+                error = %error,
+                "failed to release idempotency submit claim"
+            );
         }
     }
 }
@@ -723,7 +729,6 @@ async fn main() -> Result<()> {
         http,
         auth,
         idempotency,
-        in_flight_submit_keys: Arc::new(std::sync::Mutex::new(HashSet::new())),
     };
 
     let router = Router::new()
@@ -742,6 +747,7 @@ async fn main() -> Result<()> {
         routes = ?state.config.route_allowlist,
         submit_fastlane_enabled = state.config.submit_fastlane_enabled,
         idempotency_db_path = %state.config.idempotency_db_path,
+        idempotency_claim_ttl_sec = state.config.idempotency_claim_ttl_sec,
         submit_signature_verify_enabled = state.config.submit_signature_verify.is_some(),
         submit_signature_verify_strict = state
             .config
@@ -770,8 +776,13 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
             "degraded"
         }
     };
+    let status = if idempotency_store_status == "ok" {
+        "ok"
+    } else {
+        "degraded"
+    };
     Json(json!({
-        "status": "ok",
+        "status": status,
         "contract_version": state.config.contract_version,
         "enabled_routes": state.config.route_allowlist,
         "signer_source": state.config.signer_source.as_str(),
@@ -1100,23 +1111,34 @@ async fn handle_submit(
         client_order_id = %request.client_order_id,
         "handling submit request"
     );
-    if let Some(cached_response) = state
-        .idempotency
-        .load_submit_response(request.client_order_id.as_str())
-        .map_err(map_idempotency_error_to_reject)?
-    {
-        debug!(
-            route = %route,
-            signal_id = %request.signal_id,
-            client_order_id = %request.client_order_id,
-            "serving cached idempotent submit response"
-        );
-        return Ok(cached_response);
-    }
-    let _in_flight_guard = SubmitInFlightGuard::acquire(
-        state.in_flight_submit_keys.clone(),
+    let _submit_claim_guard = match state.idempotency.load_cached_or_claim_submit(
         request.client_order_id.as_str(),
-    )?;
+        request.request_id.as_str(),
+        state.config.idempotency_claim_ttl_sec,
+    ) {
+        Ok(SubmitClaimOutcome::Cached(cached_response)) => {
+            debug!(
+                route = %route,
+                signal_id = %request.signal_id,
+                client_order_id = %request.client_order_id,
+                "serving cached idempotent submit response"
+            );
+            return Ok(cached_response);
+        }
+        Ok(SubmitClaimOutcome::Claimed) => {
+            SubmitClaimGuard::new(state.idempotency.clone(), request.client_order_id.as_str())
+        }
+        Ok(SubmitClaimOutcome::InFlight) => {
+            return Err(Reject::retryable(
+                "submit_in_flight",
+                format!(
+                    "client_order_id={} is already being processed",
+                    request.client_order_id
+                ),
+            ));
+        }
+        Err(error) => return Err(map_idempotency_error_to_reject(error)),
+    };
     let backend_response = forward_to_upstream(
         state,
         route.as_str(),
@@ -3455,6 +3477,7 @@ mod tests {
             hmac_ttl_sec: 30,
             request_timeout_ms: 2_000,
             idempotency_db_path: ":memory:".to_string(),
+            idempotency_claim_ttl_sec: DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC,
             max_notional_sol: 10.0,
             allow_nonzero_tip: true,
             submit_signature_verify: None,
@@ -3473,7 +3496,6 @@ mod tests {
             http,
             auth,
             idempotency,
-            in_flight_submit_keys: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
 
