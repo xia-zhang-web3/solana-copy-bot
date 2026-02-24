@@ -82,6 +82,8 @@ contract_guard_tests=(
   "request_validation_rejects_empty_client_order_id"
   "request_types_simulate_requires_request_id_field"
   "request_types_submit_requires_compute_budget_field"
+  "request_ingress_parse_json_or_reject_returns_invalid_json_payload"
+  "request_ingress_verify_auth_or_reject_returns_auth_reject_payload"
   "normalize_route_trims_and_lowercases"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"

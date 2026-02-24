@@ -30,6 +30,7 @@ mod fee_hints;
 mod http_utils;
 mod idempotency;
 mod key_validation;
+mod request_ingress;
 mod reject_mapping;
 mod request_validation;
 mod request_types;
@@ -64,6 +65,7 @@ use crate::fee_hints::{parse_response_fee_hint_fields, resolve_fee_hints, FeeHin
 use crate::http_utils::{endpoint_identity, validate_endpoint_url};
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
+use crate::request_ingress::{parse_json_or_reject, verify_auth_or_reject};
 use crate::reject_mapping::{
     map_common_contract_validation_error_to_reject, map_compute_budget_validation_error_to_reject,
     map_fee_hint_error_to_reject, map_fee_hint_field_parse_error_to_reject,
@@ -662,32 +664,20 @@ async fn simulate(
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse {
-    if let Err(reject) = state.auth.verify(&headers, raw_body.as_ref()).await {
-        return (
-            StatusCode::OK,
-            Json(reject_to_json(
-                &reject,
-                None,
-                &state.config.contract_version,
-            )),
-        );
+    if let Some(response) = verify_auth_or_reject(
+        state.auth.as_ref(),
+        &headers,
+        raw_body.as_ref(),
+        &state.config.contract_version,
+    )
+    .await
+    {
+        return response;
     }
 
-    let request: SimulateRequest = match serde_json::from_slice(raw_body.as_ref()) {
+    let request: SimulateRequest = match parse_json_or_reject(raw_body.as_ref(), &state.config.contract_version) {
         Ok(value) => value,
-        Err(error) => {
-            return (
-                StatusCode::OK,
-                Json(reject_to_json(
-                    &Reject::terminal(
-                        "invalid_json",
-                        format!("request body is not valid JSON: {}", error),
-                    ),
-                    None,
-                    &state.config.contract_version,
-                )),
-            );
-        }
+        Err(response) => return response,
     };
 
     match handle_simulate(&state, &request, raw_body.as_ref()).await {
@@ -708,32 +698,20 @@ async fn submit(
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse {
-    if let Err(reject) = state.auth.verify(&headers, raw_body.as_ref()).await {
-        return (
-            StatusCode::OK,
-            Json(reject_to_json(
-                &reject,
-                None,
-                &state.config.contract_version,
-            )),
-        );
+    if let Some(response) = verify_auth_or_reject(
+        state.auth.as_ref(),
+        &headers,
+        raw_body.as_ref(),
+        &state.config.contract_version,
+    )
+    .await
+    {
+        return response;
     }
 
-    let request: SubmitRequest = match serde_json::from_slice(raw_body.as_ref()) {
+    let request: SubmitRequest = match parse_json_or_reject(raw_body.as_ref(), &state.config.contract_version) {
         Ok(value) => value,
-        Err(error) => {
-            return (
-                StatusCode::OK,
-                Json(reject_to_json(
-                    &Reject::terminal(
-                        "invalid_json",
-                        format!("request body is not valid JSON: {}", error),
-                    ),
-                    None,
-                    &state.config.contract_version,
-                )),
-            );
-        }
+        Err(response) => return response,
     };
 
     let client_order_id = request.client_order_id.clone();
