@@ -34,6 +34,7 @@ mod request_ingress;
 mod reject_mapping;
 mod request_validation;
 mod request_types;
+mod response_envelope;
 mod rfc3339_time;
 mod route_allowlist;
 mod route_backend;
@@ -66,6 +67,7 @@ use crate::http_utils::{endpoint_identity, validate_endpoint_url};
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
 use crate::request_ingress::{parse_json_or_reject, verify_auth_or_reject};
+use crate::response_envelope::success_or_reject_to_http;
 use crate::reject_mapping::{
     map_common_contract_validation_error_to_reject, map_compute_budget_validation_error_to_reject,
     map_fee_hint_error_to_reject, map_fee_hint_field_parse_error_to_reject,
@@ -73,7 +75,7 @@ use crate::reject_mapping::{
     map_parsed_upstream_reject, map_request_validation_error_to_reject,
     map_simulate_response_validation_error_to_reject, map_slippage_validation_error_to_reject,
     map_submit_response_validation_error_to_reject, map_submit_tip_policy_error_to_reject,
-    map_submit_transport_artifact_error_to_reject, reject_to_json, simulate_http_status_for_reject,
+    map_submit_transport_artifact_error_to_reject, simulate_http_status_for_reject,
 };
 use crate::request_validation::{
     validate_non_empty_client_order_id, validate_non_empty_request_id,
@@ -680,17 +682,11 @@ async fn simulate(
         Err(response) => return response,
     };
 
-    match handle_simulate(&state, &request, raw_body.as_ref()).await {
-        Ok(value) => (StatusCode::OK, Json(value)),
-        Err(reject) => (
-            StatusCode::OK,
-            Json(reject_to_json(
-                &reject,
-                None,
-                &state.config.contract_version,
-            )),
-        ),
-    }
+    success_or_reject_to_http(
+        handle_simulate(&state, &request, raw_body.as_ref()).await,
+        None,
+        &state.config.contract_version,
+    )
 }
 
 async fn submit(
@@ -715,17 +711,11 @@ async fn submit(
     };
 
     let client_order_id = request.client_order_id.clone();
-    match handle_submit(&state, &request, raw_body.as_ref()).await {
-        Ok(value) => (StatusCode::OK, Json(value)),
-        Err(reject) => (
-            StatusCode::OK,
-            Json(reject_to_json(
-                &reject,
-                Some(client_order_id.as_str()),
-                &state.config.contract_version,
-            )),
-        ),
-    }
+    success_or_reject_to_http(
+        handle_submit(&state, &request, raw_body.as_ref()).await,
+        Some(client_order_id.as_str()),
+        &state.config.contract_version,
+    )
 }
 
 async fn handle_simulate(
