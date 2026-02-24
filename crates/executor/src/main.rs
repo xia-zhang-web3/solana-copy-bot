@@ -23,6 +23,7 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod auth_crypto;
+mod contract_version;
 mod http_utils;
 mod fee_hints;
 mod common_contract;
@@ -44,6 +45,7 @@ mod tx_build;
 mod upstream_outcome;
 
 use crate::auth_crypto::{compute_hmac_signature_hex, constant_time_eq};
+use crate::contract_version::is_valid_contract_version_token;
 use crate::fee_hints::{
     parse_response_fee_hint_fields, resolve_fee_hints, FeeHintError, FeeHintFieldParseError,
     FeeHintInputs,
@@ -1917,12 +1919,6 @@ fn get_required_header<'a>(
         .ok_or_else(|| Reject::terminal(err_code, format!("missing header {}", key)))
 }
 
-fn is_valid_contract_version_token(value: &str) -> bool {
-    value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
-}
-
 fn resolve_signer_source_config(
     source_raw: Option<&str>,
     keypair_file_raw: Option<&str>,
@@ -2058,14 +2054,6 @@ mod tests {
     };
 
     static TEMP_SECRET_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn contract_version_token_validation() {
-        assert!(is_valid_contract_version_token("v1"));
-        assert!(is_valid_contract_version_token("v1.2.3-prod"));
-        assert!(!is_valid_contract_version_token("v1 beta"));
-        assert!(!is_valid_contract_version_token("v1/beta"));
-    }
 
     #[test]
     fn parse_route_allowlist_normalizes() {
