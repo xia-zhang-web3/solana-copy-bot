@@ -50,6 +50,19 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         )
     })?;
 
+    // Defense-in-depth: keep this invariant local to send path even though
+    // config parsing and endpoint_chain_checked also enforce it.
+    if backend.send_rpc_url.is_none() && backend.send_rpc_fallback_url.is_some() {
+        return Err(Reject::terminal(
+            "adapter_send_rpc_not_configured",
+            format!(
+                "route={} has send RPC fallback URL but missing primary send RPC URL (set COPYBOT_EXECUTOR_ROUTE_{}_SEND_RPC_URL or COPYBOT_EXECUTOR_SEND_RPC_URL)",
+                route,
+                route.to_ascii_uppercase()
+            ),
+        ));
+    }
+
     let endpoints = backend.send_rpc_endpoint_chain_checked().map_err(|error| match error {
         SendRpcEndpointChainError::FallbackWithoutPrimary => Reject::terminal(
             "adapter_send_rpc_not_configured",
