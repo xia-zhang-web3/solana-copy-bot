@@ -43,6 +43,7 @@ mod signer_source;
 mod simulate_response;
 mod submit_deadline;
 mod submit_budget;
+mod submit_claim_guard;
 mod submit_payload;
 mod submit_response;
 mod submit_transport;
@@ -95,6 +96,7 @@ use crate::submit_deadline::SubmitDeadline;
 use crate::submit_budget::{
     default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path,
 };
+use crate::submit_claim_guard::SubmitClaimGuard;
 use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_transport::{
     extract_submit_transport_artifact, SubmitTransportArtifact,
@@ -568,48 +570,6 @@ pub(crate) struct Reject {
     pub(crate) retryable: bool,
     pub(crate) code: String,
     pub(crate) detail: String,
-}
-
-struct SubmitClaimGuard {
-    idempotency: Arc<SubmitIdempotencyStore>,
-    client_order_id: String,
-    request_id: String,
-}
-
-impl SubmitClaimGuard {
-    fn new(idempotency: Arc<SubmitIdempotencyStore>, client_order_id: &str, request_id: &str) -> Self {
-        Self {
-            idempotency,
-            client_order_id: client_order_id.trim().to_string(),
-            request_id: request_id.trim().to_string(),
-        }
-    }
-}
-
-impl Drop for SubmitClaimGuard {
-    fn drop(&mut self) {
-        match self
-            .idempotency
-            .release_submit_claim(self.client_order_id.as_str(), self.request_id.as_str())
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                warn!(
-                    client_order_id = %self.client_order_id,
-                    request_id = %self.request_id,
-                    "idempotency submit claim release had no owner-match row"
-                );
-            }
-            Err(error) => {
-                warn!(
-                    client_order_id = %self.client_order_id,
-                    request_id = %self.request_id,
-                    error = %error,
-                    "failed to release idempotency submit claim"
-                );
-            }
-        }
-    }
 }
 
 impl Reject {
