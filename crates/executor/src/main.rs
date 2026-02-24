@@ -25,10 +25,12 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod http_utils;
+mod fee_hints;
 mod route_policy;
 mod send_rpc;
 mod submit_verify;
 
+use crate::fee_hints::{resolve_fee_hints, FeeHintError, FeeHintInputs};
 use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
@@ -1182,46 +1184,16 @@ async fn handle_submit(
     let response_priority_fee =
         parse_optional_non_negative_u64_field(&backend_response, "priority_fee_lamports")?;
 
-    let default_priority_fee = ((request.compute_budget.cu_limit as u128)
-        .saturating_mul(request.compute_budget.cu_price_micro_lamports as u128)
-        / 1_000_000u128) as u64;
-    let base_fee_lamports = response_base_fee.unwrap_or(DEFAULT_BASE_FEE_LAMPORTS);
-    let priority_fee_lamports = response_priority_fee.unwrap_or(default_priority_fee);
-    let derived_network_fee_lamports = base_fee_lamports
-        .checked_add(priority_fee_lamports)
-        .ok_or_else(|| Reject::terminal("fee_overflow", "base+priority fee overflow"))?;
-
-    let network_fee_lamports = response_network_fee.unwrap_or(derived_network_fee_lamports);
-    if network_fee_lamports != derived_network_fee_lamports {
-        return Err(Reject::terminal(
-            "submit_adapter_invalid_response",
-            format!(
-                "network_fee_lamports={} does not match base+priority={}",
-                network_fee_lamports, derived_network_fee_lamports
-            ),
-        ));
-    }
-
-    for (field, value) in [
-        ("network_fee_lamports", network_fee_lamports),
-        ("base_fee_lamports", base_fee_lamports),
-        ("priority_fee_lamports", priority_fee_lamports),
-    ] {
-        if value > i64::MAX as u64 {
-            return Err(Reject::terminal(
-                "submit_adapter_invalid_response",
-                format!("{}={} exceeds i64::MAX", field, value),
-            ));
-        }
-    }
-    if let Some(value) = ata_create_rent_lamports {
-        if value > i64::MAX as u64 {
-            return Err(Reject::terminal(
-                "submit_adapter_invalid_response",
-                format!("ata_create_rent_lamports={} exceeds i64::MAX", value),
-            ));
-        }
-    }
+    let resolved_fee_hints = resolve_fee_hints(FeeHintInputs {
+        response_network_fee_lamports: response_network_fee,
+        response_base_fee_lamports: response_base_fee,
+        response_priority_fee_lamports: response_priority_fee,
+        response_ata_create_rent_lamports: ata_create_rent_lamports,
+        request_cu_limit: request.compute_budget.cu_limit,
+        request_cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
+        default_base_fee_lamports: DEFAULT_BASE_FEE_LAMPORTS,
+    })
+    .map_err(map_fee_hint_error_to_reject)?;
 
     let mut response = json!({
         "status": "ok",
@@ -1240,10 +1212,10 @@ async fn handle_submit(
             "cu_limit": request.compute_budget.cu_limit,
             "cu_price_micro_lamports": request.compute_budget.cu_price_micro_lamports,
         },
-        "network_fee_lamports": network_fee_lamports,
-        "base_fee_lamports": base_fee_lamports,
-        "priority_fee_lamports": priority_fee_lamports,
-        "ata_create_rent_lamports": ata_create_rent_lamports,
+        "network_fee_lamports": resolved_fee_hints.network_fee_lamports,
+        "base_fee_lamports": resolved_fee_hints.base_fee_lamports,
+        "priority_fee_lamports": resolved_fee_hints.priority_fee_lamports,
+        "ata_create_rent_lamports": resolved_fee_hints.ata_create_rent_lamports,
     });
     if let Some(policy_code) = tip_policy_code {
         response["tip_policy"] = json!({
@@ -1584,6 +1556,28 @@ fn parse_optional_non_negative_u64_field(
         "submit_adapter_invalid_response",
         format!("{} must be non-negative integer when present", field),
     ))
+}
+
+fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
+    match error {
+        FeeHintError::OverflowBasePlusPriority => {
+            Reject::terminal("fee_overflow", "base+priority fee overflow")
+        }
+        FeeHintError::NetworkFeeMismatch {
+            network_fee_lamports,
+            derived_network_fee_lamports,
+        } => Reject::terminal(
+            "submit_adapter_invalid_response",
+            format!(
+                "network_fee_lamports={} does not match base+priority={}",
+                network_fee_lamports, derived_network_fee_lamports
+            ),
+        ),
+        FeeHintError::FieldExceedsI64 { field, value } => Reject::terminal(
+            "submit_adapter_invalid_response",
+            format!("{}={} exceeds i64::MAX", field, value),
+        ),
+    }
 }
 
 fn build_submit_forward_payload(
