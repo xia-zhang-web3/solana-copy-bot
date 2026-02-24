@@ -683,6 +683,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 155. executor startup-config extraction completed: `ExecutorConfig::from_env()` environment parsing/validation logic moved from `crates/executor/src/main.rs` into dedicated module `crates/executor/src/executor_config_env.rs`, preserving fail-closed startup contract for routes/auth/secrets/timeouts/idempotency/submit-verify settings.
 156. executor health endpoint extraction completed: `/healthz` handler moved from `crates/executor/src/main.rs` into dedicated module `crates/executor/src/healthz_endpoint.rs`, preserving runtime idempotency probe behavior and health payload schema while keeping router wiring unchanged.
 157. executor phase-2A extraction baseline completed: `crates/executor/src/main.rs` runtime path now contains only bootstrap/router wiring (`main`) while HTTP endpoints, business handlers, startup config parsing, reject/envelope/validation/auth helpers, and transport/policy logic are modularized in dedicated files for phase-2B implementation slices.
+158. executor phase-2A post-audit build fix applied: non-test binary build regression after extraction was resolved by restoring runtime imports for `/simulate` endpoint wiring and de-coupling submit handler from root-scope send-RPC import (`submit_handler` now imports `crate::send_rpc::send_signed_transaction_via_rpc` directly), with `cargo check -p copybot-executor` restored to PASS.
 
 Остается в next-code-queue:
 

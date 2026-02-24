@@ -24,6 +24,7 @@ use crate::submit_response::{
     resolve_submit_response_submitted_at, validate_submit_response_request_identity,
     validate_submit_response_route_and_contract,
 };
+use crate::send_rpc::send_signed_transaction_via_rpc;
 use crate::submit_transport::{extract_submit_transport_artifact, SubmitTransportArtifact};
 use crate::submit_verify::verify_submitted_signature_visibility;
 use crate::submit_verify_payload::submit_signature_verification_to_json;
@@ -33,7 +34,7 @@ use crate::tx_build::{
 };
 use crate::upstream_forward::forward_to_upstream;
 use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
-use crate::{send_signed_transaction_via_rpc, AppState, Reject};
+use crate::{AppState, Reject};
 
 pub(crate) async fn handle_submit(
     state: &AppState,

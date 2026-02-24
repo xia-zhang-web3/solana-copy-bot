@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use axum::{
-    http::StatusCode,
     routing::{get, post},
     Router,
 };
 #[cfg(test)]
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use reqwest::Client;
+#[cfg(test)]
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
@@ -72,7 +72,6 @@ use crate::healthz_endpoint::healthz;
 use crate::idempotency::SubmitIdempotencyStore;
 #[cfg(test)]
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
-#[cfg(test)]
 use crate::request_endpoints::simulate;
 use crate::request_endpoints::submit;
 pub(crate) use crate::reject::Reject;

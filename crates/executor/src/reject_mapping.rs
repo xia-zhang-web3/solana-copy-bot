@@ -1,3 +1,4 @@
+#[cfg(test)]
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
@@ -334,6 +335,7 @@ pub(crate) fn reject_to_json(
     payload
 }
 
+#[cfg(test)]
 pub(crate) fn simulate_http_status_for_reject(_reject: &Reject) -> StatusCode {
     StatusCode::OK
 }
