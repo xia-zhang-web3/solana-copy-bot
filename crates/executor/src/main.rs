@@ -30,6 +30,7 @@ mod idempotency;
 mod route_backend;
 mod route_policy;
 mod send_rpc;
+mod submit_transport;
 mod submit_verify;
 mod tx_build;
 
@@ -43,6 +44,9 @@ use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_policy::apply_submit_tip_policy;
 use crate::route_policy::requires_submit_fastlane_enabled;
 use crate::send_rpc::send_signed_transaction_via_rpc;
+use crate::submit_transport::{
+    extract_submit_transport_artifact, SubmitTransportArtifact, SubmitTransportArtifactError,
+};
 #[cfg(test)]
 use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 use crate::submit_verify::{
@@ -1306,37 +1310,20 @@ async fn handle_submit(
         }
     }
 
-    let upstream_tx_signature = backend_response
-        .get("tx_signature")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let signed_tx_base64 = backend_response
-        .get("signed_tx_base64")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let (tx_signature, submit_transport) = if let Some(value) = upstream_tx_signature {
-        validate_signature_like(value).map_err(|error| {
-            Reject::retryable(
-                "submit_adapter_invalid_response",
-                format!(
-                    "upstream tx_signature is not valid base58 signature: {}",
-                    error
-                ),
+    let (tx_signature, submit_transport) = match extract_submit_transport_artifact(&backend_response)
+        .map_err(map_submit_transport_artifact_error_to_reject)?
+    {
+        SubmitTransportArtifact::UpstreamSignature(value) => (value, "upstream_signature"),
+        SubmitTransportArtifact::SignedTransactionBase64(value) => {
+            let signature = send_signed_transaction_via_rpc(
+                state,
+                route.as_str(),
+                value.as_str(),
+                Some(&submit_deadline),
             )
-        })?;
-        (value.to_string(), "upstream_signature")
-    } else if let Some(value) = signed_tx_base64 {
-        let signature =
-            send_signed_transaction_via_rpc(state, route.as_str(), value, Some(&submit_deadline))
-                .await?;
-        (signature, "adapter_send_rpc")
-    } else {
-        return Err(Reject::retryable(
-            "submit_adapter_invalid_response",
-            "upstream response missing tx_signature and signed_tx_base64",
-        ));
+            .await?;
+            (signature, "adapter_send_rpc")
+        }
     };
 
     let submit_signature_verify = verify_submitted_signature_visibility(
@@ -1881,6 +1868,19 @@ fn map_compute_budget_validation_error_to_reject(error: ComputeBudgetValidationE
                 "compute_budget.cu_price_micro_lamports must be in {}..={}",
                 min, max
             ),
+        ),
+    }
+}
+
+fn map_submit_transport_artifact_error_to_reject(error: SubmitTransportArtifactError) -> Reject {
+    match error {
+        SubmitTransportArtifactError::InvalidUpstreamSignature { error } => Reject::retryable(
+            "submit_adapter_invalid_response",
+            format!("upstream tx_signature is not valid base58 signature: {}", error),
+        ),
+        SubmitTransportArtifactError::MissingSubmitArtifact => Reject::retryable(
+            "submit_adapter_invalid_response",
+            "upstream response missing tx_signature and signed_tx_base64",
         ),
     }
 }
@@ -3281,6 +3281,54 @@ mod tests {
         );
         let _ = upstream_handle.join();
         let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_when_upstream_missing_transport_artifacts() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-missing-transport-1",
+            "client_order_id": "client-order-missing-transport-1",
+            "request_id": "request-missing-transport-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("missing submit transport artifacts should reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("missing tx_signature and signed_tx_base64"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
     }
 
     #[tokio::test]

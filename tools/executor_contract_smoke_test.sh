@@ -69,6 +69,7 @@ contract_guard_tests=(
   "handle_submit_rejects_compute_budget_price_out_of_range"
   "handle_submit_rejects_slippage_bps_out_of_range"
   "handle_submit_rejects_slippage_exceeding_route_cap"
+  "handle_submit_rejects_when_upstream_missing_transport_artifacts"
   "handle_submit_returns_cached_response_for_duplicate_client_order_id"
   "handle_submit_rejects_parallel_duplicate_client_order_id_in_flight"
   "handle_submit_returns_canonical_cached_response_when_store_conflicts"
@@ -81,6 +82,7 @@ contract_guard_tests=(
   "send_signed_transaction_via_rpc_treats_blockhash_expired_payload_as_terminal"
   "send_signed_transaction_via_rpc_rejects_fallback_without_primary_url"
   "resolve_fee_hints_rejects_derived_priority_fee_overflow"
+  "submit_transport_extract_rejects_missing_artifacts"
 )
 
 for test_name in "${contract_guard_tests[@]}"; do
