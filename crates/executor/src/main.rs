@@ -62,6 +62,7 @@ const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
 const DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC: u64 = 60;
+const CLAIM_TTL_SAFETY_PADDING_MS: u64 = 1_000;
 const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
 
 #[derive(Clone)]
@@ -416,14 +417,6 @@ impl ExecutorConfig {
                 "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC must be > 0"
             ));
         }
-        let min_claim_ttl_sec = (request_timeout_ms.saturating_add(999) / 1000).max(1);
-        if idempotency_claim_ttl_sec < min_claim_ttl_sec {
-            return Err(anyhow!(
-                "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC must be >= {} (derived from COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS={})",
-                min_claim_ttl_sec,
-                request_timeout_ms
-            ));
-        }
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -435,6 +428,18 @@ impl ExecutorConfig {
         }
         let allow_nonzero_tip = parse_bool_env("COPYBOT_EXECUTOR_ALLOW_NONZERO_TIP", true);
         let submit_signature_verify = parse_submit_signature_verify_config()?;
+        let min_claim_ttl_sec = min_claim_ttl_sec_for_submit_path(
+            request_timeout_ms,
+            &route_backends,
+            submit_signature_verify.as_ref(),
+        );
+        if idempotency_claim_ttl_sec < min_claim_ttl_sec {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC must be >= {} (derived from request_timeout_ms={}, route fallback topology, send_rpc topology, and submit signature verify settings)",
+                min_claim_ttl_sec,
+                request_timeout_ms
+            ));
+        }
 
         Ok(Self {
             bind_addr,
@@ -458,6 +463,48 @@ impl ExecutorConfig {
             submit_signature_verify,
         })
     }
+}
+
+fn min_claim_ttl_sec_for_submit_path(
+    request_timeout_ms: u64,
+    route_backends: &HashMap<String, RouteBackend>,
+    submit_signature_verify: Option<&SubmitSignatureVerifyConfig>,
+) -> u64 {
+    let submit_hops = route_backends
+        .values()
+        .map(|backend| backend.endpoint_chain(UpstreamAction::Submit).len() as u64)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let send_rpc_hops = route_backends
+        .values()
+        .map(|backend| backend.send_rpc_endpoint_chain().len() as u64)
+        .max()
+        .unwrap_or(0);
+    let verify_hops = submit_signature_verify
+        .map(|config| {
+            config
+                .attempts
+                .saturating_mul(config.endpoints.len() as u64)
+                .max(1)
+        })
+        .unwrap_or(0);
+    let verify_wait_ms = submit_signature_verify
+        .map(|config| {
+            config
+                .interval_ms
+                .saturating_mul(config.attempts.saturating_sub(1))
+        })
+        .unwrap_or(0);
+    let total_hops = submit_hops
+        .saturating_add(send_rpc_hops)
+        .saturating_add(verify_hops)
+        .max(1);
+    let budget_ms = request_timeout_ms
+        .saturating_mul(total_hops)
+        .saturating_add(verify_wait_ms)
+        .saturating_add(CLAIM_TTL_SAFETY_PADDING_MS);
+    (budget_ms.saturating_add(999) / 1000).max(1)
 }
 
 #[derive(Clone)]
@@ -671,16 +718,26 @@ impl SubmitClaimGuard {
 
 impl Drop for SubmitClaimGuard {
     fn drop(&mut self) {
-        if let Err(error) = self
+        match self
             .idempotency
             .release_submit_claim(self.client_order_id.as_str(), self.request_id.as_str())
         {
-            warn!(
-                client_order_id = %self.client_order_id,
-                request_id = %self.request_id,
-                error = %error,
-                "failed to release idempotency submit claim"
-            );
+            Ok(true) => {}
+            Ok(false) => {
+                warn!(
+                    client_order_id = %self.client_order_id,
+                    request_id = %self.request_id,
+                    "idempotency submit claim release had no owner-match row"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    client_order_id = %self.client_order_id,
+                    request_id = %self.request_id,
+                    error = %error,
+                    "failed to release idempotency submit claim"
+                );
+            }
         }
     }
 }
@@ -2183,6 +2240,37 @@ mod tests {
         let routes = parse_route_allowlist("rpc,fastlane".to_string()).unwrap();
         assert!(validate_fastlane_route_policy(&routes, false).is_err());
         assert!(validate_fastlane_route_policy(&routes, true).is_ok());
+    }
+
+    #[test]
+    fn min_claim_ttl_sec_for_submit_path_accounts_for_verify_and_fallback_hops() {
+        let mut route_backends = HashMap::new();
+        route_backends.insert(
+            "rpc".to_string(),
+            RouteBackend {
+                submit_url: "https://submit.primary".to_string(),
+                submit_fallback_url: Some("https://submit.fallback".to_string()),
+                simulate_url: "https://simulate.primary".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: Some("https://send-rpc.primary".to_string()),
+                send_rpc_fallback_url: Some("https://send-rpc.fallback".to_string()),
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let verify = SubmitSignatureVerifyConfig {
+            endpoints: vec![
+                "https://verify.primary".to_string(),
+                "https://verify.fallback".to_string(),
+            ],
+            attempts: 3,
+            interval_ms: 250,
+            strict: false,
+        };
+        let ttl = min_claim_ttl_sec_for_submit_path(2_000, &route_backends, Some(&verify));
+        assert_eq!(ttl, 22);
     }
 
     #[test]
