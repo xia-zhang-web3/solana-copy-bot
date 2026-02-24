@@ -163,3 +163,43 @@ Adapter wiring target:
 2. `COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL=http://127.0.0.1:8090/simulate`
 
 Before rollout, run executor preflight/rehearsal/evidence helpers from Phase 4+ plan sections.
+
+## 8) Executor Rollout Evidence Helper (Phase 5)
+
+```bash
+CONFIG_PATH=/etc/solana-copy-bot/live.server.toml \
+EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env \
+ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env \
+OUTPUT_DIR=state/executor-rollout \
+RUN_TESTS=true \
+./tools/executor_rollout_evidence_report.sh 24 60
+```
+
+What it runs:
+
+1. `tools/executor_signer_rotation_report.sh`
+2. `tools/executor_preflight.sh`
+3. `tools/execution_devnet_rehearsal.sh`
+
+Top-level verdict:
+
+1. `executor_rollout_verdict: GO|HOLD|NO_GO`
+2. `executor_rollout_reason_code`
+3. `artifacts_written`
+
+## 9) Executor Final Evidence Package (Phase 5/6)
+
+```bash
+CONFIG_PATH=/etc/solana-copy-bot/live.server.toml \
+EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env \
+ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env \
+OUTPUT_ROOT=state/executor-final \
+./tools/executor_final_evidence_report.sh 24 60
+```
+
+Expected package fields:
+
+1. `final_executor_package_verdict: GO|HOLD|NO_GO`
+2. `final_executor_package_reason_code`
+3. `artifact_summary`, `artifact_manifest`, `artifact_rollout_capture`
+4. `summary_sha256`, `rollout_capture_sha256`, `manifest_sha256`

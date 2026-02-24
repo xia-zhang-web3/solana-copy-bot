@@ -2550,6 +2550,193 @@ EOF
   echo "[ok] executor signer rotation report pass/fail checks"
 }
 
+run_executor_rollout_evidence_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local executor_env_path="$TMP_DIR/executor-rollout.env"
+  local adapter_env_path="$TMP_DIR/adapter-rollout-for-executor.env"
+  local artifacts_dir="$TMP_DIR/executor-rollout-artifacts"
+  local final_artifacts_dir="$TMP_DIR/executor-final-package"
+  local fake_curl_bin="$TMP_DIR/fake-curl-executor-rollout"
+  local auth_token="executor-rollout-token"
+  local port="18091"
+
+  write_executor_env_preflight "$executor_env_path" "$port" "$auth_token"
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
+  write_fake_curl_executor_preflight "$fake_curl_bin" "$auth_token"
+
+  local pass_output
+  pass_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$artifacts_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60
+  )"
+  assert_contains "$pass_output" "=== Executor Rollout Evidence Summary ==="
+  assert_field_equals "$pass_output" "rotation_readiness_verdict" "PASS"
+  assert_field_equals "$pass_output" "preflight_verdict" "PASS"
+  assert_field_equals "$pass_output" "devnet_rehearsal_verdict" "GO"
+  assert_field_equals "$pass_output" "executor_rollout_verdict" "GO"
+  assert_field_equals "$pass_output" "executor_rollout_reason_code" "gates_pass"
+  assert_contains "$pass_output" "artifacts_written: true"
+  assert_sha256_field "$pass_output" "summary_sha256"
+  assert_sha256_field "$pass_output" "rotation_capture_sha256"
+  assert_sha256_field "$pass_output" "preflight_capture_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_capture_sha256"
+  if ! ls "$artifacts_dir"/executor_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
+    echo "expected executor rollout summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/executor_signer_rotation_captured_*.txt >/dev/null 2>&1; then
+    echo "expected executor signer rotation capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/executor_preflight_captured_*.txt >/dev/null 2>&1; then
+    echo "expected executor preflight capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_captured_*.txt >/dev/null 2>&1; then
+    echo "expected execution devnet rehearsal capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/executor_rollout_evidence_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected executor rollout manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+
+  write_adapter_env_preflight "$adapter_env_path" "$port" "mismatch-token"
+  local preflight_fail_output=""
+  if preflight_fail_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor rollout helper when preflight fails" >&2
+    exit 1
+  else
+    local preflight_fail_exit_code=$?
+    if [[ "$preflight_fail_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for executor rollout preflight failure, got $preflight_fail_exit_code" >&2
+      echo "$preflight_fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$preflight_fail_output" "preflight_verdict" "FAIL"
+  assert_field_equals "$preflight_fail_output" "executor_rollout_verdict" "NO_GO"
+  assert_field_equals "$preflight_fail_output" "executor_rollout_reason_code" "preflight_fail"
+
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
+  local final_output
+  final_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$final_artifacts_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60
+  )"
+  assert_contains "$final_output" "=== Executor Final Evidence Package ==="
+  assert_field_equals "$final_output" "rollout_verdict" "GO"
+  assert_field_equals "$final_output" "rollout_reason_code" "gates_pass"
+  assert_field_equals "$final_output" "final_executor_package_verdict" "GO"
+  assert_field_equals "$final_output" "final_executor_package_reason_code" "gates_pass"
+  assert_contains "$final_output" "artifacts_written: true"
+  assert_contains "$final_output" "rollout_artifacts_written: true"
+  assert_sha256_field "$final_output" "summary_sha256"
+  assert_sha256_field "$final_output" "rollout_capture_sha256"
+  assert_sha256_field "$final_output" "manifest_sha256"
+  if ! ls "$final_artifacts_dir"/executor_final_evidence_summary_*.txt >/dev/null 2>&1; then
+    echo "expected executor final package summary artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/executor_final_evidence_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected executor final package manifest artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/executor_rollout_evidence_captured_*.txt >/dev/null 2>&1; then
+    echo "expected executor final package captured rollout artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/rollout/executor_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested executor rollout summary artifact in $final_artifacts_dir/rollout" >&2
+    exit 1
+  fi
+
+  write_adapter_env_preflight "$adapter_env_path" "$port" "mismatch-token"
+  local final_nogo_output=""
+  if final_nogo_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/executor-final-package-nogo" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor final package helper when rollout gate fails" >&2
+    exit 1
+  else
+    local final_nogo_exit_code=$?
+    if [[ "$final_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for executor final package helper, got $final_nogo_exit_code" >&2
+      echo "$final_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$final_nogo_output" "rollout_verdict" "NO_GO"
+  assert_field_equals "$final_nogo_output" "rollout_reason_code" "preflight_fail"
+  assert_field_equals "$final_nogo_output" "final_executor_package_verdict" "NO_GO"
+  assert_field_equals "$final_nogo_output" "final_executor_package_reason_code" "preflight_fail"
+  echo "[ok] executor rollout/final evidence helpers"
+}
+
 run_adapter_rollout_evidence_case() {
   local db_path="$1"
   local config_path="$2"
@@ -3179,6 +3366,7 @@ main() {
   run_executor_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case
   run_executor_signer_rotation_report_case
+  run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_go_nogo_preflight_fail_case "$legacy_db"
   run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"

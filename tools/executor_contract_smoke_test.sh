@@ -16,6 +16,9 @@ pass() {
 
 [[ -f "$CONTRACT_FILE" ]] || fail "missing canonical contract: $CONTRACT_FILE"
 [[ -f "$PLAN_FILE" ]] || fail "missing executor master plan: $PLAN_FILE"
+[[ -f "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" ]] || fail "missing helper: tools/executor_rollout_evidence_report.sh"
+[[ -f "$ROOT_DIR/tools/executor_final_evidence_report.sh" ]] || fail "missing helper: tools/executor_final_evidence_report.sh"
+pass "executor evidence helpers present"
 
 required_contract_patterns=(
   "# Executor Contract v1 \(Canonical\)"
