@@ -56,13 +56,11 @@ pub(crate) fn build_submit_forward_payload(
     let object = payload
         .as_object_mut()
         .ok_or(ForwardPayloadBuildError::RootNotObject)?;
+    object.insert("tip_lamports".to_string(), Value::from(effective_tip_lamports));
 
-    if requested_tip_lamports != effective_tip_lamports {
-        object.insert("tip_lamports".to_string(), Value::from(effective_tip_lamports));
-    }
-
-    serde_json::to_vec(&payload)
-        .map_err(|error| ForwardPayloadBuildError::Encode(error.to_string()))
+    serde_json::to_vec(&payload).map_err(|error| {
+        ForwardPayloadBuildError::Encode(format!("failed to encode submit request body: {}", error))
+    })
 }
 
 #[cfg(test)]
