@@ -262,8 +262,9 @@ Primary model (required for production closure):
 
 1. Executor fetches recent blockhash per submit attempt.
 2. On retryable send failure, refresh blockhash before retry.
-3. Expired blockhash errors are classified retryable with bounded retry budget.
-4. Submit path must not reuse stale blockhash across retry boundary.
+3. Expired blockhash errors are classified as terminal `executor_blockhash_expired` for the current submit attempt (no in-attempt auto-resend on stale blockhash in this path).
+4. Any bounded retry policy for blockhash-expired must be orchestrated by caller-level retry flow with a fresh submit attempt and rebuilt transaction context.
+5. Submit path must not reuse stale blockhash across retry boundary.
 
 ## 9.5 Simulation semantics
 

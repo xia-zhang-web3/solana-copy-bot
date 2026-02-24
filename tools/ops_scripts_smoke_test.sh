@@ -566,6 +566,120 @@ COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=false
 EOF
 }
 
+write_executor_env_preflight() {
+  local env_path="$1"
+  local port="$2"
+  local token="$3"
+  cat >"$env_path" <<EOF
+COPYBOT_EXECUTOR_BIND_ADDR="127.0.0.1:${port}"
+COPYBOT_EXECUTOR_CONTRACT_VERSION="v1"
+COPYBOT_EXECUTOR_SIGNER_PUBKEY="Signer1111111111111111111111111111111111"
+COPYBOT_EXECUTOR_SIGNER_SOURCE="kms"
+COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID="kms-key-1"
+COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper,rpc,jito"
+COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=false
+COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=false
+COPYBOT_EXECUTOR_BEARER_TOKEN="${token}"
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL="https://executor.upstream.local/submit"
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL="https://executor.upstream.local/simulate"
+EOF
+}
+
+write_adapter_env_preflight() {
+  local env_path="$1"
+  local port="$2"
+  local token="$3"
+  cat >"$env_path" <<EOF
+COPYBOT_ADAPTER_ROUTE_ALLOWLIST="paper,rpc,jito"
+COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL="http://127.0.0.1:${port}/submit"
+COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL="http://127.0.0.1:${port}/simulate"
+COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN="${token}"
+EOF
+}
+
+write_fake_curl_executor_preflight() {
+  local fake_bin_dir="$1"
+  local token="$2"
+  local script_path="$fake_bin_dir/curl"
+  mkdir -p "$fake_bin_dir"
+  cat >"$script_path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+expected_token='__EXPECTED_TOKEN__'
+output_file=""
+auth_header=""
+url=""
+status_code="200"
+body='{"status":"not_found"}'
+
+while (($#)); do
+  case "$1" in
+    -o)
+      output_file="$2"
+      shift 2
+      ;;
+    -w)
+      shift 2
+      ;;
+    -H)
+      header="$2"
+      header_lower="$(printf '%s' "$header" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$header_lower" == authorization:* ]]; then
+        auth_header="${header#*:}"
+        auth_header="${auth_header#"${auth_header%%[![:space:]]*}"}"
+        auth_header="${auth_header%"${auth_header##*[![:space:]]}"}"
+      fi
+      shift 2
+      ;;
+    --data|-d|-X|-m|--connect-timeout)
+      shift 2
+      ;;
+    -s|-S)
+      shift
+      ;;
+    http://*|https://*)
+      url="$1"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [[ "$url" == *"/healthz" ]]; then
+  body='{"status":"ok","contract_version":"v1","enabled_routes":["paper","rpc","jito"],"signer_source":"kms","idempotency_store_status":"ok"}'
+  status_code="200"
+elif [[ "$url" == *"/simulate" ]]; then
+  if [[ -z "$auth_header" ]]; then
+    code="auth_missing"
+  elif [[ "$auth_header" == "Bearer ${expected_token}" ]]; then
+    code="invalid_request"
+  else
+    code="auth_invalid"
+  fi
+  body="{\"status\":\"reject\",\"retryable\":false,\"code\":\"${code}\",\"detail\":\"smoke preflight probe\"}"
+  status_code="200"
+fi
+
+if [[ -n "$output_file" ]]; then
+  printf '%s' "$body" >"$output_file"
+fi
+printf '%s' "$status_code"
+EOF
+  python3 - "$script_path" "$token" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+token = sys.argv[2]
+content = path.read_text()
+path.write_text(content.replace("__EXPECTED_TOKEN__", token))
+PY
+  chmod +x "$script_path"
+}
+
 init_common_tables() {
   local db_path="$1"
   sqlite3 "$db_path" <<'SQL'
@@ -1789,6 +1903,65 @@ run_adapter_preflight_case() {
   echo "[ok] adapter preflight pass/fail + route-policy + route-order + secret diagnostics + numeric parity guards"
 }
 
+run_executor_preflight_case() {
+  local db_path="$1"
+  local config_path="$TMP_DIR/executor-preflight.toml"
+  local executor_env_path="$TMP_DIR/executor-preflight.env"
+  local adapter_env_path="$TMP_DIR/adapter-preflight.env"
+  local artifacts_dir="$TMP_DIR/executor-preflight-artifacts"
+  local fake_curl_bin="$TMP_DIR/fake-curl-preflight"
+  local auth_token="executor-smoke-token"
+  local port="18090"
+
+  write_config_adapter_preflight_pass "$config_path" "$db_path"
+  write_executor_env_preflight "$executor_env_path" "$port" "$auth_token"
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
+  write_fake_curl_executor_preflight "$fake_curl_bin" "$auth_token"
+
+  local pass_output
+  pass_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      OUTPUT_DIR="$artifacts_dir" \
+      HTTP_TIMEOUT_SEC="3" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh"
+  )"
+  assert_contains "$pass_output" "=== Executor Preflight ==="
+  assert_contains "$pass_output" "preflight_verdict: PASS"
+  assert_field_equals "$pass_output" "preflight_reason_code" "checks_passed"
+  assert_contains "$pass_output" "artifacts_written: true"
+  assert_sha256_field "$pass_output" "summary_sha256"
+  if ! ls "$artifacts_dir"/executor_preflight_summary_*.txt >/dev/null 2>&1; then
+    echo "expected executor preflight summary artifact file to be written" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/executor_preflight_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected executor preflight manifest artifact file to be written" >&2
+    exit 1
+  fi
+
+  write_adapter_env_preflight "$adapter_env_path" "$port" "mismatch-token"
+  local fail_output
+  if fail_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter auth token mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$fail_output" "preflight_verdict: FAIL"
+  assert_field_equals "$fail_output" "preflight_reason_code" "contract_checks_failed"
+  assert_contains "$fail_output" "adapter auth token mismatch"
+
+  echo "[ok] executor preflight helper"
+}
+
 run_adapter_secret_rotation_report_case() {
   local env_path="$TMP_DIR/adapter-rotation.env"
   local secrets_dir="$TMP_DIR/secrets"
@@ -2945,6 +3118,7 @@ main() {
   run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
   run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
   run_adapter_preflight_case "$legacy_db"
+  run_executor_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case
   run_executor_signer_rotation_report_case
   run_go_nogo_preflight_fail_case "$legacy_db"

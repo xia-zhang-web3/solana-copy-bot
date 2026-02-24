@@ -181,7 +181,8 @@ Route-specific slippage/tip semantics:
 
 1. fetch blockhash per attempt
 2. refresh blockhash on retryable resend attempts
-3. blockhash-expired classified with explicit `executor_*` code and bounded retry policy
+3. blockhash-expired is a terminal outcome for the current submit attempt with explicit `executor_blockhash_expired` code (no in-attempt auto-resend on stale blockhash in this path)
+4. bounded retry, if used, is caller/orchestrator-level via a fresh submit attempt and rebuilt transaction context
 
 ## 6.3 Fee hint computation
 

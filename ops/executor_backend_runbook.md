@@ -120,7 +120,42 @@ Outputs:
 3. `artifacts_written`
 4. optional `artifact_report`, `artifact_manifest`, `report_sha256`
 
-## 6) Integration Note (Phase 4 target)
+## 6) Executor Preflight (Phase 4)
+
+Use before devnet rehearsal / rollout evidence:
+
+```bash
+CONFIG_PATH=/etc/solana-copy-bot/live.server.toml \
+EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env \
+ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env \
+OUTPUT_DIR=state/executor-preflight \
+./tools/executor_preflight.sh
+```
+
+What it validates (fail-closed):
+
+1. Config gate: `execution.enabled=true` and `execution.mode=adapter_submit_confirm` (otherwise `SKIP`).
+2. Executor env contract:
+   1. signer/auth invariants,
+   2. route allowlist/backend URL coverage.
+3. Adapter -> executor wiring:
+   1. submit/simulate upstream URLs target executor endpoint,
+   2. adapter upstream auth tokens match executor bearer token when bearer is required.
+4. Live endpoint probes:
+   1. `GET /healthz` reachable and consistent (`status=ok`, contract version match),
+   2. `POST /simulate` auth probe without/with bearer.
+
+Expected output fields include:
+
+1. `preflight_verdict: PASS|FAIL|SKIP`
+2. `preflight_reason_code`
+3. `executor_health_url`
+4. `health_status`
+5. `auth_probe_without_auth_code`
+6. `auth_probe_with_auth_code`
+7. `artifacts_written`
+
+## 7) Integration Note (Phase 4 target)
 
 Adapter wiring target:
 
