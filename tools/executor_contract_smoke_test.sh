@@ -80,6 +80,8 @@ contract_guard_tests=(
   "parse_bool_token_rejects_false_forms"
   "request_validation_rejects_invalid_simulate_action"
   "request_validation_rejects_empty_client_order_id"
+  "request_types_simulate_requires_request_id_field"
+  "request_types_submit_requires_compute_budget_field"
   "normalize_route_trims_and_lowercases"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"

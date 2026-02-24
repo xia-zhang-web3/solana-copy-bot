@@ -9,7 +9,6 @@ use axum::{
 };
 use chrono::Utc;
 use reqwest::Client;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
@@ -33,6 +32,7 @@ mod idempotency;
 mod key_validation;
 mod reject_mapping;
 mod request_validation;
+mod request_types;
 mod rfc3339_time;
 mod route_allowlist;
 mod route_backend;
@@ -78,6 +78,7 @@ use crate::request_validation::{
     validate_non_empty_signal_id, validate_signal_ts_rfc3339, validate_simulate_action,
     validate_simulate_dry_run,
 };
+use crate::request_types::{ComputeBudgetRequest, SimulateRequest, SubmitRequest};
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_normalization::normalize_route;
@@ -526,43 +527,6 @@ impl ExecutorConfig {
             submit_signature_verify,
         })
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct SimulateRequest {
-    action: Option<String>,
-    contract_version: Option<String>,
-    request_id: String,
-    signal_id: String,
-    side: String,
-    token: String,
-    notional_sol: f64,
-    signal_ts: String,
-    route: String,
-    dry_run: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ComputeBudgetRequest {
-    cu_limit: u32,
-    cu_price_micro_lamports: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct SubmitRequest {
-    contract_version: Option<String>,
-    signal_id: String,
-    client_order_id: String,
-    request_id: String,
-    side: String,
-    token: String,
-    notional_sol: f64,
-    signal_ts: String,
-    route: String,
-    slippage_bps: f64,
-    route_slippage_cap_bps: f64,
-    tip_lamports: u64,
-    compute_budget: ComputeBudgetRequest,
 }
 
 #[derive(Debug, Clone)]
