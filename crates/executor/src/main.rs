@@ -78,8 +78,10 @@ use crate::reject_mapping::{
     map_parsed_upstream_reject, map_request_validation_error_to_reject,
     map_simulate_response_validation_error_to_reject, map_slippage_validation_error_to_reject,
     map_submit_response_validation_error_to_reject, map_submit_tip_policy_error_to_reject,
-    map_submit_transport_artifact_error_to_reject, simulate_http_status_for_reject,
+    map_submit_transport_artifact_error_to_reject,
 };
+#[cfg(test)]
+use crate::reject_mapping::simulate_http_status_for_reject;
 use crate::request_validation::{
     validate_non_empty_client_order_id, validate_non_empty_request_id,
     validate_non_empty_signal_id, validate_signal_ts_rfc3339, validate_simulate_action,

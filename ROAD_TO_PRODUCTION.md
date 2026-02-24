@@ -667,6 +667,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 139. executor healthz-payload extraction completed: `/healthz` JSON assembly moved from `main.rs` into shared module `crates/executor/src/healthz_payload.rs` (`build_healthz_payload`, `top_level_healthz_status`) with unchanged field set/status semantics (`ok` vs `degraded`) and added direct module guard coverage in contract smoke.
 140. executor healthz alias semantics documented in code: `routes` field is explicitly retained as backward-compat alias of `enabled_routes` for existing preflight/report consumers, and module test coverage now asserts alias equality (`healthz_payload_routes_alias_matches_enabled_routes`) to prevent accidental drift.
 141. executor bind-address parsing extraction completed: `COPYBOT_EXECUTOR_BIND_ADDR` parsing moved from local `main.rs` helper into shared env-parsing module (`parse_socket_addr_str` in `crates/executor/src/env_parsing.rs`), with retained fail-closed error context and added direct guard coverage in contract smoke (`parse_socket_addr_str_rejects_invalid_socket_addr`).
+142. executor import hygiene cleanup completed: `simulate_http_status_for_reject` import in `main.rs` is now test-scoped (`#[cfg(test)]`) since production call sites were already removed, reducing non-test surface while preserving existing guard test coverage.
 
 Остается в next-code-queue:
 
