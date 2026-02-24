@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use std::net::SocketAddr;
 use std::env;
 
 pub(crate) fn non_empty_env(name: &str) -> Result<String> {
@@ -55,9 +56,16 @@ pub(crate) fn parse_bool_env(name: &str, default: bool) -> bool {
     }
 }
 
+pub(crate) fn parse_socket_addr_str(name: &str, value: &str) -> Result<SocketAddr> {
+    value
+        .trim()
+        .parse::<SocketAddr>()
+        .map_err(|error| anyhow!("invalid {}: {}", name, error))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_bool_token;
+    use super::{parse_bool_token, parse_socket_addr_str};
 
     #[test]
     fn parse_bool_token_accepts_true_forms() {
@@ -75,5 +83,25 @@ mod tests {
         assert!(!parse_bool_token("off"));
         assert!(!parse_bool_token("no"));
         assert!(!parse_bool_token("random"));
+    }
+
+    #[test]
+    fn parse_socket_addr_str_accepts_valid_socket_addr() {
+        let addr = parse_socket_addr_str("COPYBOT_EXECUTOR_BIND_ADDR", "127.0.0.1:8090")
+            .expect("valid socket addr must parse");
+        assert_eq!(addr.to_string(), "127.0.0.1:8090");
+    }
+
+    #[test]
+    fn parse_socket_addr_str_rejects_invalid_socket_addr() {
+        let error = parse_socket_addr_str("COPYBOT_EXECUTOR_BIND_ADDR", "not-an-addr")
+            .expect_err("invalid socket addr must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("invalid COPYBOT_EXECUTOR_BIND_ADDR"),
+            "error={}",
+            error
+        );
     }
 }

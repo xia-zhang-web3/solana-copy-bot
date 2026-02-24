@@ -78,6 +78,7 @@ contract_guard_tests=(
   "to_hex_lower_matches_expected"
   "parse_bool_token_accepts_true_forms"
   "parse_bool_token_rejects_false_forms"
+  "parse_socket_addr_str_rejects_invalid_socket_addr"
   "request_validation_rejects_invalid_simulate_action"
   "request_validation_rejects_empty_client_order_id"
   "request_types_simulate_requires_request_id_field"

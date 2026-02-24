@@ -61,7 +61,8 @@ use crate::auth_verifier::AuthVerifier;
 use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
 use crate::contract_version::is_valid_contract_version_token;
 use crate::env_parsing::{
-    non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_u64_env,
+    non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_socket_addr_str,
+    parse_u64_env,
 };
 use crate::fee_hints::{parse_response_fee_hint_fields, resolve_fee_hints, FeeHintInputs};
 use crate::healthz_payload::{build_healthz_payload, HealthzPayloadInputs};
@@ -171,10 +172,10 @@ struct ExecutorConfig {
 
 impl ExecutorConfig {
     fn from_env() -> Result<Self> {
-        let bind_addr = parse_socket_addr(
-            env::var("COPYBOT_EXECUTOR_BIND_ADDR")
-                .unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string()),
-        )?;
+        let bind_addr_raw =
+            env::var("COPYBOT_EXECUTOR_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string());
+        let bind_addr =
+            parse_socket_addr_str("COPYBOT_EXECUTOR_BIND_ADDR", bind_addr_raw.as_str())?;
 
         let contract_version = env::var("COPYBOT_EXECUTOR_CONTRACT_VERSION")
             .unwrap_or_else(|_| "v1".to_string())
@@ -1002,13 +1003,6 @@ async fn handle_submit(
         return Ok(canonical);
     }
     Ok(response)
-}
-
-fn parse_socket_addr(value: String) -> Result<SocketAddr> {
-    value
-        .trim()
-        .parse::<SocketAddr>()
-        .map_err(|error| anyhow!("invalid COPYBOT_EXECUTOR_BIND_ADDR: {}", error))
 }
 
 #[cfg(test)]
