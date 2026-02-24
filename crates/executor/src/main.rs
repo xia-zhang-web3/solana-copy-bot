@@ -755,14 +755,18 @@ async fn handle_simulate(
     request: &SimulateRequest,
     raw_body: &[u8],
 ) -> std::result::Result<Value, Reject> {
-    validate_common_contract(
-        state,
-        request.contract_version.as_deref(),
-        request.route.as_str(),
-        request.side.as_str(),
-        request.token.as_str(),
-        request.notional_sol,
-    )?;
+    validate_common_contract_inputs(CommonContractInputs {
+        request_contract_version: request.contract_version.as_deref(),
+        expected_contract_version: state.config.contract_version.as_str(),
+        route: request.route.as_str(),
+        route_allowlist: &state.config.route_allowlist,
+        submit_fastlane_enabled: state.config.submit_fastlane_enabled,
+        side: request.side.as_str(),
+        token: request.token.as_str(),
+        notional_sol: request.notional_sol,
+        max_notional_sol: state.config.max_notional_sol,
+    })
+    .map_err(map_common_contract_validation_error_to_reject)?;
     validate_simulate_action(request.action.as_deref())
         .map_err(map_request_validation_error_to_reject)?;
     validate_simulate_dry_run(request.dry_run).map_err(map_request_validation_error_to_reject)?;
@@ -814,14 +818,18 @@ async fn handle_submit(
     request: &SubmitRequest,
     raw_body: &[u8],
 ) -> std::result::Result<Value, Reject> {
-    validate_common_contract(
-        state,
-        request.contract_version.as_deref(),
-        request.route.as_str(),
-        request.side.as_str(),
-        request.token.as_str(),
-        request.notional_sol,
-    )?;
+    validate_common_contract_inputs(CommonContractInputs {
+        request_contract_version: request.contract_version.as_deref(),
+        expected_contract_version: state.config.contract_version.as_str(),
+        route: request.route.as_str(),
+        route_allowlist: &state.config.route_allowlist,
+        submit_fastlane_enabled: state.config.submit_fastlane_enabled,
+        side: request.side.as_str(),
+        token: request.token.as_str(),
+        notional_sol: request.notional_sol,
+        max_notional_sol: state.config.max_notional_sol,
+    })
+    .map_err(map_common_contract_validation_error_to_reject)?;
     validate_signal_ts_rfc3339(request.signal_ts.as_str())
         .map_err(map_request_validation_error_to_reject)?;
     validate_non_empty_client_order_id(request.client_order_id.as_str())
@@ -1033,28 +1041,6 @@ async fn handle_submit(
     Ok(response)
 }
 
-fn validate_common_contract(
-    state: &AppState,
-    request_contract_version: Option<&str>,
-    route: &str,
-    side: &str,
-    token: &str,
-    notional_sol: f64,
-) -> std::result::Result<(), Reject> {
-    validate_common_contract_inputs(CommonContractInputs {
-        request_contract_version,
-        expected_contract_version: state.config.contract_version.as_str(),
-        route,
-        route_allowlist: &state.config.route_allowlist,
-        submit_fastlane_enabled: state.config.submit_fastlane_enabled,
-        side,
-        token,
-        notional_sol,
-        max_notional_sol: state.config.max_notional_sol,
-    })
-    .map_err(map_common_contract_validation_error_to_reject)
-}
-
 fn parse_socket_addr(value: String) -> Result<SocketAddr> {
     value
         .trim()
@@ -1164,14 +1150,18 @@ mod tests {
     fn validate_common_contract_rejects_fastlane_when_feature_disabled() {
         let mut state = test_state("http://127.0.0.1:1/upstream");
         state.config.route_allowlist.insert("fastlane".to_string());
-        let reject = validate_common_contract(
-            &state,
-            Some("v1"),
-            "fastlane",
-            "buy",
-            "11111111111111111111111111111111",
-            1.0,
-        )
+        let reject = validate_common_contract_inputs(CommonContractInputs {
+            request_contract_version: Some("v1"),
+            expected_contract_version: state.config.contract_version.as_str(),
+            route: "fastlane",
+            route_allowlist: &state.config.route_allowlist,
+            submit_fastlane_enabled: state.config.submit_fastlane_enabled,
+            side: "buy",
+            token: "11111111111111111111111111111111",
+            notional_sol: 1.0,
+            max_notional_sol: state.config.max_notional_sol,
+        })
+        .map_err(map_common_contract_validation_error_to_reject)
         .expect_err("fastlane must be rejected when feature flag is disabled");
         assert_eq!(reject.code, "fastlane_not_enabled");
     }
