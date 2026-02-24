@@ -24,26 +24,27 @@ use tracing_subscriber::EnvFilter;
 mod auth_crypto;
 mod auth_mode;
 mod auth_verifier;
+mod common_contract;
 mod contract_version;
 mod env_parsing;
-mod http_utils;
 mod fee_hints;
-mod common_contract;
+mod http_utils;
 mod idempotency;
 mod key_validation;
+mod reject_mapping;
+mod request_validation;
 mod rfc3339_time;
 mod route_allowlist;
 mod route_backend;
 mod route_normalization;
 mod route_policy;
-mod reject_mapping;
-mod send_rpc;
 mod secret_source;
+mod send_rpc;
 mod signer_source;
 mod simulate_response;
-mod submit_deadline;
 mod submit_budget;
 mod submit_claim_guard;
+mod submit_deadline;
 mod submit_payload;
 mod submit_response;
 mod submit_transport;
@@ -54,55 +55,52 @@ mod upstream_outcome;
 
 use crate::auth_mode::require_authenticated_mode;
 use crate::auth_verifier::AuthVerifier;
+use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
 use crate::contract_version::is_valid_contract_version_token;
 use crate::env_parsing::{
     non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_u64_env,
 };
-use crate::fee_hints::{
-    parse_response_fee_hint_fields, resolve_fee_hints, FeeHintInputs,
-};
-use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
+use crate::fee_hints::{parse_response_fee_hint_fields, resolve_fee_hints, FeeHintInputs};
 use crate::http_utils::{endpoint_identity, validate_endpoint_url};
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
-use crate::rfc3339_time::parse_rfc3339_utc;
-use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
-use crate::route_backend::{RouteBackend, UpstreamAction};
-use crate::route_normalization::normalize_route;
 use crate::reject_mapping::{
     map_common_contract_validation_error_to_reject, map_compute_budget_validation_error_to_reject,
     map_fee_hint_error_to_reject, map_fee_hint_field_parse_error_to_reject,
     map_forward_payload_build_error_to_reject, map_idempotency_error_to_reject,
-    map_parsed_upstream_reject, map_simulate_response_validation_error_to_reject,
-    map_slippage_validation_error_to_reject, map_submit_response_validation_error_to_reject,
-    map_submit_tip_policy_error_to_reject, map_submit_transport_artifact_error_to_reject,
-    reject_to_json, simulate_http_status_for_reject,
+    map_parsed_upstream_reject, map_request_validation_error_to_reject,
+    map_simulate_response_validation_error_to_reject, map_slippage_validation_error_to_reject,
+    map_submit_response_validation_error_to_reject, map_submit_tip_policy_error_to_reject,
+    map_submit_transport_artifact_error_to_reject, reject_to_json, simulate_http_status_for_reject,
 };
+use crate::request_validation::{
+    validate_non_empty_client_order_id, validate_non_empty_request_id,
+    validate_non_empty_signal_id, validate_signal_ts_rfc3339, validate_simulate_action,
+    validate_simulate_dry_run,
+};
+use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
+use crate::route_backend::{RouteBackend, UpstreamAction};
+use crate::route_normalization::normalize_route;
+#[cfg(test)]
+use crate::route_policy::apply_submit_tip_policy;
 use crate::secret_source::resolve_secret_source;
 #[cfg(test)]
 use crate::secret_source::secret_file_has_restrictive_permissions;
-use crate::signer_source::{resolve_signer_source_config, SignerSource};
-#[cfg(test)]
-use crate::route_policy::apply_submit_tip_policy;
 use crate::send_rpc::send_signed_transaction_via_rpc;
+use crate::signer_source::{resolve_signer_source_config, SignerSource};
 use crate::simulate_response::{
-    build_simulate_success_payload, resolve_simulate_response_detail, validate_simulate_response_route_and_contract,
+    build_simulate_success_payload, resolve_simulate_response_detail,
+    validate_simulate_response_route_and_contract,
 };
+use crate::submit_budget::{default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path};
+use crate::submit_claim_guard::SubmitClaimGuard;
+use crate::submit_deadline::SubmitDeadline;
+use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_response::{
     resolve_submit_response_submitted_at, validate_submit_response_request_identity,
     validate_submit_response_route_and_contract,
 };
-use crate::submit_deadline::SubmitDeadline;
-use crate::submit_budget::{
-    default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path,
-};
-use crate::submit_claim_guard::SubmitClaimGuard;
-use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
-use crate::submit_transport::{
-    extract_submit_transport_artifact, SubmitTransportArtifact,
-};
-use crate::upstream_forward::forward_to_upstream;
-use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
+use crate::submit_transport::{extract_submit_transport_artifact, SubmitTransportArtifact};
 #[cfg(test)]
 use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 use crate::submit_verify::{
@@ -110,9 +108,11 @@ use crate::submit_verify::{
     verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
 };
 use crate::tx_build::{
-    build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports, validate_submit_compute_budget,
-    validate_submit_slippage_policy, ComputeBudgetBounds,
+    build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports,
+    validate_submit_compute_budget, validate_submit_slippage_policy, ComputeBudgetBounds,
 };
+use crate::upstream_forward::forward_to_upstream;
+use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
 #[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 
@@ -799,37 +799,15 @@ async fn handle_simulate(
         request.token.as_str(),
         request.notional_sol,
     )?;
-    if request
-        .action
-        .as_deref()
-        .map(|value| value.trim().eq_ignore_ascii_case("simulate"))
-        != Some(true)
-    {
-        return Err(Reject::terminal(
-            "invalid_action",
-            "simulate endpoint requires action=simulate",
-        ));
-    }
-    if request.dry_run != Some(true) {
-        return Err(Reject::terminal(
-            "invalid_dry_run",
-            "simulate endpoint requires dry_run=true",
-        ));
-    }
-    parse_rfc3339_utc(request.signal_ts.as_str())
-        .ok_or_else(|| Reject::terminal("invalid_signal_ts", "signal_ts must be RFC3339"))?;
-    if request.request_id.trim().is_empty() {
-        return Err(Reject::terminal(
-            "invalid_request_id",
-            "request_id must be non-empty",
-        ));
-    }
-    if request.signal_id.trim().is_empty() {
-        return Err(Reject::terminal(
-            "invalid_signal_id",
-            "signal_id must be non-empty",
-        ));
-    }
+    validate_simulate_action(request.action.as_deref())
+        .map_err(map_request_validation_error_to_reject)?;
+    validate_simulate_dry_run(request.dry_run).map_err(map_request_validation_error_to_reject)?;
+    validate_signal_ts_rfc3339(request.signal_ts.as_str())
+        .map_err(map_request_validation_error_to_reject)?;
+    validate_non_empty_request_id(request.request_id.as_str())
+        .map_err(map_request_validation_error_to_reject)?;
+    validate_non_empty_signal_id(request.signal_id.as_str())
+        .map_err(map_request_validation_error_to_reject)?;
 
     let route = normalize_route(request.route.as_str());
     debug!(
@@ -880,27 +858,14 @@ async fn handle_submit(
         request.token.as_str(),
         request.notional_sol,
     )?;
-    parse_rfc3339_utc(request.signal_ts.as_str())
-        .ok_or_else(|| Reject::terminal("invalid_signal_ts", "signal_ts must be RFC3339"))?;
-
-    if request.client_order_id.trim().is_empty() {
-        return Err(Reject::terminal(
-            "invalid_client_order_id",
-            "client_order_id must be non-empty",
-        ));
-    }
-    if request.request_id.trim().is_empty() {
-        return Err(Reject::terminal(
-            "invalid_request_id",
-            "request_id must be non-empty",
-        ));
-    }
-    if request.signal_id.trim().is_empty() {
-        return Err(Reject::terminal(
-            "invalid_signal_id",
-            "signal_id must be non-empty",
-        ));
-    }
+    validate_signal_ts_rfc3339(request.signal_ts.as_str())
+        .map_err(map_request_validation_error_to_reject)?;
+    validate_non_empty_client_order_id(request.client_order_id.as_str())
+        .map_err(map_request_validation_error_to_reject)?;
+    validate_non_empty_request_id(request.request_id.as_str())
+        .map_err(map_request_validation_error_to_reject)?;
+    validate_non_empty_signal_id(request.signal_id.as_str())
+        .map_err(map_request_validation_error_to_reject)?;
     validate_submit_slippage_policy(
         request.slippage_bps,
         request.route_slippage_cap_bps,
@@ -927,12 +892,9 @@ async fn handle_submit(
     )
     .map_err(map_compute_budget_validation_error_to_reject)?;
 
-    let forward_body = build_submit_forward_payload_core(
-        raw_body,
-        request.tip_lamports,
-        effective_tip_lamports,
-    )
-    .map_err(map_forward_payload_build_error_to_reject)?;
+    let forward_body =
+        build_submit_forward_payload_core(raw_body, request.tip_lamports, effective_tip_lamports)
+            .map_err(map_forward_payload_build_error_to_reject)?;
     if let Some(policy_code) = tip_policy_code {
         debug!(
             route = %route,
@@ -963,13 +925,11 @@ async fn handle_submit(
             );
             return Ok(cached_response);
         }
-        Ok(SubmitClaimOutcome::Claimed) => {
-            SubmitClaimGuard::new(
-                state.idempotency.clone(),
-                request.client_order_id.as_str(),
-                request.request_id.as_str(),
-            )
-        }
+        Ok(SubmitClaimOutcome::Claimed) => SubmitClaimGuard::new(
+            state.idempotency.clone(),
+            request.client_order_id.as_str(),
+            request.request_id.as_str(),
+        ),
         Ok(SubmitClaimOutcome::InFlight) => {
             return Err(Reject::retryable(
                 "submit_in_flight",
@@ -1001,21 +961,22 @@ async fn handle_submit(
     )
     .map_err(map_submit_response_validation_error_to_reject)?;
 
-    let (tx_signature, submit_transport) = match extract_submit_transport_artifact(&backend_response)
-        .map_err(map_submit_transport_artifact_error_to_reject)?
-    {
-        SubmitTransportArtifact::UpstreamSignature(value) => (value, "upstream_signature"),
-        SubmitTransportArtifact::SignedTransactionBase64(value) => {
-            let signature = send_signed_transaction_via_rpc(
-                state,
-                route.as_str(),
-                value.as_str(),
-                Some(&submit_deadline),
-            )
-            .await?;
-            (signature, "adapter_send_rpc")
-        }
-    };
+    let (tx_signature, submit_transport) =
+        match extract_submit_transport_artifact(&backend_response)
+            .map_err(map_submit_transport_artifact_error_to_reject)?
+        {
+            SubmitTransportArtifact::UpstreamSignature(value) => (value, "upstream_signature"),
+            SubmitTransportArtifact::SignedTransactionBase64(value) => {
+                let signature = send_signed_transaction_via_rpc(
+                    state,
+                    route.as_str(),
+                    value.as_str(),
+                    Some(&submit_deadline),
+                )
+                .await?;
+                (signature, "adapter_send_rpc")
+            }
+        };
 
     let submit_signature_verify = verify_submitted_signature_visibility(
         state,
@@ -1574,12 +1535,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_rejects_wrong_bearer_token() {
-        let verifier = AuthVerifier::new(
-            Some("correct-token".to_string()),
-            None,
-            None,
-            30,
-        );
+        let verifier = AuthVerifier::new(Some("correct-token".to_string()), None, None, 30);
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
@@ -1594,12 +1550,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_accepts_correct_bearer_token() {
-        let verifier = AuthVerifier::new(
-            Some("correct-token".to_string()),
-            None,
-            None,
-            30,
-        );
+        let verifier = AuthVerifier::new(Some("correct-token".to_string()), None, None, 30);
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
@@ -1871,8 +1822,8 @@ mod tests {
 
         let signature =
             send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-            .await
-            .expect("send RPC should return tx signature");
+                .await
+                .expect("send RPC should return tx signature");
         assert_eq!(signature, rpc_signature);
         let _ = send_rpc_handle.join();
     }
@@ -1904,8 +1855,8 @@ mod tests {
 
         let reject =
             send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-            .await
-            .expect_err("mismatched send RPC signature must fail");
+                .await
+                .expect_err("mismatched send RPC signature must fail");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "send_rpc_signature_mismatch");
         let _ = send_rpc_handle.join();
@@ -1944,8 +1895,8 @@ mod tests {
 
         let signature =
             send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-            .await
-            .expect("fallback send RPC with dedicated auth token should succeed");
+                .await
+                .expect("fallback send RPC with dedicated auth token should succeed");
         assert_eq!(signature, expected_signature);
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
@@ -1972,8 +1923,8 @@ mod tests {
 
         let reject =
             send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-            .await
-            .expect_err("fallback-only send RPC topology must fail closed");
+                .await
+                .expect_err("fallback-only send RPC topology must fail closed");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "adapter_send_rpc_not_configured");
         assert!(
@@ -2010,8 +1961,8 @@ mod tests {
 
         let signature =
             send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-            .await
-            .expect("already processed error should resolve to expected signature");
+                .await
+                .expect("already processed error should resolve to expected signature");
         assert_eq!(signature, expected_signature);
         let _ = send_rpc_handle.join();
     }
@@ -2397,9 +2348,8 @@ mod tests {
         let request: SubmitRequest =
             serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
 
-        let first_submit = async {
-            handle_submit(&state, &request, raw_body_bytes.as_slice()).await
-        };
+        let first_submit =
+            async { handle_submit(&state, &request, raw_body_bytes.as_slice()).await };
         let second_submit = async {
             tokio::time::sleep(Duration::from_millis(20)).await;
             handle_submit(&state, &request, raw_body_bytes.as_slice()).await
@@ -2606,7 +2556,10 @@ mod tests {
             response.get("tx_signature").and_then(Value::as_str),
             Some(signature.as_str())
         );
-        assert_eq!(response.get("tip_lamports").and_then(Value::as_u64), Some(0));
+        assert_eq!(
+            response.get("tip_lamports").and_then(Value::as_u64),
+            Some(0)
+        );
         assert_eq!(
             response
                 .get("tip_policy")
@@ -2673,7 +2626,10 @@ mod tests {
             response.get("tx_signature").and_then(Value::as_str),
             Some(signature.as_str())
         );
-        assert_eq!(response.get("tip_lamports").and_then(Value::as_u64), Some(0));
+        assert_eq!(
+            response.get("tip_lamports").and_then(Value::as_u64),
+            Some(0)
+        );
         assert_eq!(
             response
                 .get("tip_policy")
@@ -2767,7 +2723,10 @@ mod tests {
             .expect_err("invalid cu_limit must reject");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_compute_budget");
-        assert_eq!(reject.detail, "compute_budget.cu_limit must be in 1..=1400000");
+        assert_eq!(
+            reject.detail,
+            "compute_budget.cu_limit must be in 1..=1400000"
+        );
     }
 
     #[tokio::test]

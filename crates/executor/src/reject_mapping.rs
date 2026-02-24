@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 
 use crate::common_contract::CommonContractValidationError;
 use crate::fee_hints::{FeeHintError, FeeHintFieldParseError};
+use crate::request_validation::RequestValidationError;
 use crate::simulate_response::SimulateResponseValidationError;
 use crate::submit_response::SubmitResponseValidationError;
 use crate::submit_transport::SubmitTransportArtifactError;
@@ -15,10 +16,9 @@ use crate::Reject;
 
 pub(crate) fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
     match error {
-        FeeHintError::DerivedPriorityFeeExceedsU64 { .. } => Reject::terminal(
-            "fee_overflow",
-            "derived priority fee exceeds u64 range",
-        ),
+        FeeHintError::DerivedPriorityFeeExceedsU64 { .. } => {
+            Reject::terminal("fee_overflow", "derived priority fee exceeds u64 range")
+        }
         FeeHintError::OverflowBasePlusPriority => {
             Reject::terminal("fee_overflow", "base+priority fee overflow")
         }
@@ -87,6 +87,31 @@ pub(crate) fn map_common_contract_validation_error_to_reject(
                 "notional_sol={} exceeds executor max_notional_sol={}",
                 notional_sol, max_notional_sol
             ),
+        ),
+    }
+}
+
+pub(crate) fn map_request_validation_error_to_reject(error: RequestValidationError) -> Reject {
+    match error {
+        RequestValidationError::InvalidAction => Reject::terminal(
+            "invalid_action",
+            "simulate endpoint requires action=simulate",
+        ),
+        RequestValidationError::InvalidDryRun => {
+            Reject::terminal("invalid_dry_run", "simulate endpoint requires dry_run=true")
+        }
+        RequestValidationError::InvalidSignalTs => {
+            Reject::terminal("invalid_signal_ts", "signal_ts must be RFC3339")
+        }
+        RequestValidationError::InvalidRequestId => {
+            Reject::terminal("invalid_request_id", "request_id must be non-empty")
+        }
+        RequestValidationError::InvalidSignalId => {
+            Reject::terminal("invalid_signal_id", "signal_id must be non-empty")
+        }
+        RequestValidationError::InvalidClientOrderId => Reject::terminal(
+            "invalid_client_order_id",
+            "client_order_id must be non-empty",
         ),
     }
 }
@@ -207,7 +232,10 @@ pub(crate) fn map_submit_transport_artifact_error_to_reject(
     match error {
         SubmitTransportArtifactError::InvalidUpstreamSignature { error } => Reject::retryable(
             "submit_adapter_invalid_response",
-            format!("upstream tx_signature is not valid base58 signature: {}", error),
+            format!(
+                "upstream tx_signature is not valid base58 signature: {}",
+                error
+            ),
         ),
         SubmitTransportArtifactError::MissingSubmitArtifact => Reject::retryable(
             "submit_adapter_invalid_response",
