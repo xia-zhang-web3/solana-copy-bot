@@ -25,12 +25,14 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod http_utils;
+mod route_policy;
 mod send_rpc;
 mod submit_verify;
 
 use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
+use crate::route_policy::{apply_submit_tip_policy, requires_submit_fastlane_enabled};
 use crate::send_rpc::send_signed_transaction_via_rpc;
 #[cfg(test)]
 use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
@@ -983,7 +985,7 @@ async fn handle_submit(
     }
     let route = normalize_route(request.route.as_str());
     let (effective_tip_lamports, tip_policy_code) =
-        normalize_submit_tip_for_route(route.as_str(), request.tip_lamports);
+        apply_submit_tip_policy(route.as_str(), request.tip_lamports);
 
     if effective_tip_lamports > TIP_MAX_LAMPORTS {
         return Err(Reject::terminal(
@@ -1530,7 +1532,7 @@ fn validate_common_contract(
             format!("route={} is not allowed", route),
         ));
     }
-    if route == "fastlane" && !state.config.submit_fastlane_enabled {
+    if requires_submit_fastlane_enabled(route.as_str()) && !state.config.submit_fastlane_enabled {
         return Err(Reject::terminal(
             "fastlane_not_enabled",
             "route=fastlane requires COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=true",
@@ -1582,14 +1584,6 @@ fn parse_optional_non_negative_u64_field(
         "submit_adapter_invalid_response",
         format!("{} must be non-negative integer when present", field),
     ))
-}
-
-fn normalize_submit_tip_for_route(route: &str, requested_tip_lamports: u64) -> (u64, Option<&'static str>) {
-    let normalized_route = normalize_route(route);
-    if normalized_route == "rpc" && requested_tip_lamports > 0 {
-        return (0, Some("rpc_tip_forced_zero"));
-    }
-    (requested_tip_lamports, None)
 }
 
 fn build_submit_forward_payload(
@@ -1786,10 +1780,14 @@ fn validate_fastlane_route_policy(
     route_allowlist: &HashSet<String>,
     submit_fastlane_enabled: bool,
 ) -> Result<()> {
-    if !submit_fastlane_enabled && route_allowlist.contains("fastlane") {
-        return Err(anyhow!(
-            "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false"
-        ));
+    if !submit_fastlane_enabled {
+        for route in route_allowlist {
+            if requires_submit_fastlane_enabled(route.as_str()) {
+                return Err(anyhow!(
+                    "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -2063,12 +2061,12 @@ mod tests {
     }
 
     #[test]
-    fn normalize_submit_tip_for_route_forces_rpc_tip_to_zero() {
-        let (effective, policy_code) = normalize_submit_tip_for_route("rpc", 12_345);
+    fn apply_submit_tip_policy_forces_rpc_tip_to_zero() {
+        let (effective, policy_code) = apply_submit_tip_policy("rpc", 12_345);
         assert_eq!(effective, 0);
         assert_eq!(policy_code, Some("rpc_tip_forced_zero"));
 
-        let (effective, policy_code) = normalize_submit_tip_for_route("jito", 12_345);
+        let (effective, policy_code) = apply_submit_tip_policy("jito", 12_345);
         assert_eq!(effective, 12_345);
         assert_eq!(policy_code, None);
     }
