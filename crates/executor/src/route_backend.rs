@@ -57,6 +57,17 @@ impl RouteBackend {
         }
         self.fallback_auth_token.as_deref()
     }
+
+    pub(crate) fn send_rpc_endpoint_chain(&self) -> Vec<(&str, Option<&str>)> {
+        let mut endpoints = Vec::with_capacity(2);
+        if let Some(url) = self.send_rpc_url.as_deref() {
+            endpoints.push((url, self.send_rpc_primary_auth_token.as_deref()));
+        }
+        if let Some(url) = self.send_rpc_fallback_url.as_deref() {
+            endpoints.push((url, self.send_rpc_fallback_auth_token.as_deref()));
+        }
+        endpoints
+    }
 }
 
 #[cfg(test)]
@@ -109,5 +120,21 @@ mod tests {
             backend.auth_token_for_attempt(UpstreamAction::Simulate, 3),
             Some("fallback-token")
         );
+    }
+
+    #[test]
+    fn send_rpc_endpoint_chain_preserves_primary_fallback_and_auth() {
+        let mut backend = sample_backend();
+        backend.send_rpc_url = Some("https://send-rpc.primary".to_string());
+        backend.send_rpc_fallback_url = Some("https://send-rpc.fallback".to_string());
+        backend.send_rpc_primary_auth_token = Some("send-primary-token".to_string());
+        backend.send_rpc_fallback_auth_token = Some("send-fallback-token".to_string());
+
+        let chain = backend.send_rpc_endpoint_chain();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].0, "https://send-rpc.primary");
+        assert_eq!(chain[0].1, Some("send-primary-token"));
+        assert_eq!(chain[1].0, "https://send-rpc.fallback");
+        assert_eq!(chain[1].1, Some("send-fallback-token"));
     }
 }

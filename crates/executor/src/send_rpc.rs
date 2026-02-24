@@ -46,7 +46,8 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         )
     })?;
 
-    let Some(primary_url) = backend.send_rpc_url.as_deref() else {
+    let endpoints = backend.send_rpc_endpoint_chain();
+    if endpoints.is_empty() {
         return Err(Reject::terminal(
             "adapter_send_rpc_not_configured",
             format!(
@@ -55,11 +56,6 @@ pub(crate) async fn send_signed_transaction_via_rpc(
                 route.to_ascii_uppercase()
             ),
         ));
-    };
-    let mut endpoints = Vec::with_capacity(2);
-    endpoints.push((primary_url, backend.send_rpc_primary_auth_token.as_deref()));
-    if let Some(url) = backend.send_rpc_fallback_url.as_deref() {
-        endpoints.push((url, backend.send_rpc_fallback_auth_token.as_deref()));
     }
 
     let mut last_retryable: Option<Reject> = None;
@@ -79,7 +75,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
             ]
         });
         let mut request = state.http.post(*url).json(&payload);
-        if let Some(token) = auth_token {
+        if let Some(token) = *auth_token {
             request = request.bearer_auth(token);
         }
         let response = match request.send().await {
