@@ -298,6 +298,7 @@ dependencies = [
  "chrono",
  "hmac",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

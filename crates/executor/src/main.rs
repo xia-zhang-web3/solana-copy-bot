@@ -26,6 +26,7 @@ use tracing_subscriber::EnvFilter;
 
 mod http_utils;
 mod fee_hints;
+mod idempotency;
 mod route_backend;
 mod route_policy;
 mod send_rpc;
@@ -35,6 +36,7 @@ use crate::fee_hints::{resolve_fee_hints, FeeHintError, FeeHintInputs};
 use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
+use crate::idempotency::SubmitIdempotencyStore;
 use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_policy::{apply_submit_tip_policy, requires_submit_fastlane_enabled};
 use crate::send_rpc::send_signed_transaction_via_rpc;
@@ -66,6 +68,7 @@ struct AppState {
     config: ExecutorConfig,
     http: Client,
     auth: Arc<AuthVerifier>,
+    idempotency: Arc<SubmitIdempotencyStore>,
 }
 
 #[derive(Clone)]
@@ -84,6 +87,7 @@ struct ExecutorConfig {
     hmac_secret: Option<String>,
     hmac_ttl_sec: u64,
     request_timeout_ms: u64,
+    idempotency_db_path: String,
     max_notional_sol: f64,
     allow_nonzero_tip: bool,
     submit_signature_verify: Option<SubmitSignatureVerifyConfig>,
@@ -392,6 +396,15 @@ impl ExecutorConfig {
 
         let request_timeout_ms =
             parse_u64_env("COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;
+        let idempotency_db_path = env::var("COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH")
+            .unwrap_or_else(|_| "state/executor_idempotency.sqlite3".to_string())
+            .trim()
+            .to_string();
+        if idempotency_db_path.is_empty() {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH must be non-empty"
+            ));
+        }
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -419,6 +432,7 @@ impl ExecutorConfig {
             hmac_secret,
             hmac_ttl_sec,
             request_timeout_ms,
+            idempotency_db_path,
             max_notional_sol,
             allow_nonzero_tip,
             submit_signature_verify,
@@ -664,8 +678,17 @@ async fn main() -> Result<()> {
         .build()
         .context("failed to build reqwest client")?;
     let auth = Arc::new(AuthVerifier::new(&config));
+    let idempotency = Arc::new(
+        SubmitIdempotencyStore::open(config.idempotency_db_path.as_str())
+            .context("failed to open idempotency store")?,
+    );
 
-    let state = AppState { config, http, auth };
+    let state = AppState {
+        config,
+        http,
+        auth,
+        idempotency,
+    };
 
     let router = Router::new()
         .route("/healthz", get(healthz))
@@ -682,6 +705,7 @@ async fn main() -> Result<()> {
         contract_version = %state.config.contract_version,
         routes = ?state.config.route_allowlist,
         submit_fastlane_enabled = state.config.submit_fastlane_enabled,
+        idempotency_db_path = %state.config.idempotency_db_path,
         submit_signature_verify_enabled = state.config.submit_signature_verify.is_some(),
         submit_signature_verify_strict = state
             .config
@@ -708,6 +732,7 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
         "signer_kms_key_id_configured": state.config.signer_kms_key_id.is_some(),
         "signer_keypair_file_configured": state.config.signer_keypair_file.is_some(),
         "submit_fastlane_enabled": state.config.submit_fastlane_enabled,
+        "idempotency_store_status": "ok",
         "signer_pubkey": state.config.signer_pubkey,
         "routes": state.config.route_allowlist,
     }))
@@ -1029,6 +1054,19 @@ async fn handle_submit(
         client_order_id = %request.client_order_id,
         "handling submit request"
     );
+    if let Some(cached_response) = state
+        .idempotency
+        .load_submit_response(request.client_order_id.as_str())
+        .map_err(map_idempotency_error_to_reject)?
+    {
+        debug!(
+            route = %route,
+            signal_id = %request.signal_id,
+            client_order_id = %request.client_order_id,
+            "serving cached idempotent submit response"
+        );
+        return Ok(cached_response);
+    }
     let backend_response = forward_to_upstream(
         state,
         route.as_str(),
@@ -1215,6 +1253,19 @@ async fn handle_submit(
     }
     response["submit_signature_verify"] =
         submit_signature_verification_to_json(&submit_signature_verify);
+    if let Err(error) = state.idempotency.store_submit_response(
+        request.client_order_id.as_str(),
+        request.request_id.as_str(),
+        &response,
+    ) {
+        warn!(
+            route = %route,
+            signal_id = %request.signal_id,
+            client_order_id = %request.client_order_id,
+            error = %error,
+            "failed to persist submit idempotency record; returning success response"
+        );
+    }
     Ok(response)
 }
 
@@ -1538,6 +1589,13 @@ fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
             format!("{}={} exceeds i64::MAX", field, value),
         ),
     }
+}
+
+fn map_idempotency_error_to_reject(error: anyhow::Error) -> Reject {
+    Reject::retryable(
+        "idempotency_store_unavailable",
+        format!("idempotency store unavailable: {}", error),
+    )
 }
 
 fn build_submit_forward_payload(
@@ -2865,6 +2923,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_returns_cached_response_for_duplicate_client_order_id() {
+        let signature = bs58::encode([17u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}"}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-idempotent-1",
+            "client_order_id": "client-order-idempotent-1",
+            "request_id": "request-idempotent-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.3,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let first = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("first submit should succeed");
+        let first_submitted_at = first
+            .get("submitted_at")
+            .and_then(Value::as_str)
+            .expect("submitted_at");
+
+        let second = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("second submit should return cached response");
+        assert_eq!(
+            second.get("tx_signature").and_then(Value::as_str),
+            Some(signature.as_str())
+        );
+        assert_eq!(
+            second.get("submitted_at").and_then(Value::as_str),
+            Some(first_submitted_at)
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_forces_rpc_tip_to_zero_and_emits_trace() {
         let signature = bs58::encode([15u8; 64]).into_string();
         let Some((upstream_url, upstream_handle)) =
@@ -3214,16 +3331,26 @@ mod tests {
             hmac_secret: None,
             hmac_ttl_sec: 30,
             request_timeout_ms: 2_000,
+            idempotency_db_path: ":memory:".to_string(),
             max_notional_sol: 10.0,
             allow_nonzero_tip: true,
             submit_signature_verify: None,
         };
         let auth = Arc::new(AuthVerifier::new(&config));
+        let idempotency = Arc::new(
+            SubmitIdempotencyStore::open(config.idempotency_db_path.as_str())
+                .expect("idempotency store"),
+        );
         let http = Client::builder()
             .timeout(Duration::from_millis(2_000))
             .build()
             .expect("http client");
-        AppState { config, http, auth }
+        AppState {
+            config,
+            http,
+            auth,
+            idempotency,
+        }
     }
 
     fn spawn_one_shot_upstream_raw(
