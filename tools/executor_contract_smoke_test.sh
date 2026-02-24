@@ -65,6 +65,7 @@ contract_guard_tests=(
   "handle_submit_returns_cached_response_for_duplicate_client_order_id"
   "handle_submit_rejects_parallel_duplicate_client_order_id_in_flight"
   "handle_submit_returns_canonical_cached_response_when_store_conflicts"
+  "handle_submit_rejects_when_submit_deadline_budget_exhausted"
   "store_persists_across_store_reopen"
   "store_does_not_overwrite_existing_response"
   "claim_flow_returns_claimed_inflight_then_cached"
