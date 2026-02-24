@@ -45,6 +45,7 @@ mod route_policy;
 mod secret_source;
 mod send_rpc;
 mod signer_source;
+mod simulate_handler;
 mod simulate_response;
 mod submit_budget;
 mod submit_claim_guard;
@@ -80,14 +81,13 @@ use crate::reject_mapping::{
     map_fee_hint_error_to_reject, map_fee_hint_field_parse_error_to_reject,
     map_forward_payload_build_error_to_reject, map_idempotency_error_to_reject,
     map_parsed_upstream_reject, map_request_validation_error_to_reject,
-    map_simulate_response_validation_error_to_reject, map_slippage_validation_error_to_reject,
-    map_submit_response_validation_error_to_reject, map_submit_tip_policy_error_to_reject,
-    map_submit_transport_artifact_error_to_reject,
+    map_slippage_validation_error_to_reject, map_submit_response_validation_error_to_reject,
+    map_submit_tip_policy_error_to_reject, map_submit_transport_artifact_error_to_reject,
 };
 #[cfg(test)]
 use crate::reject_mapping::simulate_http_status_for_reject;
 use crate::request_validation::{
-    validate_simulate_request_basics, validate_submit_request_identity,
+    validate_submit_request_identity,
 };
 use crate::request_types::{ComputeBudgetRequest, SimulateRequest, SubmitRequest};
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
@@ -100,10 +100,7 @@ use crate::secret_source::resolve_secret_source;
 use crate::secret_source::secret_file_has_restrictive_permissions;
 use crate::send_rpc::send_signed_transaction_via_rpc;
 use crate::signer_source::{resolve_signer_source_config, SignerSource};
-use crate::simulate_response::{
-    build_simulate_success_payload, resolve_simulate_response_detail,
-    validate_simulate_response_route_and_contract,
-};
+use crate::simulate_handler::handle_simulate;
 use crate::submit_budget::{default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path};
 use crate::submit_claim_guard::SubmitClaimGuard;
 use crate::submit_deadline::SubmitDeadline;
@@ -680,68 +677,6 @@ async fn submit(
         Some(client_order_id.as_str()),
         &state.config.contract_version,
     )
-}
-
-async fn handle_simulate(
-    state: &AppState,
-    request: &SimulateRequest,
-    raw_body: &[u8],
-) -> std::result::Result<Value, Reject> {
-    validate_common_contract_inputs(CommonContractInputs {
-        request_contract_version: request.contract_version.as_deref(),
-        expected_contract_version: state.config.contract_version.as_str(),
-        route: request.route.as_str(),
-        route_allowlist: &state.config.route_allowlist,
-        submit_fastlane_enabled: state.config.submit_fastlane_enabled,
-        side: request.side.as_str(),
-        token: request.token.as_str(),
-        notional_sol: request.notional_sol,
-        max_notional_sol: state.config.max_notional_sol,
-    })
-    .map_err(map_common_contract_validation_error_to_reject)?;
-    validate_simulate_request_basics(
-        request.action.as_deref(),
-        request.dry_run,
-        request.signal_ts.as_str(),
-        request.request_id.as_str(),
-        request.signal_id.as_str(),
-    )
-    .map_err(map_request_validation_error_to_reject)?;
-
-    let route = normalize_route(request.route.as_str());
-    debug!(
-        route = %route,
-        signal_id = %request.signal_id,
-        "handling simulate request"
-    );
-    let backend_response = forward_to_upstream(
-        state,
-        route.as_str(),
-        UpstreamAction::Simulate,
-        raw_body,
-        None,
-    )
-    .await?;
-    match parse_upstream_outcome(&backend_response, "simulation_rejected") {
-        UpstreamOutcome::Reject(reject) => return Err(map_parsed_upstream_reject(reject)),
-        UpstreamOutcome::Success => {}
-    }
-
-    validate_simulate_response_route_and_contract(
-        &backend_response,
-        route.as_str(),
-        state.config.contract_version.as_str(),
-    )
-    .map_err(map_simulate_response_validation_error_to_reject)?;
-
-    let detail = resolve_simulate_response_detail(&backend_response, "adapter_simulation_ok");
-
-    Ok(build_simulate_success_payload(
-        route.as_str(),
-        state.config.contract_version.as_str(),
-        request.request_id.as_str(),
-        detail.as_str(),
-    ))
 }
 
 async fn handle_submit(
