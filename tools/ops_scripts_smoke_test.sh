@@ -570,6 +570,7 @@ write_executor_env_preflight() {
   local env_path="$1"
   local port="$2"
   local token="$3"
+  local allow_unauth="${4:-false}"
   cat >"$env_path" <<EOF
 COPYBOT_EXECUTOR_BIND_ADDR="127.0.0.1:${port}"
 COPYBOT_EXECUTOR_CONTRACT_VERSION="v1"
@@ -578,7 +579,7 @@ COPYBOT_EXECUTOR_SIGNER_SOURCE="kms"
 COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID="kms-key-1"
 COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper,rpc,jito"
 COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=false
-COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=false
+COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=${allow_unauth}
 COPYBOT_EXECUTOR_BEARER_TOKEN="${token}"
 COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL="https://executor.upstream.local/submit"
 COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL="https://executor.upstream.local/simulate"
@@ -589,8 +590,9 @@ write_adapter_env_preflight() {
   local env_path="$1"
   local port="$2"
   local token="$3"
+  local allowlist="${4:-paper,rpc,jito}"
   cat >"$env_path" <<EOF
-COPYBOT_ADAPTER_ROUTE_ALLOWLIST="paper,rpc,jito"
+COPYBOT_ADAPTER_ROUTE_ALLOWLIST="${allowlist}"
 COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL="http://127.0.0.1:${port}/submit"
 COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL="http://127.0.0.1:${port}/simulate"
 COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN="${token}"
@@ -607,6 +609,9 @@ write_fake_curl_executor_preflight() {
 set -euo pipefail
 
 expected_token='__EXPECTED_TOKEN__'
+simulate_without_auth_status="${FAKE_EXECUTOR_SIMULATE_WITHOUT_AUTH_STATUS:-200}"
+simulate_with_auth_status="${FAKE_EXECUTOR_SIMULATE_WITH_AUTH_STATUS:-200}"
+simulate_invalid_auth_status="${FAKE_EXECUTOR_SIMULATE_INVALID_AUTH_STATUS:-200}"
 output_file=""
 auth_header=""
 url=""
@@ -654,13 +659,15 @@ if [[ "$url" == *"/healthz" ]]; then
 elif [[ "$url" == *"/simulate" ]]; then
   if [[ -z "$auth_header" ]]; then
     code="auth_missing"
+    status_code="$simulate_without_auth_status"
   elif [[ "$auth_header" == "Bearer ${expected_token}" ]]; then
     code="invalid_request"
+    status_code="$simulate_with_auth_status"
   else
     code="auth_invalid"
+    status_code="$simulate_invalid_auth_status"
   fi
   body="{\"status\":\"reject\",\"retryable\":false,\"code\":\"${code}\",\"detail\":\"smoke preflight probe\"}"
-  status_code="200"
 fi
 
 if [[ -n "$output_file" ]]; then
@@ -1931,6 +1938,7 @@ run_executor_preflight_case() {
   assert_contains "$pass_output" "=== Executor Preflight ==="
   assert_contains "$pass_output" "preflight_verdict: PASS"
   assert_field_equals "$pass_output" "preflight_reason_code" "checks_passed"
+  assert_field_equals "$pass_output" "auth_probe_with_auth_http_status" "200"
   assert_contains "$pass_output" "artifacts_written: true"
   assert_sha256_field "$pass_output" "summary_sha256"
   if ! ls "$artifacts_dir"/executor_preflight_summary_*.txt >/dev/null 2>&1; then
@@ -1958,6 +1966,56 @@ run_executor_preflight_case() {
   assert_contains "$fail_output" "preflight_verdict: FAIL"
   assert_field_equals "$fail_output" "preflight_reason_code" "contract_checks_failed"
   assert_contains "$fail_output" "adapter auth token mismatch"
+
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
+  local with_auth_5xx_output
+  if with_auth_5xx_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_SIMULATE_WITH_AUTH_STATUS="503" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure when /simulate with valid bearer returns non-200" >&2
+    exit 1
+  fi
+  assert_contains "$with_auth_5xx_output" "preflight_verdict: FAIL"
+  assert_contains "$with_auth_5xx_output" "auth probe with configured bearer token must return HTTP 200, got 503"
+
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token" "paper,rpc,jito,fastlane"
+  local allowlist_mismatch_output
+  if allowlist_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter route allowlist not subset of executor allowlist" >&2
+    exit 1
+  fi
+  assert_contains "$allowlist_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$allowlist_mismatch_output" "adapter route allowlist includes route=fastlane that is not present in executor allowlist"
+
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
+  write_executor_env_preflight "$executor_env_path" "$port" "$auth_token" "true"
+  local unauth_mismatch_output
+  if unauth_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure when unauth mode is enabled but endpoint still requires auth" >&2
+    exit 1
+  fi
+  assert_contains "$unauth_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$unauth_mismatch_output" "COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true but simulate endpoint still requires auth"
 
   echo "[ok] executor preflight helper"
 }

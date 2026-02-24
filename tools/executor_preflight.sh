@@ -563,6 +563,10 @@ while IFS= read -r route; do
   [[ -z "$route" ]] && continue
   route_upper="$(printf '%s' "$route" | tr '[:lower:]' '[:upper:]')"
 
+  if ! csv_contains_route "$executor_route_allowlist_csv" "$route"; then
+    errors+=("adapter route allowlist includes route=$route that is not present in executor allowlist")
+  fi
+
   adapter_route_submit="$(first_non_empty \
     "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SUBMIT_URL")" \
     "$adapter_submit_default")"
@@ -655,9 +659,16 @@ if command -v curl >/dev/null 2>&1; then
       if probe_http_status="$(curl -sS -m "$HTTP_TIMEOUT_SEC" -H "content-type: application/json" --data "$simulate_probe_payload" -o "$probe_body_file" -w "%{http_code}" "$probe_url" 2>/dev/null)"; then
         probe_body="$(cat "$probe_body_file")"
         auth_probe_without_auth_code="$(json_string_field "$probe_body" "code")"
+        if [[ "$probe_http_status" != "200" ]]; then
+          errors+=("auth probe without token must return HTTP 200, got $probe_http_status")
+        fi
         if [[ "$executor_bearer_required" == "true" ]]; then
           if [[ "$auth_probe_without_auth_code" != "auth_missing" && "$auth_probe_without_auth_code" != "auth_invalid" ]]; then
             errors+=("auth probe without token must fail with auth_missing/auth_invalid when bearer is required")
+          fi
+        else
+          if [[ "$auth_probe_without_auth_code" == "auth_missing" || "$auth_probe_without_auth_code" == "auth_invalid" ]]; then
+            errors+=("executor is configured with COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true but simulate endpoint still requires auth")
           fi
         fi
       else
@@ -669,6 +680,9 @@ if command -v curl >/dev/null 2>&1; then
           probe_with_auth_body="$(cat "$probe_body_file")"
           auth_probe_with_auth_http_status="$probe_with_auth_status"
           auth_probe_with_auth_code="$(json_string_field "$probe_with_auth_body" "code")"
+          if [[ "$probe_with_auth_status" != "200" ]]; then
+            errors+=("auth probe with configured bearer token must return HTTP 200, got $probe_with_auth_status")
+          fi
           if [[ "$auth_probe_with_auth_code" == "auth_missing" || "$auth_probe_with_auth_code" == "auth_invalid" ]]; then
             errors+=("auth probe with configured bearer token still failed auth check")
           fi
