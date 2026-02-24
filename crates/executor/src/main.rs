@@ -981,13 +981,17 @@ async fn handle_submit(
             ),
         ));
     }
-    if request.tip_lamports > TIP_MAX_LAMPORTS {
+    let route = normalize_route(request.route.as_str());
+    let (effective_tip_lamports, tip_policy_code) =
+        normalize_submit_tip_for_route(route.as_str(), request.tip_lamports);
+
+    if effective_tip_lamports > TIP_MAX_LAMPORTS {
         return Err(Reject::terminal(
             "invalid_tip_lamports",
             format!("tip_lamports exceeds max {}", TIP_MAX_LAMPORTS),
         ));
     }
-    if request.tip_lamports > 0 && !state.config.allow_nonzero_tip {
+    if effective_tip_lamports > 0 && !state.config.allow_nonzero_tip {
         return Err(Reject::terminal(
             "tip_not_supported",
             "non-zero tip_lamports is disabled in executor config",
@@ -1012,9 +1016,6 @@ async fn handle_submit(
         ));
     }
 
-    let route = normalize_route(request.route.as_str());
-    let (effective_tip_lamports, tip_policy_code) =
-        normalize_submit_tip_for_route(route.as_str(), request.tip_lamports);
     let forward_body = build_submit_forward_payload(
         raw_body,
         request.tip_lamports,
@@ -2922,6 +2923,112 @@ mod tests {
             Some(0)
         );
         let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_allows_rpc_tip_when_nonzero_tip_disabled() {
+        let signature = bs58::encode([16u8; 64]).into_string();
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_expect_tip_lamports(0, signature.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        state.config.allow_nonzero_tip = false;
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-2",
+            "client_order_id": "client-order-rpc-tip-disabled",
+            "request_id": "request-rpc-tip-disabled",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 15.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 7000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("rpc route should coerce tip and bypass nonzero-tip reject");
+        assert_eq!(
+            response.get("tx_signature").and_then(Value::as_str),
+            Some(signature.as_str())
+        );
+        assert_eq!(response.get("tip_lamports").and_then(Value::as_u64), Some(0));
+        assert_eq!(
+            response
+                .get("tip_policy")
+                .and_then(|value| value.get("policy_code"))
+                .and_then(Value::as_str),
+            Some("rpc_tip_forced_zero")
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_nonzero_tip_for_jito_when_disabled() {
+        let state = {
+            let mut state = test_state("http://127.0.0.1:1/upstream");
+            state.config.allow_nonzero_tip = false;
+            state.config.route_allowlist.insert("jito".to_string());
+            state.config.route_backends.insert(
+                "jito".to_string(),
+                RouteBackend {
+                    submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                    submit_fallback_url: None,
+                    simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                    simulate_fallback_url: None,
+                    primary_auth_token: None,
+                    fallback_auth_token: None,
+                    send_rpc_url: None,
+                    send_rpc_fallback_url: None,
+                    send_rpc_primary_auth_token: None,
+                    send_rpc_fallback_auth_token: None,
+                },
+            );
+            state
+        };
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-jito-1",
+            "client_order_id": "client-order-jito-tip",
+            "request_id": "request-jito-tip",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "jito",
+            "slippage_bps": 15.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 1000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("non-rpc route must still reject non-zero tip when disabled");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "tip_not_supported");
     }
 
     #[tokio::test]

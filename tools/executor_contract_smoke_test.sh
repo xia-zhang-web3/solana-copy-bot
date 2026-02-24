@@ -60,6 +60,7 @@ contract_guard_tests=(
   "validate_fastlane_route_policy_enforces_feature_gate"
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
+  "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
 )
 
 for test_name in "${contract_guard_tests[@]}"; do
