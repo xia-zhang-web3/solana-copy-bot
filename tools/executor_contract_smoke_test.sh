@@ -57,6 +57,7 @@ pass "copybot-executor tests pass"
 contract_guard_tests=(
   "simulate_reject_status_is_http_200_for_retryable_and_terminal"
   "require_authenticated_mode_fails_closed_by_default"
+  "validate_hmac_auth_config_rejects_partial_pair"
   "auth_verifier_rejects_wrong_bearer_token"
   "auth_verifier_accepts_correct_bearer_token"
   "resolve_signer_source_config_rejects_keypair_pubkey_mismatch"

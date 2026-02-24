@@ -56,7 +56,7 @@ mod tx_build;
 mod upstream_forward;
 mod upstream_outcome;
 
-use crate::auth_mode::require_authenticated_mode;
+use crate::auth_mode::{require_authenticated_mode, validate_hmac_auth_config};
 use crate::auth_verifier::AuthVerifier;
 use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
 use crate::contract_version::parse_contract_version;
@@ -435,18 +435,11 @@ impl ExecutorConfig {
         )?;
         let hmac_ttl_sec = parse_u64_env("COPYBOT_EXECUTOR_HMAC_TTL_SEC", 30)?;
         let allow_unauthenticated = parse_bool_env("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", false);
-        if (hmac_key_id.is_some() && hmac_secret.is_none())
-            || (hmac_key_id.is_none() && hmac_secret.is_some())
-        {
-            return Err(anyhow!(
-                "COPYBOT_EXECUTOR_HMAC_KEY_ID and COPYBOT_EXECUTOR_HMAC_SECRET must be set together"
-            ));
-        }
-        if hmac_key_id.is_some() && !(5..=300).contains(&hmac_ttl_sec) {
-            return Err(anyhow!(
-                "COPYBOT_EXECUTOR_HMAC_TTL_SEC must be in 5..=300 when HMAC auth is enabled"
-            ));
-        }
+        validate_hmac_auth_config(
+            hmac_key_id.as_deref(),
+            hmac_secret.as_deref(),
+            hmac_ttl_sec,
+        )?;
         require_authenticated_mode(bearer_token.as_deref(), allow_unauthenticated)?;
 
         let request_timeout_ms =

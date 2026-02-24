@@ -669,6 +669,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 141. executor bind-address parsing extraction completed: `COPYBOT_EXECUTOR_BIND_ADDR` parsing moved from local `main.rs` helper into shared env-parsing module (`parse_socket_addr_str` in `crates/executor/src/env_parsing.rs`), with retained fail-closed error context and added direct guard coverage in contract smoke (`parse_socket_addr_str_rejects_invalid_socket_addr`).
 142. executor import hygiene cleanup completed: `simulate_http_status_for_reject` import in `main.rs` is now test-scoped (`#[cfg(test)]`) since production call sites were already removed, reducing non-test surface while preserving existing guard test coverage.
 143. executor contract-version parsing extraction completed: `COPYBOT_EXECUTOR_CONTRACT_VERSION` normalization/validation moved from `main.rs` into `crates/executor/src/contract_version.rs` (`parse_contract_version`), keeping the same fail-closed token constraints (`[A-Za-z0-9._-]`, len<=64, non-empty) while adding direct module guard coverage for invalid contract-version values.
+144. executor auth-mode extraction continued: HMAC pair/TTL validation moved from `ExecutorConfig::from_env` into `crates/executor/src/auth_mode.rs` (`validate_hmac_auth_config`) so auth policy guards are centralized with `require_authenticated_mode`; fail-closed error messages/ranges remain unchanged and contract smoke now includes direct guard coverage for partial HMAC config.
 
 Остается в next-code-queue:
 
