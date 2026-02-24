@@ -63,6 +63,8 @@ contract_guard_tests=(
   "handle_simulate_rejects_empty_request_id"
   "handle_simulate_rejects_empty_signal_id"
   "handle_simulate_rejects_upstream_route_mismatch"
+  "forward_to_upstream_uses_fallback_after_primary_retryable_status"
+  "forward_to_upstream_does_not_fallback_after_primary_terminal_status"
   "validate_fastlane_route_policy_enforces_feature_gate"
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
   "common_contract_validation_rejects_invalid_side"
