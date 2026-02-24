@@ -20,6 +20,10 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
 fi
 
 declare -a errors=()
+PYTHON3_BIN="$(command -v python3 || true)"
+if [[ -z "$PYTHON3_BIN" ]]; then
+  errors+=("python3 is required for executor_preflight URL/JSON helpers")
+fi
 
 cfg_value() {
   local section="$1"
@@ -289,7 +293,11 @@ csv_contains_route() {
 
 endpoint_identity() {
   local endpoint="$1"
-  python3 - "$endpoint" <<'PY'
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    printf ''
+    return 0
+  fi
+  "$PYTHON3_BIN" - "$endpoint" <<'PY'
 import sys
 from urllib.parse import urlsplit
 
@@ -313,7 +321,11 @@ PY
 url_from_bind_addr() {
   local bind_addr="$1"
   local path="$2"
-  python3 - "$bind_addr" "$path" <<'PY'
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    printf ''
+    return 0
+  fi
+  "$PYTHON3_BIN" - "$bind_addr" "$path" <<'PY'
 import sys
 
 bind = sys.argv[1].strip()
@@ -347,7 +359,11 @@ PY
 json_string_field() {
   local body="$1"
   local key="$2"
-  python3 - "$key" "$body" <<'PY'
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    printf ''
+    return 0
+  fi
+  "$PYTHON3_BIN" - "$key" "$body" <<'PY'
 import json
 import sys
 
@@ -374,7 +390,11 @@ PY
 json_routes_csv_field() {
   local body="$1"
   local key="$2"
-  python3 - "$key" "$body" <<'PY'
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    printf ''
+    return 0
+  fi
+  "$PYTHON3_BIN" - "$key" "$body" <<'PY'
 import json
 import sys
 
