@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use crate::route_normalization::normalize_route;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SimulateResponseValidationError {
@@ -75,10 +76,6 @@ pub(crate) fn build_simulate_success_payload(
         "request_id": request_id,
         "detail": detail
     })
-}
-
-fn normalize_route(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]

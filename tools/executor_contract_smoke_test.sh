@@ -64,6 +64,7 @@ contract_guard_tests=(
   "validate_fastlane_route_policy_enforces_feature_gate"
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
   "parse_route_allowlist_rejects_unknown_route"
+  "normalize_route_trims_and_lowercases"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
   "handle_submit_rejects_compute_budget_limit_out_of_range"
@@ -90,6 +91,7 @@ contract_guard_tests=(
   "submit_response_resolve_submitted_at_rejects_invalid_rfc3339"
   "submit_payload_includes_tip_policy_when_present"
   "simulate_response_validation_rejects_route_mismatch"
+  "submit_deadline_remaining_timeout_rejects_when_budget_exhausted"
   "upstream_outcome_rejects_unknown_status"
 )
 

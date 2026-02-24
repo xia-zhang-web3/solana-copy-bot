@@ -8,7 +8,8 @@ use crate::{
     http_utils::{
         classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
     },
-    optional_non_empty_env, parse_bool_env, parse_u64_env, AppState, Reject, SubmitDeadline,
+    optional_non_empty_env, parse_bool_env, parse_u64_env, submit_deadline::SubmitDeadline,
+    AppState, Reject,
     DEFAULT_SUBMIT_VERIFY_ATTEMPTS, DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
 };
 

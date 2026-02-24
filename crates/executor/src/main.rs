@@ -18,7 +18,7 @@ use std::{
     env, fs,
     net::SocketAddr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -28,9 +28,11 @@ mod http_utils;
 mod fee_hints;
 mod idempotency;
 mod route_backend;
+mod route_normalization;
 mod route_policy;
 mod send_rpc;
 mod simulate_response;
+mod submit_deadline;
 mod submit_payload;
 mod submit_response;
 mod submit_transport;
@@ -47,6 +49,7 @@ use crate::http_utils::{
 };
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::route_backend::{RouteBackend, UpstreamAction};
+use crate::route_normalization::normalize_route;
 #[cfg(test)]
 use crate::route_policy::apply_submit_tip_policy;
 use crate::route_policy::requires_submit_fastlane_enabled;
@@ -59,6 +62,7 @@ use crate::submit_response::{
     resolve_submit_response_submitted_at, validate_submit_response_request_identity,
     validate_submit_response_route_and_contract, SubmitResponseValidationError,
 };
+use crate::submit_deadline::SubmitDeadline;
 use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_transport::{
     extract_submit_transport_artifact, SubmitTransportArtifact, SubmitTransportArtifactError,
@@ -560,46 +564,6 @@ fn default_submit_total_budget_ms(request_timeout_ms: u64) -> u64 {
         .saturating_mul(3)
         .saturating_add(1_000)
         .max(DEFAULT_SUBMIT_TOTAL_BUDGET_MS)
-}
-
-#[derive(Clone, Copy, Debug)]
-struct SubmitDeadline {
-    started_at: Instant,
-    total_budget_ms: u64,
-}
-
-impl SubmitDeadline {
-    fn new(total_budget_ms: u64) -> Self {
-        Self {
-            started_at: Instant::now(),
-            total_budget_ms: total_budget_ms.max(1),
-        }
-    }
-
-    fn elapsed_ms(&self) -> u64 {
-        let millis = self.started_at.elapsed().as_millis();
-        if millis > u128::from(u64::MAX) {
-            u64::MAX
-        } else {
-            millis as u64
-        }
-    }
-
-    fn remaining_timeout(&self, stage: &str) -> std::result::Result<Duration, Reject> {
-        let elapsed_ms = self.elapsed_ms();
-        if elapsed_ms >= self.total_budget_ms {
-            return Err(Reject::retryable(
-                "executor_submit_timeout_budget_exceeded",
-                format!(
-                    "submit timeout budget exceeded before stage={} elapsed_ms={} budget_ms={}",
-                    stage, elapsed_ms, self.total_budget_ms
-                ),
-            ));
-        }
-        Ok(Duration::from_millis(
-            self.total_budget_ms.saturating_sub(elapsed_ms).max(1),
-        ))
-    }
 }
 
 #[derive(Clone)]
@@ -1979,10 +1943,6 @@ fn validate_fastlane_route_policy(
         }
     }
     Ok(())
-}
-
-fn normalize_route(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
 }
 
 fn get_required_header<'a>(
