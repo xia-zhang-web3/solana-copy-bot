@@ -41,6 +41,7 @@ mod secret_source;
 mod signer_source;
 mod simulate_response;
 mod submit_deadline;
+mod submit_budget;
 mod submit_payload;
 mod submit_response;
 mod submit_transport;
@@ -83,6 +84,9 @@ use crate::submit_response::{
     validate_submit_response_route_and_contract, SubmitResponseValidationError,
 };
 use crate::submit_deadline::SubmitDeadline;
+use crate::submit_budget::{
+    default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path,
+};
 use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_transport::{
     extract_submit_transport_artifact, SubmitTransportArtifact, SubmitTransportArtifactError,
@@ -118,9 +122,7 @@ const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
-const DEFAULT_SUBMIT_TOTAL_BUDGET_MS: u64 = 7_000;
 const DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC: u64 = 60;
-const CLAIM_TTL_SAFETY_PADDING_MS: u64 = 1_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -518,57 +520,6 @@ impl ExecutorConfig {
             submit_signature_verify,
         })
     }
-}
-
-fn min_claim_ttl_sec_for_submit_path(
-    request_timeout_ms: u64,
-    route_backends: &HashMap<String, RouteBackend>,
-    submit_signature_verify: Option<&SubmitSignatureVerifyConfig>,
-) -> u64 {
-    let effective_request_timeout_ms = request_timeout_ms.max(500);
-    let submit_hops = route_backends
-        .values()
-        .map(|backend| backend.endpoint_chain(UpstreamAction::Submit).len() as u64)
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let send_rpc_hops = route_backends
-        .values()
-        .map(|backend| backend.send_rpc_endpoint_chain().len() as u64)
-        .max()
-        .unwrap_or(0);
-    let verify_hops = submit_signature_verify
-        .map(|config| {
-            config
-                .attempts
-                .saturating_mul(config.endpoints.len() as u64)
-                .max(1)
-        })
-        .unwrap_or(0);
-    let verify_wait_ms = submit_signature_verify
-        .map(|config| {
-            config
-                .interval_ms
-                .saturating_mul(config.attempts.saturating_sub(1))
-        })
-        .unwrap_or(0);
-    let total_hops = submit_hops
-        .saturating_add(send_rpc_hops)
-        .saturating_add(verify_hops)
-        .max(1);
-    let budget_ms = effective_request_timeout_ms
-        .saturating_mul(total_hops)
-        .saturating_add(verify_wait_ms)
-        .saturating_add(CLAIM_TTL_SAFETY_PADDING_MS);
-    (budget_ms.saturating_add(999) / 1000).max(1)
-}
-
-fn default_submit_total_budget_ms(request_timeout_ms: u64) -> u64 {
-    request_timeout_ms
-        .max(500)
-        .saturating_mul(3)
-        .saturating_add(1_000)
-        .max(DEFAULT_SUBMIT_TOTAL_BUDGET_MS)
 }
 
 #[derive(Clone)]
