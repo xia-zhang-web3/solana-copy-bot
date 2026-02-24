@@ -1,6 +1,20 @@
 use crate::ExecutionRuntime;
 use std::collections::BTreeMap;
 
+const GUARDED_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST: &[&str] = &[
+    "submit_adapter_unavailable",
+    "submit_adapter_http_unavailable",
+    "submit_adapter_invalid_json",
+    "upstream_unavailable",
+    "upstream_request_failed",
+    "upstream_http_unavailable",
+    "upstream_submit_signature_unseen",
+    "send_rpc_unavailable",
+    "send_rpc_request_failed",
+    "send_rpc_http_unavailable",
+    "send_rpc_error_payload_retryable",
+];
+
 impl ExecutionRuntime {
     pub(crate) fn submit_route_for_attempt(&self, attempt: u32) -> &str {
         if self.submit_route_order.is_empty() {
@@ -15,6 +29,27 @@ impl ExecutionRuntime {
         normalize_route(route)
             .and_then(|value| self.route_tip_lamports.get(value.as_str()).copied())
             .unwrap_or(0)
+    }
+
+    pub(crate) fn submit_fallback_route_allowed(
+        &self,
+        current_route: &str,
+        next_route: &str,
+        retryable_error_code: &str,
+    ) -> bool {
+        let Some(current_route) = normalize_route(current_route) else {
+            return true;
+        };
+        let Some(next_route) = normalize_route(next_route) else {
+            return true;
+        };
+        if current_route == next_route {
+            return true;
+        }
+        if is_guarded_rpc_fallback_transition(current_route.as_str(), next_route.as_str()) {
+            return is_allowed_guarded_rpc_fallback_error(retryable_error_code);
+        }
+        true
     }
 }
 
@@ -66,6 +101,17 @@ fn normalize_route(value: &str) -> Option<String> {
     }
 }
 
+fn is_guarded_rpc_fallback_transition(current_route: &str, next_route: &str) -> bool {
+    matches!(current_route, "jito" | "fastlane") && next_route == "rpc"
+}
+
+fn is_allowed_guarded_rpc_fallback_error(code: &str) -> bool {
+    let normalized = code.trim().to_ascii_lowercase();
+    GUARDED_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST
+        .iter()
+        .any(|allowed| *allowed == normalized)
+}
+
 pub(crate) fn normalize_route_tip_lamports(
     route_tip_lamports: &BTreeMap<String, u64>,
 ) -> BTreeMap<String, u64> {
@@ -73,4 +119,71 @@ pub(crate) fn normalize_route_tip_lamports(
         .iter()
         .filter_map(|(route, tip)| normalize_route(route).map(|key| (key, *tip)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use copybot_config::{ExecutionConfig, RiskConfig};
+
+    fn make_jito_rpc_runtime() -> ExecutionRuntime {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "paper".to_string();
+        execution.default_route = "jito".to_string();
+        execution.submit_allowed_routes = vec!["jito".to_string(), "rpc".to_string()];
+        execution.submit_route_order = vec!["jito".to_string(), "rpc".to_string()];
+        ExecutionRuntime::from_config(execution, RiskConfig::default())
+    }
+
+    #[test]
+    fn jito_rpc_fallback_allowlist_accepts_known_retryable_transport_codes() {
+        let runtime = make_jito_rpc_runtime();
+        for code in GUARDED_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST {
+            assert!(
+                runtime.submit_fallback_route_allowed("jito", "rpc", code),
+                "known fallback code should be allowed: {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn jito_rpc_fallback_rejects_unknown_retryable_codes_fail_closed() {
+        let runtime = make_jito_rpc_runtime();
+        assert!(
+            !runtime.submit_fallback_route_allowed("jito", "rpc", "submit_retryable_once"),
+            "unknown retryable code must fail-closed for jito->rpc fallback"
+        );
+    }
+
+    #[test]
+    fn fastlane_rpc_fallback_allowlist_accepts_known_retryable_transport_codes() {
+        let runtime = make_jito_rpc_runtime();
+        for code in GUARDED_RPC_FALLBACK_RETRYABLE_CODE_ALLOWLIST {
+            assert!(
+                runtime.submit_fallback_route_allowed("fastlane", "rpc", code),
+                "known fallback code should be allowed: {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn fastlane_rpc_fallback_rejects_unknown_retryable_codes_fail_closed() {
+        let runtime = make_jito_rpc_runtime();
+        assert!(
+            !runtime.submit_fallback_route_allowed("fastlane", "rpc", "submit_retryable_once"),
+            "unknown retryable code must fail-closed for fastlane->rpc fallback"
+        );
+    }
+
+    #[test]
+    fn fallback_policy_only_applies_to_guarded_rpc_transitions() {
+        let runtime = make_jito_rpc_runtime();
+        assert!(runtime.submit_fallback_route_allowed("rpc", "jito", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed("rpc", "fastlane", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed("rpc", "paper", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed("jito", "jito", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed("fastlane", "fastlane", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed("jito", "fastlane", "submit_retryable_once"));
+    }
 }

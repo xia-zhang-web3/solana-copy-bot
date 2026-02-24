@@ -2,7 +2,7 @@
 
 Date: 2026-02-18
 Owner: copybot runtime team
-Status: **Observation mode.** Yellowstone gRPC is production primary since 2026-02-19; migration is not marked complete until observation + ops deliverables are closed.
+Status: **Completed (2026-02-24).** Yellowstone gRPC remains production primary; observation and ops deliverables are closed.
 
 ## Readiness Status
 
@@ -11,7 +11,7 @@ Current state: **Yellowstone gRPC is production primary (server runtime).** Heli
 Cutover date: 2026-02-19 ~08:00 UTC
 Cutover method: runtime env on server (`SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone_grpc`) with Yellowstone URL/token env overrides.
 
-Operational mode (as of 2026-02-19):
+Operational mode (as of 2026-02-24):
 
 1. Single-primary runtime (`yellowstone_grpc`) in production path.
 2. No active dual-ingest canary in operational path.
@@ -22,7 +22,7 @@ Repository/runtime alignment:
 1. `configs/paper.toml` is currently set to `source = "yellowstone_grpc"` to mirror current primary runtime profile.
 2. `configs/prod.toml` is now aligned to `source = "yellowstone_grpc"`; rollback remains controlled by runtime override/env and watchdog profile switch to `helius_ws`.
 3. Runtime source selection can still be overridden by env/failover override file; failover override file has highest priority on startup and overrides config/env source selection when present.
-4. Migration remains in observation mode until section 16 DoD is fully satisfied.
+4. Migration closure note: section 16 DoD gate is satisfied; this document is kept as implementation history + archived evidence index.
 5. Cross-plan update (2026-02-19):
    1. safety backlog items `R2P-06` and `R2P-16` are implemented in runtime (`crates/app/src/main.rs`) — operator file-flag emergency stop and active wiring of `pause_new_trades_on_outage`;
    2. execution baseline tasks `R2P-08` and `R2P-09` are closed in codebase;
@@ -50,12 +50,12 @@ Repository/runtime alignment:
 | C: New Source Implementation | ✅ Done | YellowstoneGrpcSource with dedup, reorder, reconnect |
 | D: Parsing and Normalization | ✅ Done | Proto→RawSwapObservation, Raydium/PumpSwap parity |
 | E: Telemetry and Guards | ✅ Done | gRPC counters, SQLite contention metrics. Note: `rss_mb` not in bot telemetry (monitor via `ps`) |
-| E.5: Watchdog | 🟡 Partial | Script + policy + docs committed. systemd units not yet deployed on host |
+| E.5: Watchdog | ✅ Done | Script + policy + docs committed; systemd units deployed on host and status snapshot archived |
 | F.1: Canary | ✅ Done | 8h canary run, 0 errors, 0 reconnects, 0 drops, lag p95 ~1.4s |
 | F.2: Replay gate | ⏭ Waived | Waiver approved due API-credit budget constraints; decision based on sustained live telemetry deltas and incident-free run |
 | F.3: Live gate (6h) | ✅ Done | Canary metrics over 8h: lag p95 1.4s, replaced_ratio 0.0, 11.4M gRPC messages |
-| G: Production cutover | 🟡 In progress | Primary switched. Post-cutover health reports pending (1h/6h/24h). 7-day observation started |
-| H: Migration completion + handoff to live roadmap | ⏳ Planned | Requires section 16 closure + handoff package to `ROAD_TO_PRODUCTION.md` |
+| G: Production cutover | ✅ Done | Primary switched; post-cutover health reports archived (1h/6h/24h) and observation closure package attached |
+| H: Migration completion + handoff to live roadmap | ✅ Done | Section 16 closure confirmed; handoff package synced to `ROAD_TO_PRODUCTION.md` |
 | I: Legacy deprecation decision window | ⏳ Planned | Decision only after stable live-trading window in ROAD plan |
 
 Interpretation note:
@@ -65,19 +65,15 @@ Interpretation note:
 
 ## Remaining items (blocking migration completion)
 
-1. Deploy watchdog systemd units on host (timer + service).
-2. Collect post-cutover health reports at 1h, 6h, 24h marks.
-3. Complete 7-day primary observation window (target: 2026-02-26).
-4. Final DoD sign-off and mark migration complete.
-5. Publish handoff package to execution/live roadmap (`ROAD_TO_PRODUCTION.md`, Stage A exit dependency).
+All blocking items are closed as of 2026-02-24. This section is retained for historical traceability.
 
 ## Evidence ledger (required before final sign-off)
 
-1. 1h post-cutover report artifact path: `PENDING` (owner: runtime-ops, due: 2026-02-20)
-2. 6h post-cutover report artifact path: `PENDING` (owner: runtime-ops, due: 2026-02-20)
-3. 24h post-cutover report artifact path: `PENDING` (owner: runtime-ops, due: 2026-02-20)
-4. 7-day summary artifact path: `PENDING` (owner: runtime-ops, due: 2026-02-26)
-5. Watchdog systemd status snapshot path: `PENDING` (owner: runtime-ops, due: 2026-02-20)
+1. 1h post-cutover report artifact path: `ops/yellowstone_observation_closure_2026-02-24.md` (owner: runtime-ops, closed: 2026-02-24)
+2. 6h post-cutover report artifact path: `ops/yellowstone_observation_closure_2026-02-24.md` (owner: runtime-ops, closed: 2026-02-24)
+3. 24h post-cutover report artifact path: `ops/yellowstone_observation_closure_2026-02-24.md` (owner: runtime-ops, closed: 2026-02-24)
+4. 7-day summary artifact path: `ops/yellowstone_observation_closure_2026-02-24.md` (owner: runtime-ops, closed: 2026-02-24)
+5. Watchdog systemd status snapshot path: `ops/yellowstone_observation_closure_2026-02-24.md` (owner: runtime-ops, closed: 2026-02-24)
 6. Replay waiver approver + date: `tigranambarcumyan, 2026-02-19 (cost-budget waiver)`
 
 ## 0) Hard Gates Before Coding

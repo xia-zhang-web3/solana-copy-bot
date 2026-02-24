@@ -112,3 +112,35 @@ normalize_rehearsal_verdict() {
       ;;
   esac
 }
+
+sha256_file_value() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+    return
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$path" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+hasher = hashlib.sha256()
+with path.open("rb") as fh:
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        hasher.update(chunk)
+print(hasher.hexdigest())
+PY
+    return
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$path" | awk '{print $NF}'
+    return
+  fi
+  printf "unavailable"
+}

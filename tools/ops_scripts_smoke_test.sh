@@ -43,6 +43,7 @@ LOGS
 2026-02-19T12:00:00Z INFO ingestion pipeline metrics {"ingestion_lag_ms_p95":1400,"ingestion_lag_ms_p99":2100,"ws_to_fetch_queue_depth":1,"fetch_to_output_queue_depth":0,"fetch_concurrency_inflight":2,"ws_notifications_enqueued":111,"ws_notifications_replaced_oldest":0,"reconnect_count":0,"stream_gap_detected":0,"parse_rejected_total":3,"parse_rejected_by_reason":{"other":1,"missing_slot":2},"parse_fallback_by_reason":{"missing_program_ids_fallback":4},"grpc_message_total":12345,"grpc_decode_errors":0,"rpc_429":0,"rpc_5xx":0}
 2026-02-19T12:00:00Z INFO ingestion pipeline metrics {"ingestion_lag_ms_p95":1700,"ingestion_lag_ms_p99":2600,"ws_to_fetch_queue_depth":2,"fetch_to_output_queue_depth":1,"fetch_concurrency_inflight":3,"ws_notifications_enqueued":222,"ws_notifications_replaced_oldest":1,"reconnect_count":1,"stream_gap_detected":0,"parse_rejected_total":5,"parse_rejected_by_reason":{"missing_signer":3,"other":2},"parse_fallback_by_reason":{"missing_program_ids_fallback":1,"missing_slot_fallback":2},"grpc_message_total":22345,"grpc_decode_errors":1,"rpc_429":1,"rpc_5xx":0}
 2026-02-19T12:00:01Z INFO sqlite contention counters {"sqlite_write_retry_total":0,"sqlite_busy_error_total":0}
+2026-02-19T12:00:02Z INFO execution batch processed {"attempted":3,"confirmed":2,"dropped":0,"failed":1,"skipped":0,"submit_attempted_by_route":{"rpc":3},"submit_retry_scheduled_by_route":{"rpc":1},"submit_failed_by_route":{"rpc":1},"submit_dynamic_cu_policy_enabled_by_route":{"rpc":2},"submit_dynamic_cu_hint_used_by_route":{"rpc":2},"submit_dynamic_cu_hint_api_by_route":{"rpc":1},"submit_dynamic_cu_hint_rpc_by_route":{"rpc":1},"submit_dynamic_cu_price_applied_by_route":{"rpc":1},"submit_dynamic_cu_static_fallback_by_route":{"rpc":1},"submit_dynamic_tip_policy_enabled_by_route":{"rpc":2},"submit_dynamic_tip_applied_by_route":{"rpc":1},"submit_dynamic_tip_static_floor_by_route":{"rpc":1}}
 LOGS
 fi
 exit 0
@@ -276,6 +277,44 @@ submit_route_max_slippage_bps = { paper = 50.0 }
 submit_route_tip_lamports = { paper = 0 }
 submit_route_compute_unit_limit = { paper = 250000 }
 submit_route_compute_unit_price_micro_lamports = { paper = 1 }
+submit_adapter_auth_token = "token-inline"
+EOF
+}
+
+write_config_adapter_preflight_fastlane_routes() {
+  local config_path="$1"
+  local db_path="$2"
+  cat >"$config_path" <<EOF
+[system]
+env = "prod-eu"
+
+[sqlite]
+path = "$db_path"
+
+[risk]
+max_position_sol = 0.5
+max_total_exposure_sol = 3.0
+max_hold_hours = 8
+shadow_soft_exposure_cap_sol = 10.0
+shadow_hard_exposure_cap_sol = 12.0
+shadow_killswitch_enabled = true
+
+[execution]
+enabled = true
+mode = "adapter_submit_confirm"
+execution_signer_pubkey = "Signer1111111111111111111111111111111111"
+rpc_http_url = "https://rpc.primary.local"
+submit_adapter_http_url = "https://adapter.primary.local/submit"
+submit_adapter_contract_version = "v1"
+submit_adapter_require_policy_echo = true
+default_route = "fastlane"
+submit_allowed_routes = ["fastlane", "rpc"]
+submit_route_order = ["fastlane", "rpc"]
+submit_route_max_slippage_bps = { fastlane = 50.0, rpc = 40.0 }
+submit_route_tip_lamports = { fastlane = 10000, rpc = 0 }
+submit_route_compute_unit_limit = { fastlane = 300000, rpc = 300000 }
+submit_route_compute_unit_price_micro_lamports = { fastlane = 1500, rpc = 1000 }
+pretrade_max_priority_fee_lamports = 2000
 submit_adapter_auth_token = "token-inline"
 EOF
 }
@@ -680,6 +719,71 @@ assert_contains() {
   fi
 }
 
+extract_field_value() {
+  local text="$1"
+  local key="$2"
+  printf '%s\n' "$text" | awk -F': ' -v key="$key" '
+    $1 == key {
+      print substr($0, index($0, ": ") + 2)
+      exit
+    }
+  '
+}
+
+assert_sha256_field() {
+  local text="$1"
+  local key="$2"
+  local value
+  value="$(extract_field_value "$text" "$key")"
+  if [[ -z "$value" ]]; then
+    echo "expected sha256 field missing: $key" >&2
+    exit 1
+  fi
+  if ! [[ "$value" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "expected $key to be 64-char lowercase hex sha256, got: $value" >&2
+    exit 1
+  fi
+}
+
+assert_field_equals() {
+  local text="$1"
+  local key="$2"
+  local expected="$3"
+  local value
+  value="$(extract_field_value "$text" "$key")"
+  if [[ "$value" != "$expected" ]]; then
+    echo "expected $key to equal '$expected', got '$value'" >&2
+    exit 1
+  fi
+}
+
+assert_field_non_empty() {
+  local text="$1"
+  local key="$2"
+  local value
+  value="$(extract_field_value "$text" "$key")"
+  if [[ -z "$value" ]]; then
+    echo "expected $key to be non-empty" >&2
+    exit 1
+  fi
+}
+
+assert_field_in() {
+  local text="$1"
+  local key="$2"
+  shift 2
+  local value
+  value="$(extract_field_value "$text" "$key")"
+  local expected=""
+  for expected in "$@"; do
+    if [[ "$value" == "$expected" ]]; then
+      return 0
+    fi
+  done
+  echo "expected $key to match one of: $*, got '$value'" >&2
+  exit 1
+}
+
 run_ops_scripts_for_db() {
   local label="$1"
   local db_path="$2"
@@ -718,6 +822,15 @@ run_ops_scripts_for_db() {
   assert_contains "$snapshot_output" "parse_rejected_total: 5"
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
   assert_contains "$snapshot_output" "parse_fallback_by_reason: {\"missing_program_ids_fallback\": 1, \"missing_slot_fallback\": 2}"
+  assert_contains "$snapshot_output" "execution_batch_sample_available: true"
+  assert_contains "$snapshot_output" "submit_dynamic_cu_policy_enabled_by_route: {\"rpc\": 2}"
+  assert_contains "$snapshot_output" "submit_dynamic_cu_hint_api_by_route: {\"rpc\": 1}"
+  assert_contains "$snapshot_output" "submit_dynamic_cu_hint_rpc_by_route: {\"rpc\": 1}"
+  assert_contains "$snapshot_output" "submit_dynamic_cu_price_applied_by_route: {\"rpc\": 1}"
+  assert_contains "$snapshot_output" "submit_dynamic_cu_static_fallback_by_route: {\"rpc\": 1}"
+  assert_contains "$snapshot_output" "submit_dynamic_tip_policy_enabled_by_route: {\"rpc\": 2}"
+  assert_contains "$snapshot_output" "submit_dynamic_tip_applied_by_route: {\"rpc\": 1}"
+  assert_contains "$snapshot_output" "submit_dynamic_tip_static_floor_by_route: {\"rpc\": 1}"
 
   local go_nogo_output
   go_nogo_output="$(
@@ -727,7 +840,33 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "=== Execution Go/No-Go Summary ==="
   assert_contains "$go_nogo_output" "fee_decomposition_verdict: SKIP"
   assert_contains "$go_nogo_output" "route_profile_verdict: SKIP"
+  assert_contains "$go_nogo_output" "primary_route: n/a"
+  assert_contains "$go_nogo_output" "fallback_route: n/a"
+  assert_contains "$go_nogo_output" "confirmed_orders_total: n/a"
   assert_contains "$go_nogo_output" "preflight_verdict: SKIP"
+  assert_contains "$go_nogo_output" "execution_batch_sample_available: true"
+  assert_contains "$go_nogo_output" "submit_attempted_by_route: {\"rpc\": 3}"
+  assert_contains "$go_nogo_output" "submit_dynamic_cu_policy_enabled_by_route: {\"rpc\": 2}"
+  assert_contains "$go_nogo_output" "submit_dynamic_cu_hint_api_by_route: {\"rpc\": 1}"
+  assert_contains "$go_nogo_output" "submit_dynamic_cu_hint_rpc_by_route: {\"rpc\": 1}"
+  assert_contains "$go_nogo_output" "submit_dynamic_tip_static_floor_by_route: {\"rpc\": 1}"
+  assert_contains "$go_nogo_output" "dynamic_cu_hint_api_total: 1"
+  assert_contains "$go_nogo_output" "dynamic_cu_hint_rpc_total: 1"
+  assert_contains "$go_nogo_output" "dynamic_cu_hint_api_configured: false"
+  assert_contains "$go_nogo_output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_field_equals "$go_nogo_output" "dynamic_cu_hint_source_reason_code" "policy_disabled"
+  assert_contains "$go_nogo_output" "dynamic_cu_policy_config_enabled: false"
+  assert_contains "$go_nogo_output" "dynamic_cu_policy_verdict: SKIP"
+  assert_contains "$go_nogo_output" "dynamic_tip_policy_config_enabled: false"
+  assert_contains "$go_nogo_output" "dynamic_tip_policy_verdict: SKIP"
+  assert_contains "$go_nogo_output" "go_nogo_require_jito_rpc_policy: false"
+  assert_contains "$go_nogo_output" "jito_rpc_policy_verdict: SKIP"
+  assert_field_equals "$go_nogo_output" "jito_rpc_policy_reason_code" "gate_disabled"
+  assert_contains "$go_nogo_output" "go_nogo_require_fastlane_disabled: false"
+  assert_contains "$go_nogo_output" "submit_fastlane_enabled: false"
+  assert_contains "$go_nogo_output" "fastlane_feature_flag_verdict: SKIP"
+  assert_field_equals "$go_nogo_output" "fastlane_feature_flag_reason_code" "gate_disabled"
+  assert_contains "$go_nogo_output" "artifacts_written: false"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: HOLD"
 
   echo "[ok] ${label}"
@@ -806,6 +945,11 @@ run_calibration_adapter_mode_route_profile_case() {
   )"
   assert_contains "$go_nogo_output" "fee_decomposition_verdict: WARN"
   assert_contains "$go_nogo_output" "route_profile_verdict: WARN"
+  assert_contains "$go_nogo_output" "primary_route: paper"
+  assert_contains "$go_nogo_output" "fallback_route: <none>"
+  assert_contains "$go_nogo_output" "confirmed_orders_total: 1"
+  assert_contains "$go_nogo_output" "fallback_used_events:"
+  assert_contains "$go_nogo_output" "hint_mismatch_events:"
   assert_contains "$go_nogo_output" "preflight_verdict: SKIP"
   assert_contains "$go_nogo_output" "overall_go_nogo_verdict: NO_GO"
   echo "[ok] calibration adapter-mode route profile verdict"
@@ -822,6 +966,7 @@ run_runtime_snapshot_no_ingestion_case() {
   )"
   assert_contains "$snapshot_output" "=== Ingestion Runtime (latest samples) ==="
   assert_contains "$snapshot_output" "no ingestion metric samples found"
+  assert_contains "$snapshot_output" "execution_batch_sample_available: false"
   echo "[ok] runtime snapshot no-ingestion branch"
 }
 
@@ -839,6 +984,12 @@ run_go_nogo_artifact_export_case() {
   assert_contains "$output" "artifact_snapshot:"
   assert_contains "$output" "artifact_preflight:"
   assert_contains "$output" "artifact_summary:"
+  assert_contains "$output" "artifact_manifest:"
+  assert_contains "$output" "summary_sha256:"
+  assert_sha256_field "$output" "calibration_sha256"
+  assert_sha256_field "$output" "snapshot_sha256"
+  assert_sha256_field "$output" "preflight_sha256"
+  assert_sha256_field "$output" "summary_sha256"
   if ! ls "$artifacts_dir"/execution_go_nogo_summary_*.txt >/dev/null 2>&1; then
     echo "expected go/no-go summary artifact in $artifacts_dir" >&2
     exit 1
@@ -853,6 +1004,10 @@ run_go_nogo_artifact_export_case() {
   fi
   if ! ls "$artifacts_dir"/execution_adapter_preflight_*.txt >/dev/null 2>&1; then
     echo "expected adapter preflight artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_go_nogo_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected go/no-go manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
   echo "[ok] go-no-go artifact export"
@@ -870,8 +1025,584 @@ run_go_nogo_unknown_precedence_case() {
   assert_contains "$output" "fee_decomposition_verdict: UNKNOWN"
   assert_contains "$output" "route_profile_verdict: SKIP"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$output" "overall_go_nogo_reason: unable to classify readiness gate verdicts from tool output"
+  assert_field_equals "$output" "overall_go_nogo_reason_code" "readiness_gate_unknown"
   echo "[ok] go-no-go UNKNOWN precedence"
+}
+
+run_go_nogo_dynamic_hint_source_gate_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL="https://priority-fee.example/api" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$output" "dynamic_cu_policy_config_enabled: true"
+  assert_contains "$output" "dynamic_cu_policy_verdict: PASS"
+  assert_contains "$output" "dynamic_cu_hint_api_configured: true"
+  assert_contains "$output" "dynamic_cu_hint_api_total: 1"
+  assert_contains "$output" "dynamic_cu_hint_rpc_total: 1"
+  assert_contains "$output" "dynamic_cu_hint_source_verdict: PASS"
+  assert_field_equals "$output" "dynamic_cu_hint_source_reason_code" "api_hints_observed"
+  echo "[ok] go-no-go dynamic hint source gate"
+}
+
+run_go_nogo_jito_rpc_policy_gate_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local output
+  output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$output" "jito_rpc_policy_verdict: WARN"
+  assert_field_in "$output" "jito_rpc_policy_reason_code" "target_mismatch" "route_profile_not_pass"
+  assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
+  assert_field_equals "$output" "overall_go_nogo_reason_code" "jito_policy_not_pass"
+  echo "[ok] go-no-go strict jito/rpc policy gate"
+}
+
+run_go_nogo_fastlane_disabled_gate_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local blocked_output
+  blocked_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$blocked_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$blocked_output" "submit_fastlane_enabled: true"
+  assert_contains "$blocked_output" "fastlane_feature_flag_verdict: WARN"
+  assert_field_equals "$blocked_output" "fastlane_feature_flag_reason_code" "fastlane_enabled"
+  assert_contains "$blocked_output" "overall_go_nogo_verdict: NO_GO"
+  assert_field_equals "$blocked_output" "overall_go_nogo_reason_code" "fastlane_policy_not_pass"
+
+  local pass_output
+  pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_contains "$pass_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$pass_output" "submit_fastlane_enabled: false"
+  assert_contains "$pass_output" "fastlane_feature_flag_verdict: PASS"
+  assert_field_equals "$pass_output" "fastlane_feature_flag_reason_code" "fastlane_disabled"
+  assert_contains "$pass_output" "overall_go_nogo_verdict: GO"
+  echo "[ok] go-no-go strict fastlane-disabled gate"
+}
+
+run_windowed_signoff_report_case() {
+  local db_path="$1"
+  local paper_cfg="$2"
+  local adapter_cfg="$3"
+
+  local hold_output=""
+  if hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$paper_cfg" \
+      SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for windowed signoff helper in paper mode" >&2
+    exit 1
+  else
+    local hold_exit_code=$?
+    if [[ "$hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for windowed signoff helper, got $hold_exit_code" >&2
+      echo "$hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$hold_output" "window_24h_fee_decomposition_verdict: SKIP"
+  assert_contains "$hold_output" "window_24h_route_profile_verdict: SKIP"
+  assert_contains "$hold_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
+  assert_contains "$hold_output" "windowed_signoff_require_dynamic_tip_policy_pass: false"
+  assert_contains "$hold_output" "artifacts_written: false"
+  assert_contains "$hold_output" "signoff_verdict: HOLD"
+
+  local hard_block_nogo_output=""
+  if hard_block_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$paper_cfg" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for windowed signoff helper when nested overall go/no-go is not GO" >&2
+    exit 1
+  else
+    local hard_block_nogo_exit_code=$?
+    if [[ "$hard_block_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for windowed signoff helper, got $hard_block_nogo_exit_code" >&2
+      echo "$hard_block_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$hard_block_nogo_output" "window_24h_overall_go_nogo_verdict: NO_GO"
+  assert_contains "$hard_block_nogo_output" "window_24h_fee_decomposition_verdict: PASS"
+  assert_contains "$hard_block_nogo_output" "window_24h_route_profile_verdict: PASS"
+  assert_contains "$hard_block_nogo_output" "window_hard_block_count: 1"
+  assert_contains "$hard_block_nogo_output" "artifacts_written: false"
+  assert_contains "$hard_block_nogo_output" "signoff_verdict: NO_GO"
+
+  local strict_hold_output=""
+  if strict_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$paper_cfg" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for windowed signoff helper when strict jito->rpc gate is enabled in non-adapter mode" >&2
+    exit 1
+  else
+    local strict_hold_exit_code=$?
+    if [[ "$strict_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for strict jito/rpc policy windowed signoff case, got $strict_hold_exit_code" >&2
+      echo "$strict_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$strict_hold_output" "window_24h_overall_go_nogo_verdict: HOLD"
+  assert_contains "$strict_hold_output" "window_24h_fee_decomposition_verdict: PASS"
+  assert_contains "$strict_hold_output" "window_24h_route_profile_verdict: PASS"
+  assert_contains "$strict_hold_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$strict_hold_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$strict_hold_output" "window_24h_jito_rpc_policy_verdict: SKIP"
+  assert_field_equals "$strict_hold_output" "window_24h_jito_rpc_policy_reason_code" "requires_adapter_mode"
+  assert_contains "$strict_hold_output" "window_24h_fastlane_feature_flag_verdict: SKIP"
+  assert_field_equals "$strict_hold_output" "window_24h_fastlane_feature_flag_reason_code" "requires_adapter_mode"
+  assert_contains "$strict_hold_output" "window_hard_block_count: 0"
+  assert_contains "$strict_hold_output" "artifacts_written: false"
+  assert_contains "$strict_hold_output" "signoff_verdict: HOLD"
+
+  local artifacts_dir="$TMP_DIR/windowed-signoff-artifacts"
+  local go_output
+  go_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$adapter_cfg" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$artifacts_dir" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60
+  )"
+  assert_contains "$go_output" "window_24h_fee_decomposition_verdict: PASS"
+  assert_contains "$go_output" "window_24h_route_profile_verdict: PASS"
+  assert_contains "$go_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
+  assert_contains "$go_output" "windowed_signoff_require_dynamic_tip_policy_pass: false"
+  assert_contains "$go_output" "artifacts_written: true"
+  assert_contains "$go_output" "signoff_verdict: GO"
+  assert_contains "$go_output" "artifact_summary:"
+  assert_contains "$go_output" "artifact_manifest:"
+  assert_contains "$go_output" "window_24h_capture_path:"
+  assert_contains "$go_output" "window_24h_capture_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_artifact_manifest:"
+  assert_contains "$go_output" "window_24h_go_nogo_calibration_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_snapshot_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_preflight_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_summary_sha256:"
+  assert_contains "$go_output" "window_24h_go_nogo_artifacts_written: true"
+  assert_sha256_field "$go_output" "summary_sha256"
+  assert_sha256_field "$go_output" "window_24h_capture_sha256"
+  assert_sha256_field "$go_output" "window_24h_go_nogo_calibration_sha256"
+  assert_sha256_field "$go_output" "window_24h_go_nogo_snapshot_sha256"
+  assert_sha256_field "$go_output" "window_24h_go_nogo_preflight_sha256"
+  assert_sha256_field "$go_output" "window_24h_go_nogo_summary_sha256"
+  if ! ls "$artifacts_dir"/execution_windowed_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected windowed signoff summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_windowed_signoff_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected windowed signoff manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_24h/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
+    echo "expected captured go/no-go artifact for 24h window in $artifacts_dir/window_24h" >&2
+    exit 1
+  fi
+
+  local dynamic_fake_bin_dir="$TMP_DIR/fake-bin-dynamic-hint-warn"
+  mkdir -p "$dynamic_fake_bin_dir"
+  cp "$FAKE_BIN_DIR/journalctl" "$dynamic_fake_bin_dir/journalctl"
+  python3 - "$dynamic_fake_bin_dir/journalctl" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = text.replace('"submit_dynamic_cu_hint_api_by_route":{"rpc":1},', "")
+path.write_text(text)
+PY
+  chmod +x "$dynamic_fake_bin_dir/journalctl"
+
+  local dynamic_gate_hold_output=""
+  if dynamic_gate_hold_output="$(
+    PATH="$dynamic_fake_bin_dir:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$adapter_cfg" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL="https://priority-fee.example/api" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for windowed signoff helper when dynamic hint source gate is required and not PASS" >&2
+    exit 1
+  else
+    local dynamic_gate_hold_exit_code=$?
+    if [[ "$dynamic_gate_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for required dynamic hint source gate, got $dynamic_gate_hold_exit_code" >&2
+      echo "$dynamic_gate_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$dynamic_gate_hold_output" "windowed_signoff_require_dynamic_hint_source_pass: true"
+  assert_contains "$dynamic_gate_hold_output" "window_24h_dynamic_cu_policy_config_enabled: true"
+  assert_contains "$dynamic_gate_hold_output" "window_24h_dynamic_cu_hint_source_verdict: WARN"
+  assert_contains "$dynamic_gate_hold_output" "signoff_verdict: HOLD"
+
+  local tip_fake_bin_dir="$TMP_DIR/fake-bin-dynamic-tip-warn"
+  mkdir -p "$tip_fake_bin_dir"
+  cp "$FAKE_BIN_DIR/journalctl" "$tip_fake_bin_dir/journalctl"
+  python3 - "$tip_fake_bin_dir/journalctl" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = text.replace('"submit_dynamic_tip_applied_by_route":{"rpc":1},', "")
+path.write_text(text)
+PY
+  chmod +x "$tip_fake_bin_dir/journalctl"
+
+  local tip_gate_hold_output=""
+  if tip_gate_hold_output="$(
+    PATH="$tip_fake_bin_dir:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$adapter_cfg" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED="true" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="true" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for windowed signoff helper when dynamic tip gate is required and not PASS" >&2
+    exit 1
+  else
+    local tip_gate_hold_exit_code=$?
+    if [[ "$tip_gate_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for required dynamic tip gate, got $tip_gate_hold_exit_code" >&2
+      echo "$tip_gate_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$tip_gate_hold_output" "windowed_signoff_require_dynamic_tip_policy_pass: true"
+  assert_contains "$tip_gate_hold_output" "window_24h_dynamic_tip_policy_config_enabled: true"
+  assert_contains "$tip_gate_hold_output" "window_24h_dynamic_tip_policy_verdict: WARN"
+  assert_contains "$tip_gate_hold_output" "signoff_verdict: HOLD"
+  echo "[ok] execution windowed signoff helper"
+}
+
+run_execution_route_fee_signoff_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local strict_config_path="$3"
+  local hold_output
+  if hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected HOLD exit for route/fee signoff helper on paper config" >&2
+    exit 1
+  else
+    hold_status=$?
+  fi
+  if [[ "$hold_status" -ne 2 ]]; then
+    echo "expected HOLD exit code 2 from route/fee signoff helper, got $hold_status" >&2
+    exit 1
+  fi
+  assert_contains "$hold_output" "=== Execution Route/Fee Signoff Summary ==="
+  assert_contains "$hold_output" "window_24h_overall_go_nogo_verdict: HOLD"
+  assert_field_equals "$hold_output" "window_24h_overall_go_nogo_reason_code" "readiness_gate_skip"
+  assert_contains "$hold_output" "window_24h_route_profile_verdict: SKIP"
+  assert_contains "$hold_output" "window_24h_fee_decomposition_verdict: SKIP"
+  assert_contains "$hold_output" "window_24h_route_verdict_parity: true"
+  assert_contains "$hold_output" "window_24h_fee_verdict_parity: true"
+  assert_contains "$hold_output" "go_nogo_require_jito_rpc_policy: false"
+  assert_contains "$hold_output" "go_nogo_require_fastlane_disabled: false"
+  assert_contains "$hold_output" "signoff_verdict: HOLD"
+  assert_contains "$hold_output" "artifacts_written: false"
+
+  local artifacts_dir="$TMP_DIR/route-fee-signoff-artifacts"
+  local export_output
+  if export_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$artifacts_dir" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "1,24" "60" 2>&1
+  )"; then
+    echo "expected HOLD exit for route/fee signoff helper export case on paper config" >&2
+    exit 1
+  else
+    export_status=$?
+  fi
+  if [[ "$export_status" -ne 2 ]]; then
+    echo "expected HOLD exit code 2 from route/fee signoff helper export case, got $export_status" >&2
+    exit 1
+  fi
+  assert_contains "$export_output" "window_count: 2"
+  assert_contains "$export_output" "artifacts_written: true"
+  assert_contains "$export_output" "artifact_summary:"
+  assert_contains "$export_output" "artifact_manifest:"
+  assert_contains "$export_output" "window_1h_go_nogo_capture_path:"
+  assert_contains "$export_output" "window_1h_calibration_capture_path:"
+  assert_contains "$export_output" "window_24h_go_nogo_capture_path:"
+  assert_contains "$export_output" "window_24h_calibration_capture_path:"
+  assert_sha256_field "$export_output" "summary_sha256"
+  assert_sha256_field "$export_output" "window_1h_go_nogo_capture_sha256"
+  assert_sha256_field "$export_output" "window_1h_calibration_capture_sha256"
+  assert_sha256_field "$export_output" "window_24h_go_nogo_capture_sha256"
+  assert_sha256_field "$export_output" "window_24h_calibration_capture_sha256"
+  if ! ls "$artifacts_dir"/execution_route_fee_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected route/fee signoff summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_route_fee_signoff_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected route/fee signoff manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_1h/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
+    echo "expected 1h go-no-go capture artifact in $artifacts_dir/window_1h" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_1h/execution_fee_calibration_captured_*.txt >/dev/null 2>&1; then
+    echo "expected 1h calibration capture artifact in $artifacts_dir/window_1h" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_24h/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
+    echo "expected 24h go-no-go capture artifact in $artifacts_dir/window_24h" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/window_24h/execution_fee_calibration_captured_*.txt >/dev/null 2>&1; then
+    echo "expected 24h calibration capture artifact in $artifacts_dir/window_24h" >&2
+    exit 1
+  fi
+  manifest_path="$(extract_field_value "$export_output" "artifact_manifest")"
+  if [[ -z "$manifest_path" || "$manifest_path" == "n/a" ]]; then
+    echo "expected route/fee signoff manifest path in export output" >&2
+    exit 1
+  fi
+  if ! grep -Fq "window_1h/execution_go_nogo_captured_" "$manifest_path"; then
+    echo "expected window-qualified 1h go-no-go capture entry in manifest $manifest_path" >&2
+    exit 1
+  fi
+  if ! grep -Fq "window_24h/execution_go_nogo_captured_" "$manifest_path"; then
+    echo "expected window-qualified 24h go-no-go capture entry in manifest $manifest_path" >&2
+    exit 1
+  fi
+  if ! grep -Fq "window_1h/execution_fee_calibration_captured_" "$manifest_path"; then
+    echo "expected window-qualified 1h calibration capture entry in manifest $manifest_path" >&2
+    exit 1
+  fi
+  if ! grep -Fq "window_24h/execution_fee_calibration_captured_" "$manifest_path"; then
+    echo "expected window-qualified 24h calibration capture entry in manifest $manifest_path" >&2
+    exit 1
+  fi
+
+  local invalid_output
+  if invalid_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24,invalid" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper invalid windows" >&2
+    exit 1
+  else
+    invalid_status=$?
+  fi
+  if [[ "$invalid_status" -ne 3 ]]; then
+    echo "expected NO_GO exit code 3 from route/fee signoff helper invalid windows, got $invalid_status" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_output" "signoff_verdict: NO_GO"
+  assert_contains "$invalid_output" "input_error: window token must be an integer (got: invalid)"
+
+  local override_without_test_mode_output
+  if override_without_test_mode_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper when test override is set without GO_NOGO_TEST_MODE=true" >&2
+    exit 1
+  else
+    override_without_test_mode_status=$?
+  fi
+  if [[ "$override_without_test_mode_status" -ne 3 ]]; then
+    echo "expected NO_GO exit code 3 from route/fee signoff helper override-without-test-mode case, got $override_without_test_mode_status" >&2
+    exit 1
+  fi
+  assert_contains "$override_without_test_mode_output" "signoff_verdict: NO_GO"
+  assert_contains "$override_without_test_mode_output" "input_error: route fee signoff test verdict override requires GO_NOGO_TEST_MODE=true"
+
+  local strict_nogo_output
+  if strict_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper when strict jito/rpc policy is enforced and fails" >&2
+    exit 1
+  else
+    strict_nogo_status=$?
+  fi
+  if [[ "$strict_nogo_status" -ne 3 ]]; then
+    echo "expected NO_GO exit code 3 for strict jito/rpc policy route/fee signoff case, got $strict_nogo_status" >&2
+    exit 1
+  fi
+  assert_contains "$strict_nogo_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$strict_nogo_output" "window_24h_overall_go_nogo_verdict: NO_GO"
+  assert_field_equals "$strict_nogo_output" "window_24h_overall_go_nogo_reason_code" "jito_policy_not_pass"
+  assert_contains "$strict_nogo_output" "signoff_verdict: NO_GO"
+  assert_field_equals "$strict_nogo_output" "signoff_reason_code" "window_hard_block"
+
+  local final_hold_output=""
+  if final_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-hold" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected HOLD exit for final route/fee package helper on paper config" >&2
+    exit 1
+  else
+    local final_hold_status=$?
+    if [[ "$final_hold_status" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 from final route/fee package helper, got $final_hold_status" >&2
+      echo "$final_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_hold_output" "=== Execution Route/Fee Final Evidence Package ==="
+  assert_contains "$final_hold_output" "signoff_verdict: HOLD"
+  assert_contains "$final_hold_output" "final_route_fee_package_verdict: HOLD"
+  assert_contains "$final_hold_output" "signoff_artifacts_written: true"
+  assert_sha256_field "$final_hold_output" "summary_sha256"
+  assert_sha256_field "$final_hold_output" "signoff_capture_sha256"
+  assert_sha256_field "$final_hold_output" "manifest_sha256"
+
+  local final_go_output
+  final_go_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-go" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24" "60"
+  )"
+  assert_contains "$final_go_output" "signoff_verdict: GO"
+  assert_field_equals "$final_go_output" "signoff_reason_code" "test_override"
+  assert_contains "$final_go_output" "final_route_fee_package_verdict: GO"
+  assert_field_equals "$final_go_output" "final_route_fee_package_reason_code" "test_override"
+
+  local final_nogo_output=""
+  if final_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-nogo" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24,invalid" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for final route/fee package helper invalid windows" >&2
+    exit 1
+  else
+    local final_nogo_status=$?
+    if [[ "$final_nogo_status" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 from final route/fee package helper invalid windows, got $final_nogo_status" >&2
+      echo "$final_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_nogo_output" "signoff_verdict: NO_GO"
+  assert_field_equals "$final_nogo_output" "signoff_reason_code" "input_error"
+  assert_contains "$final_nogo_output" "final_route_fee_package_verdict: NO_GO"
+  assert_field_equals "$final_nogo_output" "final_route_fee_package_reason_code" "input_error"
+
+  echo "[ok] execution route/fee signoff helper"
 }
 
 run_go_nogo_preflight_fail_case() {
@@ -885,7 +1616,7 @@ run_go_nogo_preflight_fail_case() {
   )"
   assert_contains "$output" "preflight_verdict: FAIL"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
-  assert_contains "$output" "overall_go_nogo_reason: adapter preflight failed:"
+  assert_field_equals "$output" "overall_go_nogo_reason_code" "preflight_fail"
   echo "[ok] go-no-go preflight fail gate"
 }
 
@@ -895,6 +1626,7 @@ run_adapter_preflight_case() {
   local fail_cfg="$TMP_DIR/adapter-preflight-fail.toml"
   local missing_map_cfg="$TMP_DIR/adapter-preflight-missing-map.toml"
   local invalid_route_order_cfg="$TMP_DIR/adapter-preflight-invalid-route-order.toml"
+  local fastlane_cfg="$TMP_DIR/adapter-preflight-fastlane.toml"
   local missing_secret_cfg="$TMP_DIR/adapter-preflight-missing-secret.toml"
   local tip_above_max_cfg="$TMP_DIR/adapter-preflight-tip-above-max.toml"
   local default_cu_limit_too_low_cfg="$TMP_DIR/adapter-preflight-default-cu-limit-too-low.toml"
@@ -904,6 +1636,8 @@ run_adapter_preflight_case() {
   local invalid_route_order_output
   local missing_secret_output
   local env_override_output
+  local fastlane_disabled_output
+  local fastlane_enabled_output
   local tip_above_max_output
   local default_cu_limit_too_low_output
   local route_price_exceeds_pretrade_output
@@ -966,6 +1700,25 @@ run_adapter_preflight_case() {
   fi
   assert_contains "$invalid_route_order_output" "preflight_verdict: FAIL"
   assert_contains "$invalid_route_order_output" "execution.submit_route_order route=rpc must be present in execution.submit_allowed_routes"
+
+  write_config_adapter_preflight_fastlane_routes "$fastlane_cfg" "$db_path"
+  if fastlane_disabled_output="$(
+    CONFIG_PATH="$fastlane_cfg" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure when fastlane route is configured while submit_fastlane_enabled=false" >&2
+    exit 1
+  fi
+  assert_contains "$fastlane_disabled_output" "preflight_verdict: FAIL"
+  assert_contains "$fastlane_disabled_output" "execution.submit_fastlane_enabled must be true"
+
+  fastlane_enabled_output="$(
+    CONFIG_PATH="$fastlane_cfg" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh"
+  )"
+  assert_contains "$fastlane_enabled_output" "preflight_verdict: PASS"
+  assert_contains "$fastlane_enabled_output" "submit_fastlane_enabled: true"
 
   write_config_adapter_preflight_missing_secret_file "$missing_secret_cfg" "$db_path"
   if missing_secret_output="$(
@@ -1061,9 +1814,17 @@ run_adapter_secret_rotation_report_case() {
   )"
   assert_contains "$pass_output" "=== Adapter Secret Rotation Report ==="
   assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$pass_output" "artifacts_written: true"
   assert_contains "$pass_output" "artifact_report:"
+  assert_contains "$pass_output" "artifact_manifest:"
+  assert_contains "$pass_output" "report_sha256:"
+  assert_sha256_field "$pass_output" "report_sha256"
   if ! ls "$artifacts_dir"/adapter_secret_rotation_report_*.txt >/dev/null 2>&1; then
     echo "expected adapter secret rotation artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/adapter_secret_rotation_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected adapter secret rotation manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
 
@@ -1079,6 +1840,7 @@ run_adapter_secret_rotation_report_case() {
       bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh"
   )"
   assert_contains "$duplicate_key_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$duplicate_key_output" "artifacts_written: false"
 
   local quoted_hash_env_path="$TMP_DIR/adapter-rotation-quoted-hash.env"
   cp "$env_path" "$quoted_hash_env_path"
@@ -1234,12 +1996,69 @@ run_devnet_rehearsal_case() {
   assert_contains "$output" "=== Execution Devnet Rehearsal ==="
   assert_contains "$output" "preflight_verdict: PASS"
   assert_contains "$output" "overall_go_nogo_verdict: GO"
+  assert_contains "$output" "dynamic_cu_policy_verdict: SKIP"
+  assert_contains "$output" "dynamic_tip_policy_verdict: SKIP"
+  assert_contains "$output" "dynamic_cu_hint_api_total: 1"
+  assert_contains "$output" "dynamic_cu_hint_rpc_total: 1"
+  assert_contains "$output" "dynamic_cu_hint_api_configured: false"
+  assert_contains "$output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_field_equals "$output" "dynamic_cu_hint_source_reason_code" "policy_disabled"
+  assert_contains "$output" "go_nogo_require_jito_rpc_policy: false"
+  assert_contains "$output" "jito_rpc_policy_verdict: SKIP"
+  assert_field_equals "$output" "jito_rpc_policy_reason_code" "gate_disabled"
+  assert_contains "$output" "go_nogo_require_fastlane_disabled: false"
+  assert_contains "$output" "submit_fastlane_enabled: false"
+  assert_contains "$output" "fastlane_feature_flag_verdict: SKIP"
+  assert_field_equals "$output" "fastlane_feature_flag_reason_code" "gate_disabled"
+  assert_contains "$output" "windowed_signoff_required: false"
+  assert_contains "$output" "windowed_signoff_windows_csv: 1,6,24"
+  assert_contains "$output" "windowed_signoff_require_dynamic_hint_source_pass: false"
+  assert_contains "$output" "windowed_signoff_require_dynamic_tip_policy_pass: false"
+  assert_contains "$output" "windowed_signoff_exit_code: 0"
+  assert_contains "$output" "windowed_signoff_verdict: GO"
+  assert_contains "$output" "windowed_signoff_artifact_manifest:"
+  assert_contains "$output" "windowed_signoff_summary_sha256:"
+  assert_contains "$output" "route_fee_signoff_required: false"
+  assert_contains "$output" "route_fee_signoff_windows_csv: 1,6,24"
+  assert_contains "$output" "route_fee_signoff_verdict:"
+  assert_field_non_empty "$output" "route_fee_signoff_reason_code"
+  assert_contains "$output" "route_fee_signoff_artifact_manifest:"
+  assert_contains "$output" "route_fee_signoff_summary_sha256:"
+  assert_contains "$output" "route_fee_signoff_artifacts_written: true"
+  assert_contains "$output" "primary_route:"
+  assert_contains "$output" "fallback_route:"
+  assert_contains "$output" "confirmed_orders_total:"
   assert_contains "$output" "tests_run: false"
+  assert_contains "$output" "go_nogo_artifacts_written: true"
+  assert_contains "$output" "windowed_signoff_artifacts_written: true"
+  assert_contains "$output" "artifacts_written: true"
   assert_contains "$output" "devnet_rehearsal_verdict: GO"
   assert_contains "$output" "artifact_summary:"
   assert_contains "$output" "artifact_preflight:"
   assert_contains "$output" "artifact_go_nogo:"
+  assert_contains "$output" "artifact_windowed_signoff:"
+  assert_contains "$output" "artifact_route_fee_signoff:"
   assert_contains "$output" "artifact_tests:"
+  assert_contains "$output" "artifact_manifest:"
+  assert_contains "$output" "summary_sha256:"
+  assert_sha256_field "$output" "summary_sha256"
+  assert_sha256_field "$output" "preflight_sha256"
+  assert_sha256_field "$output" "go_nogo_sha256"
+  assert_sha256_field "$output" "windowed_signoff_sha256"
+  assert_sha256_field "$output" "route_fee_signoff_sha256"
+  assert_sha256_field "$output" "tests_sha256"
+  assert_sha256_field "$output" "go_nogo_nested_capture_sha256"
+  assert_sha256_field "$output" "windowed_signoff_nested_capture_sha256"
+  assert_sha256_field "$output" "route_fee_signoff_nested_capture_sha256"
+  assert_sha256_field "$output" "go_nogo_summary_sha256"
+  assert_sha256_field "$output" "windowed_signoff_summary_sha256"
+  assert_sha256_field "$output" "route_fee_signoff_summary_sha256"
+  assert_contains "$output" "go_nogo_artifact_manifest:"
+  assert_contains "$output" "go_nogo_summary_sha256:"
+  assert_contains "$output" "windowed_signoff_artifact_manifest:"
+  assert_contains "$output" "windowed_signoff_summary_sha256:"
+  assert_contains "$output" "route_fee_signoff_artifact_manifest:"
+  assert_contains "$output" "route_fee_signoff_summary_sha256:"
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_summary_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1252,14 +2071,169 @@ run_devnet_rehearsal_case() {
     echo "expected devnet rehearsal go/no-go artifact in $artifacts_dir" >&2
     exit 1
   fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_windowed_signoff_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal windowed signoff artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_route_fee_signoff_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal route/fee signoff artifact in $artifacts_dir" >&2
+    exit 1
+  fi
   if ! ls "$artifacts_dir"/execution_devnet_rehearsal_tests_*.txt >/dev/null 2>&1; then
     echo "expected devnet rehearsal tests artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_devnet_rehearsal_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected devnet rehearsal manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
   if ! ls "$artifacts_dir"/go_nogo/execution_go_nogo_captured_*.txt >/dev/null 2>&1; then
     echo "expected nested go/no-go capture artifact in $artifacts_dir/go_nogo" >&2
     exit 1
   fi
+  if ! ls "$artifacts_dir"/windowed_signoff/execution_windowed_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested windowed signoff summary artifact in $artifacts_dir/windowed_signoff" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/windowed_signoff/execution_windowed_signoff_captured_*.txt >/dev/null 2>&1; then
+    echo "expected nested windowed signoff capture artifact in $artifacts_dir/windowed_signoff" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/route_fee_signoff/execution_route_fee_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested route/fee signoff summary artifact in $artifacts_dir/route_fee_signoff" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/route_fee_signoff/execution_route_fee_signoff_captured_*.txt >/dev/null 2>&1; then
+    echo "expected nested route/fee signoff capture artifact in $artifacts_dir/route_fee_signoff" >&2
+    exit 1
+  fi
+
+  local required_nogo_output=""
+  if required_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      WINDOWED_SIGNOFF_REQUIRED="true" WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="true" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for devnet rehearsal helper when required windowed signoff returns NO_GO" >&2
+    exit 1
+  else
+    local required_nogo_exit_code=$?
+    if [[ "$required_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required windowed signoff branch, got $required_nogo_exit_code" >&2
+      echo "$required_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$required_nogo_output" "windowed_signoff_required: true"
+  assert_contains "$required_nogo_output" "windowed_signoff_require_dynamic_hint_source_pass: true"
+  assert_contains "$required_nogo_output" "windowed_signoff_require_dynamic_tip_policy_pass: true"
+  assert_contains "$required_nogo_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$required_nogo_output" "jito_rpc_policy_verdict: WARN"
+  assert_field_in "$required_nogo_output" "jito_rpc_policy_reason_code" "target_mismatch" "route_profile_not_pass"
+  assert_contains "$required_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$required_nogo_output" "submit_fastlane_enabled: false"
+  assert_contains "$required_nogo_output" "fastlane_feature_flag_verdict: PASS"
+  assert_field_equals "$required_nogo_output" "fastlane_feature_flag_reason_code" "fastlane_disabled"
+  assert_contains "$required_nogo_output" "windowed_signoff_verdict: NO_GO"
+  assert_contains "$required_nogo_output" "artifacts_written: false"
+  assert_contains "$required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+
+  local fastlane_strict_nogo_output=""
+  if fastlane_strict_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for devnet rehearsal helper when strict fastlane-disabled gate is violated" >&2
+    exit 1
+  else
+    local fastlane_strict_nogo_exit_code=$?
+    if [[ "$fastlane_strict_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for strict fastlane-disabled rehearsal branch, got $fastlane_strict_nogo_exit_code" >&2
+      echo "$fastlane_strict_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
+  assert_field_equals "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason_code" "fastlane_enabled"
+  assert_contains "$fastlane_strict_nogo_output" "overall_go_nogo_verdict: NO_GO"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_field_equals "$fastlane_strict_nogo_output" "devnet_rehearsal_reason_code" "go_nogo_no_go"
+
+  local route_fee_required_nogo_output=""
+  if route_fee_required_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" ROUTE_FEE_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for devnet rehearsal helper when required route/fee signoff returns NO_GO" >&2
+    exit 1
+  else
+    local route_fee_required_nogo_exit_code=$?
+    if [[ "$route_fee_required_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required route/fee signoff branch, got $route_fee_required_nogo_exit_code" >&2
+      echo "$route_fee_required_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_verdict: NO_GO"
+  assert_field_equals "$route_fee_required_nogo_output" "route_fee_signoff_reason_code" "input_error"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_windows_csv: 1,invalid"
+  assert_contains "$route_fee_required_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_field_equals "$route_fee_required_nogo_output" "devnet_rehearsal_reason_code" "route_fee_signoff_no_go"
+
+  local route_fee_required_hold_output=""
+  if route_fee_required_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="HOLD" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for devnet rehearsal helper when required route/fee signoff returns HOLD" >&2
+    exit 1
+  else
+    local route_fee_required_hold_exit_code=$?
+    if [[ "$route_fee_required_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for required route/fee signoff HOLD branch, got $route_fee_required_hold_exit_code" >&2
+      echo "$route_fee_required_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_verdict: HOLD"
+  assert_field_equals "$route_fee_required_hold_output" "route_fee_signoff_reason_code" "test_override"
+  assert_contains "$route_fee_required_hold_output" "devnet_rehearsal_verdict: HOLD"
+  assert_field_equals "$route_fee_required_hold_output" "devnet_rehearsal_reason_code" "route_fee_signoff_hold"
+
+  local route_fee_required_go_output
+  route_fee_required_go_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
+  )"
+  assert_contains "$route_fee_required_go_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_go_output" "route_fee_signoff_verdict: GO"
+  assert_field_equals "$route_fee_required_go_output" "route_fee_signoff_reason_code" "test_override"
+  assert_contains "$route_fee_required_go_output" "devnet_rehearsal_verdict: GO"
+  assert_field_equals "$route_fee_required_go_output" "devnet_rehearsal_reason_code" "test_mode_override"
   echo "[ok] execution devnet rehearsal helper"
 }
 
@@ -1299,9 +2273,77 @@ run_adapter_rollout_evidence_case() {
   )"
   assert_contains "$pass_output" "=== Adapter Rollout Evidence Summary ==="
   assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$pass_output" "rotation_artifact_manifest:"
+  assert_contains "$pass_output" "rotation_report_sha256:"
+  assert_contains "$pass_output" "rotation_artifacts_written: true"
   assert_contains "$pass_output" "devnet_rehearsal_verdict: GO"
+  assert_contains "$pass_output" "dynamic_cu_policy_verdict: SKIP"
+  assert_contains "$pass_output" "dynamic_tip_policy_verdict: SKIP"
+  assert_contains "$pass_output" "dynamic_cu_hint_api_total: 1"
+  assert_contains "$pass_output" "dynamic_cu_hint_rpc_total: 1"
+  assert_contains "$pass_output" "dynamic_cu_hint_api_configured: false"
+  assert_contains "$pass_output" "dynamic_cu_hint_source_verdict: SKIP"
+  assert_field_equals "$pass_output" "dynamic_cu_hint_source_reason_code" "policy_disabled"
+  assert_contains "$pass_output" "go_nogo_require_jito_rpc_policy: false"
+  assert_contains "$pass_output" "jito_rpc_policy_verdict: SKIP"
+  assert_field_equals "$pass_output" "jito_rpc_policy_reason_code" "gate_disabled"
+  assert_contains "$pass_output" "go_nogo_require_fastlane_disabled: false"
+  assert_contains "$pass_output" "submit_fastlane_enabled: false"
+  assert_contains "$pass_output" "fastlane_feature_flag_verdict: SKIP"
+  assert_field_equals "$pass_output" "fastlane_feature_flag_reason_code" "gate_disabled"
+  assert_contains "$pass_output" "route_fee_signoff_required: false"
+  assert_contains "$pass_output" "route_fee_signoff_verdict:"
+  assert_field_non_empty "$pass_output" "route_fee_signoff_reason_code"
+  assert_contains "$pass_output" "route_fee_signoff_windows_csv: 1,6,24"
+  assert_contains "$pass_output" "route_fee_signoff_artifact_manifest:"
+  assert_contains "$pass_output" "route_fee_signoff_summary_sha256:"
+  assert_contains "$pass_output" "route_fee_signoff_artifacts_written: true"
+  assert_contains "$pass_output" "route_fee_window_count:"
+  assert_contains "$pass_output" "windowed_signoff_required: false"
+  assert_contains "$pass_output" "windowed_signoff_windows_csv: 1,6,24"
+  assert_contains "$pass_output" "windowed_signoff_require_dynamic_hint_source_pass: false"
+  assert_contains "$pass_output" "windowed_signoff_require_dynamic_tip_policy_pass: false"
+  assert_contains "$pass_output" "windowed_signoff_verdict: GO"
+  assert_contains "$pass_output" "windowed_signoff_artifact_manifest:"
+  assert_contains "$pass_output" "windowed_signoff_summary_sha256:"
+  assert_contains "$pass_output" "rehearsal_route_fee_signoff_required: false"
+  assert_contains "$pass_output" "rehearsal_route_fee_signoff_windows_csv: 1,6,24"
+  assert_contains "$pass_output" "rehearsal_route_fee_signoff_verdict:"
+  assert_field_non_empty "$pass_output" "rehearsal_route_fee_signoff_reason_code"
+  assert_contains "$pass_output" "rehearsal_route_fee_signoff_artifact_manifest:"
+  assert_contains "$pass_output" "rehearsal_route_fee_signoff_summary_sha256:"
+  assert_contains "$pass_output" "rehearsal_route_fee_signoff_artifacts_written: true"
+  assert_contains "$pass_output" "primary_route:"
+  assert_contains "$pass_output" "fallback_route:"
+  assert_contains "$pass_output" "confirmed_orders_total:"
+  assert_contains "$pass_output" "rehearsal_artifact_manifest:"
+  assert_contains "$pass_output" "rehearsal_summary_sha256:"
+  assert_contains "$pass_output" "go_nogo_artifacts_written: true"
+  assert_contains "$pass_output" "windowed_signoff_artifacts_written: true"
+  assert_contains "$pass_output" "rehearsal_artifacts_written: true"
+  assert_contains "$pass_output" "artifacts_written: true"
   assert_contains "$pass_output" "adapter_rollout_verdict: GO"
   assert_contains "$pass_output" "artifact_summary:"
+  assert_contains "$pass_output" "artifact_route_fee_signoff_capture:"
+  assert_contains "$pass_output" "artifact_manifest:"
+  assert_contains "$pass_output" "summary_sha256:"
+  assert_sha256_field "$pass_output" "summary_sha256"
+  assert_sha256_field "$pass_output" "rotation_capture_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_capture_sha256"
+  assert_sha256_field "$pass_output" "route_fee_signoff_capture_sha256"
+  assert_sha256_field "$pass_output" "rotation_report_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_summary_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_preflight_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_go_nogo_sha256"
+  assert_sha256_field "$pass_output" "rehearsal_tests_sha256"
+  assert_sha256_field "$pass_output" "route_fee_signoff_summary_sha256"
+  assert_sha256_field "$pass_output" "windowed_signoff_summary_sha256"
+  assert_sha256_field "$pass_output" "go_nogo_calibration_sha256"
+  assert_sha256_field "$pass_output" "go_nogo_snapshot_sha256"
+  assert_sha256_field "$pass_output" "go_nogo_preflight_sha256"
+  assert_sha256_field "$pass_output" "go_nogo_summary_sha256"
+  assert_contains "$pass_output" "go_nogo_artifact_manifest:"
+  assert_contains "$pass_output" "go_nogo_summary_sha256:"
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
     echo "expected adapter rollout summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1314,6 +2356,350 @@ run_adapter_rollout_evidence_case() {
     echo "expected adapter rollout rehearsal capture artifact in $artifacts_dir" >&2
     exit 1
   fi
+  if ! ls "$artifacts_dir"/execution_route_fee_signoff_captured_*.txt >/dev/null 2>&1; then
+    echo "expected adapter rollout route/fee signoff capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/rehearsal/windowed_signoff/execution_windowed_signoff_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested windowed signoff summary artifact in $artifacts_dir/rehearsal/windowed_signoff" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/adapter_rollout_evidence_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected adapter rollout manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+
+  local final_artifacts_dir="$TMP_DIR/adapter-rollout-final-package"
+  local final_output
+  final_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$final_artifacts_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" 24 60
+  )"
+  assert_contains "$final_output" "=== Adapter Rollout Final Evidence Package ==="
+  assert_field_equals "$final_output" "rollout_verdict" "GO"
+  assert_field_equals "$final_output" "rollout_reason_code" "gates_pass"
+  assert_field_equals "$final_output" "final_rollout_package_verdict" "GO"
+  assert_field_equals "$final_output" "final_rollout_package_reason_code" "gates_pass"
+  assert_contains "$final_output" "artifacts_written: true"
+  assert_contains "$final_output" "rollout_artifacts_written: true"
+  assert_field_non_empty "$final_output" "rollout_artifact_summary"
+  assert_field_non_empty "$final_output" "rollout_artifact_manifest"
+  assert_sha256_field "$final_output" "summary_sha256"
+  assert_sha256_field "$final_output" "rollout_capture_sha256"
+  assert_sha256_field "$final_output" "manifest_sha256"
+  if ! ls "$final_artifacts_dir"/adapter_rollout_final_evidence_summary_*.txt >/dev/null 2>&1; then
+    echo "expected final rollout package summary artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/adapter_rollout_final_evidence_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected final rollout package manifest artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/adapter_rollout_evidence_captured_*.txt >/dev/null 2>&1; then
+    echo "expected final rollout package captured rollout artifact in $final_artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$final_artifacts_dir"/rollout/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
+    echo "expected nested rollout summary artifact in $final_artifacts_dir/rollout" >&2
+    exit 1
+  fi
+
+  local final_nested_isolation_output=""
+  if final_nested_isolation_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/adapter-rollout-final-package-isolation" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for final rollout package helper when nested rehearsal route/fee signoff is invalid" >&2
+    exit 1
+  else
+    local final_nested_isolation_exit_code=$?
+    if [[ "$final_nested_isolation_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for final rollout package nested override isolation, got $final_nested_isolation_exit_code" >&2
+      echo "$final_nested_isolation_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$final_nested_isolation_output" "rollout_verdict" "NO_GO"
+  assert_field_equals "$final_nested_isolation_output" "rollout_reason_code" "rehearsal_no_go"
+  assert_field_equals "$final_nested_isolation_output" "final_rollout_package_verdict" "NO_GO"
+  assert_field_equals "$final_nested_isolation_output" "final_rollout_package_reason_code" "rehearsal_no_go"
+
+  local final_hold_output=""
+  if final_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/adapter-rollout-final-package-hold" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="HOLD" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for final rollout package helper when required top-level route/fee signoff is HOLD" >&2
+    exit 1
+  else
+    local final_hold_exit_code=$?
+    if [[ "$final_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for final rollout package helper, got $final_hold_exit_code" >&2
+      echo "$final_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$final_hold_output" "rollout_verdict" "HOLD"
+  assert_field_equals "$final_hold_output" "rollout_reason_code" "route_fee_signoff_hold"
+  assert_field_equals "$final_hold_output" "final_rollout_package_verdict" "HOLD"
+  assert_field_equals "$final_hold_output" "final_rollout_package_reason_code" "route_fee_signoff_hold"
+
+  local windowed_nogo_output=""
+  if windowed_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="true" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      WINDOWED_SIGNOFF_REQUIRED="true" \
+      WINDOWED_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="true" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="true" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when required windowed signoff returns NO_GO" >&2
+    exit 1
+  else
+    local windowed_nogo_exit_code=$?
+    if [[ "$windowed_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required windowed signoff rollout branch, got $windowed_nogo_exit_code" >&2
+      echo "$windowed_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$windowed_nogo_output" "windowed_signoff_required: true"
+  assert_contains "$windowed_nogo_output" "windowed_signoff_require_dynamic_hint_source_pass: true"
+  assert_contains "$windowed_nogo_output" "windowed_signoff_require_dynamic_tip_policy_pass: true"
+  assert_contains "$windowed_nogo_output" "go_nogo_require_jito_rpc_policy: true"
+  assert_contains "$windowed_nogo_output" "jito_rpc_policy_verdict: WARN"
+  assert_field_in "$windowed_nogo_output" "jito_rpc_policy_reason_code" "target_mismatch" "route_profile_not_pass"
+  assert_contains "$windowed_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$windowed_nogo_output" "submit_fastlane_enabled: false"
+  assert_contains "$windowed_nogo_output" "fastlane_feature_flag_verdict: PASS"
+  assert_field_equals "$windowed_nogo_output" "fastlane_feature_flag_reason_code" "fastlane_disabled"
+  assert_contains "$windowed_nogo_output" "windowed_signoff_verdict: NO_GO"
+  assert_contains "$windowed_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_contains "$windowed_nogo_output" "artifacts_written: false"
+  assert_contains "$windowed_nogo_output" "adapter_rollout_verdict: NO_GO"
+
+  local fastlane_strict_nogo_output=""
+  if fastlane_strict_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when strict fastlane-disabled gate is violated" >&2
+    exit 1
+  else
+    local fastlane_strict_rollout_nogo_exit_code=$?
+    if [[ "$fastlane_strict_rollout_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for strict fastlane-disabled rollout branch, got $fastlane_strict_rollout_nogo_exit_code" >&2
+      echo "$fastlane_strict_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$fastlane_strict_nogo_output" "go_nogo_require_fastlane_disabled: true"
+  assert_contains "$fastlane_strict_nogo_output" "submit_fastlane_enabled: true"
+  assert_contains "$fastlane_strict_nogo_output" "fastlane_feature_flag_verdict: WARN"
+  assert_field_equals "$fastlane_strict_nogo_output" "fastlane_feature_flag_reason_code" "fastlane_enabled"
+  assert_contains "$fastlane_strict_nogo_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_field_equals "$fastlane_strict_nogo_output" "devnet_rehearsal_reason_code" "go_nogo_no_go"
+  assert_contains "$fastlane_strict_nogo_output" "adapter_rollout_verdict: NO_GO"
+  assert_field_equals "$fastlane_strict_nogo_output" "adapter_rollout_reason_code" "rehearsal_no_go"
+
+  local route_fee_required_nogo_output=""
+  if route_fee_required_nogo_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when required route/fee signoff returns NO_GO" >&2
+    exit 1
+  else
+    local route_fee_required_nogo_exit_code=$?
+    if [[ "$route_fee_required_nogo_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required route/fee signoff rollout branch, got $route_fee_required_nogo_exit_code" >&2
+      echo "$route_fee_required_nogo_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_verdict: NO_GO"
+  assert_field_equals "$route_fee_required_nogo_output" "route_fee_signoff_reason_code" "input_error"
+  assert_contains "$route_fee_required_nogo_output" "route_fee_signoff_windows_csv: 1,invalid"
+  assert_contains "$route_fee_required_nogo_output" "adapter_rollout_verdict: NO_GO"
+  assert_field_equals "$route_fee_required_nogo_output" "adapter_rollout_reason_code" "route_fee_signoff_no_go"
+
+  local route_fee_required_hold_output=""
+  if route_fee_required_hold_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="HOLD" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected HOLD exit for rollout helper when required route/fee signoff returns HOLD" >&2
+    exit 1
+  else
+    local route_fee_required_hold_exit_code=$?
+    if [[ "$route_fee_required_hold_exit_code" -ne 2 ]]; then
+      echo "expected HOLD exit code 2 for required route/fee signoff HOLD branch, got $route_fee_required_hold_exit_code" >&2
+      echo "$route_fee_required_hold_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_hold_output" "route_fee_signoff_verdict: HOLD"
+  assert_field_equals "$route_fee_required_hold_output" "route_fee_signoff_reason_code" "test_override"
+  assert_contains "$route_fee_required_hold_output" "devnet_rehearsal_verdict: GO"
+  assert_contains "$route_fee_required_hold_output" "adapter_rollout_verdict: HOLD"
+  assert_field_equals "$route_fee_required_hold_output" "adapter_rollout_reason_code" "route_fee_signoff_hold"
+
+  local route_fee_required_go_output
+  route_fee_required_go_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60
+  )"
+  assert_contains "$route_fee_required_go_output" "route_fee_signoff_required: true"
+  assert_contains "$route_fee_required_go_output" "route_fee_signoff_verdict: GO"
+  assert_field_equals "$route_fee_required_go_output" "route_fee_signoff_reason_code" "test_override"
+  assert_contains "$route_fee_required_go_output" "devnet_rehearsal_verdict: GO"
+  assert_contains "$route_fee_required_go_output" "adapter_rollout_verdict: GO"
+  assert_field_equals "$route_fee_required_go_output" "adapter_rollout_reason_code" "gates_pass_with_route_fee"
+
+  local route_fee_source_split_output=""
+  if route_fee_source_split_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV="1,invalid" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for rollout helper when nested rehearsal route/fee signoff is NO_GO" >&2
+    exit 1
+  else
+    local route_fee_source_split_exit_code=$?
+    if [[ "$route_fee_source_split_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for route/fee source split scenario, got $route_fee_source_split_exit_code" >&2
+      echo "$route_fee_source_split_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$route_fee_source_split_output" "route_fee_signoff_verdict: GO"
+  assert_field_equals "$route_fee_source_split_output" "route_fee_signoff_reason_code" "test_override"
+  assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_required: true"
+  assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_windows_csv: 1,invalid"
+  assert_contains "$route_fee_source_split_output" "rehearsal_route_fee_signoff_verdict: NO_GO"
+  assert_field_equals "$route_fee_source_split_output" "rehearsal_route_fee_signoff_reason_code" "input_error"
+  assert_contains "$route_fee_source_split_output" "devnet_rehearsal_verdict: NO_GO"
+  assert_contains "$route_fee_source_split_output" "adapter_rollout_verdict: NO_GO"
+  assert_field_equals "$route_fee_source_split_output" "adapter_rollout_reason_code" "rehearsal_no_go"
 
   local rehearsal_hold_output=""
   if rehearsal_hold_output="$(
@@ -1469,11 +2855,16 @@ main() {
   run_runtime_snapshot_no_ingestion_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_artifact_export_case "$legacy_db" "$legacy_cfg"
   run_go_nogo_unknown_precedence_case "$legacy_db" "$legacy_cfg"
+  run_go_nogo_dynamic_hint_source_gate_case "$legacy_db" "$legacy_cfg"
+  local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
+  write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
+  run_go_nogo_jito_rpc_policy_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
+  run_go_nogo_fastlane_disabled_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
+  run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
+  run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case
   run_go_nogo_preflight_fail_case "$legacy_db"
-  local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
-  write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
   run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
 

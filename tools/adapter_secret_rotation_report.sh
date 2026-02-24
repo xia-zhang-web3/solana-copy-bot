@@ -367,6 +367,10 @@ elif ((${#warnings[@]} > 0)); then
   reason="secret rotation baseline checks passed with warnings (permissions hardening recommended)"
   exit_code=2
 fi
+artifacts_written="false"
+if [[ -n "$OUTPUT_DIR" ]]; then
+  artifacts_written="true"
+fi
 
 summary="$({
   echo "=== Adapter Secret Rotation Report ==="
@@ -378,6 +382,7 @@ summary="$({
   echo "allow_unauthenticated: $allow_unauthenticated"
   echo "rotation_readiness_verdict: $verdict"
   echo "rotation_readiness_reason: $reason"
+  echo "artifacts_written: $artifacts_written"
   if ((${#report_lines[@]} > 0)); then
     echo "--- secret file checks ---"
     printf '%s\n' "${report_lines[@]}"
@@ -397,8 +402,15 @@ echo "$summary"
 if [[ -n "$OUTPUT_DIR" ]]; then
   mkdir -p "$OUTPUT_DIR"
   artifact_path="$OUTPUT_DIR/adapter_secret_rotation_report_${timestamp_compact}.txt"
+  manifest_path="$OUTPUT_DIR/adapter_secret_rotation_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary" >"$artifact_path"
+  report_sha256="$(sha256_file_value "$artifact_path")"
+  cat >"$manifest_path" <<EOF
+report_sha256: $report_sha256
+EOF
   echo "artifact_report: $artifact_path"
+  echo "artifact_manifest: $manifest_path"
+  echo "report_sha256: $report_sha256"
 fi
 
 exit "$exit_code"

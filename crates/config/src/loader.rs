@@ -304,6 +304,13 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_adapter_require_policy_echo = submit_adapter_require_policy_echo;
     }
+    if let Some(submit_fastlane_enabled) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.submit_fastlane_enabled = submit_fastlane_enabled;
+    }
     if let Ok(submit_allowed_routes_csv) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES")
     {
@@ -373,6 +380,53 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
                 .execution
                 .submit_route_compute_unit_price_micro_lamports = route_prices;
         }
+    }
+    if let Some(submit_dynamic_cu_price_enabled) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.submit_dynamic_cu_price_enabled = submit_dynamic_cu_price_enabled;
+    }
+    if let Some(submit_dynamic_cu_price_percentile) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_PERCENTILE")
+            .ok()
+            .and_then(|value| value.parse::<u8>().ok())
+    {
+        config.execution.submit_dynamic_cu_price_percentile = submit_dynamic_cu_price_percentile;
+    }
+    if let Ok(value) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL")
+    {
+        config.execution.submit_dynamic_cu_price_api_primary_url = value;
+    }
+    if let Ok(value) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_FALLBACK_URL")
+    {
+        config.execution.submit_dynamic_cu_price_api_fallback_url = value;
+    }
+    if let Ok(value) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_AUTH_TOKEN")
+    {
+        config.execution.submit_dynamic_cu_price_api_auth_token = value;
+    }
+    if let Ok(value) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_AUTH_TOKEN_FILE")
+    {
+        config.execution.submit_dynamic_cu_price_api_auth_token_file = value;
+    }
+    if let Some(submit_dynamic_tip_lamports_enabled) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED")
+            .ok()
+            .and_then(parse_env_bool)
+    {
+        config.execution.submit_dynamic_tip_lamports_enabled = submit_dynamic_tip_lamports_enabled;
+    }
+    if let Some(submit_dynamic_tip_lamports_multiplier_bps) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_MULTIPLIER_BPS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+    {
+        config.execution.submit_dynamic_tip_lamports_multiplier_bps =
+            submit_dynamic_tip_lamports_multiplier_bps;
     }
     if let Some(submit_timeout_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_TIMEOUT_MS")
         .ok()

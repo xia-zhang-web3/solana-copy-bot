@@ -3,7 +3,7 @@ use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use uuid::Uuid;
 
 use crate::auth::compute_hmac_signature_hex;
@@ -25,6 +25,12 @@ pub struct SubmitResult {
     pub network_fee_lamports_hint: Option<u64>,
     pub base_fee_lamports_hint: Option<u64>,
     pub priority_fee_lamports_hint: Option<u64>,
+    pub dynamic_cu_price_policy_enabled: bool,
+    pub dynamic_cu_price_hint_used: bool,
+    pub dynamic_cu_price_hint_source: Option<DynamicCuPriceHintSource>,
+    pub dynamic_cu_price_applied: bool,
+    pub dynamic_tip_policy_enabled: bool,
+    pub dynamic_tip_applied: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,11 +39,23 @@ pub enum SubmitErrorKind {
     Terminal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicCuPriceHintSource {
+    Api,
+    Rpc,
+}
+
 #[derive(Debug, Clone)]
 pub struct SubmitError {
     pub kind: SubmitErrorKind,
     pub code: String,
     pub detail: String,
+    pub dynamic_cu_price_policy_enabled: bool,
+    pub dynamic_cu_price_hint_used: bool,
+    pub dynamic_cu_price_hint_source: Option<DynamicCuPriceHintSource>,
+    pub dynamic_cu_price_applied: bool,
+    pub dynamic_tip_policy_enabled: bool,
+    pub dynamic_tip_applied: bool,
 }
 
 impl SubmitError {
@@ -46,6 +64,12 @@ impl SubmitError {
             kind: SubmitErrorKind::Retryable,
             code: code.into(),
             detail: detail.into(),
+            dynamic_cu_price_policy_enabled: false,
+            dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_hint_source: None,
+            dynamic_cu_price_applied: false,
+            dynamic_tip_policy_enabled: false,
+            dynamic_tip_applied: false,
         }
     }
 
@@ -54,7 +78,31 @@ impl SubmitError {
             kind: SubmitErrorKind::Terminal,
             code: code.into(),
             detail: detail.into(),
+            dynamic_cu_price_policy_enabled: false,
+            dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_hint_source: None,
+            dynamic_cu_price_applied: false,
+            dynamic_tip_policy_enabled: false,
+            dynamic_tip_applied: false,
         }
+    }
+
+    pub(crate) fn with_dynamic_policy_flags(
+        mut self,
+        dynamic_cu_price_policy_enabled: bool,
+        dynamic_cu_price_hint_used: bool,
+        dynamic_cu_price_hint_source: Option<DynamicCuPriceHintSource>,
+        dynamic_cu_price_applied: bool,
+        dynamic_tip_policy_enabled: bool,
+        dynamic_tip_applied: bool,
+    ) -> Self {
+        self.dynamic_cu_price_policy_enabled = dynamic_cu_price_policy_enabled;
+        self.dynamic_cu_price_hint_used = dynamic_cu_price_hint_used;
+        self.dynamic_cu_price_hint_source = dynamic_cu_price_hint_source;
+        self.dynamic_cu_price_applied = dynamic_cu_price_applied;
+        self.dynamic_tip_policy_enabled = dynamic_tip_policy_enabled;
+        self.dynamic_tip_applied = dynamic_tip_applied;
+        self
     }
 }
 
@@ -104,6 +152,12 @@ impl OrderSubmitter for PaperOrderSubmitter {
             network_fee_lamports_hint: None,
             base_fee_lamports_hint: None,
             priority_fee_lamports_hint: None,
+            dynamic_cu_price_policy_enabled: false,
+            dynamic_cu_price_hint_used: false,
+            dynamic_cu_price_hint_source: None,
+            dynamic_cu_price_applied: false,
+            dynamic_tip_policy_enabled: false,
+            dynamic_tip_applied: false,
         })
     }
 }
@@ -145,10 +199,31 @@ struct AdapterHmacAuth {
 }
 
 #[derive(Debug, Clone)]
+struct DynamicCuPricePolicy {
+    rpc_endpoints: Vec<String>,
+    api_endpoints: Vec<String>,
+    api_auth_token: Option<String>,
+    percentile: u8,
+    max_micro_lamports: u64,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct DynamicTipLamportsPolicy {
+    multiplier_bps: u32,
+}
+
+const PRIORITY_FEE_HINT_TIMEOUT_MS_CAP: u64 = 1_000;
+const PRIORITY_FEE_HINT_TIMEOUT_MS_FLOOR: u64 = 250;
+
+#[derive(Debug, Clone)]
 pub struct AdapterOrderSubmitter {
     endpoints: Vec<String>,
     auth_token: Option<String>,
     hmac_auth: Option<AdapterHmacAuth>,
+    dynamic_cu_price_policy: Option<DynamicCuPricePolicy>,
+    dynamic_tip_lamports_policy: Option<DynamicTipLamportsPolicy>,
+    dynamic_cu_price_client: Option<Client>,
     contract_version: String,
     require_policy_echo: bool,
     allowed_routes: HashSet<String>,
@@ -175,6 +250,104 @@ impl AdapterOrderSubmitter {
         route_tip_lamports: &BTreeMap<String, u64>,
         route_compute_unit_limit: &BTreeMap<String, u32>,
         route_compute_unit_price_micro_lamports: &BTreeMap<String, u64>,
+        timeout_ms: u64,
+        slippage_bps: f64,
+    ) -> Option<Self> {
+        Self::new_with_dynamic_and_tip(
+            primary_url,
+            fallback_url,
+            auth_token,
+            hmac_key_id,
+            hmac_secret,
+            hmac_ttl_sec,
+            contract_version,
+            require_policy_echo,
+            allowed_routes,
+            route_max_slippage_bps,
+            route_tip_lamports,
+            route_compute_unit_limit,
+            route_compute_unit_price_micro_lamports,
+            "",
+            "",
+            false,
+            75,
+            0,
+            false,
+            10_000,
+            timeout_ms,
+            slippage_bps,
+        )
+    }
+
+    pub fn new_with_dynamic(
+        primary_url: &str,
+        fallback_url: &str,
+        auth_token: &str,
+        hmac_key_id: &str,
+        hmac_secret: &str,
+        hmac_ttl_sec: u64,
+        contract_version: &str,
+        require_policy_echo: bool,
+        allowed_routes: &[String],
+        route_max_slippage_bps: &BTreeMap<String, f64>,
+        route_tip_lamports: &BTreeMap<String, u64>,
+        route_compute_unit_limit: &BTreeMap<String, u32>,
+        route_compute_unit_price_micro_lamports: &BTreeMap<String, u64>,
+        rpc_primary_url: &str,
+        rpc_fallback_url: &str,
+        submit_dynamic_cu_price_enabled: bool,
+        submit_dynamic_cu_price_percentile: u8,
+        pretrade_max_priority_fee_micro_lamports: u64,
+        timeout_ms: u64,
+        slippage_bps: f64,
+    ) -> Option<Self> {
+        Self::new_with_dynamic_and_tip(
+            primary_url,
+            fallback_url,
+            auth_token,
+            hmac_key_id,
+            hmac_secret,
+            hmac_ttl_sec,
+            contract_version,
+            require_policy_echo,
+            allowed_routes,
+            route_max_slippage_bps,
+            route_tip_lamports,
+            route_compute_unit_limit,
+            route_compute_unit_price_micro_lamports,
+            rpc_primary_url,
+            rpc_fallback_url,
+            submit_dynamic_cu_price_enabled,
+            submit_dynamic_cu_price_percentile,
+            pretrade_max_priority_fee_micro_lamports,
+            false,
+            10_000,
+            timeout_ms,
+            slippage_bps,
+        )
+    }
+
+    pub fn new_with_dynamic_and_tip(
+        primary_url: &str,
+        fallback_url: &str,
+        auth_token: &str,
+        hmac_key_id: &str,
+        hmac_secret: &str,
+        hmac_ttl_sec: u64,
+        contract_version: &str,
+        require_policy_echo: bool,
+        allowed_routes: &[String],
+        route_max_slippage_bps: &BTreeMap<String, f64>,
+        route_tip_lamports: &BTreeMap<String, u64>,
+        route_compute_unit_limit: &BTreeMap<String, u32>,
+        route_compute_unit_price_micro_lamports: &BTreeMap<String, u64>,
+        rpc_primary_url: &str,
+        rpc_fallback_url: &str,
+        submit_dynamic_cu_price_enabled: bool,
+        submit_dynamic_cu_price_percentile: u8,
+        pretrade_max_priority_fee_micro_lamports: u64,
+        submit_dynamic_tip_lamports_enabled: bool,
+        submit_dynamic_tip_lamports_multiplier_bps: u32,
         timeout_ms: u64,
         slippage_bps: f64,
     ) -> Option<Self> {
@@ -236,6 +409,51 @@ impl AdapterOrderSubmitter {
         {
             return None;
         }
+        let dynamic_cu_price_policy = if submit_dynamic_cu_price_enabled {
+            if submit_dynamic_cu_price_percentile == 0 || submit_dynamic_cu_price_percentile > 100 {
+                return None;
+            }
+            if pretrade_max_priority_fee_micro_lamports == 0 {
+                return None;
+            }
+            let hint_timeout_ms = priority_fee_hint_timeout_ms(timeout_ms);
+            if route_compute_unit_price_micro_lamports
+                .values()
+                .any(|value| *value > pretrade_max_priority_fee_micro_lamports)
+            {
+                return None;
+            }
+            let rpc_endpoints =
+                normalize_distinct_non_empty_endpoints(rpc_primary_url, rpc_fallback_url);
+            if rpc_endpoints.is_empty() {
+                return None;
+            }
+            Some(DynamicCuPricePolicy {
+                rpc_endpoints,
+                api_endpoints: Vec::new(),
+                api_auth_token: None,
+                percentile: submit_dynamic_cu_price_percentile,
+                max_micro_lamports: pretrade_max_priority_fee_micro_lamports,
+                timeout_ms: hint_timeout_ms,
+            })
+        } else {
+            None
+        };
+        let dynamic_tip_lamports_policy = if submit_dynamic_tip_lamports_enabled {
+            if !submit_dynamic_cu_price_enabled {
+                return None;
+            }
+            if submit_dynamic_tip_lamports_multiplier_bps == 0
+                || submit_dynamic_tip_lamports_multiplier_bps > 100_000
+            {
+                return None;
+            }
+            Some(DynamicTipLamportsPolicy {
+                multiplier_bps: submit_dynamic_tip_lamports_multiplier_bps,
+            })
+        } else {
+            None
+        };
 
         let client = match Client::builder()
             .timeout(StdDuration::from_millis(timeout_ms.max(500)))
@@ -243,6 +461,21 @@ impl AdapterOrderSubmitter {
         {
             Ok(value) => value,
             Err(_) => return None,
+        };
+        let dynamic_cu_price_client = if dynamic_cu_price_policy.is_some() {
+            let hint_timeout_ms = dynamic_cu_price_policy
+                .as_ref()
+                .map(|policy| policy.timeout_ms)
+                .unwrap_or_else(|| priority_fee_hint_timeout_ms(timeout_ms));
+            match Client::builder()
+                .timeout(StdDuration::from_millis(hint_timeout_ms))
+                .build()
+            {
+                Ok(value) => Some(value),
+                Err(_) => return None,
+            }
+        } else {
+            None
         };
 
         let token = auth_token.trim();
@@ -279,6 +512,9 @@ impl AdapterOrderSubmitter {
             endpoints,
             auth_token,
             hmac_auth,
+            dynamic_cu_price_policy,
+            dynamic_tip_lamports_policy,
+            dynamic_cu_price_client,
             contract_version: contract_version.to_string(),
             require_policy_echo,
             allowed_routes,
@@ -289,6 +525,121 @@ impl AdapterOrderSubmitter {
             slippage_bps,
             client,
         })
+    }
+
+    pub fn with_dynamic_cu_price_api(
+        mut self,
+        api_primary_url: &str,
+        api_fallback_url: &str,
+        api_auth_token: &str,
+    ) -> Option<Self> {
+        let api_endpoints =
+            normalize_distinct_non_empty_endpoints(api_primary_url, api_fallback_url);
+        let token = api_auth_token.trim();
+        let api_auth_token = if token.is_empty() {
+            None
+        } else {
+            Some(token.to_string())
+        };
+
+        let Some(policy) = self.dynamic_cu_price_policy.as_mut() else {
+            if api_endpoints.is_empty() && api_auth_token.is_none() {
+                return Some(self);
+            }
+            return None;
+        };
+
+        if api_endpoints.is_empty() {
+            if api_auth_token.is_none() {
+                return Some(self);
+            }
+            return None;
+        }
+
+        policy.api_endpoints = api_endpoints;
+        policy.api_auth_token = api_auth_token;
+        Some(self)
+    }
+
+    fn resolve_route_cu_price_micro_lamports(
+        &self,
+        static_route_cu_price: u64,
+    ) -> (u64, Option<DynamicCuPriceHintSource>, bool) {
+        let Some(policy) = self.dynamic_cu_price_policy.as_ref() else {
+            return (static_route_cu_price, None, false);
+        };
+        let hinted =
+            self.query_recent_priority_fee_micro_lamports(policy)
+                .map(|(dynamic, source)| {
+                    let resolved = dynamic
+                        .max(static_route_cu_price)
+                        .min(policy.max_micro_lamports)
+                        .clamp(
+                            EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+                            EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+                        );
+                    (resolved, source)
+                });
+        let resolved = hinted
+            .as_ref()
+            .map(|(value, _)| *value)
+            .unwrap_or(static_route_cu_price)
+            .max(static_route_cu_price)
+            .min(policy.max_micro_lamports)
+            .clamp(
+                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN,
+                EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+            );
+        let hint_source = hinted.map(|(_, source)| source);
+        let applied = resolved > static_route_cu_price;
+        (resolved, hint_source, applied)
+    }
+
+    fn resolve_route_tip_lamports(
+        &self,
+        static_route_tip_lamports: u64,
+        route_cu_limit: u32,
+        route_cu_price_micro_lamports: u64,
+    ) -> (u64, bool) {
+        let Some(policy) = self.dynamic_tip_lamports_policy.as_ref() else {
+            return (static_route_tip_lamports, false);
+        };
+        let dynamic_tip = dynamic_tip_lamports_from_compute_budget(
+            route_cu_limit,
+            route_cu_price_micro_lamports,
+            policy.multiplier_bps,
+        );
+        let resolved = static_route_tip_lamports
+            .max(dynamic_tip)
+            .min(EXECUTION_ROUTE_TIP_LAMPORTS_MAX);
+        let applied = resolved > static_route_tip_lamports;
+        (resolved, applied)
+    }
+
+    fn query_recent_priority_fee_micro_lamports(
+        &self,
+        policy: &DynamicCuPricePolicy,
+    ) -> Option<(u64, DynamicCuPriceHintSource)> {
+        let client = self.dynamic_cu_price_client.as_ref()?;
+        let started = Instant::now();
+        let total_timeout = StdDuration::from_millis(policy.timeout_ms);
+        if let Some(fee) = query_priority_fee_hint_api_endpoints(
+            client,
+            &policy.api_endpoints,
+            policy.api_auth_token.as_deref(),
+            started,
+            total_timeout,
+            policy.percentile,
+        ) {
+            return Some(fee);
+        }
+        query_priority_fee_rpc_endpoints(
+            client,
+            &policy.rpc_endpoints,
+            started,
+            total_timeout,
+            policy.percentile,
+        )
     }
 
     fn submit_via_endpoint(
@@ -433,7 +784,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 )
             })?;
         let effective_slippage_bps = self.slippage_bps.min(route_cap);
-        let route_tip_lamports = self
+        let static_route_tip_lamports = self
             .route_tip_lamports
             .get(route.as_str())
             .copied()
@@ -453,7 +804,7 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                     format!("missing compute unit limit for route={}", route),
                 )
             })?;
-        let route_cu_price_micro_lamports = self
+        let static_route_cu_price_micro_lamports = self
             .route_compute_unit_price_micro_lamports
             .get(route.as_str())
             .copied()
@@ -466,6 +817,16 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                     ),
                 )
             })?;
+        let dynamic_cu_price_policy_enabled = self.dynamic_cu_price_policy.is_some();
+        let (route_cu_price_micro_lamports, dynamic_cu_price_hint_source, dynamic_cu_price_applied) =
+            self.resolve_route_cu_price_micro_lamports(static_route_cu_price_micro_lamports);
+        let dynamic_cu_price_hint_used = dynamic_cu_price_hint_source.is_some();
+        let dynamic_tip_policy_enabled = self.dynamic_tip_lamports_policy.is_some();
+        let (route_tip_lamports, dynamic_tip_applied) = self.resolve_route_tip_lamports(
+            static_route_tip_lamports,
+            route_cu_limit,
+            route_cu_price_micro_lamports,
+        );
 
         let payload = json!({
             "contract_version": self.contract_version,
@@ -500,11 +861,37 @@ impl OrderSubmitter for AdapterOrderSubmitter {
                 route_cu_limit,
                 route_cu_price_micro_lamports,
             ) {
-                Ok(result) => return Ok(result),
+                Ok(mut result) => {
+                    result.dynamic_cu_price_policy_enabled = dynamic_cu_price_policy_enabled;
+                    result.dynamic_cu_price_hint_used = dynamic_cu_price_hint_used;
+                    result.dynamic_cu_price_hint_source = dynamic_cu_price_hint_source;
+                    result.dynamic_cu_price_applied = dynamic_cu_price_applied;
+                    result.dynamic_tip_policy_enabled = dynamic_tip_policy_enabled;
+                    result.dynamic_tip_applied = dynamic_tip_applied;
+                    return Ok(result);
+                }
                 Err(error) if matches!(error.kind, SubmitErrorKind::Terminal) => {
+                    let error = error.with_dynamic_policy_flags(
+                        dynamic_cu_price_policy_enabled,
+                        dynamic_cu_price_hint_used,
+                        dynamic_cu_price_hint_source,
+                        dynamic_cu_price_applied,
+                        dynamic_tip_policy_enabled,
+                        dynamic_tip_applied,
+                    );
                     return Err(error);
                 }
-                Err(error) => last_retryable_error = Some(error),
+                Err(error) => {
+                    let error = error.with_dynamic_policy_flags(
+                        dynamic_cu_price_policy_enabled,
+                        dynamic_cu_price_hint_used,
+                        dynamic_cu_price_hint_source,
+                        dynamic_cu_price_applied,
+                        dynamic_tip_policy_enabled,
+                        dynamic_tip_applied,
+                    );
+                    last_retryable_error = Some(error);
+                }
             }
         }
 
@@ -586,6 +973,183 @@ fn normalize_route_cu_price(route_caps: &BTreeMap<String, u64>) -> HashMap<Strin
         .collect()
 }
 
+fn dynamic_tip_lamports_from_compute_budget(
+    cu_limit: u32,
+    cu_price_micro_lamports: u64,
+    multiplier_bps: u32,
+) -> u64 {
+    let priority_fee = priority_fee_lamports_from_compute_budget(cu_limit, cu_price_micro_lamports);
+    let scaled = (priority_fee as u128).saturating_mul(multiplier_bps as u128) / 10_000u128;
+    scaled
+        .min(EXECUTION_ROUTE_TIP_LAMPORTS_MAX as u128)
+        .try_into()
+        .unwrap_or(EXECUTION_ROUTE_TIP_LAMPORTS_MAX)
+}
+
+fn priority_fee_lamports_from_compute_budget(cu_limit: u32, cu_price_micro_lamports: u64) -> u64 {
+    let numerator = (cu_limit as u128)
+        .saturating_mul(cu_price_micro_lamports as u128)
+        .saturating_add(999_999);
+    let lamports = numerator / 1_000_000u128;
+    lamports
+        .min(u64::MAX as u128)
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn query_priority_fee_rpc_endpoints(
+    client: &Client,
+    endpoints: &[String],
+    started: Instant,
+    total_timeout: StdDuration,
+    percentile: u8,
+) -> Option<(u64, DynamicCuPriceHintSource)> {
+    for endpoint in endpoints {
+        let elapsed = started.elapsed();
+        if elapsed >= total_timeout {
+            break;
+        }
+        let remaining_timeout = total_timeout.saturating_sub(elapsed);
+        let response = match client
+            .post(endpoint)
+            .header("content-type", "application/json")
+            .timeout(remaining_timeout)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "copybot-priority-fee",
+                "method": "getRecentPrioritizationFees",
+                "params": []
+            }))
+            .send()
+        {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let body: Value = match response.json() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(fee) = parse_recent_priority_fee_percentile_from_rpc_body(&body, percentile) {
+            return Some((fee, DynamicCuPriceHintSource::Rpc));
+        }
+    }
+    None
+}
+
+fn query_priority_fee_hint_api_endpoints(
+    client: &Client,
+    endpoints: &[String],
+    auth_token: Option<&str>,
+    started: Instant,
+    total_timeout: StdDuration,
+    percentile: u8,
+) -> Option<(u64, DynamicCuPriceHintSource)> {
+    for endpoint in endpoints {
+        let elapsed = started.elapsed();
+        if elapsed >= total_timeout {
+            break;
+        }
+        let remaining_timeout = total_timeout.saturating_sub(elapsed);
+        let mut request = client
+            .get(endpoint)
+            .header("accept", "application/json")
+            .timeout(remaining_timeout);
+        if let Some(token) = auth_token {
+            request = request.bearer_auth(token);
+        }
+        let response = match request.send() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let body: Value = match response.json() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(fee) = parse_priority_fee_hint_from_api_body(&body, percentile) {
+            return Some((fee, DynamicCuPriceHintSource::Api));
+        }
+    }
+    None
+}
+
+fn parse_priority_fee_hint_from_api_body(body: &Value, percentile: u8) -> Option<u64> {
+    [
+        body.get("cu_price_micro_lamports"),
+        body.get("priority_fee_micro_lamports"),
+        body.get("recommended_micro_lamports"),
+        body.get("result")
+            .and_then(|value| value.get("cu_price_micro_lamports")),
+        body.get("result")
+            .and_then(|value| value.get("priority_fee_micro_lamports")),
+        body.get("result")
+            .and_then(|value| value.get("recommended_micro_lamports")),
+        body.get("data")
+            .and_then(|value| value.get("cu_price_micro_lamports")),
+        body.get("data")
+            .and_then(|value| value.get("priority_fee_micro_lamports")),
+        body.get("data")
+            .and_then(|value| value.get("recommended_micro_lamports")),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(parse_u64_from_json_value)
+    .or_else(|| parse_recent_priority_fee_percentile_from_rpc_body(body, percentile))
+}
+
+fn parse_u64_from_json_value(value: &Value) -> Option<u64> {
+    if let Some(number) = value.as_u64() {
+        return Some(number);
+    }
+    value
+        .as_str()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+}
+
+fn parse_recent_priority_fee_percentile_from_rpc_body(body: &Value, percentile: u8) -> Option<u64> {
+    if percentile == 0 || percentile > 100 {
+        return None;
+    }
+    let rows = body.get("result")?.as_array()?;
+    let mut fees = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let Some(value) = row.get("prioritizationFee").and_then(Value::as_u64) {
+            fees.push(value);
+        }
+    }
+    if fees.is_empty() {
+        return None;
+    }
+    fees.sort_unstable();
+    let len = fees.len();
+    let rank = (((percentile as usize) * len).saturating_add(99) / 100).saturating_sub(1);
+    fees.get(rank.min(len.saturating_sub(1))).copied()
+}
+
+fn normalize_distinct_non_empty_endpoints(primary_url: &str, fallback_url: &str) -> Vec<String> {
+    let mut endpoints = Vec::new();
+    let primary = primary_url.trim();
+    if !primary.is_empty() {
+        endpoints.push(primary.to_string());
+    }
+    let fallback = fallback_url.trim();
+    if !fallback.is_empty() && !fallback.eq_ignore_ascii_case(primary) {
+        endpoints.push(fallback.to_string());
+    }
+    endpoints
+}
+
+fn priority_fee_hint_timeout_ms(submit_timeout_ms: u64) -> u64 {
+    submit_timeout_ms
+        .min(PRIORITY_FEE_HINT_TIMEOUT_MS_CAP)
+        .max(PRIORITY_FEE_HINT_TIMEOUT_MS_FLOOR)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,10 +1157,11 @@ mod tests {
     use chrono::Utc;
     use std::collections::BTreeMap;
     use std::collections::HashMap;
+    use std::io::ErrorKind;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
-    use std::time::Duration as StdDuration;
+    use std::time::{Duration as StdDuration, Instant};
 
     fn make_intent() -> ExecutionIntent {
         ExecutionIntent {
@@ -743,6 +1308,152 @@ mod tests {
             }
         });
         Some((format!("http://{}/submit", addr), handle))
+    }
+
+    fn spawn_probe_server_with_optional_capture(
+        path: &str,
+        status: u16,
+        response_body: Value,
+        response_delay_ms: u64,
+        accept_timeout_ms: u64,
+    ) -> Option<(String, thread::JoinHandle<Option<CapturedHttpRequest>>)> {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!(
+                    "skipping probe server test: failed to bind 127.0.0.1:0: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        if let Err(error) = listener.set_nonblocking(true) {
+            eprintln!(
+                "skipping probe server test: failed to set nonblocking mode: {}",
+                error
+            );
+            return None;
+        }
+        let addr = match listener.local_addr() {
+            Ok(addr) => addr,
+            Err(error) => {
+                eprintln!(
+                    "skipping probe server test: failed to read listener addr: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        let endpoint = format!("http://{}/{}", addr, path.trim_start_matches('/'));
+        let response_body = response_body.to_string();
+        let handle = thread::spawn(move || -> Option<CapturedHttpRequest> {
+            let deadline = Instant::now() + StdDuration::from_millis(accept_timeout_ms.max(100));
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return None;
+                        }
+                        thread::sleep(StdDuration::from_millis(5));
+                    }
+                    Err(_) => return None,
+                }
+            };
+
+            if stream.set_nonblocking(false).is_err() {
+                return None;
+            }
+            if stream
+                .set_read_timeout(Some(StdDuration::from_secs(5)))
+                .is_err()
+            {
+                return None;
+            }
+            let read_deadline = Instant::now() + StdDuration::from_secs(6);
+            let mut buffer = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            let mut header_end = None;
+            while header_end.is_none() {
+                let read = match stream.read(&mut chunk) {
+                    Ok(value) => value,
+                    Err(error)
+                        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                    {
+                        if Instant::now() >= read_deadline {
+                            return None;
+                        }
+                        continue;
+                    }
+                    Err(_) => return None,
+                };
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                header_end = find_header_end(&buffer).map(|offset| offset + 4);
+            }
+            let header_end = header_end?;
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+            let mut lines = header_text.split("\r\n");
+            let request_line = lines.next().unwrap_or_default().to_string();
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let mut headers = HashMap::new();
+            let mut content_length = 0usize;
+            for line in lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    let key = name.trim().to_ascii_lowercase();
+                    let value = value.trim().to_string();
+                    if key == "content-length" {
+                        content_length = value.parse::<usize>().unwrap_or(0);
+                    }
+                    headers.insert(key, value);
+                }
+            }
+            while buffer.len() < header_end.saturating_add(content_length) {
+                let read = match stream.read(&mut chunk) {
+                    Ok(value) => value,
+                    Err(_) => break,
+                };
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            let body_end = header_end
+                .saturating_add(content_length)
+                .min(buffer.len())
+                .max(header_end);
+            let body = String::from_utf8_lossy(&buffer[header_end..body_end]).to_string();
+
+            if response_delay_ms > 0 {
+                thread::sleep(StdDuration::from_millis(response_delay_ms));
+            }
+            let reason = if status == 200 { "OK" } else { "ERR" };
+            let response = format!(
+                "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                status,
+                reason,
+                response_body.len(),
+                response_body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+
+            Some(CapturedHttpRequest {
+                path,
+                headers,
+                body,
+            })
+        });
+        Some((endpoint, handle))
     }
 
     fn parse_response(
@@ -1203,6 +1914,105 @@ mod tests {
     }
 
     #[test]
+    fn parse_recent_priority_fee_percentile_from_rpc_body_selects_nearest_rank() {
+        let body = json!({
+            "result": [
+                { "prioritizationFee": 100 },
+                { "prioritizationFee": 500 },
+                { "prioritizationFee": 200 },
+                { "prioritizationFee": 900 }
+            ]
+        });
+        assert_eq!(
+            parse_recent_priority_fee_percentile_from_rpc_body(&body, 50),
+            Some(200)
+        );
+        assert_eq!(
+            parse_recent_priority_fee_percentile_from_rpc_body(&body, 90),
+            Some(900)
+        );
+    }
+
+    #[test]
+    fn parse_recent_priority_fee_percentile_from_rpc_body_ignores_non_numeric_rows() {
+        let body = json!({
+            "result": [
+                { "prioritizationFee": "bad" },
+                { "prioritizationFee": 2000 },
+                { "foo": 1 }
+            ]
+        });
+        assert_eq!(
+            parse_recent_priority_fee_percentile_from_rpc_body(&body, 80),
+            Some(2000)
+        );
+    }
+
+    #[test]
+    fn parse_priority_fee_hint_from_api_body_supports_common_shapes() {
+        let root_value = json!({
+            "cu_price_micro_lamports": "3300"
+        });
+        assert_eq!(
+            parse_priority_fee_hint_from_api_body(&root_value, 75),
+            Some(3_300)
+        );
+
+        let nested_value = json!({
+            "result": {
+                "priority_fee_micro_lamports": 2800
+            }
+        });
+        assert_eq!(
+            parse_priority_fee_hint_from_api_body(&nested_value, 75),
+            Some(2_800)
+        );
+
+        let rpc_compatible_value = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 2000 },
+                { "prioritizationFee": 3000 }
+            ]
+        });
+        assert_eq!(
+            parse_priority_fee_hint_from_api_body(&rpc_compatible_value, 90),
+            Some(3_000)
+        );
+    }
+
+    #[test]
+    fn priority_fee_lamports_from_compute_budget_rounds_up_micro_lamports() {
+        assert_eq!(
+            priority_fee_lamports_from_compute_budget(300_000, 1_500),
+            450
+        );
+        assert_eq!(priority_fee_lamports_from_compute_budget(1, 1), 1);
+    }
+
+    #[test]
+    fn dynamic_tip_lamports_from_compute_budget_applies_multiplier_bps() {
+        let tip = dynamic_tip_lamports_from_compute_budget(300_000, 3_000, 20_000);
+        assert_eq!(tip, 1_800);
+    }
+
+    #[test]
+    fn dynamic_tip_lamports_from_compute_budget_saturates_at_global_tip_cap() {
+        let tip = dynamic_tip_lamports_from_compute_budget(u32::MAX, u64::MAX, u32::MAX);
+        assert_eq!(tip, EXECUTION_ROUTE_TIP_LAMPORTS_MAX);
+    }
+
+    #[test]
+    fn priority_fee_hint_timeout_ms_caps_high_submit_timeout() {
+        assert_eq!(priority_fee_hint_timeout_ms(3_000), 1_000);
+    }
+
+    #[test]
+    fn priority_fee_hint_timeout_ms_applies_floor_for_small_submit_timeout() {
+        assert_eq!(priority_fee_hint_timeout_ms(100), 250);
+    }
+
+    #[test]
     fn compute_hmac_signature_hex_matches_known_vector() {
         let signature =
             compute_hmac_signature_hex(b"key", b"The quick brown fox jumps over the lazy dog")
@@ -1430,6 +2240,94 @@ mod tests {
     }
 
     #[test]
+    fn adapter_submitter_dynamic_cu_price_requires_non_zero_cap() {
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            "http://rpc.primary",
+            "",
+            true,
+            75,
+            0,
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_uses_capped_hint_timeout_budget() {
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_000),
+            "http://rpc.primary",
+            "http://rpc.fallback",
+            true,
+            75,
+            5_000,
+            3_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        assert_eq!(
+            submitter
+                .dynamic_cu_price_policy
+                .as_ref()
+                .map(|value| value.timeout_ms),
+            Some(1_000)
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_rejects_route_policy_above_cap() {
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            "https://adapter.example/submit",
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            false,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 50.0),
+            &make_route_tips("rpc", 0),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            "http://rpc.primary",
+            "",
+            true,
+            75,
+            1_000,
+            1_000,
+            50.0,
+        );
+        assert!(submitter.is_none());
+    }
+
+    #[test]
     fn adapter_submitter_posts_route_tip_and_budget_policy() {
         let response = json!({
             "status": "ok",
@@ -1640,5 +2538,861 @@ mod tests {
             compute_hmac_signature_hex(hmac_secret.as_bytes(), signed_payload.as_bytes())
                 .expect("compute expected signature");
         assert_eq!(signature, expected_signature);
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_uses_recent_priority_fee_with_cap() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 1200 },
+                { "prioritizationFee": 2600 },
+                { "prioritizationFee": 4400 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-1",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 3500
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-1", "rpc")
+            .expect("submit call should succeed");
+        assert_eq!(result.tx_signature, "sig-dynamic-1");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+        assert!(!result.dynamic_tip_policy_enabled);
+        assert!(!result.dynamic_tip_applied);
+
+        let rpc_captured = rpc_handle.join().expect("join rpc server thread");
+        let rpc_payload: Value =
+            serde_json::from_str(&rpc_captured.body).expect("parse captured rpc payload");
+        assert_eq!(
+            rpc_payload
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "getRecentPrioritizationFees"
+        );
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            3_500
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_falls_back_to_static_route_price_when_rpc_unavailable() {
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-2",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            "http://127.0.0.1:1",
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-2", "rpc")
+            .expect("submit call should succeed with static fallback");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(!result.dynamic_cu_price_hint_used);
+        assert!(!result.dynamic_cu_price_applied);
+        assert!(!result.dynamic_tip_policy_enabled);
+        assert!(!result.dynamic_tip_applied);
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            1_500
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_prefers_external_api_hint_when_configured() {
+        let Some((api_endpoint, api_handle)) = spawn_probe_server_with_optional_capture(
+            "priority-fee",
+            200,
+            json!({"cu_price_micro_lamports": 3200}),
+            0,
+            1_500,
+        ) else {
+            return;
+        };
+        let Some((rpc_endpoint, rpc_handle)) = spawn_probe_server_with_optional_capture(
+            "rpc",
+            200,
+            json!({
+                "jsonrpc": "2.0",
+                "result": [{ "prioritizationFee": 4_400 }]
+            }),
+            0,
+            500,
+        ) else {
+            let _ = api_handle.join();
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-api",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 3200
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = api_handle.join();
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .and_then(|value| value.with_dynamic_cu_price_api(&api_endpoint, "", "priority-api-token"))
+        .expect("submitter should initialize");
+
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-api", "rpc")
+            .expect("submit call should succeed with API hint");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+
+        let api_captured = api_handle
+            .join()
+            .expect("join API hint server")
+            .expect("API hint endpoint should be called");
+        assert_eq!(
+            api_captured
+                .headers
+                .get("authorization")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            "Bearer priority-api-token"
+        );
+
+        let rpc_captured = rpc_handle.join().expect("join rpc hint server");
+        assert!(
+            rpc_captured.is_none(),
+            "RPC hint endpoint should not be called when API hint succeeds"
+        );
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            3_200
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_falls_back_to_rpc_when_external_api_unavailable() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 1200 },
+                { "prioritizationFee": 2600 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-api-rpc-fallback",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 2600
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .and_then(|value| {
+            value.with_dynamic_cu_price_api("http://127.0.0.1:1", "", "priority-api-token")
+        })
+        .expect("submitter should initialize");
+
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-api-rpc-fallback", "rpc")
+            .expect("submit call should succeed with RPC fallback hint");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+
+        let rpc_captured = rpc_handle.join().expect("join rpc hint server");
+        let rpc_payload: Value = serde_json::from_str(&rpc_captured.body)
+            .expect("parse captured rpc payload after API fallback");
+        assert_eq!(
+            rpc_payload
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "getRecentPrioritizationFees"
+        );
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            2_600
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_terminal_error_preserves_policy_flags() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 1200 },
+                { "prioritizationFee": 2600 },
+                { "prioritizationFee": 4400 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-policy-error",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let error = submitter
+            .submit(&make_intent(), "cid-dynamic-policy-error", "rpc")
+            .expect_err("policy mismatch must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_policy_mismatch");
+        assert!(error.dynamic_cu_price_policy_enabled);
+        assert!(error.dynamic_cu_price_hint_used);
+        assert!(error.dynamic_cu_price_applied);
+        assert!(!error.dynamic_tip_policy_enabled);
+        assert!(!error.dynamic_tip_applied);
+
+        let _ = rpc_handle.join();
+        let _ = adapter_handle.join();
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_marks_hint_used_when_hint_below_static_floor() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 1200 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-floor",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-floor", "rpc")
+            .expect("submit call should succeed with static floor");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(!result.dynamic_cu_price_applied);
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            1_500
+        );
+        let _ = rpc_handle.join();
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_cu_price_total_timeout_budget_prevents_additive_endpoint_delay() {
+        let slow_rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [{ "prioritizationFee": 3000 }]
+        });
+        let Some((slow_rpc_endpoint, slow_rpc_handle)) =
+            spawn_probe_server_with_optional_capture("rpc", 200, slow_rpc_response, 1_500, 2_500)
+        else {
+            return;
+        };
+        let fast_rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [{ "prioritizationFee": 4500 }]
+        });
+        let Some((fast_rpc_endpoint, fast_rpc_handle)) =
+            spawn_probe_server_with_optional_capture("rpc", 200, fast_rpc_response, 600, 1_500)
+        else {
+            let _ = slow_rpc_handle.join();
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-budget",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 777,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = slow_rpc_handle.join();
+            let _ = fast_rpc_handle.join();
+            return;
+        };
+
+        let submitter = AdapterOrderSubmitter::new_with_dynamic(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &slow_rpc_endpoint,
+            &fast_rpc_endpoint,
+            true,
+            90,
+            3_500,
+            3_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+
+        let started = Instant::now();
+        submitter
+            .submit(&make_intent(), "cid-dynamic-budget", "rpc")
+            .expect("submit should succeed with static fallback after hint timeout budget");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < StdDuration::from_millis(1_500),
+            "hint phase should be capped by total timeout budget, got elapsed={:?}",
+            elapsed
+        );
+
+        let slow_rpc_captured = slow_rpc_handle.join().expect("join slow rpc server");
+        assert!(
+            slow_rpc_captured.is_some(),
+            "primary hint endpoint should be attempted"
+        );
+        let _ = fast_rpc_handle.join().expect("join fast rpc server");
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            1_500
+        );
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_tip_policy_raises_tip_from_dynamic_compute_budget() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 3000 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-tip",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 1800,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 3000
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic_and_tip(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 1_000),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            true,
+            20_000,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-tip", "rpc")
+            .expect("submit call should succeed");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+        assert!(result.dynamic_tip_policy_enabled);
+        assert!(result.dynamic_tip_applied);
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("tip_lamports")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            1_800
+        );
+        let _ = rpc_handle.join();
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_tip_policy_keeps_static_floor_when_dynamic_lower() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 3000 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-tip-floor",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": 2500,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 3000
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic_and_tip(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 2_500),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            3_500,
+            true,
+            20_000,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-tip-floor", "rpc")
+            .expect("submit call should succeed");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+        assert!(result.dynamic_tip_policy_enabled);
+        assert!(!result.dynamic_tip_applied);
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("tip_lamports")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            2_500
+        );
+        let _ = rpc_handle.join();
+    }
+
+    #[test]
+    fn adapter_submitter_dynamic_tip_policy_saturates_at_global_tip_cap() {
+        let rpc_response = json!({
+            "jsonrpc": "2.0",
+            "result": [
+                { "prioritizationFee": 10000000 }
+            ]
+        });
+        let Some((rpc_endpoint, rpc_handle)) = spawn_one_shot_adapter(200, rpc_response) else {
+            return;
+        };
+        let adapter_response = json!({
+            "status": "ok",
+            "tx_signature": "sig-dynamic-tip-cap",
+            "route": "rpc",
+            "contract_version": "v1",
+            "slippage_bps": 45.0,
+            "tip_lamports": EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
+            "network_fee_lamports": 17000,
+            "base_fee_lamports": 5000,
+            "priority_fee_lamports": 12000,
+            "compute_budget": {
+                "cu_limit": EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX,
+                "cu_price_micro_lamports": EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX
+            }
+        });
+        let Some((adapter_endpoint, adapter_handle)) =
+            spawn_one_shot_adapter(200, adapter_response)
+        else {
+            let _ = rpc_handle.join();
+            return;
+        };
+        let submitter = AdapterOrderSubmitter::new_with_dynamic_and_tip(
+            &adapter_endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 1_000),
+            &make_route_cu_limits("rpc", EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX),
+            &make_route_cu_prices("rpc", 1_500),
+            &rpc_endpoint,
+            "",
+            true,
+            90,
+            EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
+            true,
+            100_000,
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+        let result = submitter
+            .submit(&make_intent(), "cid-dynamic-tip-cap", "rpc")
+            .expect("submit call should succeed");
+        assert!(result.dynamic_cu_price_policy_enabled);
+        assert!(result.dynamic_cu_price_hint_used);
+        assert!(result.dynamic_cu_price_applied);
+        assert!(result.dynamic_tip_policy_enabled);
+        assert!(result.dynamic_tip_applied);
+        assert_eq!(
+            result.applied_tip_lamports,
+            EXECUTION_ROUTE_TIP_LAMPORTS_MAX
+        );
+
+        let adapter_captured = adapter_handle.join().expect("join adapter server thread");
+        let adapter_payload: Value =
+            serde_json::from_str(&adapter_captured.body).expect("parse captured adapter payload");
+        assert_eq!(
+            adapter_payload
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX
+        );
+        assert_eq!(
+            adapter_payload
+                .get("tip_lamports")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            EXECUTION_ROUTE_TIP_LAMPORTS_MAX
+        );
+        let _ = rpc_handle.join();
     }
 }

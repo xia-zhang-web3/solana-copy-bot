@@ -24,7 +24,7 @@ pub(crate) fn validate_execution_runtime_contract(
     let mode = validate_execution_mode_contract(config)?;
     validate_signer_contract(config, mode.as_str())?;
     validate_adapter_contract(config, env, mode.as_str())?;
-    validate_routes_contract(config, mode.as_str())?;
+    validate_routes_contract(config, env, mode.as_str())?;
 
     if matches!(
         env.trim().to_ascii_lowercase().as_str(),
@@ -40,6 +40,14 @@ pub(crate) fn validate_execution_runtime_contract(
             submit_route_tip_lamports = ?config.submit_route_tip_lamports,
             submit_route_compute_unit_limit = ?config.submit_route_compute_unit_limit,
             submit_route_compute_unit_price_micro_lamports = ?config.submit_route_compute_unit_price_micro_lamports,
+            submit_dynamic_cu_price_enabled = config.submit_dynamic_cu_price_enabled,
+            submit_dynamic_cu_price_percentile = config.submit_dynamic_cu_price_percentile,
+            submit_dynamic_cu_price_api_primary_url = %config.submit_dynamic_cu_price_api_primary_url.trim(),
+            submit_dynamic_cu_price_api_fallback_url = %config.submit_dynamic_cu_price_api_fallback_url.trim(),
+            submit_dynamic_cu_price_api_auth_configured = !config.submit_dynamic_cu_price_api_auth_token.trim().is_empty(),
+            submit_dynamic_tip_lamports_enabled = config.submit_dynamic_tip_lamports_enabled,
+            submit_dynamic_tip_lamports_multiplier_bps = config.submit_dynamic_tip_lamports_multiplier_bps,
+            submit_fastlane_enabled = config.submit_fastlane_enabled,
             submit_adapter_contract_version = %config.submit_adapter_contract_version,
             submit_adapter_require_policy_echo = config.submit_adapter_require_policy_echo,
             pretrade_require_token_account = config.pretrade_require_token_account,
@@ -170,7 +178,7 @@ fn validate_adapter_contract(config: &ExecutionConfig, env: &str, mode: &str) ->
     Ok(())
 }
 
-fn validate_routes_contract(config: &ExecutionConfig, mode: &str) -> Result<()> {
+fn validate_routes_contract(config: &ExecutionConfig, env: &str, mode: &str) -> Result<()> {
     if config.batch_size == 0 {
         return Err(anyhow!(
             "execution.batch_size must be >= 1 when execution is enabled"
@@ -189,6 +197,13 @@ fn validate_routes_contract(config: &ExecutionConfig, mode: &str) -> Result<()> 
     if config.max_submit_attempts == 0 {
         return Err(anyhow!(
             "execution.max_submit_attempts must be >= 1 when execution is enabled"
+        ));
+    }
+    if config.submit_dynamic_cu_price_percentile == 0
+        || config.submit_dynamic_cu_price_percentile > 100
+    {
+        return Err(anyhow!(
+            "execution.submit_dynamic_cu_price_percentile must be in 1..=100 when execution is enabled"
         ));
     }
     if config.submit_timeout_ms < 100 {
@@ -372,6 +387,9 @@ fn validate_routes_contract(config: &ExecutionConfig, mode: &str) -> Result<()> 
         }
     }
     if mode == "adapter_submit_confirm" {
+        if !config.submit_fastlane_enabled {
+            validate_fastlane_disabled_route_contract(default_route.as_str(), config)?;
+        }
         let find_route_cap = |route: &str| -> Option<f64> {
             config
                 .submit_route_max_slippage_bps
@@ -486,6 +504,91 @@ fn validate_routes_contract(config: &ExecutionConfig, mode: &str) -> Result<()> 
                 EXECUTION_ROUTE_DEFAULT_COMPUTE_UNIT_LIMIT_MIN
             ));
         }
+        if config.submit_dynamic_cu_price_enabled && config.pretrade_max_priority_fee_lamports == 0
+        {
+            return Err(anyhow!(
+                "execution.submit_dynamic_cu_price_enabled=true requires execution.pretrade_max_priority_fee_lamports > 0 to cap dynamic compute unit price"
+            ));
+        }
+        let dynamic_hint_api_primary = config.submit_dynamic_cu_price_api_primary_url.trim();
+        let dynamic_hint_api_fallback = config.submit_dynamic_cu_price_api_fallback_url.trim();
+        let dynamic_hint_api_auth_token = config.submit_dynamic_cu_price_api_auth_token.trim();
+        let dynamic_hint_api_auth_token_file =
+            config.submit_dynamic_cu_price_api_auth_token_file.trim();
+        if config.submit_dynamic_cu_price_enabled {
+            if !dynamic_hint_api_fallback.is_empty() && dynamic_hint_api_primary.is_empty() {
+                return Err(anyhow!(
+                    "execution.submit_dynamic_cu_price_api_fallback_url requires non-empty execution.submit_dynamic_cu_price_api_primary_url"
+                ));
+            }
+            if !dynamic_hint_api_primary.is_empty() {
+                validate_adapter_endpoint_url(
+                    dynamic_hint_api_primary,
+                    "execution.submit_dynamic_cu_price_api_primary_url",
+                    is_production_env_profile(env),
+                )?;
+            }
+            if !dynamic_hint_api_fallback.is_empty() {
+                validate_adapter_endpoint_url(
+                    dynamic_hint_api_fallback,
+                    "execution.submit_dynamic_cu_price_api_fallback_url",
+                    is_production_env_profile(env),
+                )?;
+            }
+            if !dynamic_hint_api_primary.is_empty() && !dynamic_hint_api_fallback.is_empty() {
+                let primary_identity =
+                    adapter_endpoint_identity(dynamic_hint_api_primary).with_context(|| {
+                        "failed normalizing execution.submit_dynamic_cu_price_api_primary_url endpoint identity"
+                    })?;
+                let fallback_identity =
+                    adapter_endpoint_identity(dynamic_hint_api_fallback).with_context(|| {
+                        "failed normalizing execution.submit_dynamic_cu_price_api_fallback_url endpoint identity"
+                    })?;
+                if primary_identity == fallback_identity {
+                    return Err(anyhow!(
+                        "execution.submit_dynamic_cu_price_api_primary_url and execution.submit_dynamic_cu_price_api_fallback_url must resolve to distinct endpoints when both are set"
+                    ));
+                }
+            }
+            if dynamic_hint_api_primary.is_empty()
+                && (!dynamic_hint_api_auth_token.is_empty()
+                    || !dynamic_hint_api_auth_token_file.is_empty())
+            {
+                return Err(anyhow!(
+                    "execution.submit_dynamic_cu_price_api_auth_token requires execution.submit_dynamic_cu_price_api_primary_url to be set"
+                ));
+            }
+        } else if !dynamic_hint_api_primary.is_empty()
+            || !dynamic_hint_api_fallback.is_empty()
+            || !dynamic_hint_api_auth_token.is_empty()
+            || !dynamic_hint_api_auth_token_file.is_empty()
+        {
+            return Err(anyhow!(
+                "execution.submit_dynamic_cu_price_api_* settings require execution.submit_dynamic_cu_price_enabled=true"
+            ));
+        }
+        if config.submit_dynamic_tip_lamports_enabled {
+            if !config.submit_dynamic_cu_price_enabled {
+                return Err(anyhow!(
+                    "execution.submit_dynamic_tip_lamports_enabled=true requires execution.submit_dynamic_cu_price_enabled=true"
+                ));
+            }
+            if config.submit_dynamic_tip_lamports_multiplier_bps == 0
+                || config.submit_dynamic_tip_lamports_multiplier_bps > 100_000
+            {
+                return Err(anyhow!(
+                    "execution.submit_dynamic_tip_lamports_multiplier_bps must be in 1..=100000 when dynamic tip policy is enabled"
+                ));
+            }
+        }
+    } else if config.submit_dynamic_cu_price_enabled {
+        return Err(anyhow!(
+            "execution.submit_dynamic_cu_price_enabled is only supported in execution.mode=adapter_submit_confirm"
+        ));
+    } else if config.submit_dynamic_tip_lamports_enabled {
+        return Err(anyhow!(
+            "execution.submit_dynamic_tip_lamports_enabled is only supported in execution.mode=adapter_submit_confirm"
+        ));
     }
 
     Ok(())
@@ -504,6 +607,76 @@ fn is_valid_contract_version_token(value: &str) -> bool {
     value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn is_fastlane_route(route: &str) -> bool {
+    route.trim().eq_ignore_ascii_case("fastlane")
+}
+
+fn validate_fastlane_disabled_route_contract(
+    default_route: &str,
+    config: &ExecutionConfig,
+) -> Result<()> {
+    if is_fastlane_route(default_route) {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when execution.default_route=fastlane"
+        ));
+    }
+    if config
+        .submit_allowed_routes
+        .iter()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_allowed_routes"
+        ));
+    }
+    if config
+        .submit_route_order
+        .iter()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_order"
+        ));
+    }
+    if config
+        .submit_route_max_slippage_bps
+        .keys()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_max_slippage_bps"
+        ));
+    }
+    if config
+        .submit_route_tip_lamports
+        .keys()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_tip_lamports"
+        ));
+    }
+    if config
+        .submit_route_compute_unit_limit
+        .keys()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_compute_unit_limit"
+        ));
+    }
+    if config
+        .submit_route_compute_unit_price_micro_lamports
+        .keys()
+        .any(|route| is_fastlane_route(route))
+    {
+        return Err(anyhow!(
+            "execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_compute_unit_price_micro_lamports"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_unique_normalized_route_list(values: &[String], field_name: &str) -> Result<()> {
@@ -580,7 +753,7 @@ fn validate_adapter_endpoint_url(
     };
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(anyhow!(
-            "{field_name} must not embed credentials in URL (use submit_adapter_auth_token / HMAC fields)"
+            "{field_name} must not embed credentials in URL (use dedicated auth token/HMAC config fields)"
         ));
     }
     if parsed.query().is_some() {

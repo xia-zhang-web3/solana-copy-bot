@@ -9,6 +9,16 @@ pub(crate) fn log_execution_batch_report(report: &ExecutionBatchReport) {
     let has_route_metrics = !report.submit_attempted_by_route.is_empty()
         || !report.submit_retry_scheduled_by_route.is_empty()
         || !report.submit_failed_by_route.is_empty()
+        || !report.submit_fallback_blocked_by_route.is_empty()
+        || !report.submit_dynamic_cu_policy_enabled_by_route.is_empty()
+        || !report.submit_dynamic_cu_hint_used_by_route.is_empty()
+        || !report.submit_dynamic_cu_hint_api_by_route.is_empty()
+        || !report.submit_dynamic_cu_hint_rpc_by_route.is_empty()
+        || !report.submit_dynamic_cu_price_applied_by_route.is_empty()
+        || !report.submit_dynamic_cu_static_fallback_by_route.is_empty()
+        || !report.submit_dynamic_tip_policy_enabled_by_route.is_empty()
+        || !report.submit_dynamic_tip_applied_by_route.is_empty()
+        || !report.submit_dynamic_tip_static_floor_by_route.is_empty()
         || !report.pretrade_retry_scheduled_by_route.is_empty()
         || !report.pretrade_terminal_rejected_by_route.is_empty()
         || !report.pretrade_failed_by_route.is_empty()
@@ -40,6 +50,16 @@ pub(crate) fn log_execution_batch_report(report: &ExecutionBatchReport) {
         submit_attempted_by_route = ?report.submit_attempted_by_route,
         submit_retry_scheduled_by_route = ?report.submit_retry_scheduled_by_route,
         submit_failed_by_route = ?report.submit_failed_by_route,
+        submit_fallback_blocked_by_route = ?report.submit_fallback_blocked_by_route,
+        submit_dynamic_cu_policy_enabled_by_route = ?report.submit_dynamic_cu_policy_enabled_by_route,
+        submit_dynamic_cu_hint_used_by_route = ?report.submit_dynamic_cu_hint_used_by_route,
+        submit_dynamic_cu_hint_api_by_route = ?report.submit_dynamic_cu_hint_api_by_route,
+        submit_dynamic_cu_hint_rpc_by_route = ?report.submit_dynamic_cu_hint_rpc_by_route,
+        submit_dynamic_cu_price_applied_by_route = ?report.submit_dynamic_cu_price_applied_by_route,
+        submit_dynamic_cu_static_fallback_by_route = ?report.submit_dynamic_cu_static_fallback_by_route,
+        submit_dynamic_tip_policy_enabled_by_route = ?report.submit_dynamic_tip_policy_enabled_by_route,
+        submit_dynamic_tip_applied_by_route = ?report.submit_dynamic_tip_applied_by_route,
+        submit_dynamic_tip_static_floor_by_route = ?report.submit_dynamic_tip_static_floor_by_route,
         pretrade_retry_scheduled_by_route = ?report.pretrade_retry_scheduled_by_route,
         pretrade_terminal_rejected_by_route = ?report.pretrade_terminal_rejected_by_route,
         pretrade_failed_by_route = ?report.pretrade_failed_by_route,

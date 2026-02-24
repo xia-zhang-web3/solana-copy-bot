@@ -1,4 +1,3 @@
-
 use super::*;
 use std::ffi::OsString;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -134,14 +133,52 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
                                 "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS",
                                 "12345",
                                 || {
-                                    let (cfg, _) = load_from_env_or_default(config_path)
-                                        .expect("load config with env overrides");
-                                    assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
-                                    assert!(!cfg.risk.shadow_killswitch_enabled);
-                                    assert_eq!(cfg.shadow.min_holders, 42);
-                                    assert_eq!(
-                                        cfg.execution.pretrade_max_priority_fee_lamports,
-                                        12_345
+                                    with_env_var(
+                                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED",
+                                        "true",
+                                        || {
+                                            with_env_var(
+                                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_PERCENTILE",
+                                                "90",
+                                                || {
+                                                    with_env_var(
+                                                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED",
+                                                        "true",
+                                                        || {
+                                                            with_env_var(
+                                                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_MULTIPLIER_BPS",
+                                                                "15000",
+                                                                || {
+                                                                    let (cfg, _) = load_from_env_or_default(config_path)
+                                                                        .expect("load config with env overrides");
+                                                                    assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
+                                                                    assert!(!cfg.risk.shadow_killswitch_enabled);
+                                                                    assert_eq!(cfg.shadow.min_holders, 42);
+                                                                    assert_eq!(
+                                                                        cfg.execution.pretrade_max_priority_fee_lamports,
+                                                                        12_345
+                                                                    );
+                                                                    assert!(cfg.execution.submit_dynamic_cu_price_enabled);
+                                                                    assert_eq!(
+                                                                        cfg.execution.submit_dynamic_cu_price_percentile,
+                                                                        90
+                                                                    );
+                                                                    assert!(
+                                                                        cfg.execution
+                                                                            .submit_dynamic_tip_lamports_enabled
+                                                                    );
+                                                                    assert_eq!(
+                                                                        cfg.execution
+                                                                            .submit_dynamic_tip_lamports_multiplier_bps,
+                                                                        15_000
+                                                                    );
+                                                                },
+                                                            );
+                                                        },
+                                                    );
+                                                },
+                                            );
+                                        },
                                     );
                                 },
                             );
@@ -149,6 +186,73 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
                     },
                 );
             });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_applies_dynamic_cu_price_api_overrides() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL",
+                "https://priority.example.com/v1/fees",
+                || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_FALLBACK_URL",
+                        "https://priority-fallback.example.com/v1/fees",
+                        || {
+                            with_env_var(
+                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_AUTH_TOKEN",
+                                "api-token",
+                                || {
+                                    with_env_var(
+                                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_AUTH_TOKEN_FILE",
+                                        "/tmp/priority_api.token",
+                                        || {
+                                            let (cfg, _) = load_from_env_or_default(config_path)
+                                                .expect("load config with dynamic cu api env overrides");
+                                            assert_eq!(
+                                                cfg.execution.submit_dynamic_cu_price_api_primary_url,
+                                                "https://priority.example.com/v1/fees"
+                                            );
+                                            assert_eq!(
+                                                cfg.execution.submit_dynamic_cu_price_api_fallback_url,
+                                                "https://priority-fallback.example.com/v1/fees"
+                                            );
+                                            assert_eq!(
+                                                cfg.execution.submit_dynamic_cu_price_api_auth_token,
+                                                "api-token"
+                                            );
+                                            assert_eq!(
+                                                cfg.execution.submit_dynamic_cu_price_api_auth_token_file,
+                                                "/tmp/priority_api.token"
+                                            );
+                                        },
+                                    );
+                                },
+                            );
+                        },
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_applies_submit_fastlane_enabled_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED",
+                "true",
+                || {
+                    let (cfg, _) = load_from_env_or_default(config_path)
+                        .expect("load config with submit fastlane env override");
+                    assert!(cfg.execution.submit_fastlane_enabled);
+                },
+            );
         });
     });
 }

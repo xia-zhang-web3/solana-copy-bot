@@ -987,6 +987,7 @@ submit_primary="$(trim_string "$(cfg_or_env_string execution submit_adapter_http
 submit_fallback="$(trim_string "$(cfg_or_env_string execution submit_adapter_fallback_http_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_FALLBACK_HTTP_URL)")"
 contract_version="$(trim_string "$(cfg_or_env_trimmed_nonempty_string execution submit_adapter_contract_version SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_CONTRACT_VERSION)")"
 strict_policy_echo="$(cfg_or_env_bool execution submit_adapter_require_policy_echo SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO)"
+submit_fastlane_enabled="$(cfg_or_env_bool execution submit_fastlane_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED)"
 if ! submit_allowed_routes_csv="$(cfg_or_env_route_list_csv execution submit_allowed_routes SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES 2>&1)"; then
   errors+=("$submit_allowed_routes_csv")
   submit_allowed_routes_csv=""
@@ -1113,6 +1114,30 @@ if [[ -n "${submit_route_order_csv//[[:space:]]/}" ]]; then
   fi
 fi
 
+if [[ "$submit_fastlane_enabled" != "true" ]]; then
+  if [[ "$default_route" == "fastlane" ]]; then
+    errors+=("execution.submit_fastlane_enabled must be true when execution.default_route=fastlane")
+  fi
+  if csv_contains_route "$submit_allowed_routes_csv" "fastlane"; then
+    errors+=("execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_allowed_routes")
+  fi
+  if csv_contains_route "$submit_route_order_csv" "fastlane"; then
+    errors+=("execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_order")
+  fi
+  if csv_contains_route "$submit_route_max_slippage_bps_keys_csv" "fastlane"; then
+    errors+=("execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_max_slippage_bps")
+  fi
+  if csv_contains_route "$submit_route_tip_lamports_keys_csv" "fastlane"; then
+    errors+=("execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_tip_lamports")
+  fi
+  if csv_contains_route "$submit_route_compute_unit_limit_keys_csv" "fastlane"; then
+    errors+=("execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_compute_unit_limit")
+  fi
+  if csv_contains_route "$submit_route_compute_unit_price_keys_csv" "fastlane"; then
+    errors+=("execution.submit_fastlane_enabled must be true when fastlane route is present in execution.submit_route_compute_unit_price_micro_lamports")
+  fi
+fi
+
 validate_route_policy_map_coverage() {
   local field_name="$1"
   local map_keys_csv="$2"
@@ -1202,6 +1227,7 @@ echo "submit_route_order_csv: ${submit_route_order_csv:-<empty>}"
 echo "adapter_primary_url_set: $([[ -n "$submit_primary" ]] && echo true || echo false)"
 echo "adapter_fallback_url_set: $([[ -n "$submit_fallback" ]] && echo true || echo false)"
 echo "strict_policy_echo: $strict_policy_echo"
+echo "submit_fastlane_enabled: $submit_fastlane_enabled"
 echo "auth_token_inline_set: $([[ -n "$auth_token_inline" ]] && echo true || echo false)"
 echo "auth_token_file_set: $([[ -n "$auth_token_file_raw" ]] && echo true || echo false)"
 echo "hmac_key_id_set: $([[ -n "$hmac_key_id" ]] && echo true || echo false)"

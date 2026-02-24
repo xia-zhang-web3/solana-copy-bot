@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, ExecutionConfig, RiskConfig, ShadowConfig};
+use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
+#[cfg(test)]
+use copybot_config::ExecutionConfig;
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
@@ -204,6 +206,12 @@ fn parse_ingestion_source_override(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn ingestion_error_backoff_ms(consecutive_errors: u32) -> u64 {
+    let index =
+        (consecutive_errors.saturating_sub(1) as usize).min(INGESTION_ERROR_BACKOFF_MS.len() - 1);
+    INGESTION_ERROR_BACKOFF_MS[index]
 }
 
 fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
@@ -1678,9 +1686,7 @@ async fn run_app_loop(
                     }
                     Err(error) => {
                         ingestion_error_streak = ingestion_error_streak.saturating_add(1);
-                        let index = (ingestion_error_streak.saturating_sub(1) as usize)
-                            .min(INGESTION_ERROR_BACKOFF_MS.len() - 1);
-                        let backoff_ms = INGESTION_ERROR_BACKOFF_MS[index];
+                        let backoff_ms = ingestion_error_backoff_ms(ingestion_error_streak);
                         ingestion_backoff_until =
                             Some(time::Instant::now() + Duration::from_millis(backoff_ms));
                         warn!(
@@ -2009,6 +2015,8 @@ mod app_tests {
     fn resolve_execution_adapter_secrets_reads_file_sources() -> Result<()> {
         let auth_path = write_temp_secret_file("auth-token", "token-from-file\n")?;
         let hmac_path = write_temp_secret_file("hmac-secret", "hmac-from-file \n")?;
+        let dynamic_api_auth_path =
+            write_temp_secret_file("dynamic-api-auth", "api-token-file \n")?;
         let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
 
         let mut execution = ExecutionConfig::default();
@@ -2016,13 +2024,20 @@ mod app_tests {
         execution.mode = "adapter_submit_confirm".to_string();
         execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
         execution.submit_adapter_hmac_secret_file = hmac_path.to_string_lossy().to_string();
+        execution.submit_dynamic_cu_price_api_auth_token_file =
+            dynamic_api_auth_path.to_string_lossy().to_string();
 
         resolve_execution_adapter_secrets(&mut execution, config_path.as_path())?;
         assert_eq!(execution.submit_adapter_auth_token, "token-from-file");
         assert_eq!(execution.submit_adapter_hmac_secret, "hmac-from-file");
+        assert_eq!(
+            execution.submit_dynamic_cu_price_api_auth_token,
+            "api-token-file"
+        );
 
         let _ = std::fs::remove_file(auth_path);
         let _ = std::fs::remove_file(hmac_path);
+        let _ = std::fs::remove_file(dynamic_api_auth_path);
         Ok(())
     }
 
@@ -2069,6 +2084,31 @@ mod app_tests {
         );
 
         let _ = std::fs::remove_file(hmac_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_dynamic_api_inline_and_file_conflict() -> Result<()>
+    {
+        let api_token_path = write_temp_secret_file("dynamic-api-conflict", "api-token-file\n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_dynamic_cu_price_api_auth_token = "inline-api-token".to_string();
+        execution.submit_dynamic_cu_price_api_auth_token_file =
+            api_token_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("inline+file dynamic API token conflict must fail");
+        assert!(
+            error.to_string().contains("cannot be set at the same time"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(api_token_path);
         Ok(())
     }
 
@@ -2130,8 +2170,10 @@ mod app_tests {
 
         let auth_path = secrets_dir.join("auth.txt");
         let hmac_path = secrets_dir.join("hmac.txt");
+        let api_token_path = secrets_dir.join("priority_api.token");
         std::fs::write(&auth_path, "auth-rel\n")?;
         std::fs::write(&hmac_path, "hmac-rel\n")?;
+        std::fs::write(&api_token_path, "priority-api-rel\n")?;
 
         let loaded_config_path = config_dir.join("dev.toml");
         let mut execution = ExecutionConfig::default();
@@ -2139,10 +2181,16 @@ mod app_tests {
         execution.mode = "adapter_submit_confirm".to_string();
         execution.submit_adapter_auth_token_file = "../secrets/auth.txt".to_string();
         execution.submit_adapter_hmac_secret_file = "../secrets/hmac.txt".to_string();
+        execution.submit_dynamic_cu_price_api_auth_token_file =
+            "../secrets/priority_api.token".to_string();
 
         resolve_execution_adapter_secrets(&mut execution, loaded_config_path.as_path())?;
         assert_eq!(execution.submit_adapter_auth_token, "auth-rel");
         assert_eq!(execution.submit_adapter_hmac_secret, "hmac-rel");
+        assert_eq!(
+            execution.submit_dynamic_cu_price_api_auth_token,
+            "priority-api-rel"
+        );
 
         let _ = std::fs::remove_dir_all(root);
         Ok(())
@@ -2175,6 +2223,198 @@ mod app_tests {
             error
                 .to_string()
                 .contains("route rpc price (1500) cannot exceed"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_cu_price_without_pretrade_cap() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+        execution.pretrade_max_priority_fee_lamports = 0;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic CU price without pretrade cap must fail-closed");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_cu_price_enabled=true"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_cu_price_outside_adapter_mode() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "paper".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic CU price must be restricted to adapter_submit_confirm");
+        assert!(
+            error
+                .to_string()
+                .contains("only supported in execution.mode=adapter_submit_confirm"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_dynamic_cu_price_percentile() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.submit_dynamic_cu_price_percentile = 0;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic cu price percentile below range must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_cu_price_percentile must be in 1..=100"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_cu_price_api_without_dynamic_policy() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = false;
+        execution.submit_dynamic_cu_price_api_primary_url =
+            "https://priority.example.com/v1/fees".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic cu price api must require dynamic policy");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_cu_price_api_* settings require"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_cu_price_api_fallback_without_primary() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+        execution.submit_dynamic_cu_price_api_fallback_url =
+            "https://priority-fallback.example.com/v1/fees".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic cu price api fallback without primary must fail");
+        assert!(
+            error.to_string().contains("requires non-empty"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_duplicate_dynamic_cu_price_api_endpoints() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+        execution.submit_dynamic_cu_price_api_primary_url =
+            "https://priority.example.com/v1/fees".to_string();
+        execution.submit_dynamic_cu_price_api_fallback_url =
+            "https://priority.example.com:443/v1/fees".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("duplicate dynamic cu price api endpoint identity must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must resolve to distinct endpoints"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_tip_without_dynamic_cu_price() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_tip_lamports_enabled = true;
+        execution.submit_dynamic_cu_price_enabled = false;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic tip requires dynamic cu price");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_tip_lamports_enabled=true requires execution.submit_dynamic_cu_price_enabled=true"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_dynamic_tip_outside_adapter_mode() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "paper".to_string();
+        execution.submit_dynamic_tip_lamports_enabled = true;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic tip must be restricted to adapter_submit_confirm");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_tip_lamports_enabled is only supported"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_dynamic_tip_multiplier_bps() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_dynamic_cu_price_enabled = true;
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+        execution.submit_dynamic_tip_lamports_enabled = true;
+        execution.submit_dynamic_tip_lamports_multiplier_bps = 0;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("dynamic tip multiplier outside range must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("submit_dynamic_tip_lamports_multiplier_bps must be in 1..=100000"),
             "unexpected error: {}",
             error
         );
@@ -2261,6 +2501,69 @@ mod app_tests {
             "unexpected error: {}",
             error
         );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_fastlane_routes_when_feature_flag_disabled() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_fastlane_enabled = false;
+        execution.default_route = "fastlane".to_string();
+        execution.submit_allowed_routes = vec!["fastlane".to_string(), "rpc".to_string()];
+        execution.submit_route_order = vec!["fastlane".to_string(), "rpc".to_string()];
+        execution.submit_route_max_slippage_bps =
+            BTreeMap::from([("fastlane".to_string(), 50.0), ("rpc".to_string(), 50.0)]);
+        execution.submit_route_tip_lamports =
+            BTreeMap::from([("fastlane".to_string(), 10_000), ("rpc".to_string(), 0)]);
+        execution.submit_route_compute_unit_limit = BTreeMap::from([
+            ("fastlane".to_string(), 300_000),
+            ("rpc".to_string(), 300_000),
+        ]);
+        execution.submit_route_compute_unit_price_micro_lamports =
+            BTreeMap::from([("fastlane".to_string(), 1_500), ("rpc".to_string(), 1_000)]);
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("fastlane route policy must be blocked when feature flag is disabled");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.submit_fastlane_enabled must be true"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_allows_fastlane_routes_when_feature_flag_enabled() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.submit_fastlane_enabled = true;
+        execution.default_route = "fastlane".to_string();
+        execution.submit_allowed_routes = vec!["fastlane".to_string(), "rpc".to_string()];
+        execution.submit_route_order = vec!["fastlane".to_string(), "rpc".to_string()];
+        execution.submit_route_max_slippage_bps =
+            BTreeMap::from([("fastlane".to_string(), 50.0), ("rpc".to_string(), 50.0)]);
+        execution.submit_route_tip_lamports =
+            BTreeMap::from([("fastlane".to_string(), 10_000), ("rpc".to_string(), 0)]);
+        execution.submit_route_compute_unit_limit = BTreeMap::from([
+            ("fastlane".to_string(), 300_000),
+            ("rpc".to_string(), 300_000),
+        ]);
+        execution.submit_route_compute_unit_price_micro_lamports =
+            BTreeMap::from([("fastlane".to_string(), 1_500), ("rpc".to_string(), 1_000)]);
+        execution.pretrade_max_priority_fee_lamports = 2_000;
+
+        validate_execution_runtime_contract(&execution, "paper")
+            .expect("fastlane route policy should pass when feature flag is enabled");
     }
 
     #[test]
@@ -3862,6 +4165,24 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=
 this-is-not-a-valid-line
 "#;
         assert!(parse_ingestion_source_override(content).is_none());
+    }
+
+    #[test]
+    fn ingestion_error_backoff_ms_uses_progressive_schedule() {
+        assert_eq!(ingestion_error_backoff_ms(0), 100);
+        assert_eq!(ingestion_error_backoff_ms(1), 100);
+        assert_eq!(ingestion_error_backoff_ms(2), 250);
+        assert_eq!(ingestion_error_backoff_ms(3), 500);
+        assert_eq!(ingestion_error_backoff_ms(4), 1_000);
+        assert_eq!(ingestion_error_backoff_ms(5), 2_000);
+        assert_eq!(ingestion_error_backoff_ms(6), 5_000);
+    }
+
+    #[test]
+    fn ingestion_error_backoff_ms_saturates_at_max_step() {
+        assert_eq!(ingestion_error_backoff_ms(7), 5_000);
+        assert_eq!(ingestion_error_backoff_ms(100), 5_000);
+        assert_eq!(ingestion_error_backoff_ms(u32::MAX), 5_000);
     }
 
     #[test]

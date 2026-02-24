@@ -181,7 +181,7 @@ impl ExecutionRuntime {
                     )),
                 };
                 let submitter: Box<dyn OrderSubmitter + Send + Sync> =
-                    match AdapterOrderSubmitter::new(
+                    match AdapterOrderSubmitter::new_with_dynamic_and_tip(
                         &config.submit_adapter_http_url,
                         &config.submit_adapter_fallback_http_url,
                         &config.submit_adapter_auth_token,
@@ -195,9 +195,23 @@ impl ExecutionRuntime {
                         &config.submit_route_tip_lamports,
                         &config.submit_route_compute_unit_limit,
                         &config.submit_route_compute_unit_price_micro_lamports,
+                        &config.rpc_http_url,
+                        &config.rpc_fallback_http_url,
+                        config.submit_dynamic_cu_price_enabled,
+                        config.submit_dynamic_cu_price_percentile,
+                        config.pretrade_max_priority_fee_lamports,
+                        config.submit_dynamic_tip_lamports_enabled,
+                        config.submit_dynamic_tip_lamports_multiplier_bps,
                         config.submit_timeout_ms.max(500),
                         config.slippage_bps,
-                    ) {
+                    )
+                    .and_then(|value| {
+                        value.with_dynamic_cu_price_api(
+                            &config.submit_dynamic_cu_price_api_primary_url,
+                            &config.submit_dynamic_cu_price_api_fallback_url,
+                            &config.submit_dynamic_cu_price_api_auth_token,
+                        )
+                    }) {
                         Some(value) => Box::new(value),
                         None => Box::new(FailClosedOrderSubmitter::new(
                             "submitter_init_failed",
@@ -562,11 +576,19 @@ mod tests {
 
     struct RetryableOnceSubmitter {
         routes: Arc<Mutex<Vec<String>>>,
+        retryable_code: String,
     }
 
     impl RetryableOnceSubmitter {
         fn new(routes: Arc<Mutex<Vec<String>>>) -> Self {
-            Self { routes }
+            Self::new_with_code(routes, "submit_adapter_http_unavailable")
+        }
+
+        fn new_with_code(routes: Arc<Mutex<Vec<String>>>, retryable_code: &str) -> Self {
+            Self {
+                routes,
+                retryable_code: retryable_code.to_string(),
+            }
         }
     }
 
@@ -584,7 +606,7 @@ mod tests {
             calls.push(route.to_string());
             if calls.len() == 1 {
                 return Err(submitter::SubmitError::retryable(
-                    "submit_retryable_once",
+                    self.retryable_code.as_str(),
                     "first submit attempt failed",
                 ));
             }
@@ -597,6 +619,12 @@ mod tests {
                 network_fee_lamports_hint: None,
                 base_fee_lamports_hint: None,
                 priority_fee_lamports_hint: None,
+                dynamic_cu_price_policy_enabled: false,
+                dynamic_cu_price_hint_used: false,
+                dynamic_cu_price_hint_source: None,
+                dynamic_cu_price_applied: false,
+                dynamic_tip_policy_enabled: false,
+                dynamic_tip_applied: false,
             })
         }
     }
@@ -621,6 +649,12 @@ mod tests {
                 network_fee_lamports_hint: None,
                 base_fee_lamports_hint: None,
                 priority_fee_lamports_hint: None,
+                dynamic_cu_price_policy_enabled: false,
+                dynamic_cu_price_hint_used: false,
+                dynamic_cu_price_hint_source: None,
+                dynamic_cu_price_applied: false,
+                dynamic_tip_policy_enabled: false,
+                dynamic_tip_applied: false,
             })
         }
     }
@@ -646,7 +680,78 @@ mod tests {
                 network_fee_lamports_hint: Some(self.network_fee_lamports_hint),
                 base_fee_lamports_hint: None,
                 priority_fee_lamports_hint: None,
+                dynamic_cu_price_policy_enabled: false,
+                dynamic_cu_price_hint_used: false,
+                dynamic_cu_price_hint_source: None,
+                dynamic_cu_price_applied: false,
+                dynamic_tip_policy_enabled: false,
+                dynamic_tip_applied: false,
             })
+        }
+    }
+
+    struct DynamicPolicyMetricsSubmitter {
+        dynamic_cu_price_policy_enabled: bool,
+        dynamic_cu_price_hint_used: bool,
+        dynamic_cu_price_hint_source: Option<submitter::DynamicCuPriceHintSource>,
+        dynamic_cu_price_applied: bool,
+        dynamic_tip_policy_enabled: bool,
+        dynamic_tip_applied: bool,
+    }
+
+    impl OrderSubmitter for DynamicPolicyMetricsSubmitter {
+        fn submit(
+            &self,
+            _intent: &ExecutionIntent,
+            _client_order_id: &str,
+            route: &str,
+        ) -> std::result::Result<submitter::SubmitResult, submitter::SubmitError> {
+            Ok(submitter::SubmitResult {
+                route: route.to_string(),
+                tx_signature: "dynamic-policy-metrics-sig".to_string(),
+                submitted_at: Utc::now(),
+                applied_tip_lamports: 0,
+                ata_create_rent_lamports: None,
+                network_fee_lamports_hint: None,
+                base_fee_lamports_hint: None,
+                priority_fee_lamports_hint: None,
+                dynamic_cu_price_policy_enabled: self.dynamic_cu_price_policy_enabled,
+                dynamic_cu_price_hint_used: self.dynamic_cu_price_hint_used,
+                dynamic_cu_price_hint_source: self.dynamic_cu_price_hint_source,
+                dynamic_cu_price_applied: self.dynamic_cu_price_applied,
+                dynamic_tip_policy_enabled: self.dynamic_tip_policy_enabled,
+                dynamic_tip_applied: self.dynamic_tip_applied,
+            })
+        }
+    }
+
+    struct DynamicPolicyRetryableErrorSubmitter {
+        dynamic_cu_price_policy_enabled: bool,
+        dynamic_cu_price_hint_used: bool,
+        dynamic_cu_price_hint_source: Option<submitter::DynamicCuPriceHintSource>,
+        dynamic_cu_price_applied: bool,
+        dynamic_tip_policy_enabled: bool,
+        dynamic_tip_applied: bool,
+    }
+
+    impl OrderSubmitter for DynamicPolicyRetryableErrorSubmitter {
+        fn submit(
+            &self,
+            _intent: &ExecutionIntent,
+            _client_order_id: &str,
+            _route: &str,
+        ) -> std::result::Result<submitter::SubmitResult, submitter::SubmitError> {
+            Err(
+                submitter::SubmitError::retryable("submit_retryable_dynamic", "forced retryable")
+                    .with_dynamic_policy_flags(
+                        self.dynamic_cu_price_policy_enabled,
+                        self.dynamic_cu_price_hint_used,
+                        self.dynamic_cu_price_hint_source,
+                        self.dynamic_cu_price_applied,
+                        self.dynamic_tip_policy_enabled,
+                        self.dynamic_tip_applied,
+                    ),
+            )
         }
     }
 
@@ -1247,6 +1352,537 @@ mod tests {
             .context("route fallback submit should leave order row")?;
         assert_eq!(order.route, "rpc");
         assert_eq!(order.status, "execution_confirmed");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_uses_fastlane_rpc_fallback_route_on_submit_retry() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-submit-route-fastlane-fallback")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-route-submit-fastlane",
+            now,
+            "sig-price-route-submit-fastlane",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4d:w:buy:fastlane".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-route-submit-fastlane".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let routes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "fastlane".to_string(),
+            submit_route_order: vec!["fastlane".to_string(), "rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(RetryableOnceSubmitter::new(routes.clone())),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
+        assert_eq!(
+            first.submit_attempted_by_route.get("fastlane"),
+            Some(&1),
+            "first attempt should use fastlane route"
+        );
+        assert_eq!(
+            first.submit_retry_scheduled_by_route.get("fastlane"),
+            Some(&1),
+            "retry should be scheduled on first fastlane route failure"
+        );
+
+        let second = runtime.process_batch(&store, Utc::now(), None)?;
+        assert_eq!(second.confirmed, 1);
+        assert_eq!(
+            second.submit_attempted_by_route.get("rpc"),
+            Some(&1),
+            "second attempt should use rpc fallback route"
+        );
+        assert_eq!(
+            second.confirm_confirmed_by_route.get("rpc"),
+            Some(&1),
+            "confirmed fallback order should be attributed to rpc route"
+        );
+        let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
+        assert_eq!(
+            observed_routes,
+            vec!["fastlane".to_string(), "rpc".to_string()]
+        );
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s4d_w_buy_fastlane_a1")?
+            .context("fastlane fallback submit should leave order row")?;
+        assert_eq!(order.route, "rpc");
+        assert_eq!(order.status, "execution_confirmed");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_blocks_jito_to_rpc_fallback_for_unclassified_retryable_submit_error(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("batch-submit-route-fallback-blocked")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-route-submit-blocked",
+            now,
+            "sig-price-route-submit-blocked",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4c:w:buy:route".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-route-submit-blocked".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let routes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "jito".to_string(),
+            submit_route_order: vec!["jito".to_string(), "rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(RetryableOnceSubmitter::new_with_code(
+                routes.clone(),
+                "submit_retryable_once",
+            )),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 1);
+        assert_eq!(
+            first.submit_failed_by_route.get("jito"),
+            Some(&1),
+            "jito route should fail closed when retryable code is not fallback-allowlisted"
+        );
+        assert_eq!(
+            first.submit_fallback_blocked_by_route.get("jito"),
+            Some(&1),
+            "fallback-blocked path should emit dedicated per-route counter"
+        );
+        assert_eq!(
+            first.submit_retry_scheduled_by_route.get("jito"),
+            None,
+            "retry should not be scheduled when jito->rpc fallback is blocked by policy"
+        );
+        let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
+        assert_eq!(
+            observed_routes,
+            vec!["jito".to_string()],
+            "runtime must not attempt rpc fallback for unclassified retryable code"
+        );
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s4c_w_buy_route_a1")?
+            .context("fallback-blocked submit should leave order row")?;
+        assert_eq!(order.route, "jito");
+        assert_eq!(order.status, "execution_failed");
+        assert_eq!(order.err_code.as_deref(), Some("submit_fallback_blocked"));
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_blocks_fastlane_to_rpc_fallback_for_unclassified_retryable_submit_error(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("batch-submit-route-fastlane-fallback-blocked")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-route-submit-fastlane-blocked",
+            now,
+            "sig-price-route-submit-fastlane-blocked",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4c:w:buy:fastlane".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-route-submit-fastlane-blocked".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let routes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "fastlane".to_string(),
+            submit_route_order: vec!["fastlane".to_string(), "rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(RetryableOnceSubmitter::new_with_code(
+                routes.clone(),
+                "submit_retryable_once",
+            )),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 1);
+        assert_eq!(
+            first.submit_failed_by_route.get("fastlane"),
+            Some(&1),
+            "fastlane route should fail closed when retryable code is not fallback-allowlisted"
+        );
+        assert_eq!(
+            first.submit_fallback_blocked_by_route.get("fastlane"),
+            Some(&1),
+            "fallback-blocked path should emit dedicated per-route counter"
+        );
+        assert_eq!(
+            first.submit_retry_scheduled_by_route.get("fastlane"),
+            None,
+            "retry should not be scheduled when fastlane->rpc fallback is blocked by policy"
+        );
+        let observed_routes = routes.lock().expect("routes mutex poisoned").clone();
+        assert_eq!(
+            observed_routes,
+            vec!["fastlane".to_string()],
+            "runtime must not attempt rpc fallback for unclassified retryable code"
+        );
+
+        let order = store
+            .execution_order_by_client_order_id("cb_shadow_s4c_w_buy_fastlane_a1")?
+            .context("fallback-blocked submit should leave order row")?;
+        assert_eq!(order.route, "fastlane");
+        assert_eq!(order.status, "execution_failed");
+        assert_eq!(order.err_code.as_deref(), Some("submit_fallback_blocked"));
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_records_dynamic_submit_policy_counters_by_route() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-dynamic-submit-policy-counters")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-dynamic-submit-policy",
+            now,
+            "sig-price-dynamic-submit-policy",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4d:w:buy:dynamic".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-dynamic-submit-policy".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(DynamicPolicyMetricsSubmitter {
+                dynamic_cu_price_policy_enabled: true,
+                dynamic_cu_price_hint_used: true,
+                dynamic_cu_price_hint_source: Some(submitter::DynamicCuPriceHintSource::Rpc),
+                dynamic_cu_price_applied: true,
+                dynamic_tip_policy_enabled: true,
+                dynamic_tip_applied: false,
+            }),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 1);
+        assert_eq!(
+            report.submit_dynamic_cu_policy_enabled_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_hint_used_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_cu_hint_api_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_cu_hint_rpc_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_price_applied_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_static_fallback_by_route.get("rpc"),
+            None
+        );
+        assert_eq!(
+            report.submit_dynamic_tip_policy_enabled_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_tip_applied_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_tip_static_floor_by_route.get("rpc"),
+            Some(&1)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_records_dynamic_cu_hint_used_with_static_fallback_counter() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-dynamic-submit-policy-hint-floor")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-dynamic-submit-policy-hint-floor",
+            now,
+            "sig-price-dynamic-submit-policy-hint-floor",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4e:w:buy:dynamic".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-dynamic-submit-policy-hint-floor".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(DynamicPolicyMetricsSubmitter {
+                dynamic_cu_price_policy_enabled: true,
+                dynamic_cu_price_hint_used: true,
+                dynamic_cu_price_hint_source: Some(submitter::DynamicCuPriceHintSource::Api),
+                dynamic_cu_price_applied: false,
+                dynamic_tip_policy_enabled: false,
+                dynamic_tip_applied: false,
+            }),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 1);
+        assert_eq!(
+            report.submit_dynamic_cu_policy_enabled_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_hint_used_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_hint_api_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_cu_hint_rpc_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_cu_price_applied_by_route.get("rpc"),
+            None
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_static_fallback_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_tip_policy_enabled_by_route.get("rpc"),
+            None
+        );
+        assert_eq!(report.submit_dynamic_tip_applied_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_tip_static_floor_by_route.get("rpc"),
+            None
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_records_dynamic_policy_counters_on_retryable_submit_error() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-dynamic-submit-policy-retryable")?;
+        let now = Utc::now();
+        let signal = CopySignalRow {
+            signal_id: "shadow:s4f:w:buy:dynamic".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-dynamic-submit-policy-retryable".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(DynamicPolicyRetryableErrorSubmitter {
+                dynamic_cu_price_policy_enabled: true,
+                dynamic_cu_price_hint_used: true,
+                dynamic_cu_price_hint_source: Some(submitter::DynamicCuPriceHintSource::Rpc),
+                dynamic_cu_price_applied: false,
+                dynamic_tip_policy_enabled: true,
+                dynamic_tip_applied: false,
+            }),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.submit_dynamic_cu_policy_enabled_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_hint_used_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_cu_hint_api_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_cu_hint_rpc_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_price_applied_by_route.get("rpc"),
+            None
+        );
+        assert_eq!(
+            report.submit_dynamic_cu_static_fallback_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.submit_dynamic_tip_policy_enabled_by_route.get("rpc"),
+            Some(&1)
+        );
+        assert_eq!(report.submit_dynamic_tip_applied_by_route.get("rpc"), None);
+        assert_eq!(
+            report.submit_dynamic_tip_static_floor_by_route.get("rpc"),
+            Some(&1)
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

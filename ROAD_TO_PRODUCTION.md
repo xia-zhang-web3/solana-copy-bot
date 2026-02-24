@@ -29,9 +29,9 @@ Owner: copybot runtime team
 | --- | --- | --- | --- |
 | Yellowstone primary runtime | Done | runtime-ops | 2026-02-19 |
 | Watchdog script/policy in repo | Done | runtime-ops | 2026-02-18 |
-| Watchdog systemd deploy on server | In progress | runtime-ops | 2026-02-20 |
-| Post-cutover 1h/6h/24h evidence | In progress | runtime-ops | 2026-02-20 |
-| 7-day observation closure | Pending | runtime-ops | 2026-02-26 |
+| Watchdog systemd deploy on server | Done | runtime-ops | 2026-02-24 |
+| Post-cutover 1h/6h/24h evidence | Done | runtime-ops | 2026-02-24 |
+| 7-day observation closure | Done | runtime-ops | 2026-02-24 |
 | Execution runtime (paper lifecycle) | Done | execution-dev | 2026-02-19 |
 | Execution runtime (live submit path) | In progress | execution-dev | 2026-03-09 |
 | Execution safety hardening (audit batch #1) | Done | execution-dev | 2026-02-19 |
@@ -40,9 +40,9 @@ Owner: copybot runtime team
 
 ### 2.1 Сквозной phase tracker (A→Live)
 
-| Фаза | Цель | Статус на 2026-02-19 | Главный блокер выхода |
+| Фаза | Цель | Статус на 2026-02-24 | Главный блокер выхода |
 | --- | --- | --- | --- |
-| A | Закрыть Yellowstone migration observation | In progress | systemd watchdog deploy + 1h/6h/24h evidence + 7-day window |
+| A | Закрыть Yellowstone migration observation | Done | закрыт; evidence архивирован (`ops/yellowstone_observation_closure_2026-02-24.md`) |
 | B | Закрыть security/ops baseline до первого submit | In progress | key policy + alert delivery + rollback drill |
 | C | Поднять execution core MVP | In progress | закрыть live submit-path + real tx policy (CU-limit/CU-price + route slippage bounds) |
 | C.5 | Пройти devnet dress rehearsal | In progress | собрать Stage C.5 evidence через `tools/execution_devnet_rehearsal.sh` + устранить P0/P1 по отчету |
@@ -52,11 +52,12 @@ Owner: copybot runtime team
 | G | Стабилизировать controlled live (first 7-14 days) | Pending | нулевые P0 и подтвержденная reconcile-дисциплина |
 | H | Перейти в standard live / steady-state ops | Pending | signed go-live + runbook completeness + ownership handoff |
 
-Фактический прогресс на 2026-02-19:
+Фактический прогресс на 2026-02-24:
 
 1. Закрыты safety-gates `R2P-06` и `R2P-16` (runtime BUY-gate).
 2. Execution baseline поднят: `R2P-08` и `R2P-09` закрыты; `R2P-10`/`R2P-11` в прогрессе (paper lifecycle + recovery + risk gates готовы).
 3. До real-money submit остаются code-only блокеры: live signed-tx backend за адаптерным контрактом + калибровка route-профилей под реальные market regimes.
+4. Stage A закрыт: watchdog server deploy + post-cutover evidence + observation closure архивированы (`ops/yellowstone_observation_closure_2026-02-24.md`).
 
 ## 3) Критичная правда по сроку "завтра торговать"
 
@@ -395,12 +396,14 @@ Exit criteria Stage H:
 ## 6) Детальный backlog "что за чем внедряем"
 
 `R2P-01` — Watchdog deployment on server  
+Status: ✅ Done (2026-02-24)  
 Depends on: none  
-Artifacts: `systemctl status`, timer logs, failover drill logs
+Artifacts: `systemctl status`, timer logs, failover drill logs (`ops/yellowstone_observation_closure_2026-02-24.md`)
 
 `R2P-02` — Migration evidence pack  
+Status: ✅ Done (2026-02-24)  
 Depends on: R2P-01  
-Artifacts: 1h/6h/24h reports, 7-day summary, replay waiver note
+Artifacts: 1h/6h/24h reports + observation summary + replay waiver note (`ops/yellowstone_observation_closure_2026-02-24.md`)
 
 `R2P-03` — Key management baseline  
 Depends on: none  
@@ -480,6 +483,7 @@ Depends on: R2P-11, R2P-12
 Files: `crates/execution/*`, config/env docs
 
 `R2P-14` — Live risk enforcement + `configs/live.toml`  
+Status: 🟡 In progress (`configs/live.toml` scaffold added; rollout evidence pending)  
 Depends on: R2P-11  
 Files: `crates/app/src/main.rs`, `crates/execution/*`, `configs/live.toml`
 
@@ -581,6 +585,51 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 58. adapter failover auth policy expanded: fallback upstream can use dedicated auth secret (`COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN[_FILE]` and `COPYBOT_ADAPTER_ROUTE_<ROUTE>_FALLBACK_AUTH_TOKEN[_FILE]`) while preserving backward-compatible inheritance from primary auth when fallback secret is not configured.
 59. adapter signed-transaction send wiring added: adapter submit path now accepts upstream `signed_tx_base64` (when `tx_signature` is absent), broadcasts via route-configured send RPC endpoint set (`COPYBOT_ADAPTER_SEND_RPC_URL` / per-route `..._SEND_RPC_URL` with optional fallback/auth), and returns validated on-chain signature; legacy upstream `tx_signature` path remains backward-compatible.
 60. adapter rollout evidence orchestrator added: `tools/adapter_rollout_evidence_report.sh` now composes adapter secret-rotation readiness (`tools/adapter_secret_rotation_report.sh`) and Stage C.5 devnet rehearsal (`tools/execution_devnet_rehearsal.sh`) into one fail-closed summary (`adapter_rollout_verdict=GO|HOLD|NO_GO`) with captured raw artifacts and smoke coverage for all verdict branches.
+61. live runtime baseline config added: `configs/live.toml` now provides a dedicated Stage D/E profile scaffold (`adapter_submit_confirm` + `jito/rpc` route policy + Stage E tiny-live risk limits), kept fail-safe with `execution.enabled=false` by default until rollout gates are closed.
+62. Stage D fallback policy tightened in runtime: `jito -> rpc` submit-route fallback is now allowed only for explicit availability-class retryable submit errors (adapter/upstream/send-rpc transport and HTTP-unavailable classes); non-allowlisted retryable codes fail-closed as `submit_fallback_blocked` with risk-event evidence instead of silently switching route.
+63. optional dynamic submit CU-price policy added for adapter mode: runtime can now raise route `compute_budget.cu_price_micro_lamports` using RPC `getRecentPrioritizationFees` percentile hints (`execution.submit_dynamic_cu_price_enabled`, `execution.submit_dynamic_cu_price_percentile`), bounded fail-closed by `execution.pretrade_max_priority_fee_lamports`; default remains disabled and falls back to static per-route CU policy when hints are unavailable.
+64. dynamic CU-price hinting timeout isolation added: fee-hint RPC polling now uses a dedicated short-timeout client (capped independently from submit timeout) so degraded priority-fee endpoints cannot consume the full submit request budget before adapter submit.
+65. dynamic CU-price hint phase now has a strict total timeout budget across primary+fallback RPC endpoints (not per-endpoint additive), preventing sequential endpoint probing from extending submit latency beyond the dedicated hint window.
+66. dynamic CU-price timeout behavior is now covered by integration test (`slow primary + optional fast fallback`) that verifies wall-clock budget enforcement and static-policy fallback when hint budget is exhausted before secondary endpoint polling.
+67. optional dynamic tip strategy added for adapter mode: runtime can now raise route `tip_lamports` from resolved compute budget (`cu_limit` × `cu_price_micro_lamports`) using configurable multiplier (`execution.submit_dynamic_tip_lamports_multiplier_bps`) with static tip as floor and global tip guardrail cap; policy is fail-closed and default-off.
+68. execution batch telemetry extended for dynamic submit policies: runtime now emits per-route counters for dynamic CU policy enablement/hint usage/applied-vs-static-fallback and dynamic tip policy enablement/applied-vs-static-floor, allowing rollout evidence to distinguish true dynamic-path usage from static fallback behavior.
+69. dynamic submit-policy telemetry now covers failed/retryable submit attempts too: adapter submit errors preserve dynamic policy flags (`enabled/hint_used/applied`) and execution pipeline records the same per-route dynamic counters on both success and error paths, eliminating observability blind spots during degraded submit windows.
+70. ops runtime snapshot helper now surfaces latest execution batch counters from journal logs (including dynamic submit-policy route maps), and smoke coverage validates presence/absence branches to keep go/no-go evidence observable during adapter-mode rollout.
+71. go/no-go summary now explicitly carries execution submit dynamic-policy evidence from runtime snapshot (`execution_batch_sample_available` and per-route submit/dynamic maps), so rollout packets can be reviewed from a single `tools/execution_go_nogo_report.sh` artifact without cross-reading raw snapshot output.
+72. go/no-go helper now emits explicit dynamic-policy readiness verdicts (`dynamic_cu_policy_verdict`, `dynamic_tip_policy_verdict`) with per-policy reasons and aggregate counters from runtime submit telemetry; this keeps dynamic-policy rollout evidence actionable without changing top-level fail-closed `overall_go_nogo_verdict` precedence.
+73. Stage C.5/rollout orchestrators now propagate dynamic-policy readiness fields from go/no-go output (`dynamic_cu_policy_verdict/reason`, `dynamic_tip_policy_verdict/reason`) into `tools/execution_devnet_rehearsal.sh` and `tools/adapter_rollout_evidence_report.sh` summaries, so auditors can review dynamic submit readiness directly from top-level rehearsal/rollout artifacts.
+74. go/no-go summary now includes route-profile and fee-decomposition calibration context fields (`primary_route/fallback_route`, primary/fallback KPI sample metrics, and fee-consistency/fallback counters), so Stage D tightening evidence for route order and fee decomposition can be audited from one consolidated artifact.
+75. devnet rehearsal summary now mirrors go/no-go route-profile/fee-decomposition context fields (primary/fallback route and KPI/counter excerpts), reducing operator dependency on nested artifact lookup during Stage C.5 evidence review.
+76. adapter rollout evidence summary now also mirrors rehearsal route-profile/fee-decomposition context fields (primary/fallback route, KPI snippets, fee-consistency/fallback counters), so final rollout packets remain self-contained at the top-level orchestrator artifact.
+77. go/no-go artifact export now emits deterministic SHA-256 checksums (`calibration/snapshot/preflight/summary`) and writes a manifest file (`execution_go_nogo_manifest_*.txt`) alongside raw captures, improving evidence-chain verification during Stage C.5 and rollout audits.
+78. devnet rehearsal and rollout orchestrators now emit checksum manifests too (`execution_devnet_rehearsal_manifest_*.txt`, `adapter_rollout_evidence_manifest_*.txt`) with SHA-256 hashes for their captured artifacts, aligning all Stage C.5 rollout evidence tools to the same integrity contract.
+79. adapter secret rotation helper now emits a checksum manifest (`adapter_secret_rotation_manifest_*.txt`) with report SHA-256 when `OUTPUT_DIR` is set, completing checksum-chain parity across rotation/rehearsal/rollout evidence helpers.
+80. rehearsal/rollout summaries now propagate nested go/no-go manifest/hash metadata (`go_nogo_artifact_manifest`, `go_nogo_*_sha256`) so checksum-chain tracing can be audited directly from top-level orchestrator outputs.
+81. rollout summary now also exposes nested rotation and rehearsal checksum metadata (`rotation_artifact_manifest/report_sha256`, `rehearsal_artifact_manifest/*_sha256`) so both sub-gates are integrity-traceable from the top-level rollout artifact.
+82. smoke coverage now validates checksum fields as strict lowercase SHA-256 hex (64 chars) across rotation/go-no-go/rehearsal/rollout helpers, preventing silent fallback to non-hash tokens in evidence outputs.
+83. dynamic CU-price policy now supports an optional external Priority Fee API source (`execution.submit_dynamic_cu_price_api_primary_url` with optional fallback/auth token and `_file` secret source), queried before RPC hints with shared timeout budget and fail-closed config guards; RPC `getRecentPrioritizationFees` remains automatic fallback when API hints are unavailable.
+84. dynamic CU hint source split (`api` vs `rpc`) is now propagated end-to-end in evidence orchestration: go/no-go emits source totals, devnet rehearsal mirrors them (`dynamic_cu_hint_api_total`/`dynamic_cu_hint_rpc_total`), and rollout summary carries the same fields; smoke validates snapshot/go-no-go/rehearsal/rollout branches to keep source-level telemetry regressions visible.
+85. go/no-go now emits explicit dynamic CU hint-source readiness gate (`dynamic_cu_hint_source_verdict/reason`) with config awareness (`dynamic_cu_hint_api_configured`) and source totals, and rehearsal/rollout summaries propagate the same fields so API-vs-RPC hint adoption can be audited without opening nested artifacts.
+86. multi-window adapter readiness helper added: `tools/execution_windowed_signoff_report.sh` now aggregates `execution_go_nogo_report.sh` over configurable windows (default `1,6,24`) into one `signoff_verdict=GO|HOLD|NO_GO` with per-window fee/route gates, route stability checks, and captured-artifact checksum manifest; smoke covers both `HOLD` (paper/skip) and `GO` (adapter test-mode PASS) branches.
+87. windowed signoff helper hardened fail-closed: per-window PASS now requires nested `overall_go_nogo_verdict=GO` and exit code `0` (not only fee/route PASS), preventing false `signoff_verdict=GO` when nested go/no-go is `NO_GO/HOLD`; smoke includes explicit regression case (`fee/route PASS` with nested overall `NO_GO` => signoff `NO_GO`).
+88. devnet rehearsal/rollout orchestration now carries windowed signoff evidence end-to-end: `tools/execution_devnet_rehearsal.sh` always captures nested `execution_windowed_signoff_report.sh` output (`windowed_signoff_*` fields + artifact hashes) and can enforce it as a required gate via `WINDOWED_SIGNOFF_REQUIRED=true` (with configurable `WINDOWED_SIGNOFF_WINDOWS_CSV`), while `tools/adapter_rollout_evidence_report.sh` propagates the same fields to top-level rollout summary; smoke covers pass-path propagation and required-gate `NO_GO` branches for both helpers.
+89. windowed signoff helper now supports optional dynamic-hint-source strictness (`WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS=true`): when dynamic CU policy is enabled in nested go/no-go output, each window requires `dynamic_cu_hint_source_verdict=PASS` (UNKNOWN remains fail-closed), and the strictness flag is propagated through rehearsal/rollout summaries with smoke coverage for the `HOLD` branch.
+90. windowed signoff helper now also supports optional dynamic-tip strictness (`WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=true`): when dynamic tip policy is enabled in nested go/no-go output, each window requires `dynamic_tip_policy_verdict=PASS` (UNKNOWN remains fail-closed), and the strictness flag is propagated through rehearsal/rollout summaries with smoke coverage for the `HOLD` branch.
+91. windowed signoff summary now includes nested go/no-go artifact-chain metadata per window (`window_*_go_nogo_artifact_manifest` and `window_*_go_nogo_{calibration,snapshot,preflight,summary}_sha256`), so multi-window signoff packets can be audited without opening each captured go/no-go output manually.
+92. evidence helpers now emit explicit `artifacts_written` flags even when `OUTPUT_DIR` is unset (`false`), and upstream orchestration summaries propagate nested artifact-write flags (`go_nogo_artifacts_written`, `windowed_signoff_artifacts_written`, `rehearsal_artifacts_written`) so `n/a` hash fields remain auditable as intentional no-export states.
+93. submit fallback hardening now also applies fail-closed allowlist policy to `fastlane -> rpc` transitions (same retryable availability/transport code set as `jito -> rpc`), preventing silent fallback on unclassified retryable submit errors when Fastlane is introduced under feature-flag routing.
+94. go/no-go helper now supports optional strict route-policy gate (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`) that requires adapter-mode route-profile evidence to resolve as `primary=jito` and `fallback=rpc` (`jito_rpc_policy_verdict=PASS`), and this strictness is propagated through windowed signoff/devnet rehearsal/rollout summaries.
+95. adapter route contract now enforces explicit Fastlane feature-flag gating: `execution.submit_fastlane_enabled` defaults to `false`, and runtime config validation + adapter preflight fail-closed if `fastlane` appears in default/allowed/order/CU-tip-slippage maps without enabling this flag.
+96. go/no-go/windowed/rehearsal/rollout orchestration now supports optional strict Fastlane-disabled gate (`GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`): nested go/no-go requires `execution.submit_fastlane_enabled=false` (`fastlane_feature_flag_verdict=PASS`), and this strictness metadata is propagated through higher-level evidence summaries.
+97. route-profile + fee-decomposition signoff helper added: `tools/execution_route_fee_signoff_report.sh` runs `execution_go_nogo_report.sh` and `execution_fee_calibration_report.sh` across multi-window sets (default `1,6,24`), enforces per-window verdict parity (`route_profile_verdict` and `fee_decomposition_verdict`), checks primary/fallback route stability, and emits a single `signoff_verdict=GO|HOLD|NO_GO` with artifact manifest for next-code-queue evidence packaging.
+98. top-level rollout orchestrator now captures route/fee signoff evidence in-band (`execution_route_fee_signoff_report.sh`) and can enforce it as required gate via `ROUTE_FEE_SIGNOFF_REQUIRED=true` (windows configurable with `ROUTE_FEE_SIGNOFF_WINDOWS_CSV`), while propagating route/fee signoff verdict, stability fields, and capture hashes in rollout summary artifacts.
+99. Stage C.5 rehearsal helper now also captures nested route/fee signoff evidence (`execution_route_fee_signoff_report.sh`) and can enforce it as required gate via `ROUTE_FEE_SIGNOFF_REQUIRED=true` (`ROUTE_FEE_SIGNOFF_WINDOWS_CSV` configurable), while propagating verdict/stability/hash fields in `tools/execution_devnet_rehearsal.sh` summary and artifacts.
+100. rollout summary now exposes nested rehearsal route/fee signoff fields under explicit `rehearsal_route_fee_*` keys, so operators can distinguish rehearsal-gate evidence from top-level rollout route/fee gate evidence in a single artifact.
+101. route/fee signoff helper now propagates per-window nested go/no-go reason fields (`window_*_overall_go_nogo_reason`) and uses that reason in hard-block summaries (`signoff_reason` for nested `NO_GO`/`HOLD`), with smoke coverage for strict-policy hard-block path (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`) to keep fail-closed diagnostics explicit in multi-window evidence output.
+102. strict policy diagnostics now emit stable reason codes (`jito_rpc_policy_reason_code`, `fastlane_feature_flag_reason_code`, `overall_go_nogo_reason_code`, `signoff_reason_code`, `devnet_rehearsal_reason_code`, `adapter_rollout_reason_code`) across go-no-go/windowed/rehearsal/rollout summaries, and smoke assertions use these codes to reduce false failures from copy-edits in human-readable reason text.
+103. diagnostics hardening finalized for rollout evidence chain: dynamic hint-source and route/fee signoff now also emit stable reason codes end-to-end (`dynamic_cu_hint_source_reason_code`, `route_fee_signoff_reason_code`, `rehearsal_route_fee_signoff_reason_code`), and smoke assertions were upgraded from free-text substring matching to field-scoped exact-code checks (`assert_field_equals`/`assert_field_in`) to remove false positives from reason phrasing edits.
+104. final rollout evidence package helper added: `tools/adapter_rollout_final_evidence_report.sh` runs strict-gated rollout evidence (`adapter_rollout_evidence_report.sh`) into a single package artifact root (`OUTPUT_ROOT`) with consolidated package verdict fields, captured rollout output, and top-level checksum manifest; smoke covers the pass-path package export and nested artifact presence.
+105. final route/fee signoff evidence package helper added: `tools/execution_route_fee_final_evidence_report.sh` runs `execution_route_fee_signoff_report.sh` into a single package artifact root (`OUTPUT_ROOT`) with strict policy defaults (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`, `GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`), consolidated package verdict fields (`final_route_fee_package_verdict`), and checksum manifest chaining top-level + nested signoff artifacts; smoke now covers wrapper exit mapping (`GO/HOLD/NO_GO`).
 
 Остается в next-code-queue:
 

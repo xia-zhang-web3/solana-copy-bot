@@ -7,7 +7,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use reqwest::Client;
@@ -34,10 +33,13 @@ use crate::http_utils::{
 };
 use crate::send_rpc::send_signed_transaction_via_rpc;
 use crate::submit_verify::{
-    build_submit_signature_verify_config, parse_submit_signature_verify_config,
-    submit_signature_verification_to_json, verify_submitted_signature_visibility,
-    SubmitSignatureVerification, SubmitSignatureVerifyConfig,
+    parse_submit_signature_verify_config, submit_signature_verification_to_json,
+    verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
 };
+#[cfg(test)]
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
+#[cfg(test)]
+use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 
 const TIP_MAX_LAMPORTS: u64 = 100_000_000;
 const CU_LIMIT_MIN: u32 = 1;

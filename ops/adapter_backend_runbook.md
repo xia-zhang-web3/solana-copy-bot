@@ -167,6 +167,32 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
    2. expected `rotation_readiness_verdict: PASS` (or `WARN` only for non-blocking permission hardening),
    3. attach emitted `artifact_report` file to ops evidence package.
 10. Combined rollout evidence helper:
-   1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=configs/paper.toml OUTPUT_DIR=state/adapter-rollout ./tools/adapter_rollout_evidence_report.sh 24 60`
+   1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=/etc/solana-copy-bot/live.server.toml OUTPUT_DIR=state/adapter-rollout ./tools/adapter_rollout_evidence_report.sh 24 60`
    2. helper runs secret rotation readiness + Stage C.5 devnet rehearsal and emits a single `adapter_rollout_verdict` (`GO`/`HOLD`/`NO_GO`),
-   3. attach `artifact_summary` plus captured raw artifacts for audit handoff.
+   3. optional strictness flags can be passed through to rehearsal/windowed signoff:
+      1. `WINDOWED_SIGNOFF_REQUIRED=true`
+      2. `WINDOWED_SIGNOFF_WINDOWS_CSV=1,6,24`
+      3. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS=true`
+      4. `WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS=true`
+      5. `GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`
+      6. `GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`
+      7. `ROUTE_FEE_SIGNOFF_REQUIRED=true`
+      8. `ROUTE_FEE_SIGNOFF_WINDOWS_CSV=1,6,24`
+      9. `REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED=true`
+      10. `REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV=1,6,24`
+   4. attach `artifact_summary` plus captured raw artifacts for audit handoff.
+11. Route/fee signoff helper (for `ROAD_TO_PRODUCTION` next-code-queue items 2/3):
+   1. run `CONFIG_PATH=configs/live.toml OUTPUT_DIR=state/route-fee-signoff ./tools/execution_route_fee_signoff_report.sh 1,6,24 60`
+   2. helper runs both `execution_go_nogo_report.sh` and `execution_fee_calibration_report.sh` per window and enforces parity (`route_profile_verdict` + `fee_decomposition_verdict`),
+   3. expected closure signal for tightening route policy: `signoff_verdict: GO` with stable primary/fallback routes and `route_profile_pass_count == fee_decomposition_pass_count == window_count`,
+   4. attach emitted summary + manifest + per-window captures to the rollout evidence package.
+12. Final rollout evidence package helper (recommended before production handoff):
+   1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=configs/live.toml OUTPUT_ROOT=state/adapter-rollout-final ./tools/adapter_rollout_final_evidence_report.sh 24 60`
+   2. helper executes `adapter_rollout_evidence_report.sh` with strict-gate defaults enabled (`windowed`, `jito/rpc policy`, `fastlane-disabled`, `route/fee signoff`),
+   3. output includes consolidated package verdict (`final_rollout_package_verdict`) and package manifest checksums,
+   4. attach both package artifacts and nested rollout artifacts under `OUTPUT_ROOT/rollout/` as the final runtime evidence bundle.
+13. Final route/fee signoff evidence package helper (recommended for next-code-queue items 2/3):
+   1. run `CONFIG_PATH=configs/live.toml OUTPUT_ROOT=state/route-fee-final ./tools/execution_route_fee_final_evidence_report.sh 1,6,24 60`
+   2. helper executes `execution_route_fee_signoff_report.sh` with strict defaults enabled (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`, `GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`) and captures nested artifacts under `OUTPUT_ROOT/route_fee_signoff/`,
+   3. output includes consolidated package verdict (`final_route_fee_package_verdict`) plus checksum manifest for summary/capture/nested signoff artifacts,
+   4. attach package summary + manifest + nested signoff artifacts as the final route-profile/fee-decomposition evidence set.

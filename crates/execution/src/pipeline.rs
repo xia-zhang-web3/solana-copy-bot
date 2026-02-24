@@ -1,12 +1,58 @@
 use crate::batch_report::bump_route_counter;
 use crate::intent::ExecutionIntent;
 use crate::pretrade::PreTradeDecisionKind;
-use crate::submitter::SubmitErrorKind;
+use crate::submitter::{DynamicCuPriceHintSource, SubmitErrorKind};
 use crate::{ExecutionBatchReport, ExecutionRuntime, SignalResult};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_storage::{ExecutionOrderRow, SqliteStore};
 use serde_json::json;
+
+fn bump_dynamic_submit_policy_counters(
+    report: &mut ExecutionBatchReport,
+    route: &str,
+    dynamic_cu_price_policy_enabled: bool,
+    dynamic_cu_price_hint_used: bool,
+    dynamic_cu_price_hint_source: Option<DynamicCuPriceHintSource>,
+    dynamic_cu_price_applied: bool,
+    dynamic_tip_policy_enabled: bool,
+    dynamic_tip_applied: bool,
+) {
+    if dynamic_cu_price_policy_enabled {
+        bump_route_counter(&mut report.submit_dynamic_cu_policy_enabled_by_route, route);
+        if dynamic_cu_price_hint_used {
+            bump_route_counter(&mut report.submit_dynamic_cu_hint_used_by_route, route);
+            match dynamic_cu_price_hint_source {
+                Some(DynamicCuPriceHintSource::Api) => {
+                    bump_route_counter(&mut report.submit_dynamic_cu_hint_api_by_route, route);
+                }
+                Some(DynamicCuPriceHintSource::Rpc) => {
+                    bump_route_counter(&mut report.submit_dynamic_cu_hint_rpc_by_route, route);
+                }
+                None => {}
+            }
+        }
+        if dynamic_cu_price_applied {
+            bump_route_counter(&mut report.submit_dynamic_cu_price_applied_by_route, route);
+        } else {
+            bump_route_counter(
+                &mut report.submit_dynamic_cu_static_fallback_by_route,
+                route,
+            );
+        }
+    }
+    if dynamic_tip_policy_enabled {
+        bump_route_counter(
+            &mut report.submit_dynamic_tip_policy_enabled_by_route,
+            route,
+        );
+        if dynamic_tip_applied {
+            bump_route_counter(&mut report.submit_dynamic_tip_applied_by_route, route);
+        } else {
+            bump_route_counter(&mut report.submit_dynamic_tip_static_floor_by_route, route);
+        }
+    }
+}
 
 impl ExecutionRuntime {
     pub(crate) fn process_pending_order(
@@ -161,6 +207,16 @@ impl ExecutionRuntime {
         {
             Ok(value) => value,
             Err(error) => {
+                bump_dynamic_submit_policy_counters(
+                    report,
+                    selected_route,
+                    error.dynamic_cu_price_policy_enabled,
+                    error.dynamic_cu_price_hint_used,
+                    error.dynamic_cu_price_hint_source,
+                    error.dynamic_cu_price_applied,
+                    error.dynamic_tip_policy_enabled,
+                    error.dynamic_tip_applied,
+                );
                 let retryable = matches!(error.kind, SubmitErrorKind::Retryable);
                 let detail = format!(
                     "submit_error attempt={} max_attempts={} route={} code={} detail={}",
@@ -168,6 +224,53 @@ impl ExecutionRuntime {
                 );
                 if retryable && attempt < self.max_submit_attempts {
                     let next_attempt = attempt.saturating_add(1);
+                    let next_route = self.submit_route_for_attempt(next_attempt);
+                    if !self.submit_fallback_route_allowed(
+                        selected_route,
+                        next_route,
+                        error.code.as_str(),
+                    ) {
+                        let blocked_detail = format!(
+                            "submit_fallback_blocked attempt={} next_attempt={} route={} next_route={} code={} detail={}",
+                            attempt,
+                            next_attempt,
+                            selected_route,
+                            next_route,
+                            error.code,
+                            error.detail
+                        );
+                        bump_route_counter(&mut report.submit_failed_by_route, selected_route);
+                        bump_route_counter(
+                            &mut report.submit_fallback_blocked_by_route,
+                            selected_route,
+                        );
+                        store.mark_order_failed(
+                            &order.order_id,
+                            "submit_fallback_blocked",
+                            Some(&blocked_detail),
+                        )?;
+                        store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                        let details = json!({
+                            "signal_id": intent.signal_id,
+                            "order_id": order.order_id,
+                            "attempt": attempt,
+                            "next_attempt": next_attempt,
+                            "max_submit_attempts": self.max_submit_attempts,
+                            "route": selected_route,
+                            "next_route": next_route,
+                            "error_code": error.code,
+                            "retryable": true,
+                            "error": error.detail
+                        })
+                        .to_string();
+                        let _ = store.insert_risk_event(
+                            "execution_submit_fallback_blocked",
+                            "error",
+                            now,
+                            Some(&details),
+                        );
+                        return Ok(SignalResult::Failed);
+                    }
                     store.set_order_attempt(&order.order_id, next_attempt, Some(&detail))?;
                     store.update_copy_signal_status(&intent.signal_id, "execution_simulated")?;
                     bump_route_counter(&mut report.submit_retry_scheduled_by_route, selected_route);
@@ -220,6 +323,16 @@ impl ExecutionRuntime {
                 return Ok(SignalResult::Failed);
             }
         };
+        bump_dynamic_submit_policy_counters(
+            report,
+            submit.route.as_str(),
+            submit.dynamic_cu_price_policy_enabled,
+            submit.dynamic_cu_price_hint_used,
+            submit.dynamic_cu_price_hint_source,
+            submit.dynamic_cu_price_applied,
+            submit.dynamic_tip_policy_enabled,
+            submit.dynamic_tip_applied,
+        );
         store.mark_order_submitted(
             &order.order_id,
             submit.route.as_str(),

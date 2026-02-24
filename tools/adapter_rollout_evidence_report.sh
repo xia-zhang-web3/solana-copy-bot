@@ -14,6 +14,20 @@ SERVICE="${SERVICE:-solana-copy-bot}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
+WINDOWED_SIGNOFF_WINDOWS_CSV="${WINDOWED_SIGNOFF_WINDOWS_CSV:-1,6,24}"
+WINDOWED_SIGNOFF_REQUIRED="${WINDOWED_SIGNOFF_REQUIRED:-false}"
+WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
+WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
+GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
+GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
+ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
+REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="${REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
+REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
+REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-${GO_NOGO_TEST_MODE:-false}}"
+REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}}"
+REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}}"
+REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -34,16 +48,22 @@ fi
 
 rotation_output_dir=""
 rehearsal_output_dir=""
+route_fee_signoff_output_dir=""
 if [[ -n "$OUTPUT_DIR" ]]; then
   rotation_output_dir="$OUTPUT_DIR/rotation"
   rehearsal_output_dir="$OUTPUT_DIR/rehearsal"
-  mkdir -p "$rotation_output_dir" "$rehearsal_output_dir"
+  route_fee_signoff_output_dir="$OUTPUT_DIR/route_fee_signoff"
+  mkdir -p "$rotation_output_dir" "$rehearsal_output_dir" "$route_fee_signoff_output_dir"
 fi
 
 rotation_output=""
 rotation_exit_code=3
 rotation_verdict="UNKNOWN"
 rotation_reason="rotation helper not executed"
+rotation_artifact_report=""
+rotation_artifact_manifest=""
+rotation_report_sha256=""
+rotation_artifacts_written="false"
 if [[ -f "$ADAPTER_ENV_PATH" ]]; then
   if rotation_output="$(
     ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
@@ -57,6 +77,10 @@ if [[ -f "$ADAPTER_ENV_PATH" ]]; then
 
   rotation_verdict="$(normalize_rotation_verdict "$(extract_field "rotation_readiness_verdict" "$rotation_output")")"
   rotation_reason="$(extract_field "rotation_readiness_reason" "$rotation_output")"
+  rotation_artifact_report="$(trim_string "$(extract_field "artifact_report" "$rotation_output")")"
+  rotation_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rotation_output")")"
+  rotation_report_sha256="$(trim_string "$(extract_field "report_sha256" "$rotation_output")")"
+  rotation_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rotation_output")")"
   rotation_first_error="$(printf '%s\n' "$rotation_output" | awk '
     /^--- errors ---$/ {in_errors=1; next}
     /^--- / && in_errors {exit}
@@ -88,6 +112,72 @@ rehearsal_verdict="UNKNOWN"
 rehearsal_reason="execution devnet rehearsal helper not executed"
 preflight_verdict=""
 go_nogo_verdict=""
+go_nogo_reason_code=""
+go_nogo_require_jito_rpc_policy=""
+jito_rpc_policy_verdict=""
+jito_rpc_policy_reason=""
+jito_rpc_policy_reason_code=""
+go_nogo_require_fastlane_disabled=""
+submit_fastlane_enabled=""
+fastlane_feature_flag_verdict=""
+fastlane_feature_flag_reason=""
+fastlane_feature_flag_reason_code=""
+rehearsal_reason_code=""
+dynamic_cu_hint_source_reason_code=""
+dynamic_cu_policy_verdict=""
+dynamic_cu_policy_reason=""
+dynamic_tip_policy_verdict=""
+dynamic_tip_policy_reason=""
+windowed_signoff_required=""
+windowed_signoff_windows_csv=""
+windowed_signoff_require_dynamic_hint_source_pass=""
+windowed_signoff_require_dynamic_tip_policy_pass=""
+windowed_signoff_verdict=""
+windowed_signoff_reason=""
+primary_route=""
+fallback_route=""
+primary_attempted_orders=""
+primary_success_rate_pct=""
+primary_timeout_rate_pct=""
+fallback_attempted_orders=""
+fallback_success_rate_pct=""
+fallback_timeout_rate_pct=""
+confirmed_orders_total=""
+fee_consistency_missing_coverage_rows=""
+fee_consistency_mismatch_rows=""
+fallback_used_events=""
+hint_mismatch_events=""
+go_nogo_artifact_manifest=""
+go_nogo_calibration_sha256=""
+go_nogo_snapshot_sha256=""
+go_nogo_preflight_sha256=""
+go_nogo_summary_sha256=""
+go_nogo_artifacts_written="false"
+rehearsal_artifact_manifest=""
+rehearsal_summary_sha256=""
+rehearsal_preflight_sha256=""
+rehearsal_go_nogo_sha256=""
+rehearsal_tests_sha256=""
+rehearsal_artifacts_written="false"
+windowed_signoff_artifact_manifest=""
+windowed_signoff_summary_sha256=""
+windowed_signoff_artifacts_written="false"
+rehearsal_route_fee_signoff_required=""
+rehearsal_route_fee_signoff_windows_csv=""
+rehearsal_route_fee_signoff_verdict=""
+rehearsal_route_fee_signoff_reason=""
+rehearsal_route_fee_signoff_reason_code=""
+rehearsal_route_fee_signoff_exit_code=""
+rehearsal_route_fee_signoff_artifact_manifest=""
+rehearsal_route_fee_signoff_summary_sha256=""
+rehearsal_route_fee_signoff_artifacts_written="false"
+rehearsal_route_fee_primary_route_stable=""
+rehearsal_route_fee_stable_primary_route=""
+rehearsal_route_fee_fallback_route_stable=""
+rehearsal_route_fee_stable_fallback_route=""
+rehearsal_route_fee_route_profile_pass_count=""
+rehearsal_route_fee_fee_decomposition_pass_count=""
+rehearsal_route_fee_window_count=""
 tests_run=""
 tests_failed=""
 if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
@@ -110,6 +200,18 @@ else
       GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$GO_NOGO_REQUIRE_JITO_RPC_POLICY" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$GO_NOGO_REQUIRE_FASTLANE_DISABLED" \
+      WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
+      WINDOWED_SIGNOFF_REQUIRED="$WINDOWED_SIGNOFF_REQUIRED" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
+      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" \
+      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
+      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
       bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     rehearsal_exit_code=0
@@ -119,8 +221,79 @@ else
 
   rehearsal_verdict="$(normalize_rehearsal_verdict "$(extract_field "devnet_rehearsal_verdict" "$rehearsal_output")")"
   rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
+  rehearsal_reason_code="$(trim_string "$(extract_field "devnet_rehearsal_reason_code" "$rehearsal_output")")"
   preflight_verdict="$(trim_string "$(extract_field "preflight_verdict" "$rehearsal_output")")"
   go_nogo_verdict="$(trim_string "$(extract_field "overall_go_nogo_verdict" "$rehearsal_output")")"
+  go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$rehearsal_output")")"
+  go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$(extract_field "go_nogo_require_jito_rpc_policy" "$rehearsal_output")")"
+  jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$rehearsal_output")")"
+  jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$rehearsal_output")")"
+  jito_rpc_policy_reason_code="$(trim_string "$(extract_field "jito_rpc_policy_reason_code" "$rehearsal_output")")"
+  go_nogo_require_fastlane_disabled="$(normalize_bool_token "$(extract_field "go_nogo_require_fastlane_disabled" "$rehearsal_output")")"
+  submit_fastlane_enabled="$(normalize_bool_token "$(extract_field "submit_fastlane_enabled" "$rehearsal_output")")"
+  fastlane_feature_flag_verdict="$(normalize_gate_verdict "$(extract_field "fastlane_feature_flag_verdict" "$rehearsal_output")")"
+  fastlane_feature_flag_reason="$(trim_string "$(extract_field "fastlane_feature_flag_reason" "$rehearsal_output")")"
+  fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$rehearsal_output")")"
+  dynamic_cu_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_policy_verdict" "$rehearsal_output")")"
+  dynamic_cu_policy_reason="$(trim_string "$(extract_field "dynamic_cu_policy_reason" "$rehearsal_output")")"
+  dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$rehearsal_output")")"
+  dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$rehearsal_output")")"
+  windowed_signoff_required="$(trim_string "$(extract_field "windowed_signoff_required" "$rehearsal_output")")"
+  windowed_signoff_windows_csv="$(trim_string "$(extract_field "windowed_signoff_windows_csv" "$rehearsal_output")")"
+  windowed_signoff_require_dynamic_hint_source_pass="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$rehearsal_output")")"
+  windowed_signoff_require_dynamic_tip_policy_pass="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_tip_policy_pass" "$rehearsal_output")")"
+  windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "windowed_signoff_verdict" "$rehearsal_output")")"
+  windowed_signoff_reason="$(trim_string "$(extract_field "windowed_signoff_reason" "$rehearsal_output")")"
+  dynamic_cu_hint_api_total="$(trim_string "$(extract_field "dynamic_cu_hint_api_total" "$rehearsal_output")")"
+  dynamic_cu_hint_rpc_total="$(trim_string "$(extract_field "dynamic_cu_hint_rpc_total" "$rehearsal_output")")"
+  dynamic_cu_hint_api_configured="$(trim_string "$(extract_field "dynamic_cu_hint_api_configured" "$rehearsal_output")")"
+  dynamic_cu_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$rehearsal_output")")"
+  dynamic_cu_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$rehearsal_output")")"
+  dynamic_cu_hint_source_reason_code="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason_code" "$rehearsal_output")")"
+  primary_route="$(trim_string "$(extract_field "primary_route" "$rehearsal_output")")"
+  fallback_route="$(trim_string "$(extract_field "fallback_route" "$rehearsal_output")")"
+  primary_attempted_orders="$(trim_string "$(extract_field "primary_attempted_orders" "$rehearsal_output")")"
+  primary_success_rate_pct="$(trim_string "$(extract_field "primary_success_rate_pct" "$rehearsal_output")")"
+  primary_timeout_rate_pct="$(trim_string "$(extract_field "primary_timeout_rate_pct" "$rehearsal_output")")"
+  fallback_attempted_orders="$(trim_string "$(extract_field "fallback_attempted_orders" "$rehearsal_output")")"
+  fallback_success_rate_pct="$(trim_string "$(extract_field "fallback_success_rate_pct" "$rehearsal_output")")"
+  fallback_timeout_rate_pct="$(trim_string "$(extract_field "fallback_timeout_rate_pct" "$rehearsal_output")")"
+  confirmed_orders_total="$(trim_string "$(extract_field "confirmed_orders_total" "$rehearsal_output")")"
+  fee_consistency_missing_coverage_rows="$(trim_string "$(extract_field "fee_consistency_missing_coverage_rows" "$rehearsal_output")")"
+  fee_consistency_mismatch_rows="$(trim_string "$(extract_field "fee_consistency_mismatch_rows" "$rehearsal_output")")"
+  fallback_used_events="$(trim_string "$(extract_field "fallback_used_events" "$rehearsal_output")")"
+  hint_mismatch_events="$(trim_string "$(extract_field "hint_mismatch_events" "$rehearsal_output")")"
+  go_nogo_artifact_manifest="$(trim_string "$(extract_field "go_nogo_artifact_manifest" "$rehearsal_output")")"
+  go_nogo_calibration_sha256="$(trim_string "$(extract_field "go_nogo_calibration_sha256" "$rehearsal_output")")"
+  go_nogo_snapshot_sha256="$(trim_string "$(extract_field "go_nogo_snapshot_sha256" "$rehearsal_output")")"
+  go_nogo_preflight_sha256="$(trim_string "$(extract_field "go_nogo_preflight_sha256" "$rehearsal_output")")"
+  go_nogo_summary_sha256="$(trim_string "$(extract_field "go_nogo_summary_sha256" "$rehearsal_output")")"
+  go_nogo_artifacts_written="$(normalize_bool_token "$(extract_field "go_nogo_artifacts_written" "$rehearsal_output")")"
+  rehearsal_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rehearsal_output")")"
+  rehearsal_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rehearsal_output")")"
+  rehearsal_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$rehearsal_output")")"
+  rehearsal_go_nogo_sha256="$(trim_string "$(extract_field "go_nogo_sha256" "$rehearsal_output")")"
+  rehearsal_tests_sha256="$(trim_string "$(extract_field "tests_sha256" "$rehearsal_output")")"
+  rehearsal_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rehearsal_output")")"
+  windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "windowed_signoff_artifact_manifest" "$rehearsal_output")")"
+  windowed_signoff_summary_sha256="$(trim_string "$(extract_field "windowed_signoff_summary_sha256" "$rehearsal_output")")"
+  windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "windowed_signoff_artifacts_written" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_required="$(normalize_bool_token "$(extract_field "route_fee_signoff_required" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_windows_csv="$(trim_string "$(extract_field "route_fee_signoff_windows_csv" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "route_fee_signoff_verdict" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_reason="$(trim_string "$(extract_field "route_fee_signoff_reason" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_reason_code="$(trim_string "$(extract_field "route_fee_signoff_reason_code" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_exit_code="$(trim_string "$(extract_field "route_fee_signoff_exit_code" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "route_fee_signoff_artifact_manifest" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "route_fee_signoff_summary_sha256" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "route_fee_signoff_artifacts_written" "$rehearsal_output")")"
+  rehearsal_route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "route_fee_primary_route_stable" "$rehearsal_output")")"
+  rehearsal_route_fee_stable_primary_route="$(trim_string "$(extract_field "route_fee_stable_primary_route" "$rehearsal_output")")"
+  rehearsal_route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "route_fee_fallback_route_stable" "$rehearsal_output")")"
+  rehearsal_route_fee_stable_fallback_route="$(trim_string "$(extract_field "route_fee_stable_fallback_route" "$rehearsal_output")")"
+  rehearsal_route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_fee_route_profile_pass_count" "$rehearsal_output")")"
+  rehearsal_route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "route_fee_fee_decomposition_pass_count" "$rehearsal_output")")"
+  rehearsal_route_fee_window_count="$(trim_string "$(extract_field "route_fee_window_count" "$rehearsal_output")")"
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
   if [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
@@ -130,33 +303,146 @@ else
   fi
 fi
 
+route_fee_signoff_required="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_REQUIRED")"
+route_fee_signoff_go_nogo_test_mode="$(normalize_bool_token "${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-${GO_NOGO_TEST_MODE:-false}}")"
+route_fee_signoff_go_nogo_test_fee_override="$(trim_string "${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}}")"
+route_fee_signoff_go_nogo_test_route_override="$(trim_string "${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}}")"
+route_fee_signoff_test_verdict_override_raw="$(trim_string "${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}")"
+route_fee_signoff_output=""
+route_fee_signoff_exit_code=3
+route_fee_signoff_verdict="UNKNOWN"
+route_fee_signoff_reason="execution route/fee signoff helper not executed"
+route_fee_signoff_reason_code="not_executed"
+route_fee_signoff_windows_csv=""
+route_fee_signoff_artifact_manifest=""
+route_fee_signoff_summary_sha256=""
+route_fee_signoff_artifacts_written="false"
+route_fee_primary_route_stable=""
+route_fee_stable_primary_route=""
+route_fee_fallback_route_stable=""
+route_fee_stable_fallback_route=""
+route_fee_route_profile_pass_count=""
+route_fee_fee_decomposition_pass_count=""
+route_fee_window_count=""
+if [[ ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+  route_fee_signoff_exit_code=3
+  route_fee_signoff_verdict="NO_GO"
+  route_fee_signoff_reason="invalid risk events window for route/fee signoff"
+  route_fee_signoff_reason_code="input_error"
+elif [[ ! -f "$CONFIG_PATH" ]]; then
+  route_fee_signoff_exit_code=3
+  route_fee_signoff_verdict="NO_GO"
+  route_fee_signoff_reason="config file not found: $CONFIG_PATH"
+  route_fee_signoff_reason_code="input_error"
+else
+  if route_fee_signoff_output="$(
+    PATH="$PATH" \
+      DB_PATH="${DB_PATH:-}" \
+      CONFIG_PATH="$CONFIG_PATH" \
+      SERVICE="$SERVICE" \
+      OUTPUT_DIR="$route_fee_signoff_output_dir" \
+      GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_fee_override" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_route_override" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$GO_NOGO_REQUIRE_JITO_RPC_POLICY" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$GO_NOGO_REQUIRE_FASTLANE_DISABLED" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+  )"; then
+    route_fee_signoff_exit_code=0
+  else
+    route_fee_signoff_exit_code=$?
+  fi
+
+  route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$route_fee_signoff_output")")"
+  route_fee_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$route_fee_signoff_output")")"
+  route_fee_signoff_reason_code="$(trim_string "$(extract_field "signoff_reason_code" "$route_fee_signoff_output")")"
+  route_fee_signoff_windows_csv="$(trim_string "$(extract_field "windows_csv" "$route_fee_signoff_output")")"
+  route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
+  route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
+  route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+  route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
+  route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_signoff_output")")"
+  route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"
+  route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_signoff_output")")"
+  route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_profile_pass_count" "$route_fee_signoff_output")")"
+  route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "fee_decomposition_pass_count" "$route_fee_signoff_output")")"
+  route_fee_window_count="$(trim_string "$(extract_field "window_count" "$route_fee_signoff_output")")"
+  if [[ "$route_fee_signoff_verdict" == "UNKNOWN" ]]; then
+    route_fee_signoff_reason="unable to classify route/fee signoff verdict (exit=$route_fee_signoff_exit_code)"
+    route_fee_signoff_reason_code="unknown_verdict"
+  elif [[ -z "$route_fee_signoff_reason" ]]; then
+    route_fee_signoff_reason="execution route/fee signoff helper reported $route_fee_signoff_verdict"
+    route_fee_signoff_reason_code="missing_reason"
+  fi
+fi
+
+if [[ -n "$route_fee_signoff_test_verdict_override_raw" ]]; then
+  if [[ "$route_fee_signoff_go_nogo_test_mode" == "true" ]]; then
+    route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$route_fee_signoff_test_verdict_override_raw")"
+    route_fee_signoff_reason="test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=${route_fee_signoff_test_verdict_override_raw})"
+    route_fee_signoff_reason_code="test_override"
+  else
+    input_errors+=("ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE requires ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE=true")
+  fi
+fi
+
 adapter_rollout_verdict="NO_GO"
 adapter_rollout_reason="unrecognized rollout gate state"
+adapter_rollout_reason_code="unrecognized_state"
 if ((${#input_errors[@]} > 0)); then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="${input_errors[0]}"
+  adapter_rollout_reason_code="input_error"
 elif [[ "$rotation_verdict" == "FAIL" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="rotation readiness failed: ${rotation_reason:-n/a}"
+  adapter_rollout_reason_code="rotation_fail"
 elif [[ "$rotation_verdict" == "UNKNOWN" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="rotation readiness verdict unknown; fail-closed"
+  adapter_rollout_reason_code="rotation_unknown"
 elif [[ "$rehearsal_verdict" == "NO_GO" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="devnet rehearsal returned NO_GO: ${rehearsal_reason:-n/a}"
+  adapter_rollout_reason_code="rehearsal_no_go"
 elif [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="devnet rehearsal verdict unknown; fail-closed"
-elif [[ "$rotation_verdict" == "WARN" || "$rehearsal_verdict" == "HOLD" ]]; then
+  adapter_rollout_reason_code="rehearsal_unknown"
+elif [[ "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "UNKNOWN" ]]; then
+  adapter_rollout_verdict="NO_GO"
+  adapter_rollout_reason="required route/fee signoff verdict unknown; fail-closed"
+  adapter_rollout_reason_code="route_fee_signoff_unknown"
+elif [[ "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "NO_GO" ]]; then
+  adapter_rollout_verdict="NO_GO"
+  adapter_rollout_reason="required route/fee signoff returned NO_GO: ${route_fee_signoff_reason:-n/a}"
+  adapter_rollout_reason_code="route_fee_signoff_no_go"
+elif [[ "$rotation_verdict" == "WARN" || "$rehearsal_verdict" == "HOLD" || ( "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "HOLD" ) ]]; then
   adapter_rollout_verdict="HOLD"
   if [[ "$rotation_verdict" == "WARN" ]]; then
     adapter_rollout_reason="rotation readiness returned WARN: ${rotation_reason:-n/a}"
-  else
+    adapter_rollout_reason_code="rotation_warn"
+  elif [[ "$rehearsal_verdict" == "HOLD" ]]; then
     adapter_rollout_reason="devnet rehearsal returned HOLD: ${rehearsal_reason:-n/a}"
+    adapter_rollout_reason_code="rehearsal_hold"
+  else
+    adapter_rollout_reason="required route/fee signoff returned HOLD: ${route_fee_signoff_reason:-n/a}"
+    adapter_rollout_reason_code="route_fee_signoff_hold"
   fi
-elif [[ "$rotation_verdict" == "PASS" && "$rehearsal_verdict" == "GO" ]]; then
+elif [[ "$rotation_verdict" == "PASS" && "$rehearsal_verdict" == "GO" && ( "$route_fee_signoff_required" != "true" || "$route_fee_signoff_verdict" == "GO" ) ]]; then
   adapter_rollout_verdict="GO"
-  adapter_rollout_reason="rotation readiness and devnet rehearsal gates passed"
+  if [[ "$route_fee_signoff_required" == "true" ]]; then
+    adapter_rollout_reason="rotation readiness, devnet rehearsal, and required route/fee signoff gates passed"
+    adapter_rollout_reason_code="gates_pass_with_route_fee"
+  else
+    adapter_rollout_reason="rotation readiness and devnet rehearsal gates passed"
+    adapter_rollout_reason_code="gates_pass"
+  fi
+fi
+
+artifacts_written="false"
+if [[ -n "$OUTPUT_DIR" ]]; then
+  artifacts_written="true"
 fi
 
 summary_output="$(cat <<EOF
@@ -171,18 +457,111 @@ risk_events_minutes: $RISK_EVENTS_MINUTES
 rotation_readiness_verdict: $rotation_verdict
 rotation_readiness_reason: ${rotation_reason:-n/a}
 rotation_exit_code: $rotation_exit_code
+rotation_artifact_report: ${rotation_artifact_report:-n/a}
+rotation_artifact_manifest: ${rotation_artifact_manifest:-n/a}
+rotation_report_sha256: ${rotation_report_sha256:-n/a}
+rotation_artifacts_written: $rotation_artifacts_written
 
 devnet_rehearsal_verdict: $rehearsal_verdict
 devnet_rehearsal_reason: ${rehearsal_reason:-n/a}
+devnet_rehearsal_reason_code: ${rehearsal_reason_code:-n/a}
 devnet_rehearsal_exit_code: $rehearsal_exit_code
 preflight_verdict: ${preflight_verdict:-unknown}
 overall_go_nogo_verdict: ${go_nogo_verdict:-unknown}
+overall_go_nogo_reason_code: ${go_nogo_reason_code:-n/a}
+go_nogo_require_jito_rpc_policy: ${go_nogo_require_jito_rpc_policy:-false}
+jito_rpc_policy_verdict: ${jito_rpc_policy_verdict:-unknown}
+jito_rpc_policy_reason: ${jito_rpc_policy_reason:-n/a}
+jito_rpc_policy_reason_code: ${jito_rpc_policy_reason_code:-n/a}
+go_nogo_require_fastlane_disabled: ${go_nogo_require_fastlane_disabled:-false}
+submit_fastlane_enabled: ${submit_fastlane_enabled:-false}
+fastlane_feature_flag_verdict: ${fastlane_feature_flag_verdict:-unknown}
+fastlane_feature_flag_reason: ${fastlane_feature_flag_reason:-n/a}
+fastlane_feature_flag_reason_code: ${fastlane_feature_flag_reason_code:-n/a}
+route_fee_signoff_required: $route_fee_signoff_required
+route_fee_signoff_verdict: ${route_fee_signoff_verdict:-unknown}
+route_fee_signoff_reason: ${route_fee_signoff_reason:-n/a}
+route_fee_signoff_reason_code: ${route_fee_signoff_reason_code:-n/a}
+route_fee_signoff_exit_code: ${route_fee_signoff_exit_code:-3}
+route_fee_signoff_windows_csv: ${route_fee_signoff_windows_csv:-n/a}
+route_fee_signoff_artifact_manifest: ${route_fee_signoff_artifact_manifest:-n/a}
+route_fee_signoff_summary_sha256: ${route_fee_signoff_summary_sha256:-n/a}
+route_fee_signoff_artifacts_written: $route_fee_signoff_artifacts_written
+route_fee_primary_route_stable: ${route_fee_primary_route_stable:-false}
+route_fee_stable_primary_route: ${route_fee_stable_primary_route:-n/a}
+route_fee_fallback_route_stable: ${route_fee_fallback_route_stable:-false}
+route_fee_stable_fallback_route: ${route_fee_stable_fallback_route:-n/a}
+route_fee_route_profile_pass_count: ${route_fee_route_profile_pass_count:-n/a}
+route_fee_fee_decomposition_pass_count: ${route_fee_fee_decomposition_pass_count:-n/a}
+route_fee_window_count: ${route_fee_window_count:-n/a}
+dynamic_cu_policy_verdict: ${dynamic_cu_policy_verdict:-unknown}
+dynamic_cu_policy_reason: ${dynamic_cu_policy_reason:-n/a}
+dynamic_tip_policy_verdict: ${dynamic_tip_policy_verdict:-unknown}
+dynamic_tip_policy_reason: ${dynamic_tip_policy_reason:-n/a}
+windowed_signoff_required: ${windowed_signoff_required:-false}
+windowed_signoff_windows_csv: ${windowed_signoff_windows_csv:-n/a}
+windowed_signoff_require_dynamic_hint_source_pass: ${windowed_signoff_require_dynamic_hint_source_pass:-false}
+windowed_signoff_require_dynamic_tip_policy_pass: ${windowed_signoff_require_dynamic_tip_policy_pass:-false}
+windowed_signoff_verdict: ${windowed_signoff_verdict:-unknown}
+windowed_signoff_reason: ${windowed_signoff_reason:-n/a}
+dynamic_cu_hint_api_total: ${dynamic_cu_hint_api_total:-n/a}
+dynamic_cu_hint_rpc_total: ${dynamic_cu_hint_rpc_total:-n/a}
+dynamic_cu_hint_api_configured: ${dynamic_cu_hint_api_configured:-false}
+dynamic_cu_hint_source_verdict: ${dynamic_cu_hint_source_verdict:-unknown}
+dynamic_cu_hint_source_reason: ${dynamic_cu_hint_source_reason:-n/a}
+dynamic_cu_hint_source_reason_code: ${dynamic_cu_hint_source_reason_code:-n/a}
+primary_route: ${primary_route:-n/a}
+fallback_route: ${fallback_route:-n/a}
+primary_attempted_orders: ${primary_attempted_orders:-n/a}
+primary_success_rate_pct: ${primary_success_rate_pct:-n/a}
+primary_timeout_rate_pct: ${primary_timeout_rate_pct:-n/a}
+fallback_attempted_orders: ${fallback_attempted_orders:-n/a}
+fallback_success_rate_pct: ${fallback_success_rate_pct:-n/a}
+fallback_timeout_rate_pct: ${fallback_timeout_rate_pct:-n/a}
+confirmed_orders_total: ${confirmed_orders_total:-n/a}
+fee_consistency_missing_coverage_rows: ${fee_consistency_missing_coverage_rows:-n/a}
+fee_consistency_mismatch_rows: ${fee_consistency_mismatch_rows:-n/a}
+fallback_used_events: ${fallback_used_events:-n/a}
+hint_mismatch_events: ${hint_mismatch_events:-n/a}
+go_nogo_artifact_manifest: ${go_nogo_artifact_manifest:-n/a}
+go_nogo_calibration_sha256: ${go_nogo_calibration_sha256:-n/a}
+go_nogo_snapshot_sha256: ${go_nogo_snapshot_sha256:-n/a}
+go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
+go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
+go_nogo_artifacts_written: $go_nogo_artifacts_written
+rehearsal_artifact_manifest: ${rehearsal_artifact_manifest:-n/a}
+rehearsal_summary_sha256: ${rehearsal_summary_sha256:-n/a}
+rehearsal_preflight_sha256: ${rehearsal_preflight_sha256:-n/a}
+rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
+rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
+rehearsal_artifacts_written: $rehearsal_artifacts_written
+windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
+windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
+windowed_signoff_artifacts_written: $windowed_signoff_artifacts_written
+rehearsal_route_fee_signoff_required: ${rehearsal_route_fee_signoff_required:-false}
+rehearsal_route_fee_signoff_windows_csv: ${rehearsal_route_fee_signoff_windows_csv:-n/a}
+rehearsal_route_fee_signoff_verdict: ${rehearsal_route_fee_signoff_verdict:-unknown}
+rehearsal_route_fee_signoff_reason: ${rehearsal_route_fee_signoff_reason:-n/a}
+rehearsal_route_fee_signoff_reason_code: ${rehearsal_route_fee_signoff_reason_code:-n/a}
+rehearsal_route_fee_signoff_exit_code: ${rehearsal_route_fee_signoff_exit_code:-3}
+rehearsal_route_fee_signoff_artifact_manifest: ${rehearsal_route_fee_signoff_artifact_manifest:-n/a}
+rehearsal_route_fee_signoff_summary_sha256: ${rehearsal_route_fee_signoff_summary_sha256:-n/a}
+rehearsal_route_fee_signoff_artifacts_written: ${rehearsal_route_fee_signoff_artifacts_written:-false}
+rehearsal_route_fee_primary_route_stable: ${rehearsal_route_fee_primary_route_stable:-false}
+rehearsal_route_fee_stable_primary_route: ${rehearsal_route_fee_stable_primary_route:-n/a}
+rehearsal_route_fee_fallback_route_stable: ${rehearsal_route_fee_fallback_route_stable:-false}
+rehearsal_route_fee_stable_fallback_route: ${rehearsal_route_fee_stable_fallback_route:-n/a}
+rehearsal_route_fee_route_profile_pass_count: ${rehearsal_route_fee_route_profile_pass_count:-n/a}
+rehearsal_route_fee_fee_decomposition_pass_count: ${rehearsal_route_fee_fee_decomposition_pass_count:-n/a}
+rehearsal_route_fee_window_count: ${rehearsal_route_fee_window_count:-n/a}
 tests_run: ${tests_run:-unknown}
 tests_failed: ${tests_failed:-unknown}
 input_error_count: ${#input_errors[@]}
 
 adapter_rollout_verdict: $adapter_rollout_verdict
 adapter_rollout_reason: $adapter_rollout_reason
+adapter_rollout_reason_code: $adapter_rollout_reason_code
+artifacts_written: $artifacts_written
 EOF
 )"
 
@@ -198,14 +577,35 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   summary_path="$OUTPUT_DIR/adapter_rollout_evidence_summary_${timestamp_compact}.txt"
   rotation_capture_path="$OUTPUT_DIR/adapter_secret_rotation_captured_${timestamp_compact}.txt"
   rehearsal_capture_path="$OUTPUT_DIR/execution_devnet_rehearsal_captured_${timestamp_compact}.txt"
+  route_fee_signoff_capture_path="$OUTPUT_DIR/execution_route_fee_signoff_captured_${timestamp_compact}.txt"
+  manifest_path="$OUTPUT_DIR/adapter_rollout_evidence_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary_output" >"$summary_path"
   printf '%s\n' "$rotation_output" >"$rotation_capture_path"
   printf '%s\n' "$rehearsal_output" >"$rehearsal_capture_path"
+  printf '%s\n' "$route_fee_signoff_output" >"$route_fee_signoff_capture_path"
+
+  summary_sha256="$(sha256_file_value "$summary_path")"
+  rotation_capture_sha256="$(sha256_file_value "$rotation_capture_path")"
+  rehearsal_capture_sha256="$(sha256_file_value "$rehearsal_capture_path")"
+  route_fee_signoff_capture_sha256="$(sha256_file_value "$route_fee_signoff_capture_path")"
+  cat >"$manifest_path" <<EOF
+summary_sha256: $summary_sha256
+rotation_capture_sha256: $rotation_capture_sha256
+rehearsal_capture_sha256: $rehearsal_capture_sha256
+route_fee_signoff_capture_sha256: $route_fee_signoff_capture_sha256
+EOF
+
   echo
   echo "artifacts_written: true"
   echo "artifact_summary: $summary_path"
   echo "artifact_rotation_capture: $rotation_capture_path"
   echo "artifact_rehearsal_capture: $rehearsal_capture_path"
+  echo "artifact_route_fee_signoff_capture: $route_fee_signoff_capture_path"
+  echo "artifact_manifest: $manifest_path"
+  echo "summary_sha256: $summary_sha256"
+  echo "rotation_capture_sha256: $rotation_capture_sha256"
+  echo "rehearsal_capture_sha256: $rehearsal_capture_sha256"
+  echo "route_fee_signoff_capture_sha256: $route_fee_signoff_capture_sha256"
 fi
 
 case "$adapter_rollout_verdict" in
