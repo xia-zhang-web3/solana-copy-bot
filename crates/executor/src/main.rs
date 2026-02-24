@@ -34,6 +34,7 @@ mod submit_response;
 mod submit_transport;
 mod submit_verify;
 mod tx_build;
+mod upstream_outcome;
 
 use crate::fee_hints::{
     parse_response_fee_hint_fields, resolve_fee_hints, FeeHintError, FeeHintFieldParseError,
@@ -54,6 +55,9 @@ use crate::submit_response::{
 };
 use crate::submit_transport::{
     extract_submit_transport_artifact, SubmitTransportArtifact, SubmitTransportArtifactError,
+};
+use crate::upstream_outcome::{
+    parse_upstream_outcome, ParsedUpstreamReject, UpstreamOutcome,
 };
 #[cfg(test)]
 use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
@@ -844,12 +848,6 @@ impl Reject {
     }
 }
 
-#[derive(Debug)]
-enum UpstreamOutcome {
-    Success,
-    Reject(Reject),
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let log_json = parse_bool_env("COPYBOT_EXECUTOR_LOG_JSON", true);
@@ -1101,7 +1099,7 @@ async fn handle_simulate(
     )
     .await?;
     match parse_upstream_outcome(&backend_response, "simulation_rejected") {
-        UpstreamOutcome::Reject(reject) => return Err(reject),
+        UpstreamOutcome::Reject(reject) => return Err(map_parsed_upstream_reject(reject)),
         UpstreamOutcome::Success => {}
     }
 
@@ -1281,7 +1279,7 @@ async fn handle_submit(
     )
     .await?;
     match parse_upstream_outcome(&backend_response, "submit_adapter_rejected") {
-        UpstreamOutcome::Reject(reject) => return Err(reject),
+        UpstreamOutcome::Reject(reject) => return Err(map_parsed_upstream_reject(reject)),
         UpstreamOutcome::Success => {}
     }
 
@@ -1560,72 +1558,6 @@ async fn forward_to_upstream(
     }))
 }
 
-fn parse_upstream_outcome(body: &Value, default_reject_code: &str) -> UpstreamOutcome {
-    let status = body
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let ok_flag = body.get("ok").and_then(Value::as_bool);
-    let accepted_flag = body.get("accepted").and_then(Value::as_bool);
-    let retryable = body
-        .get("retryable")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    let is_reject = matches!(
-        status.as_str(),
-        "reject" | "rejected" | "error" | "failed" | "failure"
-    ) || ok_flag == Some(false)
-        || accepted_flag == Some(false);
-    if is_reject {
-        let code = body
-            .get("code")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(default_reject_code)
-            .to_string();
-        let detail = body
-            .get("detail")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("upstream rejected request")
-            .to_string();
-        return UpstreamOutcome::Reject(if retryable {
-            Reject::retryable(code, detail)
-        } else {
-            Reject::terminal(code, detail)
-        });
-    }
-
-    let is_known_success_status = matches!(status.as_str(), "ok" | "accepted" | "success");
-    let is_known_status = is_known_success_status
-        || matches!(
-            status.as_str(),
-            "reject" | "rejected" | "error" | "failed" | "failure"
-        );
-
-    if !status.is_empty() && !is_known_status {
-        return UpstreamOutcome::Reject(Reject::terminal(
-            "upstream_invalid_status",
-            format!("unknown upstream status={}", status),
-        ));
-    }
-
-    let success = accepted_flag.or(ok_flag).unwrap_or(is_known_success_status);
-    if !success {
-        return UpstreamOutcome::Reject(Reject::terminal(
-            "upstream_invalid_response",
-            "upstream did not explicitly confirm success",
-        ));
-    }
-
-    UpstreamOutcome::Success
-}
-
 fn validate_common_contract(
     state: &AppState,
     request_contract_version: Option<&str>,
@@ -1718,6 +1650,14 @@ fn map_fee_hint_error_to_reject(error: FeeHintError) -> Reject {
             "submit_adapter_invalid_response",
             format!("{}={} exceeds i64::MAX", field, value),
         ),
+    }
+}
+
+fn map_parsed_upstream_reject(reject: ParsedUpstreamReject) -> Reject {
+    if reject.retryable {
+        Reject::retryable(reject.code, reject.detail)
+    } else {
+        Reject::terminal(reject.code, reject.detail)
     }
 }
 
