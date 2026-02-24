@@ -1977,6 +1977,22 @@ mod tests {
     }
 
     #[test]
+    fn validate_common_contract_rejects_fastlane_when_feature_disabled() {
+        let mut state = test_state("http://127.0.0.1:1/upstream");
+        state.config.route_allowlist.insert("fastlane".to_string());
+        let reject = validate_common_contract(
+            &state,
+            Some("v1"),
+            "fastlane",
+            "buy",
+            "11111111111111111111111111111111",
+            1.0,
+        )
+        .expect_err("fastlane must be rejected when feature flag is disabled");
+        assert_eq!(reject.code, "fastlane_not_enabled");
+    }
+
+    #[test]
     fn to_hex_lower_matches_expected() {
         assert_eq!(to_hex_lower(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
     }
