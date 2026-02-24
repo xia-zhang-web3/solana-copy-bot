@@ -65,6 +65,8 @@ contract_guard_tests=(
   "parse_route_allowlist_rejects_unknown_route"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
+  "handle_submit_rejects_compute_budget_limit_out_of_range"
+  "handle_submit_rejects_compute_budget_price_out_of_range"
   "handle_submit_returns_cached_response_for_duplicate_client_order_id"
   "handle_submit_rejects_parallel_duplicate_client_order_id_in_flight"
   "handle_submit_returns_canonical_cached_response_when_store_conflicts"

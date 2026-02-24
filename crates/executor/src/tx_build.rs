@@ -15,6 +15,20 @@ pub(crate) enum ForwardPayloadBuildError {
     Encode(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ComputeBudgetBounds {
+    pub(crate) cu_limit_min: u32,
+    pub(crate) cu_limit_max: u32,
+    pub(crate) cu_price_min: u64,
+    pub(crate) cu_price_max: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComputeBudgetValidationError {
+    CuLimitOutOfRange { min: u32, max: u32, value: u32 },
+    CuPriceOutOfRange { min: u64, max: u64, value: u64 },
+}
+
 pub(crate) fn resolve_submit_tip_lamports(
     route: &str,
     requested_tip_lamports: u64,
@@ -63,10 +77,34 @@ pub(crate) fn build_submit_forward_payload(
     })
 }
 
+pub(crate) fn validate_submit_compute_budget(
+    cu_limit: u32,
+    cu_price_micro_lamports: u64,
+    bounds: ComputeBudgetBounds,
+) -> Result<(), ComputeBudgetValidationError> {
+    if !(bounds.cu_limit_min..=bounds.cu_limit_max).contains(&cu_limit) {
+        return Err(ComputeBudgetValidationError::CuLimitOutOfRange {
+            min: bounds.cu_limit_min,
+            max: bounds.cu_limit_max,
+            value: cu_limit,
+        });
+    }
+    if !(bounds.cu_price_min..=bounds.cu_price_max).contains(&cu_price_micro_lamports) {
+        return Err(ComputeBudgetValidationError::CuPriceOutOfRange {
+            min: bounds.cu_price_min,
+            max: bounds.cu_price_max,
+            value: cu_price_micro_lamports,
+        });
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_submit_forward_payload, resolve_submit_tip_lamports, ForwardPayloadBuildError,
+        build_submit_forward_payload, resolve_submit_tip_lamports, validate_submit_compute_budget,
+        ComputeBudgetBounds, ComputeBudgetValidationError, ForwardPayloadBuildError,
         SubmitTipPolicyError,
     };
 
@@ -113,5 +151,66 @@ mod tests {
     fn tx_build_forward_payload_rejects_non_object_root() {
         let error = build_submit_forward_payload(br#"[]"#, 1, 0).expect_err("must reject");
         assert!(matches!(error, ForwardPayloadBuildError::RootNotObject));
+    }
+
+    #[test]
+    fn tx_build_compute_budget_accepts_in_range_values() {
+        let result = validate_submit_compute_budget(
+            300_000,
+            1_500,
+            ComputeBudgetBounds {
+                cu_limit_min: 1,
+                cu_limit_max: 1_400_000,
+                cu_price_min: 1,
+                cu_price_max: 10_000_000,
+            },
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn tx_build_compute_budget_rejects_limit_out_of_range() {
+        let error = validate_submit_compute_budget(
+            0,
+            1_500,
+            ComputeBudgetBounds {
+                cu_limit_min: 1,
+                cu_limit_max: 1_400_000,
+                cu_price_min: 1,
+                cu_price_max: 10_000_000,
+            },
+        )
+        .expect_err("must reject low cu_limit");
+        assert_eq!(
+            error,
+            ComputeBudgetValidationError::CuLimitOutOfRange {
+                min: 1,
+                max: 1_400_000,
+                value: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn tx_build_compute_budget_rejects_price_out_of_range() {
+        let error = validate_submit_compute_budget(
+            300_000,
+            0,
+            ComputeBudgetBounds {
+                cu_limit_min: 1,
+                cu_limit_max: 1_400_000,
+                cu_price_min: 1,
+                cu_price_max: 10_000_000,
+            },
+        )
+        .expect_err("must reject low cu_price");
+        assert_eq!(
+            error,
+            ComputeBudgetValidationError::CuPriceOutOfRange {
+                min: 1,
+                max: 10_000_000,
+                value: 0,
+            }
+        );
     }
 }

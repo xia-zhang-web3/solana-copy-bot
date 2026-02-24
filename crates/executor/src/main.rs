@@ -51,6 +51,7 @@ use crate::submit_verify::{
 };
 use crate::tx_build::{
     build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports,
+    validate_submit_compute_budget, ComputeBudgetBounds, ComputeBudgetValidationError,
     ForwardPayloadBuildError, SubmitTipPolicyError,
 };
 #[cfg(test)]
@@ -1209,24 +1210,17 @@ async fn handle_submit(
         state.config.allow_nonzero_tip,
     )
     .map_err(map_submit_tip_policy_error_to_reject)?;
-    if !(CU_LIMIT_MIN..=CU_LIMIT_MAX).contains(&request.compute_budget.cu_limit) {
-        return Err(Reject::terminal(
-            "invalid_compute_budget",
-            format!(
-                "compute_budget.cu_limit must be in {}..={}",
-                CU_LIMIT_MIN, CU_LIMIT_MAX
-            ),
-        ));
-    }
-    if !(CU_PRICE_MIN..=CU_PRICE_MAX).contains(&request.compute_budget.cu_price_micro_lamports) {
-        return Err(Reject::terminal(
-            "invalid_compute_budget",
-            format!(
-                "compute_budget.cu_price_micro_lamports must be in {}..={}",
-                CU_PRICE_MIN, CU_PRICE_MAX
-            ),
-        ));
-    }
+    validate_submit_compute_budget(
+        request.compute_budget.cu_limit,
+        request.compute_budget.cu_price_micro_lamports,
+        ComputeBudgetBounds {
+            cu_limit_min: CU_LIMIT_MIN,
+            cu_limit_max: CU_LIMIT_MAX,
+            cu_price_min: CU_PRICE_MIN,
+            cu_price_max: CU_PRICE_MAX,
+        },
+    )
+    .map_err(map_compute_budget_validation_error_to_reject)?;
 
     let forward_body = build_submit_forward_payload_core(
         raw_body,
@@ -1864,6 +1858,22 @@ fn map_submit_tip_policy_error_to_reject(error: SubmitTipPolicyError) -> Reject 
         SubmitTipPolicyError::TipNotAllowed { .. } => Reject::terminal(
             "tip_not_supported",
             "non-zero tip_lamports is disabled in executor config",
+        ),
+    }
+}
+
+fn map_compute_budget_validation_error_to_reject(error: ComputeBudgetValidationError) -> Reject {
+    match error {
+        ComputeBudgetValidationError::CuLimitOutOfRange { min, max, .. } => Reject::terminal(
+            "invalid_compute_budget",
+            format!("compute_budget.cu_limit must be in {}..={}", min, max),
+        ),
+        ComputeBudgetValidationError::CuPriceOutOfRange { min, max, .. } => Reject::terminal(
+            "invalid_compute_budget",
+            format!(
+                "compute_budget.cu_price_micro_lamports must be in {}..={}",
+                min, max
+            ),
         ),
     }
 }
@@ -3703,6 +3713,75 @@ mod tests {
             .expect_err("non-rpc route must still reject non-zero tip when disabled");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "tip_not_supported");
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_compute_budget_limit_out_of_range() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-invalid-cu-limit",
+            "client_order_id": "client-order-invalid-cu-limit",
+            "request_id": "request-invalid-cu-limit",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 15.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 0,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("invalid cu_limit must reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_compute_budget");
+        assert_eq!(reject.detail, "compute_budget.cu_limit must be in 1..=1400000");
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_compute_budget_price_out_of_range() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-invalid-cu-price",
+            "client_order_id": "client-order-invalid-cu-price",
+            "request_id": "request-invalid-cu-price",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 15.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 0
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("invalid cu_price must reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_compute_budget");
+        assert_eq!(
+            reject.detail,
+            "compute_budget.cu_price_micro_lamports must be in 1..=10000000"
+        );
     }
 
     #[tokio::test]
