@@ -1013,14 +1013,35 @@ async fn handle_submit(
     }
 
     let route = normalize_route(request.route.as_str());
+    let (effective_tip_lamports, tip_policy_code) =
+        normalize_submit_tip_for_route(route.as_str(), request.tip_lamports);
+    let forward_body = build_submit_forward_payload(
+        raw_body,
+        request.tip_lamports,
+        effective_tip_lamports,
+    )?;
+    if let Some(policy_code) = tip_policy_code {
+        debug!(
+            route = %route,
+            policy_code = %policy_code,
+            requested_tip_lamports = request.tip_lamports,
+            effective_tip_lamports = effective_tip_lamports,
+            "applied submit tip policy"
+        );
+    }
     debug!(
         route = %route,
         signal_id = %request.signal_id,
         client_order_id = %request.client_order_id,
         "handling submit request"
     );
-    let backend_response =
-        forward_to_upstream(state, route.as_str(), UpstreamAction::Submit, raw_body).await?;
+    let backend_response = forward_to_upstream(
+        state,
+        route.as_str(),
+        UpstreamAction::Submit,
+        forward_body.as_slice(),
+    )
+    .await?;
     match parse_upstream_outcome(&backend_response, "submit_adapter_rejected") {
         UpstreamOutcome::Reject(reject) => return Err(reject),
         UpstreamOutcome::Success => {}
@@ -1211,7 +1232,7 @@ async fn handle_submit(
         "submit_transport": submit_transport,
         "submitted_at": submitted_at.to_rfc3339(),
         "slippage_bps": request.slippage_bps,
-        "tip_lamports": request.tip_lamports,
+        "tip_lamports": effective_tip_lamports,
         "compute_budget": {
             "cu_limit": request.compute_budget.cu_limit,
             "cu_price_micro_lamports": request.compute_budget.cu_price_micro_lamports,
@@ -1221,6 +1242,13 @@ async fn handle_submit(
         "priority_fee_lamports": priority_fee_lamports,
         "ata_create_rent_lamports": ata_create_rent_lamports,
     });
+    if let Some(policy_code) = tip_policy_code {
+        response["tip_policy"] = json!({
+            "policy_code": policy_code,
+            "requested_tip_lamports": request.tip_lamports,
+            "effective_tip_lamports": effective_tip_lamports,
+        });
+    }
     response["submit_signature_verify"] =
         submit_signature_verification_to_json(&submit_signature_verify);
     Ok(response)
@@ -1553,6 +1581,47 @@ fn parse_optional_non_negative_u64_field(
         "submit_adapter_invalid_response",
         format!("{} must be non-negative integer when present", field),
     ))
+}
+
+fn normalize_submit_tip_for_route(route: &str, requested_tip_lamports: u64) -> (u64, Option<&'static str>) {
+    let normalized_route = normalize_route(route);
+    if normalized_route == "rpc" && requested_tip_lamports > 0 {
+        return (0, Some("rpc_tip_forced_zero"));
+    }
+    (requested_tip_lamports, None)
+}
+
+fn build_submit_forward_payload(
+    raw_body: &[u8],
+    requested_tip_lamports: u64,
+    effective_tip_lamports: u64,
+) -> std::result::Result<Vec<u8>, Reject> {
+    if requested_tip_lamports == effective_tip_lamports {
+        return Ok(raw_body.to_vec());
+    }
+
+    let mut payload: Value = serde_json::from_slice(raw_body).map_err(|error| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("submit request body is not valid JSON object: {}", error),
+        )
+    })?;
+    let object = payload.as_object_mut().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            "submit request body must be JSON object",
+        )
+    })?;
+    object.insert(
+        "tip_lamports".to_string(),
+        Value::Number(serde_json::Number::from(effective_tip_lamports)),
+    );
+    serde_json::to_vec(&payload).map_err(|error| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("failed to encode submit request body: {}", error),
+        )
+    })
 }
 
 fn reject_to_json(reject: &Reject, client_order_id: Option<&str>, contract_version: &str) -> Value {
@@ -1990,6 +2059,17 @@ mod tests {
         )
         .expect_err("fastlane must be rejected when feature flag is disabled");
         assert_eq!(reject.code, "fastlane_not_enabled");
+    }
+
+    #[test]
+    fn normalize_submit_tip_for_route_forces_rpc_tip_to_zero() {
+        let (effective, policy_code) = normalize_submit_tip_for_route("rpc", 12_345);
+        assert_eq!(effective, 0);
+        assert_eq!(policy_code, Some("rpc_tip_forced_zero"));
+
+        let (effective, policy_code) = normalize_submit_tip_for_route("jito", 12_345);
+        assert_eq!(effective, 12_345);
+        assert_eq!(policy_code, None);
     }
 
     #[test]
@@ -2780,6 +2860,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_forces_rpc_tip_to_zero_and_emits_trace() {
+        let signature = bs58::encode([15u8; 64]).into_string();
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_expect_tip_lamports(0, signature.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-rpc-tip",
+            "request_id": "request-rpc-tip",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 15.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 2500,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("submit should coerce rpc tip to zero and succeed");
+        assert_eq!(
+            response.get("tx_signature").and_then(Value::as_str),
+            Some(signature.as_str())
+        );
+        assert_eq!(response.get("tip_lamports").and_then(Value::as_u64), Some(0));
+        assert_eq!(
+            response
+                .get("tip_policy")
+                .and_then(|value| value.get("policy_code"))
+                .and_then(Value::as_str),
+            Some("rpc_tip_forced_zero")
+        );
+        assert_eq!(
+            response
+                .get("tip_policy")
+                .and_then(|value| value.get("requested_tip_lamports"))
+                .and_then(Value::as_u64),
+            Some(2500)
+        );
+        assert_eq!(
+            response
+                .get("tip_policy")
+                .and_then(|value| value.get("effective_tip_lamports"))
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_seen_when_rpc_reports_confirmation() {
         let signature = bs58::encode([9u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
@@ -3052,6 +3197,60 @@ mod tests {
                 } else {
                     (401u16, "Unauthorized", "missing or invalid bearer token")
                 };
+                let response = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    reason,
+                    if status == 200 { "application/json" } else { "text/plain" },
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn spawn_one_shot_upstream_expect_tip_lamports(
+        expected_tip_lamports: u64,
+        signature: &str,
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let signature = signature.to_string();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let bytes_read = stream.read(&mut request_buf).unwrap_or(0);
+                let request_raw = String::from_utf8_lossy(&request_buf[..bytes_read]);
+                let request_body = request_raw
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                let tip_matches = serde_json::from_str::<Value>(request_body)
+                    .ok()
+                    .and_then(|value| value.get("tip_lamports").and_then(Value::as_u64))
+                    .map(|value| value == expected_tip_lamports)
+                    .unwrap_or(false);
+
+                let (status, reason, body) = if tip_matches {
+                    (
+                        200u16,
+                        "OK",
+                        format!(
+                            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}"}}"#,
+                            signature
+                        ),
+                    )
+                } else {
+                    (
+                        400u16,
+                        "Bad Request",
+                        "tip_lamports mismatch for rpc route".to_string(),
+                    )
+                };
+
                 let response = format!(
                     "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status,

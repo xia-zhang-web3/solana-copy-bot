@@ -59,6 +59,7 @@ contract_guard_tests=(
   "handle_simulate_rejects_empty_signal_id"
   "validate_fastlane_route_policy_enforces_feature_gate"
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
+  "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
 )
 
 for test_name in "${contract_guard_tests[@]}"; do

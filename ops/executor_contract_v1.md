@@ -102,6 +102,10 @@ Success MUST include:
    2. `base_fee_lamports`
    3. `priority_fee_lamports`
    4. `ata_create_rent_lamports`
+6. optional tip-policy trace:
+   1. `tip_policy.policy_code` (e.g. `rpc_tip_forced_zero`)
+   2. `tip_policy.requested_tip_lamports`
+   3. `tip_policy.effective_tip_lamports`
 
 ## 4.4 Fee consistency rule (mandatory if hints provided)
 
