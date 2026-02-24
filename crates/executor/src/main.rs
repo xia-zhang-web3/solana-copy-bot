@@ -31,6 +31,7 @@ mod route_backend;
 mod route_policy;
 mod send_rpc;
 mod submit_verify;
+mod tx_build;
 
 use crate::fee_hints::{resolve_fee_hints, FeeHintError, FeeHintInputs};
 use crate::http_utils::{
@@ -38,13 +39,19 @@ use crate::http_utils::{
 };
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::route_backend::{RouteBackend, UpstreamAction};
-use crate::route_policy::{apply_submit_tip_policy, requires_submit_fastlane_enabled};
+#[cfg(test)]
+use crate::route_policy::apply_submit_tip_policy;
+use crate::route_policy::requires_submit_fastlane_enabled;
 use crate::send_rpc::send_signed_transaction_via_rpc;
 #[cfg(test)]
 use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 use crate::submit_verify::{
     parse_submit_signature_verify_config, submit_signature_verification_to_json,
     verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
+};
+use crate::tx_build::{
+    build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports,
+    ForwardPayloadBuildError, SubmitTipPolicyError,
 };
 #[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
@@ -1195,21 +1202,13 @@ async fn handle_submit(
         ));
     }
     let route = normalize_route(request.route.as_str());
-    let (effective_tip_lamports, tip_policy_code) =
-        apply_submit_tip_policy(route.as_str(), request.tip_lamports);
-
-    if effective_tip_lamports > TIP_MAX_LAMPORTS {
-        return Err(Reject::terminal(
-            "invalid_tip_lamports",
-            format!("tip_lamports exceeds max {}", TIP_MAX_LAMPORTS),
-        ));
-    }
-    if effective_tip_lamports > 0 && !state.config.allow_nonzero_tip {
-        return Err(Reject::terminal(
-            "tip_not_supported",
-            "non-zero tip_lamports is disabled in executor config",
-        ));
-    }
+    let (effective_tip_lamports, tip_policy_code) = resolve_submit_tip_lamports(
+        route.as_str(),
+        request.tip_lamports,
+        TIP_MAX_LAMPORTS,
+        state.config.allow_nonzero_tip,
+    )
+    .map_err(map_submit_tip_policy_error_to_reject)?;
     if !(CU_LIMIT_MIN..=CU_LIMIT_MAX).contains(&request.compute_budget.cu_limit) {
         return Err(Reject::terminal(
             "invalid_compute_budget",
@@ -1229,11 +1228,12 @@ async fn handle_submit(
         ));
     }
 
-    let forward_body = build_submit_forward_payload(
+    let forward_body = build_submit_forward_payload_core(
         raw_body,
         request.tip_lamports,
         effective_tip_lamports,
-    )?;
+    )
+    .map_err(map_forward_payload_build_error_to_reject)?;
     if let Some(policy_code) = tip_policy_code {
         debug!(
             route = %route,
@@ -1852,37 +1852,35 @@ fn map_idempotency_error_to_reject(error: anyhow::Error) -> Reject {
     )
 }
 
-fn build_submit_forward_payload(
-    raw_body: &[u8],
-    requested_tip_lamports: u64,
-    effective_tip_lamports: u64,
-) -> std::result::Result<Vec<u8>, Reject> {
-    if requested_tip_lamports == effective_tip_lamports {
-        return Ok(raw_body.to_vec());
+fn map_submit_tip_policy_error_to_reject(error: SubmitTipPolicyError) -> Reject {
+    match error {
+        SubmitTipPolicyError::TipExceedsMax {
+            tip_lamports: _,
+            max_lamports,
+        } => Reject::terminal(
+            "invalid_tip_lamports",
+            format!("tip_lamports exceeds max {}", max_lamports),
+        ),
+        SubmitTipPolicyError::TipNotAllowed { .. } => Reject::terminal(
+            "tip_not_supported",
+            "non-zero tip_lamports is disabled in executor config",
+        ),
     }
+}
 
-    let mut payload: Value = serde_json::from_slice(raw_body).map_err(|error| {
-        Reject::terminal(
-            "invalid_request_body",
-            format!("submit request body is not valid JSON object: {}", error),
-        )
-    })?;
-    let object = payload.as_object_mut().ok_or_else(|| {
-        Reject::terminal(
+fn map_forward_payload_build_error_to_reject(error: ForwardPayloadBuildError) -> Reject {
+    match error {
+        ForwardPayloadBuildError::InvalidJson(detail) => {
+            Reject::terminal("invalid_request_body", detail)
+        }
+        ForwardPayloadBuildError::RootNotObject => Reject::terminal(
             "invalid_request_body",
             "submit request body must be JSON object",
-        )
-    })?;
-    object.insert(
-        "tip_lamports".to_string(),
-        Value::Number(serde_json::Number::from(effective_tip_lamports)),
-    );
-    serde_json::to_vec(&payload).map_err(|error| {
-        Reject::terminal(
-            "invalid_request_body",
-            format!("failed to encode submit request body: {}", error),
-        )
-    })
+        ),
+        ForwardPayloadBuildError::Encode(detail) => {
+            Reject::terminal("invalid_request_body", detail)
+        }
+    }
 }
 
 fn reject_to_json(reject: &Reject, client_order_id: Option<&str>, contract_version: &str) -> Value {
