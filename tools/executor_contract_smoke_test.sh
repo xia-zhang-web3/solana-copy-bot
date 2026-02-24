@@ -87,6 +87,7 @@ contract_guard_tests=(
   "parse_response_fee_hint_fields_rejects_invalid_field_type"
   "submit_transport_extract_rejects_missing_artifacts"
   "submit_response_resolve_submitted_at_rejects_invalid_rfc3339"
+  "submit_payload_includes_tip_policy_when_present"
   "upstream_outcome_rejects_unknown_status"
 )
 

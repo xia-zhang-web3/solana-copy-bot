@@ -30,6 +30,7 @@ mod idempotency;
 mod route_backend;
 mod route_policy;
 mod send_rpc;
+mod submit_payload;
 mod submit_response;
 mod submit_transport;
 mod submit_verify;
@@ -53,6 +54,7 @@ use crate::submit_response::{
     resolve_submit_response_submitted_at, validate_submit_response_request_identity,
     validate_submit_response_route_and_contract, SubmitResponseValidationError,
 };
+use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_transport::{
     extract_submit_transport_artifact, SubmitTransportArtifact, SubmitTransportArtifactError,
 };
@@ -1338,37 +1340,26 @@ async fn handle_submit(
     })
     .map_err(map_fee_hint_error_to_reject)?;
 
-    let mut response = json!({
-        "status": "ok",
-        "ok": true,
-        "accepted": true,
-        "route": route,
-        "contract_version": state.config.contract_version,
-        "client_order_id": request.client_order_id,
-        "request_id": request.request_id,
-        "tx_signature": tx_signature,
-        "submit_transport": submit_transport,
-        "submitted_at": submitted_at.to_rfc3339(),
-        "slippage_bps": request.slippage_bps,
-        "tip_lamports": effective_tip_lamports,
-        "compute_budget": {
-            "cu_limit": request.compute_budget.cu_limit,
-            "cu_price_micro_lamports": request.compute_budget.cu_price_micro_lamports,
-        },
-        "network_fee_lamports": resolved_fee_hints.network_fee_lamports,
-        "base_fee_lamports": resolved_fee_hints.base_fee_lamports,
-        "priority_fee_lamports": resolved_fee_hints.priority_fee_lamports,
-        "ata_create_rent_lamports": resolved_fee_hints.ata_create_rent_lamports,
-    });
-    if let Some(policy_code) = tip_policy_code {
-        response["tip_policy"] = json!({
-            "policy_code": policy_code,
-            "requested_tip_lamports": request.tip_lamports,
-            "effective_tip_lamports": effective_tip_lamports,
-        });
-    }
-    response["submit_signature_verify"] =
+    let submit_signature_verify_json =
         submit_signature_verification_to_json(&submit_signature_verify);
+    let submitted_at_rfc3339 = submitted_at.to_rfc3339();
+    let response = build_submit_success_payload(SubmitSuccessPayloadInputs {
+        route: route.as_str(),
+        contract_version: state.config.contract_version.as_str(),
+        client_order_id: request.client_order_id.as_str(),
+        request_id: request.request_id.as_str(),
+        tx_signature: tx_signature.as_str(),
+        submit_transport,
+        submitted_at_rfc3339: submitted_at_rfc3339.as_str(),
+        slippage_bps: request.slippage_bps,
+        requested_tip_lamports: request.tip_lamports,
+        effective_tip_lamports,
+        tip_policy_code,
+        cu_limit: request.compute_budget.cu_limit,
+        cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
+        resolved_fee_hints,
+        submit_signature_verify: submit_signature_verify_json,
+    });
     let inserted = state
         .idempotency
         .store_submit_response(
