@@ -3137,7 +3137,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_signed_transaction_via_rpc_treats_unknown_error_payload_as_terminal() {
+    async fn send_signed_transaction_via_rpc_treats_blockhash_expired_payload_as_terminal() {
         let (signed_tx_base64, _expected_signature) =
             test_signed_tx_base64_with_signature([35u8; 64]);
         let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_raw(
@@ -3164,8 +3164,41 @@ mod tests {
 
         let reject =
             send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-            .await
-            .expect_err("unknown send RPC error payload should be terminal");
+                .await
+                .expect_err("blockhash-expired send RPC payload should be terminal");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "executor_blockhash_expired");
+        let _ = primary_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_treats_unknown_error_payload_as_terminal() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([41u8; 64]);
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            r#"{"jsonrpc":"2.0","error":{"code":-32002,"message":"mystery failure class"}}"#,
+        ) else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
+                .await
+                .expect_err("unknown send RPC error payload should be terminal");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "send_rpc_error_payload_terminal");
         let _ = primary_handle.join();

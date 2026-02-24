@@ -195,6 +195,15 @@ pub(crate) async fn send_signed_transaction_via_rpc(
                         }
                         return Err(reject);
                     }
+                    SendRpcErrorPayloadDisposition::BlockhashExpired => {
+                        return Err(Reject::terminal(
+                            "executor_blockhash_expired",
+                            format!(
+                                "send RPC returned blockhash-expired error endpoint={} payload={}",
+                                endpoint_label, error_payload
+                            ),
+                        ));
+                    }
                     SendRpcErrorPayloadDisposition::Terminal => {
                         return Err(Reject::terminal(
                             "send_rpc_error_payload_terminal",
@@ -253,6 +262,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SendRpcErrorPayloadDisposition {
     AlreadyProcessed,
+    BlockhashExpired,
     Retryable,
     Terminal,
 }
@@ -267,6 +277,14 @@ fn classify_send_rpc_error_payload(error_payload: &Value) -> SendRpcErrorPayload
             || payload_lower.contains("already finalized"))
     {
         return SendRpcErrorPayloadDisposition::AlreadyProcessed;
+    }
+
+    if payload_lower.contains("blockhash not found")
+        || payload_lower.contains("block height exceeded")
+        || payload_lower.contains("transaction is too old")
+        || payload_lower.contains("recent blockhash")
+    {
+        return SendRpcErrorPayloadDisposition::BlockhashExpired;
     }
 
     if code == Some(-32005)
