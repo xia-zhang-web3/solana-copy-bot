@@ -155,4 +155,30 @@ mod tests {
         assert_eq!(loaded, response);
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[test]
+    fn store_persists_across_store_reopen() {
+        let db_path = temp_db_path();
+        let db_path_str = db_path.to_string_lossy().to_string();
+        let response = json!({
+            "status": "ok",
+            "client_order_id": "order-reopen-1",
+            "tx_signature": "sig-reopen-1"
+        });
+
+        {
+            let store = SubmitIdempotencyStore::open(db_path_str.as_str()).expect("open store 1");
+            store
+                .store_submit_response("order-reopen-1", "req-reopen-1", &response)
+                .expect("store response");
+        }
+
+        let reopened = SubmitIdempotencyStore::open(db_path_str.as_str()).expect("open store 2");
+        let loaded = reopened
+            .load_submit_response("order-reopen-1")
+            .expect("load response")
+            .expect("cached response");
+        assert_eq!(loaded, response);
+        let _ = std::fs::remove_file(db_path);
+    }
 }

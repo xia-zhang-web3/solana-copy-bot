@@ -63,6 +63,7 @@ contract_guard_tests=(
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
   "handle_submit_returns_cached_response_for_duplicate_client_order_id"
+  "store_persists_across_store_reopen"
   "send_signed_transaction_via_rpc_rejects_fallback_without_primary_url"
   "resolve_fee_hints_rejects_derived_priority_fee_overflow"
 )
