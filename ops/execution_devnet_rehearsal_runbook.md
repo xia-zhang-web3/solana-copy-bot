@@ -117,3 +117,29 @@ OUTPUT_DIR="state/adapter-rollout-$(date -u +%Y%m%dT%H%M%SZ)" \
 ```
 
 Expected top-level gate: `adapter_rollout_verdict: GO`.
+
+## 9) Combined Executor Rollout/Final Evidence
+
+When adapter upstream is self-hosted `copybot-executor`, package executor-specific readiness in parallel with Stage C.5:
+
+```bash
+EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env \
+ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env \
+CONFIG_PATH=/etc/solana-copy-bot/live.server.toml \
+OUTPUT_DIR="state/executor-rollout-$(date -u +%Y%m%dT%H%M%SZ)" \
+./tools/executor_rollout_evidence_report.sh 24 60
+```
+
+Expected top-level gate: `executor_rollout_verdict: GO`.
+
+Final package:
+
+```bash
+EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env \
+ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env \
+CONFIG_PATH=/etc/solana-copy-bot/live.server.toml \
+OUTPUT_ROOT="state/executor-final-$(date -u +%Y%m%dT%H%M%SZ)" \
+./tools/executor_final_evidence_report.sh 24 60
+```
+
+Expected package gate: `final_executor_package_verdict: GO`.

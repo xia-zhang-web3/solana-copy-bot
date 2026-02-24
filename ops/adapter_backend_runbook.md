@@ -196,3 +196,8 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
    2. helper executes `execution_route_fee_signoff_report.sh` with strict defaults enabled (`GO_NOGO_REQUIRE_JITO_RPC_POLICY=true`, `GO_NOGO_REQUIRE_FASTLANE_DISABLED=true`) and captures nested artifacts under `OUTPUT_ROOT/route_fee_signoff/`,
    3. output includes consolidated package verdict (`final_route_fee_package_verdict`) plus checksum manifest for summary/capture/nested signoff artifacts,
    4. attach package summary + manifest + nested signoff artifacts as the final route-profile/fee-decomposition evidence set.
+14. Executor-specific rollout/final evidence helpers (recommended when adapter upstream is self-hosted `copybot-executor`):
+   1. run `EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=/etc/solana-copy-bot/live.server.toml OUTPUT_DIR=state/executor-rollout ./tools/executor_rollout_evidence_report.sh 24 60`
+   2. helper composes executor signer rotation + executor preflight + Stage C.5 rehearsal into a single `executor_rollout_verdict` gate (`GO`/`HOLD`/`NO_GO`),
+   3. final package command: `EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=/etc/solana-copy-bot/live.server.toml OUTPUT_ROOT=state/executor-final ./tools/executor_final_evidence_report.sh 24 60`,
+   4. attach package summary + manifest + nested rollout artifacts (`OUTPUT_ROOT/rollout/`) for executor handoff evidence.
