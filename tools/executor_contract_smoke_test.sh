@@ -86,6 +86,8 @@ contract_guard_tests=(
   "request_ingress_verify_auth_or_reject_returns_auth_reject_payload"
   "response_envelope_wraps_success_payload_with_http_200"
   "response_envelope_reject_includes_client_order_id_when_provided"
+  "healthz_payload_top_level_status_is_ok_when_store_ok"
+  "healthz_payload_build_includes_expected_fields"
   "normalize_route_trims_and_lowercases"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"

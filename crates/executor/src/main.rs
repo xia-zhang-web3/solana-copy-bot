@@ -27,6 +27,7 @@ mod common_contract;
 mod contract_version;
 mod env_parsing;
 mod fee_hints;
+mod healthz_payload;
 mod http_utils;
 mod idempotency;
 mod key_validation;
@@ -63,6 +64,7 @@ use crate::env_parsing::{
     non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_u64_env,
 };
 use crate::fee_hints::{parse_response_fee_hint_fields, resolve_fee_hints, FeeHintInputs};
+use crate::healthz_payload::{build_healthz_payload, HealthzPayloadInputs};
 use crate::http_utils::{endpoint_identity, validate_endpoint_url};
 use crate::idempotency::{SubmitClaimOutcome, SubmitIdempotencyStore};
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
@@ -637,27 +639,20 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
         Err(error) => {
             warn!(
                 error = %error,
-                "idempotency store probe failed in healthz"
+            "idempotency store probe failed in healthz"
             );
             "degraded"
         }
     };
-    let status = if idempotency_store_status == "ok" {
-        "ok"
-    } else {
-        "degraded"
-    };
-    Json(json!({
-        "status": status,
-        "contract_version": state.config.contract_version,
-        "enabled_routes": state.config.route_allowlist,
-        "signer_source": state.config.signer_source.as_str(),
-        "signer_kms_key_id_configured": state.config.signer_kms_key_id.is_some(),
-        "signer_keypair_file_configured": state.config.signer_keypair_file.is_some(),
-        "submit_fastlane_enabled": state.config.submit_fastlane_enabled,
-        "idempotency_store_status": idempotency_store_status,
-        "signer_pubkey": state.config.signer_pubkey,
-        "routes": state.config.route_allowlist,
+    Json(build_healthz_payload(HealthzPayloadInputs {
+        contract_version: state.config.contract_version.as_str(),
+        enabled_routes: &state.config.route_allowlist,
+        signer_source: state.config.signer_source.as_str(),
+        signer_kms_key_id_configured: state.config.signer_kms_key_id.is_some(),
+        signer_keypair_file_configured: state.config.signer_keypair_file.is_some(),
+        submit_fastlane_enabled: state.config.submit_fastlane_enabled,
+        idempotency_store_status,
+        signer_pubkey: state.config.signer_pubkey.as_str(),
     }))
 }
 
