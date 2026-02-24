@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use axum::{
-    body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -31,6 +30,7 @@ mod http_utils;
 mod idempotency;
 mod key_validation;
 mod request_ingress;
+mod request_endpoints;
 mod reject;
 mod reject_mapping;
 mod request_validation;
@@ -72,14 +72,14 @@ use crate::healthz_payload::{build_healthz_payload, HealthzPayloadInputs};
 use crate::http_utils::{endpoint_identity, validate_endpoint_url};
 use crate::idempotency::SubmitIdempotencyStore;
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
-use crate::request_ingress::{parse_json_or_reject, verify_auth_or_reject};
+use crate::request_endpoints::{simulate, submit};
 pub(crate) use crate::reject::Reject;
-use crate::response_envelope::success_or_reject_to_http;
 use crate::reject_mapping::{
     map_common_contract_validation_error_to_reject,
 };
 #[cfg(test)]
 use crate::reject_mapping::simulate_http_status_for_reject;
+#[cfg(test)]
 use crate::request_types::{ComputeBudgetRequest, SimulateRequest, SubmitRequest};
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::{RouteBackend, UpstreamAction};
@@ -598,63 +598,6 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
         idempotency_store_status,
         signer_pubkey: state.config.signer_pubkey.as_str(),
     }))
-}
-
-async fn simulate(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    raw_body: Bytes,
-) -> impl IntoResponse {
-    if let Some(response) = verify_auth_or_reject(
-        state.auth.as_ref(),
-        &headers,
-        raw_body.as_ref(),
-        &state.config.contract_version,
-    )
-    .await
-    {
-        return response;
-    }
-
-    let request: SimulateRequest = match parse_json_or_reject(raw_body.as_ref(), &state.config.contract_version) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-
-    success_or_reject_to_http(
-        handle_simulate(&state, &request, raw_body.as_ref()).await,
-        None,
-        &state.config.contract_version,
-    )
-}
-
-async fn submit(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    raw_body: Bytes,
-) -> impl IntoResponse {
-    if let Some(response) = verify_auth_or_reject(
-        state.auth.as_ref(),
-        &headers,
-        raw_body.as_ref(),
-        &state.config.contract_version,
-    )
-    .await
-    {
-        return response;
-    }
-
-    let request: SubmitRequest = match parse_json_or_reject(raw_body.as_ref(), &state.config.contract_version) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-
-    let client_order_id = request.client_order_id.clone();
-    success_or_reject_to_http(
-        handle_submit(&state, &request, raw_body.as_ref()).await,
-        Some(client_order_id.as_str()),
-        &state.config.contract_version,
-    )
 }
 
 #[cfg(test)]
