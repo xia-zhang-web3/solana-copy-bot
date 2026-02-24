@@ -288,6 +288,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "copybot-executor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "bs58",
+ "chrono",
+ "hmac",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "copybot-ingestion"
 version = "0.1.0"
 dependencies = [

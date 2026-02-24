@@ -2237,6 +2237,88 @@ run_devnet_rehearsal_case() {
   echo "[ok] execution devnet rehearsal helper"
 }
 
+run_executor_signer_rotation_report_case() {
+  local secrets_dir="$TMP_DIR/executor-secrets"
+  mkdir -p "$secrets_dir"
+  printf '[1,2,3]\n' >"$secrets_dir/executor_signer.json"
+  chmod 600 "$secrets_dir/executor_signer.json"
+
+  local env_path="$TMP_DIR/executor-signer-rotation.env"
+  cat >"$env_path" <<EOF
+COPYBOT_EXECUTOR_SIGNER_SOURCE=file
+COPYBOT_EXECUTOR_SIGNER_PUBKEY=11111111111111111111111111111111
+COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE=executor-secrets/executor_signer.json
+EOF
+
+  local artifacts_dir="$TMP_DIR/executor-signer-rotation-artifacts"
+  local output
+  output="$(
+    EXECUTOR_ENV_PATH="$env_path" \
+      OUTPUT_DIR="$artifacts_dir" \
+      bash "$ROOT_DIR/tools/executor_signer_rotation_report.sh"
+  )"
+  assert_contains "$output" "=== Executor Signer Rotation Report ==="
+  assert_contains "$output" "rotation_readiness_verdict: PASS"
+  assert_contains "$output" "artifacts_written: true"
+  assert_contains "$output" "signer_source: file"
+  assert_contains "$output" "signer_file_permissions_owner_only: true"
+  assert_contains "$output" "artifact_report:"
+  assert_contains "$output" "artifact_manifest:"
+  assert_contains "$output" "report_sha256:"
+  assert_sha256_field "$output" "report_sha256"
+  if ! ls "$artifacts_dir"/executor_signer_rotation_report_*.txt >/dev/null 2>&1; then
+    echo "expected executor signer rotation report artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/executor_signer_rotation_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected executor signer rotation manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+
+  local kms_missing_env_path="$TMP_DIR/executor-signer-rotation-kms-missing.env"
+  cat >"$kms_missing_env_path" <<EOF
+COPYBOT_EXECUTOR_SIGNER_SOURCE=kms
+COPYBOT_EXECUTOR_SIGNER_PUBKEY=11111111111111111111111111111111
+EOF
+  local kms_missing_output=""
+  if kms_missing_output="$(
+    EXECUTOR_ENV_PATH="$kms_missing_env_path" \
+      bash "$ROOT_DIR/tools/executor_signer_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected FAIL exit when kms signer source has no kms key id" >&2
+    exit 1
+  else
+    local kms_missing_exit_code=$?
+    if [[ "$kms_missing_exit_code" -ne 1 ]]; then
+      echo "expected FAIL exit code 1 for missing kms key id, got $kms_missing_exit_code" >&2
+      echo "$kms_missing_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$kms_missing_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$kms_missing_output" "COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID must be set"
+
+  chmod 644 "$secrets_dir/executor_signer.json"
+  local perm_fail_output=""
+  if perm_fail_output="$(
+    EXECUTOR_ENV_PATH="$env_path" \
+      bash "$ROOT_DIR/tools/executor_signer_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected FAIL exit for broad signer keypair permissions" >&2
+    exit 1
+  else
+    local perm_fail_exit_code=$?
+    if [[ "$perm_fail_exit_code" -ne 1 ]]; then
+      echo "expected FAIL exit code 1 for broad signer keypair permissions, got $perm_fail_exit_code" >&2
+      echo "$perm_fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$perm_fail_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$perm_fail_output" "must use owner-only permissions"
+  echo "[ok] executor signer rotation report pass/fail checks"
+}
+
 run_adapter_rollout_evidence_case() {
   local db_path="$1"
   local config_path="$2"
@@ -2864,6 +2946,7 @@ main() {
   run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
   run_adapter_preflight_case "$legacy_db"
   run_adapter_secret_rotation_report_case
+  run_executor_signer_rotation_report_case
   run_go_nogo_preflight_fail_case "$legacy_db"
   run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"

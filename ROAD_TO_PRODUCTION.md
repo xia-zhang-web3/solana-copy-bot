@@ -22,6 +22,7 @@ Owner: copybot runtime team
 6. Submit route policy в runtime уже enforce: route allowlist, explicit ordered fallback list (`submit_route_order`), per-route slippage/tip/CU caps, adapter-response correlation guards, contract-version pin (`submit_adapter_contract_version`) and optional strict response policy echo, плюс attempt-based route fallback.
 7. Adapter auth hardening baseline готов: optional Bearer + optional HMAC request signing (`key_id/secret/ttl`) с fail-closed валидацией на старте; HMAC считается по точным bytes исходящего JSON-body; token/secret могут подниматься из file-based secret paths.
 8. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend + ops rollout по уже готовому runtime контракту).
+9. Для закрытия upstream execution backend добавлен отдельный мастер-план: `ops/executor_backend_master_plan_2026-02-24.md`.
 
 Текущий статус этапов:
 
@@ -637,6 +638,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 2. run route-profile calibration windows in adapter mode and attach evidence package (`route_profile_verdict=PASS`, stable primary/fallback KPI) before tightening Jito-primary/RPC-fallback policy for go/no-go (`tools/execution_go_nogo_report.sh` summary + raw artifacts).
 3. finish live fee decomposition sign-off package: run adapter-mode calibration windows and attach evidence that `base/priority/tip/rent` telemetry is complete, mismatch/fallback counters are green, and totals reconcile against chain truth for go/no-go (`tools/execution_go_nogo_report.sh` + `tools/execution_fee_calibration_report.sh` raw output).
 4. execute Stage C.5 devnet rehearsal with `tools/execution_devnet_rehearsal.sh`, attach artifact bundle, and close residual P0/P1 before moving to Stage D.
+5. implement and close executor upstream backend per phased plan `ops/executor_backend_master_plan_2026-02-24.md` (contract freeze -> route adapters -> adapter integration -> rehearsal evidence).
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 
