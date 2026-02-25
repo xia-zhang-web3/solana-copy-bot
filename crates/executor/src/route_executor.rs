@@ -4,7 +4,7 @@ use tracing::debug;
 use crate::route_adapters::RouteAdapter;
 use crate::route_backend::UpstreamAction;
 use crate::route_normalization::normalize_route;
-use crate::route_policy::{classify_normalized_route, RouteKind};
+use crate::route_policy::{classify_normalized_route, requires_submit_fastlane_enabled, RouteKind};
 use crate::submit_deadline::SubmitDeadline;
 use crate::tx_build::SubmitInstructionPlan;
 use crate::{AppState, Reject};
@@ -52,6 +52,19 @@ fn resolve_route_executor_kind_normalized(route: &str) -> Option<RouteExecutorKi
     }
 }
 
+fn validate_route_executor_feature_gate(
+    normalized_route: &str,
+    submit_fastlane_enabled: bool,
+) -> std::result::Result<(), Reject> {
+    if requires_submit_fastlane_enabled(normalized_route) && !submit_fastlane_enabled {
+        return Err(Reject::terminal(
+            "fastlane_not_enabled",
+            "route=fastlane requires COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED=true",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resolve_route_executor_kind(route: &str) -> Option<RouteExecutorKind> {
     let normalized_route = normalize_route(route);
@@ -75,6 +88,10 @@ pub(crate) async fn execute_route_action(
                 format!("route={} is not supported by route executor", route),
             )
         })?;
+    validate_route_executor_feature_gate(
+        normalized_route.as_str(),
+        state.config.submit_fastlane_enabled,
+    )?;
     let route_adapter = RouteAdapter::from_kind(route_executor_kind);
     debug!(
         route = %normalized_route,
@@ -100,6 +117,7 @@ pub(crate) async fn execute_route_action(
 #[cfg(test)]
 mod tests {
     use super::{
+        validate_route_executor_feature_gate,
         resolve_route_executor_kind, resolve_route_executor_kind_normalized,
         RouteSubmitExecutionContext, RouteExecutorKind,
     };
@@ -150,5 +168,19 @@ mod tests {
     fn route_executor_submit_execution_context_defaults_none() {
         let context = RouteSubmitExecutionContext::default();
         assert!(context.instruction_plan.is_none());
+    }
+
+    #[test]
+    fn route_executor_feature_gate_rejects_fastlane_when_disabled() {
+        let reject = validate_route_executor_feature_gate("fastlane", false)
+            .expect_err("fastlane must be blocked when feature disabled");
+        assert_eq!(reject.code, "fastlane_not_enabled");
+        assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn route_executor_feature_gate_allows_fastlane_when_enabled() {
+        validate_route_executor_feature_gate("fastlane", true)
+            .expect("fastlane should pass when feature enabled");
     }
 }
