@@ -54,6 +54,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_route_allowlist_normalizes() {
+        let routes = parse_route_allowlist("RPC, jito ,fastlane".to_string()).expect("must parse");
+        assert!(routes.contains("rpc"));
+        assert!(routes.contains("jito"));
+        assert!(routes.contains("fastlane"));
+        assert_eq!(routes.len(), 3);
+    }
+
+    #[test]
     fn route_allowlist_parse_rejects_unknown_route() {
         let error = parse_route_allowlist("rpc,unknown".to_string())
             .expect_err("unknown route must be rejected");
@@ -62,6 +71,19 @@ mod tests {
                 .to_string()
                 .contains("contains unsupported route=unknown"),
             "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn parse_route_allowlist_rejects_unknown_route() {
+        let error = parse_route_allowlist("rpc,unknown_route".to_string())
+            .expect_err("unknown route must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported route=unknown_route"),
+            "error={}",
             error
         );
     }
@@ -78,5 +100,12 @@ mod tests {
             "unexpected error: {}",
             error
         );
+    }
+
+    #[test]
+    fn validate_fastlane_route_policy_enforces_feature_gate() {
+        let routes = parse_route_allowlist("rpc,fastlane".to_string()).expect("must parse");
+        assert!(validate_fastlane_route_policy(&routes, false).is_err());
+        assert!(validate_fastlane_route_policy(&routes, true).is_ok());
     }
 }

@@ -83,8 +83,6 @@ use crate::reject_mapping::map_common_contract_validation_error_to_reject;
 use crate::reject_mapping::simulate_http_status_for_reject;
 #[cfg(test)]
 use crate::request_types::{ComputeBudgetRequest, SimulateRequest, SubmitRequest};
-#[cfg(test)]
-use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::RouteBackend;
 #[cfg(test)]
 use crate::route_backend::UpstreamAction;
@@ -253,35 +251,6 @@ mod tests {
     };
 
     static TEMP_SECRET_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn parse_route_allowlist_normalizes() {
-        let routes = parse_route_allowlist("RPC, jito ,fastlane".to_string()).unwrap();
-        assert!(routes.contains("rpc"));
-        assert!(routes.contains("jito"));
-        assert!(routes.contains("fastlane"));
-        assert_eq!(routes.len(), 3);
-    }
-
-    #[test]
-    fn parse_route_allowlist_rejects_unknown_route() {
-        let error = parse_route_allowlist("rpc,unknown_route".to_string())
-            .expect_err("unknown route must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported route=unknown_route"),
-            "error={}",
-            error
-        );
-    }
-
-    #[test]
-    fn validate_fastlane_route_policy_enforces_feature_gate() {
-        let routes = parse_route_allowlist("rpc,fastlane".to_string()).unwrap();
-        assert!(validate_fastlane_route_policy(&routes, false).is_err());
-        assert!(validate_fastlane_route_policy(&routes, true).is_ok());
-    }
 
     #[test]
     fn validate_common_contract_rejects_fastlane_when_feature_disabled() {
