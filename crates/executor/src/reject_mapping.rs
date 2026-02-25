@@ -259,6 +259,12 @@ pub(crate) fn map_submit_response_validation_error_to_reject(
     error: SubmitResponseValidationError,
 ) -> Reject {
     match error {
+        SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!("upstream {} must be non-empty string when present", field_name),
+            )
+        }
         SubmitResponseValidationError::RouteMismatch {
             response_route,
             expected_route,

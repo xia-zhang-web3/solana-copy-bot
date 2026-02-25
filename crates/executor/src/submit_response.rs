@@ -5,6 +5,9 @@ use crate::rfc3339_time::parse_rfc3339_utc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SubmitResponseValidationError {
+    FieldMustBeNonEmptyStringWhenPresent {
+        field_name: String,
+    },
     RouteMismatch {
         response_route: String,
         expected_route: String,
@@ -32,11 +35,10 @@ pub(crate) fn validate_submit_response_route_and_contract(
     expected_route: &str,
     expected_contract_version: &str,
 ) -> Result<(), SubmitResponseValidationError> {
-    if let Some(response_route) = backend_response
-        .get("route")
-        .and_then(Value::as_str)
-        .map(normalize_route)
+    if let Some(response_route_raw) =
+        parse_optional_non_empty_string_field(backend_response, "route")?
     {
+        let response_route = normalize_route(response_route_raw.as_str());
         if response_route != expected_route {
             return Err(SubmitResponseValidationError::RouteMismatch {
                 response_route,
@@ -45,15 +47,12 @@ pub(crate) fn validate_submit_response_route_and_contract(
         }
     }
 
-    if let Some(response_contract_version) = backend_response
-        .get("contract_version")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    if let Some(response_contract_version) =
+        parse_optional_non_empty_string_field(backend_response, "contract_version")?
     {
-        if response_contract_version != expected_contract_version {
+        if response_contract_version.as_str() != expected_contract_version {
             return Err(SubmitResponseValidationError::ContractVersionMismatch {
-                response_contract_version: response_contract_version.to_string(),
+                response_contract_version,
                 expected_contract_version: expected_contract_version.to_string(),
             });
         }
@@ -67,35 +66,53 @@ pub(crate) fn validate_submit_response_request_identity(
     expected_client_order_id: &str,
     expected_request_id: &str,
 ) -> Result<(), SubmitResponseValidationError> {
-    if let Some(response_client_order_id) = backend_response
-        .get("client_order_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    if let Some(response_client_order_id) =
+        parse_optional_non_empty_string_field(backend_response, "client_order_id")?
     {
-        if response_client_order_id != expected_client_order_id {
+        if response_client_order_id.as_str() != expected_client_order_id {
             return Err(SubmitResponseValidationError::ClientOrderIdMismatch {
-                response_client_order_id: response_client_order_id.to_string(),
+                response_client_order_id,
                 expected_client_order_id: expected_client_order_id.to_string(),
             });
         }
     }
 
-    if let Some(response_request_id) = backend_response
-        .get("request_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    if let Some(response_request_id) =
+        parse_optional_non_empty_string_field(backend_response, "request_id")?
     {
-        if response_request_id != expected_request_id {
+        if response_request_id.as_str() != expected_request_id {
             return Err(SubmitResponseValidationError::RequestIdMismatch {
-                response_request_id: response_request_id.to_string(),
+                response_request_id,
                 expected_request_id: expected_request_id.to_string(),
             });
         }
     }
 
     Ok(())
+}
+
+fn parse_optional_non_empty_string_field(
+    backend_response: &Value,
+    field_name: &str,
+) -> Result<Option<String>, SubmitResponseValidationError> {
+    let Some(field_value) = backend_response.get(field_name) else {
+        return Ok(None);
+    };
+    if field_value.is_null() {
+        return Ok(None);
+    }
+    let Some(raw_value) = field_value.as_str() else {
+        return Err(SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+            field_name: field_name.to_string(),
+        });
+    };
+    let normalized = raw_value.trim();
+    if normalized.is_empty() {
+        return Err(SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+            field_name: field_name.to_string(),
+        });
+    }
+    Ok(Some(normalized.to_string()))
 }
 
 pub(crate) fn resolve_submit_response_submitted_at(
@@ -163,6 +180,48 @@ mod tests {
         assert!(matches!(
             error,
             SubmitResponseValidationError::RequestIdMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn submit_response_validate_route_and_contract_rejects_non_string_contract_version() {
+        let backend = json!({
+            "route": "rpc",
+            "contract_version": 123
+        });
+        let error = validate_submit_response_route_and_contract(&backend, "rpc", "v1")
+            .expect_err("non-string contract_version must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { .. }
+        ));
+    }
+
+    #[test]
+    fn submit_response_validate_request_identity_rejects_non_string_request_id() {
+        let backend = json!({
+            "client_order_id": "client-1",
+            "request_id": 123
+        });
+        let error = validate_submit_response_request_identity(&backend, "client-1", "request-1")
+            .expect_err("non-string request_id must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { .. }
+        ));
+    }
+
+    #[test]
+    fn submit_response_validate_request_identity_rejects_empty_client_order_id() {
+        let backend = json!({
+            "client_order_id": " ",
+            "request_id": "request-1"
+        });
+        let error = validate_submit_response_request_identity(&backend, "client-1", "request-1")
+            .expect_err("empty client_order_id must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { .. }
         ));
     }
 
