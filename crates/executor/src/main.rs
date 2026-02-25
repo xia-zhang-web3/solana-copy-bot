@@ -2369,6 +2369,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_submit_with_empty_token_expectation_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-submit-empty-token-expectation-1",
+            "signal_id": "signal-submit-empty-token-expectation-1",
+            "client_order_id": "client-order-submit-empty-token-expectation-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc",
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-submit-empty-token-expectation-1"),
+                signal_id: Some("signal-submit-empty-token-expectation-1"),
+                client_order_id: Some("client-order-submit-empty-token-expectation-1"),
+                side: Some("buy"),
+                token: Some(" "),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+            },
+        )
+        .await
+        .expect_err("submit with empty token expectation must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("empty token expectation"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_simulate_with_empty_request_id_expectation_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-simulate-empty-request-expectation-1",
+            "signal_id": "signal-simulate-empty-request-expectation-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some(""),
+                signal_id: Some("signal-simulate-empty-request-expectation-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect_err("simulate with empty request_id expectation must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("empty request_id expectation"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_allowlisted_route_without_backend_before_forward() {
         let mut state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",

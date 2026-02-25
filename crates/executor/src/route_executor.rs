@@ -119,11 +119,20 @@ fn validate_route_executor_payload_expectations_shape(
     payload_expectations: RouteActionPayloadExpectations<'_>,
 ) -> std::result::Result<(), Reject> {
     let require = |field_name: &str, value: Option<&str>| {
-        if value.is_none() {
-            return Err(Reject::terminal(
+        let value = value.ok_or_else(|| {
+            Reject::terminal(
                 "invalid_request_body",
                 format!(
                     "route action missing {} expectation at route-executor boundary",
+                    field_name
+                ),
+            )
+        })?;
+        if value.trim().is_empty() {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                format!(
+                    "route action has empty {} expectation at route-executor boundary",
                     field_name
                 ),
             ));
@@ -553,6 +562,77 @@ mod tests {
             assert!(reject
                 .detail
                 .contains(format!("missing {} expectation", missing_field).as_str()));
+        }
+    }
+
+    #[test]
+    fn route_executor_payload_expectations_shape_rejects_empty_shared_fields() {
+        let cases = [
+            (
+                "request_id",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: Some(""),
+                    signal_id: Some("signal-id-1"),
+                    client_order_id: Some("client-order-id-1"),
+                    side: Some("buy"),
+                    token: Some("11111111111111111111111111111111"),
+                },
+            ),
+            (
+                "signal_id",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: Some("request-id-1"),
+                    signal_id: Some("  "),
+                    client_order_id: Some("client-order-id-1"),
+                    side: Some("buy"),
+                    token: Some("11111111111111111111111111111111"),
+                },
+            ),
+            (
+                "side",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: Some("request-id-1"),
+                    signal_id: Some("signal-id-1"),
+                    client_order_id: Some("client-order-id-1"),
+                    side: Some(""),
+                    token: Some("11111111111111111111111111111111"),
+                },
+            ),
+            (
+                "token",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: Some("request-id-1"),
+                    signal_id: Some("signal-id-1"),
+                    client_order_id: Some("client-order-id-1"),
+                    side: Some("buy"),
+                    token: Some(""),
+                },
+            ),
+            (
+                "client_order_id",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: Some("request-id-1"),
+                    signal_id: Some("signal-id-1"),
+                    client_order_id: Some(" "),
+                    side: Some("buy"),
+                    token: Some("11111111111111111111111111111111"),
+                },
+            ),
+        ];
+
+        for (empty_field, expectations) in cases {
+            let reject =
+                validate_route_executor_payload_expectations_shape(UpstreamAction::Submit, expectations)
+                    .expect_err("empty shared expectation must reject");
+            assert_eq!(reject.code, "invalid_request_body");
+            assert!(reject
+                .detail
+                .contains(format!("empty {} expectation", empty_field).as_str()));
         }
     }
 }
