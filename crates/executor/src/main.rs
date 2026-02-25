@@ -1850,6 +1850,7 @@ mod tests {
             raw_body_bytes.as_slice(),
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some("fastlane"),
                 request_id: Some("request-fastlane-disabled-1"),
                 signal_id: Some("signal-fastlane-disabled-1"),
                 client_order_id: None,
@@ -1905,6 +1906,7 @@ mod tests {
             raw_body_bytes.as_slice(),
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some("jito"),
                 request_id: Some("request-jito-not-allowlisted-1"),
                 signal_id: Some("signal-jito-not-allowlisted-1"),
                 client_order_id: None,
@@ -1966,6 +1968,7 @@ mod tests {
             raw_body_bytes.as_slice(),
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some("jito"),
                 request_id: Some("request-jito-submit-not-allowlisted-1"),
                 signal_id: Some("signal-jito-submit-not-allowlisted-1"),
                 client_order_id: Some("client-order-jito-submit-not-allowlisted-1"),
@@ -1978,6 +1981,60 @@ mod tests {
         .expect_err("non-allowlisted submit route must reject before action/context checks");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "route_not_allowed");
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_submit_route_payload_hint_mismatch_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-submit-route-hint-mismatch-1",
+            "signal_id": "signal-submit-route-hint-mismatch-1",
+            "client_order_id": "client-order-submit-route-hint-mismatch-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc",
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("jito"),
+                request_id: Some("request-submit-route-hint-mismatch-1"),
+                signal_id: Some("signal-submit-route-hint-mismatch-1"),
+                client_order_id: Some("client-order-submit-route-hint-mismatch-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+            },
+        )
+        .await
+        .expect_err("submit route hint mismatch must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route payload mismatch"));
     }
 
     #[tokio::test]
@@ -2011,6 +2068,7 @@ mod tests {
             raw_body_bytes.as_slice(),
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
                 request_id: Some("request-route-backend-missing-1"),
                 signal_id: Some("signal-route-backend-missing-1"),
                 client_order_id: None,
@@ -2063,6 +2121,7 @@ mod tests {
             raw_body_bytes.as_slice(),
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
                 request_id: Some("request-submit-route-backend-missing-1"),
                 signal_id: Some("signal-submit-route-backend-missing-1"),
                 client_order_id: Some("client-order-submit-route-backend-missing-1"),
@@ -2126,6 +2185,7 @@ mod tests {
             raw_body_bytes.as_slice(),
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some("fastlane"),
                 request_id: Some("request-fastlane-submit-disabled-1"),
                 signal_id: Some("signal-fastlane-submit-disabled-1"),
                 client_order_id: Some("client-order-fastlane-submit-disabled-1"),
@@ -2172,6 +2232,7 @@ mod tests {
             raw_body_bytes.as_slice(),
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
                 request_id: Some("request-simulate-with-plan-1"),
                 signal_id: Some("signal-simulate-with-plan-1"),
                 client_order_id: None,
@@ -2230,6 +2291,7 @@ mod tests {
             raw_body_bytes.as_slice(),
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
                 request_id: Some("request-submit-no-plan-1"),
                 signal_id: Some("signal-submit-no-plan-1"),
                 client_order_id: Some("client-order-submit-no-plan-1"),

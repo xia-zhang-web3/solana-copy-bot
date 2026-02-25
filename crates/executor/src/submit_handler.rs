@@ -157,6 +157,7 @@ pub(crate) async fn handle_submit(
         forward_body.as_slice(),
         Some(&submit_deadline),
         RouteActionPayloadExpectations {
+            route_hint: Some(route.as_str()),
             request_id: Some(request.request_id.as_str()),
             signal_id: Some(request.signal_id.as_str()),
             client_order_id: Some(request.client_order_id.as_str()),

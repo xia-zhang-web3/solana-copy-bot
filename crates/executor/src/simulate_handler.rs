@@ -60,6 +60,7 @@ pub(crate) async fn handle_simulate(
             raw_body,
             None,
             RouteActionPayloadExpectations {
+                route_hint: Some(route.as_str()),
                 request_id: Some(request.request_id.as_str()),
                 signal_id: Some(request.signal_id.as_str()),
                 client_order_id: None,

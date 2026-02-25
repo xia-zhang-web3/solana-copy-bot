@@ -20,6 +20,7 @@ pub(crate) enum RouteExecutorKind {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RouteActionPayloadExpectations<'a> {
+    pub(crate) route_hint: Option<&'a str>,
     pub(crate) request_id: Option<&'a str>,
     pub(crate) signal_id: Option<&'a str>,
     pub(crate) client_order_id: Option<&'a str>,
@@ -113,6 +114,31 @@ fn validate_route_executor_action_context(
     }
 }
 
+fn validate_route_executor_payload_route_expectation(
+    normalized_route: &str,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
+) -> std::result::Result<(), Reject> {
+    let payload_route = payload_expectations
+        .route_hint
+        .ok_or_else(|| {
+            Reject::terminal(
+                "invalid_request_body",
+                "route payload hint missing at route-executor boundary",
+            )
+        })?;
+    let normalized_payload_route = normalize_route(payload_route);
+    if normalized_payload_route != normalized_route {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "route payload mismatch at route-executor boundary expected={} got={}",
+                normalized_route, normalized_payload_route
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resolve_route_executor_kind(route: &str) -> Option<RouteExecutorKind> {
     let normalized_route = normalize_route(route);
@@ -136,6 +162,7 @@ pub(crate) async fn execute_route_action(
                 format!("route={} is not supported by route executor", route),
             )
         })?;
+    validate_route_executor_payload_route_expectation(normalized_route.as_str(), payload_expectations)?;
     validate_route_executor_allowlist(normalized_route.as_str(), &state.config.route_allowlist)?;
     validate_route_executor_backend_configured(normalized_route.as_str(), &state.config.route_backends)?;
     validate_route_executor_feature_gate(
@@ -170,9 +197,10 @@ mod tests {
     use super::{
         validate_route_executor_action_context, validate_route_executor_allowlist,
         validate_route_executor_backend_configured,
-        validate_route_executor_feature_gate, resolve_route_executor_kind,
+        validate_route_executor_feature_gate, validate_route_executor_payload_route_expectation,
+        resolve_route_executor_kind,
         resolve_route_executor_kind_normalized,
-        RouteSubmitExecutionContext, RouteExecutorKind,
+        RouteActionPayloadExpectations, RouteSubmitExecutionContext, RouteExecutorKind,
     };
     use crate::route_backend::{RouteBackend, UpstreamAction};
     use crate::tx_build::SubmitInstructionPlan;
@@ -324,5 +352,42 @@ mod tests {
         .expect_err("simulate with submit plan must be rejected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn route_executor_payload_route_expectation_rejects_missing_hint() {
+        let reject = validate_route_executor_payload_route_expectation(
+            "rpc",
+            RouteActionPayloadExpectations::default(),
+        )
+        .expect_err("missing route hint must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn route_executor_payload_route_expectation_rejects_mismatch() {
+        let reject = validate_route_executor_payload_route_expectation(
+            "rpc",
+            RouteActionPayloadExpectations {
+                route_hint: Some("jito"),
+                ..RouteActionPayloadExpectations::default()
+            },
+        )
+        .expect_err("route hint mismatch must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route payload mismatch"));
+    }
+
+    #[test]
+    fn route_executor_payload_route_expectation_accepts_match_case_insensitive() {
+        validate_route_executor_payload_route_expectation(
+            "rpc",
+            RouteActionPayloadExpectations {
+                route_hint: Some(" RPC "),
+                ..RouteActionPayloadExpectations::default()
+            },
+        )
+        .expect("matching route hint should pass");
     }
 }
