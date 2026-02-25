@@ -114,6 +114,38 @@ fn validate_route_executor_action_context(
     }
 }
 
+fn validate_route_executor_payload_expectations_shape(
+    action: UpstreamAction,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
+) -> std::result::Result<(), Reject> {
+    let require = |field_name: &str, value: Option<&str>| {
+        if value.is_none() {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                format!(
+                    "route action missing {} expectation at route-executor boundary",
+                    field_name
+                ),
+            ));
+        }
+        Ok(())
+    };
+    require("request_id", payload_expectations.request_id)?;
+    require("signal_id", payload_expectations.signal_id)?;
+    require("side", payload_expectations.side)?;
+    require("token", payload_expectations.token)?;
+    match action {
+        UpstreamAction::Submit => require("client_order_id", payload_expectations.client_order_id),
+        UpstreamAction::Simulate if payload_expectations.client_order_id.is_some() => {
+            Err(Reject::terminal(
+                "invalid_request_body",
+                "simulate route action must not include client_order_id expectation at route-executor boundary",
+            ))
+        }
+        UpstreamAction::Simulate => Ok(()),
+    }
+}
+
 fn validate_route_executor_payload_route_expectation(
     normalized_route: &str,
     payload_expectations: RouteActionPayloadExpectations<'_>,
@@ -169,6 +201,7 @@ pub(crate) async fn execute_route_action(
         normalized_route.as_str(),
         state.config.submit_fastlane_enabled,
     )?;
+    validate_route_executor_payload_expectations_shape(action, payload_expectations)?;
     validate_route_executor_action_context(action, submit_context)?;
     let route_adapter = RouteAdapter::from_kind(route_executor_kind);
     debug!(
@@ -197,7 +230,9 @@ mod tests {
     use super::{
         validate_route_executor_action_context, validate_route_executor_allowlist,
         validate_route_executor_backend_configured,
-        validate_route_executor_feature_gate, validate_route_executor_payload_route_expectation,
+        validate_route_executor_feature_gate,
+        validate_route_executor_payload_expectations_shape,
+        validate_route_executor_payload_route_expectation,
         resolve_route_executor_kind,
         resolve_route_executor_kind_normalized,
         RouteActionPayloadExpectations, RouteSubmitExecutionContext, RouteExecutorKind,
@@ -389,5 +424,75 @@ mod tests {
             },
         )
         .expect("matching route hint should pass");
+    }
+
+    #[test]
+    fn route_executor_payload_expectations_shape_rejects_submit_missing_client_order_id() {
+        let reject = validate_route_executor_payload_expectations_shape(
+            UpstreamAction::Submit,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-id-1"),
+                signal_id: Some("signal-id-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        )
+        .expect_err("submit must require client_order_id expectation");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing client_order_id expectation"));
+    }
+
+    #[test]
+    fn route_executor_payload_expectations_shape_rejects_simulate_with_client_order_id() {
+        let reject = validate_route_executor_payload_expectations_shape(
+            UpstreamAction::Simulate,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-id-1"),
+                signal_id: Some("signal-id-1"),
+                client_order_id: Some("client-order-id-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        )
+        .expect_err("simulate must reject client_order_id expectation");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("must not include client_order_id expectation"));
+    }
+
+    #[test]
+    fn route_executor_payload_expectations_shape_accepts_submit_required_fields() {
+        validate_route_executor_payload_expectations_shape(
+            UpstreamAction::Submit,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-id-1"),
+                signal_id: Some("signal-id-1"),
+                client_order_id: Some("client-order-id-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        )
+        .expect("submit with complete expectations should pass");
+    }
+
+    #[test]
+    fn route_executor_payload_expectations_shape_accepts_simulate_required_fields() {
+        validate_route_executor_payload_expectations_shape(
+            UpstreamAction::Simulate,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-id-1"),
+                signal_id: Some("signal-id-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        )
+        .expect("simulate with complete expectations should pass");
     }
 }
