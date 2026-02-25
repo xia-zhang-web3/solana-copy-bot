@@ -1453,6 +1453,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_missing_deadline_before_request() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([42u8; 64]);
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
+            .await
+            .expect_err("send RPC without deadline must fail closed before request");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_missing_deadline_before_topology_check() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([43u8; 64]);
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = None;
+            backend.send_rpc_fallback_url =
+                Some("http://127.0.0.1:1/send-rpc-fallback".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
+            .await
+            .expect_err("deadline guard must reject before topology checks");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[tokio::test]
     async fn send_signed_transaction_via_rpc_returns_signature_result() {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([13u8; 64]);
         let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
@@ -1474,8 +1519,14 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let signature =
-            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
+            send_signed_transaction_via_rpc(
+                &state,
+                "rpc",
+                signed_tx_base64.as_str(),
+                Some(&submit_deadline),
+            )
                 .await
                 .expect("send RPC should return tx signature");
         assert_eq!(signature, rpc_signature);
@@ -1507,10 +1558,16 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let reject =
-            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-                .await
-                .expect_err("mismatched send RPC signature must fail");
+            send_signed_transaction_via_rpc(
+                &state,
+                "rpc",
+                signed_tx_base64.as_str(),
+                Some(&submit_deadline),
+            )
+            .await
+            .expect_err("mismatched send RPC signature must fail");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "send_rpc_signature_mismatch");
         let _ = send_rpc_handle.join();
@@ -1547,10 +1604,16 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let signature =
-            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-                .await
-                .expect("fallback send RPC with dedicated auth token should succeed");
+            send_signed_transaction_via_rpc(
+                &state,
+                "rpc",
+                signed_tx_base64.as_str(),
+                Some(&submit_deadline),
+            )
+            .await
+            .expect("fallback send RPC with dedicated auth token should succeed");
         assert_eq!(signature, expected_signature);
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
@@ -1575,10 +1638,16 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let reject =
-            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-                .await
-                .expect_err("fallback-only send RPC topology must fail closed");
+            send_signed_transaction_via_rpc(
+                &state,
+                "rpc",
+                signed_tx_base64.as_str(),
+                Some(&submit_deadline),
+            )
+            .await
+            .expect_err("fallback-only send RPC topology must fail closed");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "adapter_send_rpc_not_configured");
         assert!(
@@ -1613,10 +1682,16 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let signature =
-            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-                .await
-                .expect("already processed error should resolve to expected signature");
+            send_signed_transaction_via_rpc(
+                &state,
+                "rpc",
+                signed_tx_base64.as_str(),
+                Some(&submit_deadline),
+            )
+            .await
+            .expect("already processed error should resolve to expected signature");
         assert_eq!(signature, expected_signature);
         let _ = send_rpc_handle.join();
     }
@@ -1647,10 +1722,16 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let reject =
-            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-                .await
-                .expect_err("blockhash-expired send RPC payload should be terminal");
+            send_signed_transaction_via_rpc(
+                &state,
+                "rpc",
+                signed_tx_base64.as_str(),
+                Some(&submit_deadline),
+            )
+            .await
+            .expect_err("blockhash-expired send RPC payload should be terminal");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "executor_blockhash_expired");
         let _ = primary_handle.join();
@@ -1680,10 +1761,16 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let reject =
-            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-                .await
-                .expect_err("unknown send RPC error payload should be terminal");
+            send_signed_transaction_via_rpc(
+                &state,
+                "rpc",
+                signed_tx_base64.as_str(),
+                Some(&submit_deadline),
+            )
+            .await
+            .expect_err("unknown send RPC error payload should be terminal");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "send_rpc_error_payload_terminal");
         let _ = primary_handle.join();

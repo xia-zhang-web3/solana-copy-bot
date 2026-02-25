@@ -11,12 +11,25 @@ use crate::{
     AppState, Reject,
 };
 
+fn validate_send_rpc_deadline_context(
+    submit_deadline: Option<&SubmitDeadline>,
+) -> std::result::Result<(), Reject> {
+    if submit_deadline.is_none() {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            "submit send RPC missing deadline at send-rpc boundary",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn send_signed_transaction_via_rpc(
     state: &AppState,
     route: &str,
     signed_tx_base64: &str,
     submit_deadline: Option<&SubmitDeadline>,
 ) -> std::result::Result<String, Reject> {
+    validate_send_rpc_deadline_context(submit_deadline)?;
     let backend = state.config.route_backends.get(route).ok_or_else(|| {
         Reject::terminal(
             "route_not_allowed",
@@ -358,4 +371,26 @@ fn parse_shortvec_len(bytes: &[u8]) -> Result<(usize, usize)> {
         }
     }
     Err(anyhow!("shortvec is truncated"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_send_rpc_deadline_context;
+    use crate::submit_deadline::SubmitDeadline;
+
+    #[test]
+    fn send_rpc_deadline_context_rejects_missing_deadline() {
+        let reject = validate_send_rpc_deadline_context(None)
+            .expect_err("send RPC without deadline must reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[test]
+    fn send_rpc_deadline_context_accepts_present_deadline() {
+        let submit_deadline = SubmitDeadline::new(1_000);
+        validate_send_rpc_deadline_context(Some(&submit_deadline))
+            .expect("send RPC with deadline should pass");
+    }
 }
