@@ -709,6 +709,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 181. executor phase-2B test-structure cleanup continued: duplicated route-allowlist tests were removed from `crates/executor/src/main.rs` and consolidated in `crates/executor/src/route_allowlist.rs` with compatibility test names (`parse_route_allowlist_rejects_unknown_route`, `validate_fastlane_route_policy_enforces_feature_gate`) preserved to keep contract smoke guard pack unchanged.
 182. executor phase-2B adapter-boundary identity coverage expanded for strict-missing branches: when expected request identity exists, missing raw payload fields now have explicit submit/simulate unit and integration pre-forward guards for `request_id`, `signal_id`, and `client_order_id`, making the broader strictness (beyond side/token) explicit and regression-proof.
 183. executor phase-2B idempotency cleanup cadence hardened for multi-process topology: claim-cleanup throttle now consults shared SQLite metadata (`executor_runtime_meta.claim_cleanup_last_unix`) before running global stale-claim DELETE, reducing redundant cross-process cleanup churn while preserving same-key stale reclaim fallback when insert conflicts on stale claims.
+184. executor phase-2B test-structure cleanup continued: `require_authenticated_mode_fails_closed_by_default` was moved from `crates/executor/src/main.rs` into module-local `crates/executor/src/auth_mode.rs` with the same guard test name, reducing main-test surface while preserving contract smoke compatibility.
 
 Остается в next-code-queue:
 

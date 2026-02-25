@@ -46,6 +46,13 @@ mod tests {
     }
 
     #[test]
+    fn require_authenticated_mode_fails_closed_by_default() {
+        assert!(require_authenticated_mode(None, false).is_err());
+        assert!(require_authenticated_mode(Some("token"), false).is_ok());
+        assert!(require_authenticated_mode(None, true).is_ok());
+    }
+
+    #[test]
     fn validate_hmac_auth_config_rejects_partial_pair() {
         let error =
             validate_hmac_auth_config(Some("key-id"), None, 30).expect_err("partial pair fails");

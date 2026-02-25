@@ -64,8 +64,6 @@ mod tx_build;
 mod upstream_forward;
 mod upstream_outcome;
 
-#[cfg(test)]
-use crate::auth_mode::require_authenticated_mode;
 use crate::auth_verifier::AuthVerifier;
 #[cfg(test)]
 use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
@@ -584,13 +582,6 @@ mod tests {
         );
 
         cleanup_temp_secret_file(path);
-    }
-
-    #[test]
-    fn require_authenticated_mode_fails_closed_by_default() {
-        assert!(require_authenticated_mode(None, false).is_err());
-        assert!(require_authenticated_mode(Some("token"), false).is_ok());
-        assert!(require_authenticated_mode(None, true).is_ok());
     }
 
     #[tokio::test]
