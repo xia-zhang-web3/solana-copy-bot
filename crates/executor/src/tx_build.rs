@@ -39,6 +39,13 @@ pub(crate) enum SlippageValidationError {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SubmitInstructionPlan {
+    pub(crate) compute_budget_cu_limit: u32,
+    pub(crate) compute_budget_cu_price_micro_lamports: u64,
+    pub(crate) tip_instruction_lamports: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SubmitBuildPlanInputs<'a> {
     pub(crate) route: &'a str,
@@ -57,6 +64,7 @@ pub(crate) struct SubmitBuildPlanInputs<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SubmitBuildPlan {
     pub(crate) forward_body: Vec<u8>,
+    pub(crate) instruction_plan: SubmitInstructionPlan,
     pub(crate) effective_tip_lamports: u64,
     pub(crate) tip_policy_code: Option<&'static str>,
 }
@@ -100,12 +108,30 @@ pub(crate) fn build_submit_plan(
         effective_tip_lamports,
     )
     .map_err(SubmitBuildPlanError::ForwardPayload)?;
+    let instruction_plan = compose_submit_instruction_plan(
+        inputs.cu_limit,
+        inputs.cu_price_micro_lamports,
+        effective_tip_lamports,
+    );
 
     Ok(SubmitBuildPlan {
         forward_body,
+        instruction_plan,
         effective_tip_lamports,
         tip_policy_code,
     })
+}
+
+pub(crate) fn compose_submit_instruction_plan(
+    cu_limit: u32,
+    cu_price_micro_lamports: u64,
+    effective_tip_lamports: u64,
+) -> SubmitInstructionPlan {
+    SubmitInstructionPlan {
+        compute_budget_cu_limit: cu_limit,
+        compute_budget_cu_price_micro_lamports: cu_price_micro_lamports,
+        tip_instruction_lamports: (effective_tip_lamports > 0).then_some(effective_tip_lamports),
+    }
 }
 
 pub(crate) fn resolve_submit_tip_lamports(
@@ -207,10 +233,11 @@ pub(crate) fn validate_submit_slippage_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_submit_forward_payload, build_submit_plan, resolve_submit_tip_lamports,
+        build_submit_forward_payload, build_submit_plan, compose_submit_instruction_plan,
+        resolve_submit_tip_lamports,
         validate_submit_compute_budget, validate_submit_slippage_policy, ComputeBudgetBounds,
         ComputeBudgetValidationError, ForwardPayloadBuildError, SlippageValidationError,
-        SubmitBuildPlanError, SubmitBuildPlanInputs, SubmitTipPolicyError,
+        SubmitBuildPlanError, SubmitBuildPlanInputs, SubmitInstructionPlan, SubmitTipPolicyError,
     };
 
     #[test]
@@ -359,6 +386,32 @@ mod tests {
     }
 
     #[test]
+    fn tx_build_instruction_plan_omits_tip_when_zero() {
+        let plan = compose_submit_instruction_plan(300_000, 1_000, 0);
+        assert_eq!(
+            plan,
+            SubmitInstructionPlan {
+                compute_budget_cu_limit: 300_000,
+                compute_budget_cu_price_micro_lamports: 1_000,
+                tip_instruction_lamports: None,
+            }
+        );
+    }
+
+    #[test]
+    fn tx_build_instruction_plan_includes_tip_when_positive() {
+        let plan = compose_submit_instruction_plan(300_000, 1_000, 12_345);
+        assert_eq!(
+            plan,
+            SubmitInstructionPlan {
+                compute_budget_cu_limit: 300_000,
+                compute_budget_cu_price_micro_lamports: 1_000,
+                tip_instruction_lamports: Some(12_345),
+            }
+        );
+    }
+
+    #[test]
     fn tx_build_plan_builds_payload_and_tip_policy() {
         let input = br#"{"route":"rpc","tip_lamports":12345,"compute_budget":{"cu_limit":300000,"cu_price_micro_lamports":1000}}"#;
         let plan = build_submit_plan(SubmitBuildPlanInputs {
@@ -382,6 +435,14 @@ mod tests {
         .expect("submit plan should build");
         assert_eq!(plan.effective_tip_lamports, 0);
         assert_eq!(plan.tip_policy_code, Some("rpc_tip_forced_zero"));
+        assert_eq!(
+            plan.instruction_plan,
+            SubmitInstructionPlan {
+                compute_budget_cu_limit: 300_000,
+                compute_budget_cu_price_micro_lamports: 1_000,
+                tip_instruction_lamports: None,
+            }
+        );
         let payload: serde_json::Value =
             serde_json::from_slice(plan.forward_body.as_slice()).expect("valid json");
         assert_eq!(payload.get("tip_lamports").and_then(|v| v.as_u64()), Some(0));

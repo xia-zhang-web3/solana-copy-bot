@@ -90,8 +90,16 @@ pub(crate) async fn handle_submit(
             map_forward_payload_build_error_to_reject(inner)
         }
     })?;
+    let instruction_plan = submit_plan.instruction_plan;
     let effective_tip_lamports = submit_plan.effective_tip_lamports;
     let tip_policy_code = submit_plan.tip_policy_code;
+    debug!(
+        route = %route,
+        cu_limit = instruction_plan.compute_budget_cu_limit,
+        cu_price_micro_lamports = instruction_plan.compute_budget_cu_price_micro_lamports,
+        tip_instruction_lamports = instruction_plan.tip_instruction_lamports.unwrap_or(0),
+        "prepared submit instruction plan"
+    );
     let forward_body = submit_plan.forward_body;
     if let Some(policy_code) = tip_policy_code {
         debug!(
