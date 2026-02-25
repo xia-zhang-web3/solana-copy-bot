@@ -716,6 +716,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 188. executor runtime shutdown hardening: server now uses graceful shutdown on process signals (`SIGINT`/`SIGTERM`) via `axum::serve(...).with_graceful_shutdown(shutdown_signal())`, reducing abrupt in-flight termination risk during systemd restarts/rollouts while preserving fail-closed startup behavior.
 189. executor test-runtime optimization: HMAC skew-window replay guard test duration reduced (`ttl=1`, shorter wait), and nonce-eviction capacity guard switched to deterministic pre-seeded expired-entry setup (no sleep), keeping semantics unchanged while speeding up quick/standard audit loops.
 190. executor shutdown/nonce guard coverage hardened: signal wait logic was extracted into testable helpers (`await_shutdown_signal_ctrl_c_only`, unix `await_shutdown_signal_unix`) with dedicated async guard tests, and forward-skew HMAC replay test was made deterministic (no sleep) by asserting nonce expiry horizon directly before replay check.
+191. executor auth-verifier testclock hardening: HMAC verify path now has internal deterministic test clock hook (`verify_with_now_epoch`) used by guard tests, restoring explicit “time progression within forward-skew window” coverage in `auth_verifier_hmac_keeps_nonce_through_forward_skew_window` without reintroducing sleep-based flakiness.
 
 Остается в next-code-queue:
 

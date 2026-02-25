@@ -55,6 +55,16 @@ impl AuthVerifier {
         headers: &HeaderMap,
         raw_body: &[u8],
     ) -> std::result::Result<(), Reject> {
+        self.verify_with_now_epoch(headers, raw_body, Utc::now().timestamp())
+            .await
+    }
+
+    async fn verify_with_now_epoch(
+        &self,
+        headers: &HeaderMap,
+        raw_body: &[u8],
+        now_epoch: i64,
+    ) -> std::result::Result<(), Reject> {
         if let Some(expected) = self.bearer_token.as_deref() {
             let auth_header = headers
                 .get("authorization")
@@ -110,9 +120,8 @@ impl AuthVerifier {
                 ));
             }
             let signature = get_required_header(headers, "x-copybot-signature", "hmac_missing")?;
-            let now = Utc::now().timestamp();
             let max_skew = hmac.ttl_sec as i64;
-            if (now - timestamp).abs() > max_skew {
+            if (now_epoch - timestamp).abs() > max_skew {
                 return Err(Reject::terminal(
                     "hmac_expired",
                     "HMAC timestamp outside TTL window",
@@ -129,9 +138,8 @@ impl AuthVerifier {
             }
 
             {
-                let now = Utc::now().timestamp();
                 let mut seen = self.nonce_seen_until_epoch.lock().await;
-                seen.retain(|_, expires_at| *expires_at >= now);
+                seen.retain(|_, expires_at| *expires_at >= now_epoch);
                 let nonce_key = format!("{}:{}", key_id, nonce);
                 if seen.contains_key(&nonce_key) {
                     return Err(Reject::terminal(
@@ -286,7 +294,8 @@ mod tests {
             100_000,
         );
         let body = br#"{"action":"simulate"}"#;
-        let timestamp = Utc::now().timestamp().saturating_add(ttl_sec as i64);
+        let now_epoch = Utc::now().timestamp();
+        let timestamp = now_epoch.saturating_add(ttl_sec as i64);
         let payload = build_hmac_payload_bytes(
             timestamp.to_string().as_str(),
             ttl_sec.to_string().as_str(),
@@ -296,21 +305,13 @@ mod tests {
         let signature = compute_hmac_signature_hex(b"secret-3", payload.as_slice()).unwrap();
         let headers = build_hmac_headers("kid-3", ttl_sec, "nonce-3", timestamp, signature.as_str());
 
-        verifier.verify(&headers, body).await.expect("first verify must pass");
-        let cache_key = "kid-3:nonce-3";
-        {
-            let seen = verifier.nonce_seen_until_epoch.lock().await;
-            let expires_at = *seen
-                .get(cache_key)
-                .expect("nonce entry must be tracked after first verify");
-            assert!(
-                expires_at > Utc::now().timestamp(),
-                "forward-skew nonce should remain unexpired in replay cache"
-            );
-        }
+        verifier
+            .verify_with_now_epoch(&headers, body, now_epoch)
+            .await
+            .expect("first verify must pass");
 
         let reject = verifier
-            .verify(&headers, body)
+            .verify_with_now_epoch(&headers, body, now_epoch.saturating_add(ttl_sec as i64))
             .await
             .expect_err("replay within accepted skew window must reject");
         assert_eq!(reject.code, "hmac_replay");
