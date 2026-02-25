@@ -121,6 +121,12 @@ pub(crate) fn map_simulate_response_validation_error_to_reject(
     error: SimulateResponseValidationError,
 ) -> Reject {
     match error {
+        SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name } => {
+            Reject::terminal(
+                "simulation_invalid_response",
+                format!("upstream {} must be non-empty string when present", field_name),
+            )
+        }
         SimulateResponseValidationError::RouteMismatch {
             response_route,
             expected_route,

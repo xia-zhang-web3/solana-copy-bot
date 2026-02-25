@@ -317,6 +317,12 @@ contract_guard_tests=(
   "submit_payload_includes_tip_policy_when_present"
   "submit_verify_payload_serializes_seen_shape"
   "simulate_response_validation_rejects_route_mismatch"
+  "simulate_response_validation_rejects_non_string_route"
+  "simulate_response_validation_rejects_null_route"
+  "simulate_response_validation_rejects_non_string_contract_version"
+  "simulate_response_validation_rejects_empty_contract_version"
+  "handle_simulate_rejects_upstream_contract_version_type_invalid"
+  "handle_simulate_rejects_upstream_route_null"
   "submit_deadline_remaining_timeout_rejects_when_budget_exhausted"
   "upstream_outcome_rejects_unknown_status"
 )
