@@ -4948,6 +4948,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_submit_signature_rejects_invalid_signature_before_config_check() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            "not-base58",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("invalid submit signature must fail closed before config check");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("invalid tx_signature"));
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_rejects_invalid_signature_before_request() {
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec!["http://127.0.0.1:1/verify"],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            "not-base58",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("invalid submit signature must fail closed before request");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("invalid tx_signature"));
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_seen_when_rpc_reports_confirmation() {
         let signature = bs58::encode([9u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;

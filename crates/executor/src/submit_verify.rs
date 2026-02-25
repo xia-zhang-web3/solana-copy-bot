@@ -5,6 +5,7 @@ use tracing::warn;
 
 use crate::{
     http_utils::{classify_request_error, redacted_endpoint_label},
+    key_validation::validate_signature_like,
     submit_deadline::SubmitDeadline,
     AppState, Reject,
 };
@@ -28,6 +29,18 @@ fn validate_submit_verify_deadline_context(
     Ok(())
 }
 
+fn validate_submit_verify_signature_context(tx_signature: &str) -> std::result::Result<(), Reject> {
+    validate_signature_like(tx_signature).map_err(|error| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "submit signature verify invalid tx_signature at submit-verify boundary: {}",
+                error
+            ),
+        )
+    })
+}
+
 pub(crate) async fn verify_submitted_signature_visibility(
     state: &AppState,
     route: &str,
@@ -35,6 +48,7 @@ pub(crate) async fn verify_submitted_signature_visibility(
     submit_deadline: Option<&SubmitDeadline>,
 ) -> std::result::Result<SubmitSignatureVerification, Reject> {
     validate_submit_verify_deadline_context(submit_deadline)?;
+    validate_submit_verify_signature_context(tx_signature)?;
     let Some(config) = state.config.submit_signature_verify.as_ref() else {
         return Ok(SubmitSignatureVerification::Skipped);
     };
@@ -165,7 +179,9 @@ pub(crate) async fn verify_submitted_signature_visibility(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_submit_verify_deadline_context;
+    use super::{
+        validate_submit_verify_deadline_context, validate_submit_verify_signature_context,
+    };
     use crate::submit_deadline::SubmitDeadline;
 
     #[test]
@@ -182,5 +198,21 @@ mod tests {
         let submit_deadline = SubmitDeadline::new(1_000);
         validate_submit_verify_deadline_context(Some(&submit_deadline))
             .expect("submit verify with deadline should pass");
+    }
+
+    #[test]
+    fn submit_verify_signature_context_rejects_invalid_signature() {
+        let reject = validate_submit_verify_signature_context("not-base58")
+            .expect_err("submit verify with invalid signature must reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("invalid tx_signature"));
+    }
+
+    #[test]
+    fn submit_verify_signature_context_accepts_valid_signature() {
+        let tx_signature = bs58::encode([7u8; 64]).into_string();
+        validate_submit_verify_signature_context(tx_signature.as_str())
+            .expect("submit verify with valid signature should pass");
     }
 }
