@@ -29,30 +29,41 @@ pub(crate) fn spawn_response_cleanup_worker(state: AppState) -> JoinHandle<()> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            match state
-                .idempotency
-                .run_response_cleanup_if_due_nonblocking(
+            let idempotency = state.idempotency.clone();
+            let cleanup_outcome = tokio::task::spawn_blocking(move || {
+                idempotency.run_response_cleanup_if_due_nonblocking(
                     response_retention_sec,
                     response_cleanup_batch_size,
                     response_cleanup_max_batches_per_run,
                 )
-            {
-                Ok(true) => {}
-                Ok(false) => {
+            })
+            .await;
+            match cleanup_outcome {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => {
                     debug!(
                         response_cleanup_batch_size,
                         response_cleanup_max_batches_per_run,
                         "background idempotency response cleanup tick skipped: idempotency store lock busy"
                     );
                 }
+                Ok(Err(error)) => {
+                    warn!(
+                        error = %error,
+                        response_retention_sec,
+                        response_cleanup_batch_size,
+                        response_cleanup_max_batches_per_run,
+                        "background idempotency response cleanup tick failed"
+                    );
+                }
                 Err(error) => {
                     warn!(
-                    error = %error,
-                    response_retention_sec,
-                    response_cleanup_batch_size,
-                    response_cleanup_max_batches_per_run,
-                    "background idempotency response cleanup tick failed"
-                );
+                        error = %error,
+                        response_retention_sec,
+                        response_cleanup_batch_size,
+                        response_cleanup_max_batches_per_run,
+                        "background idempotency response cleanup blocking task join failed"
+                    );
                 }
             }
         }
