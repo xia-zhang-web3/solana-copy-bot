@@ -234,8 +234,48 @@ async fn main() -> Result<()> {
         .await
         .context("failed binding executor listener")?;
     axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .context("executor server crashed")
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(
+                error = %error,
+                "failed to install CTRL+C handler; forcing shutdown path"
+            );
+        }
+    };
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to install SIGTERM handler; falling back to CTRL+C only"
+                );
+                ctrl_c.await;
+                info!("shutdown signal received");
+                return;
+            }
+        };
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await;
+    }
+
+    info!("shutdown signal received");
 }
 
 #[cfg(test)]
