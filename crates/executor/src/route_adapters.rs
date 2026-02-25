@@ -702,6 +702,16 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_empty_signal_id_when_present() {
+        let body =
+            br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":" "}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+            .expect_err("submit empty signal_id must reject when present");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("signal_id must be non-empty"));
+    }
+
+    #[test]
     fn validate_simulate_payload_for_route_rejects_mismatched_route() {
         let body = br#"{"route":"jito","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
         let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
@@ -813,5 +823,15 @@ mod tests {
             .expect_err("simulate non-string request_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("request_id must be string"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_empty_request_id_when_present() {
+        let body =
+            br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","request_id":" "}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+            .expect_err("simulate empty request_id must reject when present");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("request_id must be non-empty"));
     }
 }
