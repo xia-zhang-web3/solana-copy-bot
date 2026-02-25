@@ -1,5 +1,10 @@
 use serde_json::Value;
 use tracing::debug;
+#[cfg(test)]
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::route_backend::UpstreamAction;
 use crate::route_executor::{
@@ -16,6 +21,40 @@ pub(crate) enum RouteAdapter {
     Rpc,
     Jito,
     Fastlane,
+}
+
+#[cfg(test)]
+fn submit_instruction_plan_presence_store() -> &'static Mutex<HashMap<String, bool>> {
+    static STORE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn record_submit_instruction_plan_presence_for_test(
+    client_order_id: Option<&str>,
+    has_instruction_plan: bool,
+) {
+    let Some(client_order_id) = client_order_id else {
+        return;
+    };
+    if let Ok(mut store) = submit_instruction_plan_presence_store().lock() {
+        store.insert(client_order_id.to_string(), has_instruction_plan);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_submit_instruction_plan_presence_for_test(client_order_id: &str) {
+    if let Ok(mut store) = submit_instruction_plan_presence_store().lock() {
+        store.remove(client_order_id);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn take_submit_instruction_plan_presence_for_test(client_order_id: &str) -> Option<bool> {
+    submit_instruction_plan_presence_store()
+        .lock()
+        .ok()
+        .and_then(|mut store| store.remove(client_order_id))
 }
 
 impl RouteAdapter {
@@ -106,6 +145,11 @@ impl RouteAdapter {
         payload_expectations: RouteActionPayloadExpectations<'_>,
         submit_context: RouteSubmitExecutionContext,
     ) -> std::result::Result<Value, Reject> {
+        #[cfg(test)]
+        record_submit_instruction_plan_presence_for_test(
+            payload_expectations.client_order_id,
+            submit_context.instruction_plan.is_some(),
+        );
         if let Some(plan) = submit_context.instruction_plan {
             debug!(
                 route = %route,

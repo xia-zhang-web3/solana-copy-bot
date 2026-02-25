@@ -181,6 +181,7 @@ contract_guard_tests=(
   "route_executor_resolve_normalized_route_for_backend_lookup"
   "route_executor_submit_execution_context_defaults_none"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
+  "handle_submit_wires_instruction_plan_presence_into_route_adapter_context"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
   "handle_submit_rejects_compute_budget_limit_out_of_range"
   "handle_submit_rejects_compute_budget_price_out_of_range"

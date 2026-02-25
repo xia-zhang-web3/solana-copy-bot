@@ -94,6 +94,11 @@ use crate::route_backend::RouteBackend;
 #[cfg(test)]
 use crate::route_backend::UpstreamAction;
 #[cfg(test)]
+use crate::route_adapters::{
+    clear_submit_instruction_plan_presence_for_test,
+    take_submit_instruction_plan_presence_for_test,
+};
+#[cfg(test)]
 use crate::route_policy::apply_submit_tip_policy;
 #[cfg(test)]
 use crate::secret_source::resolve_secret_source;
@@ -3125,6 +3130,55 @@ mod tests {
                 .and_then(|value| value.get("effective_tip_lamports"))
                 .and_then(Value::as_u64),
             Some(0)
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_wires_instruction_plan_presence_into_route_adapter_context() {
+        let signature = bs58::encode([24u8; 64]).into_string();
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_expect_tip_lamports(0, signature.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let client_order_id = "client-order-submit-context-plan-1";
+        clear_submit_instruction_plan_presence_for_test(client_order_id);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-submit-context-plan-1",
+            "client_order_id": client_order_id,
+            "request_id": "request-submit-context-plan-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 15.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 2500,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("submit should succeed and wire instruction context");
+        assert_eq!(
+            response.get("tx_signature").and_then(Value::as_str),
+            Some(signature.as_str())
+        );
+        assert_eq!(
+            take_submit_instruction_plan_presence_for_test(client_order_id),
+            Some(true)
         );
         let _ = upstream_handle.join();
     }
