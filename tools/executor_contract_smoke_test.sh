@@ -100,6 +100,7 @@ contract_guard_tests=(
   "healthz_payload_routes_alias_matches_enabled_routes"
   "normalize_route_trims_and_lowercases"
   "classify_normalized_route_maps_known_and_unknown_values"
+  "route_adapter_from_kind_maps_expected_label"
   "route_executor_resolve_maps_known_routes_case_insensitive"
   "route_executor_resolve_rejects_unknown_route"
   "route_executor_resolve_normalized_route_for_backend_lookup"

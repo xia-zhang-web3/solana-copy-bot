@@ -1,11 +1,11 @@
 use serde_json::Value;
 use tracing::debug;
 
+use crate::route_adapters::RouteAdapter;
 use crate::route_backend::UpstreamAction;
 use crate::route_normalization::normalize_route;
 use crate::route_policy::{classify_normalized_route, RouteKind};
 use crate::submit_deadline::SubmitDeadline;
-use crate::upstream_forward::forward_to_upstream;
 use crate::{AppState, Reject};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,95 +58,23 @@ pub(crate) async fn execute_route_action(
                 format!("route={} is not supported by route executor", route),
             )
         })?;
+    let route_adapter = RouteAdapter::from_kind(route_executor_kind);
     debug!(
         route = %normalized_route,
         action = %action.as_str(),
         route_executor = %route_executor_kind.as_str(),
+        route_adapter = %route_adapter.as_str(),
         "executing route action"
     );
-
-    match route_executor_kind {
-        RouteExecutorKind::Paper => {
-            execute_paper_route_action(
-                state,
-                normalized_route.as_str(),
-                action,
-                raw_body,
-                submit_deadline,
-            )
-            .await
-        }
-        RouteExecutorKind::Rpc => {
-            execute_rpc_route_action(
-                state,
-                normalized_route.as_str(),
-                action,
-                raw_body,
-                submit_deadline,
-            )
-            .await
-        }
-        RouteExecutorKind::Jito => {
-            execute_jito_route_action(
-                state,
-                normalized_route.as_str(),
-                action,
-                raw_body,
-                submit_deadline,
-            )
-            .await
-        }
-        RouteExecutorKind::Fastlane => {
-            execute_fastlane_route_action(
-                state,
-                normalized_route.as_str(),
-                action,
-                raw_body,
-                submit_deadline,
-            )
-            .await
-        }
-    }
-}
-
-async fn execute_paper_route_action(
-    state: &AppState,
-    route: &str,
-    action: UpstreamAction,
-    raw_body: &[u8],
-    submit_deadline: Option<&SubmitDeadline>,
-) -> std::result::Result<Value, Reject> {
-    forward_to_upstream(state, route, action, raw_body, submit_deadline).await
-}
-
-async fn execute_rpc_route_action(
-    state: &AppState,
-    route: &str,
-    action: UpstreamAction,
-    raw_body: &[u8],
-    submit_deadline: Option<&SubmitDeadline>,
-) -> std::result::Result<Value, Reject> {
-    forward_to_upstream(state, route, action, raw_body, submit_deadline).await
-}
-
-async fn execute_jito_route_action(
-    state: &AppState,
-    route: &str,
-    action: UpstreamAction,
-    raw_body: &[u8],
-    submit_deadline: Option<&SubmitDeadline>,
-) -> std::result::Result<Value, Reject> {
-    forward_to_upstream(state, route, action, raw_body, submit_deadline).await
-}
-
-async fn execute_fastlane_route_action(
-    state: &AppState,
-    route: &str,
-    action: UpstreamAction,
-    raw_body: &[u8],
-    submit_deadline: Option<&SubmitDeadline>,
-) -> std::result::Result<Value, Reject> {
-    forward_to_upstream(state, route, action, raw_body, submit_deadline).await
+    route_adapter
+        .execute(
+            state,
+            normalized_route.as_str(),
+            action,
+            raw_body,
+            submit_deadline,
+        )
+        .await
 }
 
 #[cfg(test)]

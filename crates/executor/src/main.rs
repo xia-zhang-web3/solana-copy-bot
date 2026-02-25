@@ -40,6 +40,7 @@ mod request_types;
 mod response_envelope;
 mod rfc3339_time;
 mod route_allowlist;
+mod route_adapters;
 mod route_backend;
 mod route_executor;
 mod route_normalization;
