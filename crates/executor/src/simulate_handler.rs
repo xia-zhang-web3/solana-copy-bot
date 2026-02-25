@@ -61,6 +61,8 @@ pub(crate) async fn handle_simulate(
                 request_id: Some(request.request_id.as_str()),
                 signal_id: Some(request.signal_id.as_str()),
                 client_order_id: None,
+                side: Some(request.side.as_str()),
+                token: Some(request.token.as_str()),
             },
         )
         .await?;

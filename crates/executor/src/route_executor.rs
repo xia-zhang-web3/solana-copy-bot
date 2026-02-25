@@ -21,6 +21,8 @@ pub(crate) struct RouteActionPayloadExpectations<'a> {
     pub(crate) request_id: Option<&'a str>,
     pub(crate) signal_id: Option<&'a str>,
     pub(crate) client_order_id: Option<&'a str>,
+    pub(crate) side: Option<&'a str>,
+    pub(crate) token: Option<&'a str>,
 }
 
 impl RouteExecutorKind {

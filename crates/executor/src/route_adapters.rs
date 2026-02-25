@@ -144,6 +144,8 @@ impl PaperRouteExecutor {
             state.config.contract_version.as_str(),
             payload_expectations.request_id,
             payload_expectations.signal_id,
+            payload_expectations.side,
+            payload_expectations.token,
         )?;
         forward_to_upstream(
             state,
@@ -170,6 +172,8 @@ impl PaperRouteExecutor {
             payload_expectations.request_id,
             payload_expectations.signal_id,
             payload_expectations.client_order_id,
+            payload_expectations.side,
+            payload_expectations.token,
         )?;
         forward_to_upstream(
             state,
@@ -218,6 +222,8 @@ impl RpcRouteExecutor {
             state.config.contract_version.as_str(),
             payload_expectations.request_id,
             payload_expectations.signal_id,
+            payload_expectations.side,
+            payload_expectations.token,
         )?;
         forward_to_upstream(
             state,
@@ -244,6 +250,8 @@ impl RpcRouteExecutor {
             payload_expectations.request_id,
             payload_expectations.signal_id,
             payload_expectations.client_order_id,
+            payload_expectations.side,
+            payload_expectations.token,
         )?;
         forward_to_upstream(
             state,
@@ -292,6 +300,8 @@ impl JitoRouteExecutor {
             state.config.contract_version.as_str(),
             payload_expectations.request_id,
             payload_expectations.signal_id,
+            payload_expectations.side,
+            payload_expectations.token,
         )?;
         forward_to_upstream(
             state,
@@ -318,6 +328,8 @@ impl JitoRouteExecutor {
             payload_expectations.request_id,
             payload_expectations.signal_id,
             payload_expectations.client_order_id,
+            payload_expectations.side,
+            payload_expectations.token,
         )?;
         forward_to_upstream(
             state,
@@ -366,6 +378,8 @@ impl FastlaneRouteExecutor {
             state.config.contract_version.as_str(),
             payload_expectations.request_id,
             payload_expectations.signal_id,
+            payload_expectations.side,
+            payload_expectations.token,
         )?;
         forward_to_upstream(
             state,
@@ -392,6 +406,8 @@ impl FastlaneRouteExecutor {
             payload_expectations.request_id,
             payload_expectations.signal_id,
             payload_expectations.client_order_id,
+            payload_expectations.side,
+            payload_expectations.token,
         )?;
         forward_to_upstream(
             state,
@@ -558,6 +574,7 @@ fn validate_optional_payload_non_empty_string_field(
     action_label: &str,
     field_name: &'static str,
     expected_value: Option<&str>,
+    normalize_for_compare: bool,
 ) -> std::result::Result<(), Reject> {
     let Some(field_value) = payload.get(field_name) else {
         return Ok(());
@@ -575,13 +592,22 @@ fn validate_optional_payload_non_empty_string_field(
         ));
     }
     if let Some(expected) = expected_value {
+        let payload_value = field_raw.trim();
         let expected = expected.trim();
-        if field_raw.trim() != expected {
+        let (payload_cmp, expected_cmp) = if normalize_for_compare {
+            (
+                payload_value.to_ascii_lowercase(),
+                expected.to_ascii_lowercase(),
+            )
+        } else {
+            (payload_value.to_string(), expected.to_string())
+        };
+        if payload_cmp != expected_cmp {
             return Err(Reject::terminal(
                 "invalid_request_body",
                 format!(
                     "{action_label} payload {field_name} mismatch at route-adapter boundary expected={expected} got={}",
-                    field_raw.trim()
+                    payload_value
                 ),
             ));
         }
@@ -597,6 +623,8 @@ fn validate_submit_payload_for_route(
     expected_request_id: Option<&str>,
     expected_signal_id: Option<&str>,
     expected_client_order_id: Option<&str>,
+    expected_side: Option<&str>,
+    expected_token: Option<&str>,
 ) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
     let payload = validate_payload_route_for_action(raw_body, expected_route, "submit")?;
     validate_optional_payload_action_field(&payload, "submit", "submit")?;
@@ -610,18 +638,35 @@ fn validate_submit_payload_for_route(
         "submit",
         "request_id",
         expected_request_id,
+        false,
     )?;
     validate_optional_payload_non_empty_string_field(
         &payload,
         "submit",
         "signal_id",
         expected_signal_id,
+        false,
     )?;
     validate_optional_payload_non_empty_string_field(
         &payload,
         "submit",
         "client_order_id",
         expected_client_order_id,
+        false,
+    )?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "submit",
+        "side",
+        expected_side,
+        true,
+    )?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "submit",
+        "token",
+        expected_token,
+        false,
     )?;
     Ok(payload)
 }
@@ -632,6 +677,8 @@ fn validate_simulate_payload_for_route(
     expected_contract_version: &str,
     expected_request_id: Option<&str>,
     expected_signal_id: Option<&str>,
+    expected_side: Option<&str>,
+    expected_token: Option<&str>,
 ) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
     let payload = validate_payload_route_for_action(raw_body, expected_route, "simulate")?;
     validate_required_payload_action_field(&payload, "simulate", "simulate")?;
@@ -645,12 +692,28 @@ fn validate_simulate_payload_for_route(
         "simulate",
         "request_id",
         expected_request_id,
+        false,
     )?;
     validate_optional_payload_non_empty_string_field(
         &payload,
         "simulate",
         "signal_id",
         expected_signal_id,
+        false,
+    )?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "simulate",
+        "side",
+        expected_side,
+        true,
+    )?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "simulate",
+        "token",
+        expected_token,
+        false,
     )?;
     Ok(payload)
 }
@@ -662,6 +725,8 @@ fn validate_rpc_submit_tip_payload(
     expected_request_id: Option<&str>,
     expected_signal_id: Option<&str>,
     expected_client_order_id: Option<&str>,
+    expected_side: Option<&str>,
+    expected_token: Option<&str>,
 ) -> std::result::Result<(), Reject> {
     let payload = validate_submit_payload_for_route(
         raw_body,
@@ -670,6 +735,8 @@ fn validate_rpc_submit_tip_payload(
         expected_request_id,
         expected_signal_id,
         expected_client_order_id,
+        expected_side,
+        expected_token,
     )?;
     let tip_lamports = match payload.get("tip_lamports") {
         None => 0u64,
@@ -697,10 +764,73 @@ fn validate_rpc_submit_tip_payload(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_rpc_submit_tip_payload, validate_simulate_payload_for_route,
-        validate_submit_payload_for_route, RouteAdapter,
+        validate_rpc_submit_tip_payload as validate_rpc_submit_tip_payload_with_expectations,
+        validate_simulate_payload_for_route as validate_simulate_payload_for_route_with_expectations,
+        validate_submit_payload_for_route as validate_submit_payload_for_route_with_expectations,
+        RouteAdapter,
     };
+    use crate::Reject;
     use crate::route_executor::RouteExecutorKind;
+    use serde_json::Map;
+    use serde_json::Value;
+
+    fn validate_submit_payload_for_route(
+        raw_body: &[u8],
+        expected_route: &str,
+        expected_contract_version: &str,
+        expected_request_id: Option<&str>,
+        expected_signal_id: Option<&str>,
+        expected_client_order_id: Option<&str>,
+    ) -> std::result::Result<Map<String, Value>, Reject> {
+        validate_submit_payload_for_route_with_expectations(
+            raw_body,
+            expected_route,
+            expected_contract_version,
+            expected_request_id,
+            expected_signal_id,
+            expected_client_order_id,
+            None,
+            None,
+        )
+    }
+
+    fn validate_simulate_payload_for_route(
+        raw_body: &[u8],
+        expected_route: &str,
+        expected_contract_version: &str,
+        expected_request_id: Option<&str>,
+        expected_signal_id: Option<&str>,
+    ) -> std::result::Result<Map<String, Value>, Reject> {
+        validate_simulate_payload_for_route_with_expectations(
+            raw_body,
+            expected_route,
+            expected_contract_version,
+            expected_request_id,
+            expected_signal_id,
+            None,
+            None,
+        )
+    }
+
+    fn validate_rpc_submit_tip_payload(
+        raw_body: &[u8],
+        expected_route: &str,
+        expected_contract_version: &str,
+        expected_request_id: Option<&str>,
+        expected_signal_id: Option<&str>,
+        expected_client_order_id: Option<&str>,
+    ) -> std::result::Result<(), Reject> {
+        validate_rpc_submit_tip_payload_with_expectations(
+            raw_body,
+            expected_route,
+            expected_contract_version,
+            expected_request_id,
+            expected_signal_id,
+            expected_client_order_id,
+            None,
+            None,
+        )
+    }
 
     #[test]
     fn route_adapter_from_kind_maps_expected_label() {
@@ -919,6 +1049,24 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_side_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","side":"sell"}"#;
+        let reject = validate_submit_payload_for_route_with_expectations(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            None,
+            Some("buy"),
+            None,
+        )
+        .expect_err("submit side mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("side mismatch"));
+    }
+
+    #[test]
     fn validate_submit_payload_for_route_rejects_empty_signal_id_when_present() {
         let body =
             br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":" "}"#;
@@ -1070,6 +1218,23 @@ mod tests {
         .expect_err("simulate request_id mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("request_id mismatch"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_token_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","token":"22222222222222222222222222222222"}"#;
+        let reject = validate_simulate_payload_for_route_with_expectations(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            None,
+            Some("11111111111111111111111111111111"),
+        )
+        .expect_err("simulate token mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("token mismatch"));
     }
 
     #[test]

@@ -145,6 +145,8 @@ pub(crate) async fn handle_submit(
             request_id: Some(request.request_id.as_str()),
             signal_id: Some(request.signal_id.as_str()),
             client_order_id: Some(request.client_order_id.as_str()),
+            side: Some(request.side.as_str()),
+            token: Some(request.token.as_str()),
         },
     )
     .await?;
