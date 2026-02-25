@@ -241,9 +241,20 @@ contract_guard_tests=(
   "upstream_outcome_rejects_unknown_status"
 )
 
-for test_name in "${contract_guard_tests[@]}"; do
-  cargo test -p copybot-executor -q "$test_name" >/dev/null
-done
-pass "contract guard tests pass"
+if [[ "${EXECUTOR_CONTRACT_SMOKE_RUN_EACH_GUARD:-false}" == "true" ]]; then
+  for test_name in "${contract_guard_tests[@]}"; do
+    cargo test -p copybot-executor -q "$test_name" >/dev/null
+  done
+  pass "contract guard tests pass"
+else
+  contract_test_list="$(mktemp)"
+  trap 'rm -f "$contract_test_list"' EXIT
+  cargo test -p copybot-executor -- --list >"$contract_test_list"
+  for test_name in "${contract_guard_tests[@]}"; do
+    rg -q "(^|::)${test_name}: test$" "$contract_test_list" \
+      || fail "missing contract guard test registration: $test_name"
+  done
+  pass "contract guard tests pass"
+fi
 
 echo "executor contract smoke: PASS"
