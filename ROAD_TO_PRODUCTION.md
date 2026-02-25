@@ -714,6 +714,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 186. executor phase-2B auth hardening continued: HMAC nonce replay cache now enforces configurable capacity (`COPYBOT_EXECUTOR_HMAC_NONCE_CACHE_MAX_ENTRIES`, default `100000`, fail-closed on zero/misconfig), and verification returns retryable overflow reject (`hmac_replay_cache_overflow`) when nonce cache is saturated; ingress/runbook/contract smoke were updated with dedicated guard coverage (`auth_verifier_hmac_rejects_when_nonce_cache_capacity_reached`).
 187. executor phase-2B auth replay-cache coverage expanded: added explicit guard test proving expired HMAC nonce entries are evicted before capacity checks (`auth_verifier_hmac_evicts_expired_nonce_before_capacity_check`), preventing false-positive overflow after TTL expiry and hardening regression visibility in contract smoke.
 188. executor runtime shutdown hardening: server now uses graceful shutdown on process signals (`SIGINT`/`SIGTERM`) via `axum::serve(...).with_graceful_shutdown(shutdown_signal())`, reducing abrupt in-flight termination risk during systemd restarts/rollouts while preserving fail-closed startup behavior.
+189. executor test-runtime optimization: HMAC skew-window replay guard test duration reduced (`ttl=1`, shorter wait), and nonce-eviction capacity guard switched to deterministic pre-seeded expired-entry setup (no sleep), keeping semantics unchanged while speeding up quick/standard audit loops.
 
 Остается в next-code-queue:
 

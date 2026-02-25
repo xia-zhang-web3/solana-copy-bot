@@ -278,7 +278,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_hmac_keeps_nonce_through_forward_skew_window() {
-        let ttl_sec = 2;
+        let ttl_sec = 1;
         let verifier = AuthVerifier::new(
             None,
             Some("kid-3".to_string()),
@@ -298,7 +298,7 @@ mod tests {
         let headers = build_hmac_headers("kid-3", ttl_sec, "nonce-3", timestamp, signature.as_str());
 
         verifier.verify(&headers, body).await.expect("first verify must pass");
-        sleep(Duration::from_millis(3_100)).await;
+        sleep(Duration::from_millis(1_300)).await;
 
         let reject = verifier
             .verify(&headers, body)
@@ -362,29 +362,13 @@ mod tests {
             1,
         );
         let body = br#"{"action":"simulate"}"#;
-
-        let timestamp_1 = Utc::now().timestamp();
-        let payload_1 = build_hmac_payload_bytes(
-            timestamp_1.to_string().as_str(),
-            ttl_sec.to_string().as_str(),
-            "nonce-evict-1",
-            body,
-        );
-        let signature_1 =
-            compute_hmac_signature_hex(b"secret-evict", payload_1.as_slice()).unwrap();
-        let headers_1 = build_hmac_headers(
-            "kid-evict",
-            ttl_sec,
-            "nonce-evict-1",
-            timestamp_1,
-            signature_1.as_str(),
-        );
-        verifier
-            .verify(&headers_1, body)
-            .await
-            .expect("first nonce should pass");
-
-        sleep(Duration::from_millis(2_100)).await;
+        {
+            let mut seen = verifier.nonce_seen_until_epoch.lock().await;
+            seen.insert(
+                "kid-evict:nonce-expired".to_string(),
+                Utc::now().timestamp().saturating_sub(1),
+            );
+        }
 
         let timestamp_2 = Utc::now().timestamp();
         let payload_2 = build_hmac_payload_bytes(
