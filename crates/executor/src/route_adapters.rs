@@ -549,6 +549,21 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_non_string_action_when_present() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"action":123}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc")
+            .expect_err("non-string submit action must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("action must be string"));
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_accepts_matching_action_case_insensitive_when_present() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"action":" SUBMIT "}"#;
+        assert!(validate_submit_payload_for_route(body, "rpc").is_ok());
+    }
+
+    #[test]
     fn validate_simulate_payload_for_route_rejects_mismatched_route() {
         let body = br#"{"route":"jito","action":"simulate","dry_run":true}"#;
         let reject = validate_simulate_payload_for_route(body, "rpc")
