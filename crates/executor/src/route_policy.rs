@@ -7,15 +7,19 @@ pub(crate) enum RouteKind {
     Other,
 }
 
-pub(crate) fn classify_route(route: &str) -> RouteKind {
-    let normalized = route.trim().to_ascii_lowercase();
-    match normalized.as_str() {
+pub(crate) fn classify_normalized_route(route: &str) -> RouteKind {
+    match route {
         "paper" => RouteKind::Paper,
         "rpc" => RouteKind::Rpc,
         "jito" => RouteKind::Jito,
         "fastlane" => RouteKind::Fastlane,
         _ => RouteKind::Other,
     }
+}
+
+pub(crate) fn classify_route(route: &str) -> RouteKind {
+    let normalized = route.trim().to_ascii_lowercase();
+    classify_normalized_route(normalized.as_str())
 }
 
 pub(crate) fn requires_submit_fastlane_enabled(route: &str) -> bool {
@@ -34,7 +38,19 @@ pub(crate) fn apply_submit_tip_policy(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_submit_tip_policy, classify_route, requires_submit_fastlane_enabled, RouteKind};
+    use super::{
+        apply_submit_tip_policy, classify_normalized_route, classify_route,
+        requires_submit_fastlane_enabled, RouteKind,
+    };
+
+    #[test]
+    fn classify_normalized_route_maps_known_and_unknown_values() {
+        assert_eq!(classify_normalized_route("paper"), RouteKind::Paper);
+        assert_eq!(classify_normalized_route("rpc"), RouteKind::Rpc);
+        assert_eq!(classify_normalized_route("jito"), RouteKind::Jito);
+        assert_eq!(classify_normalized_route("fastlane"), RouteKind::Fastlane);
+        assert_eq!(classify_normalized_route("custom"), RouteKind::Other);
+    }
 
     #[test]
     fn classify_route_maps_known_and_unknown_values() {
