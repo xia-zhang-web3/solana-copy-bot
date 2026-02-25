@@ -98,9 +98,6 @@ fn parse_optional_non_empty_string_field(
     let Some(field_value) = backend_response.get(field_name) else {
         return Ok(None);
     };
-    if field_value.is_null() {
-        return Ok(None);
-    }
     let Some(raw_value) = field_value.as_str() else {
         return Err(SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
             field_name: field_name.to_string(),
@@ -198,6 +195,36 @@ mod tests {
     }
 
     #[test]
+    fn submit_response_validate_route_and_contract_rejects_null_route() {
+        let backend = json!({
+            "route": null,
+            "contract_version": "v1"
+        });
+        let error = validate_submit_response_route_and_contract(&backend, "rpc", "v1")
+            .expect_err("null route must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name }
+            if field_name == "route"
+        ));
+    }
+
+    #[test]
+    fn submit_response_validate_route_and_contract_rejects_null_contract_version() {
+        let backend = json!({
+            "route": "rpc",
+            "contract_version": null
+        });
+        let error = validate_submit_response_route_and_contract(&backend, "rpc", "v1")
+            .expect_err("null contract_version must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name }
+            if field_name == "contract_version"
+        ));
+    }
+
+    #[test]
     fn submit_response_validate_request_identity_rejects_non_string_request_id() {
         let backend = json!({
             "client_order_id": "client-1",
@@ -212,6 +239,21 @@ mod tests {
     }
 
     #[test]
+    fn submit_response_validate_request_identity_rejects_null_request_id() {
+        let backend = json!({
+            "client_order_id": "client-1",
+            "request_id": null
+        });
+        let error = validate_submit_response_request_identity(&backend, "client-1", "request-1")
+            .expect_err("null request_id must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name }
+            if field_name == "request_id"
+        ));
+    }
+
+    #[test]
     fn submit_response_validate_request_identity_rejects_empty_client_order_id() {
         let backend = json!({
             "client_order_id": " ",
@@ -222,6 +264,21 @@ mod tests {
         assert!(matches!(
             error,
             SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { .. }
+        ));
+    }
+
+    #[test]
+    fn submit_response_validate_request_identity_rejects_null_client_order_id() {
+        let backend = json!({
+            "client_order_id": null,
+            "request_id": "request-1"
+        });
+        let error = validate_submit_response_request_identity(&backend, "client-1", "request-1")
+            .expect_err("null client_order_id must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name }
+            if field_name == "client_order_id"
         ));
     }
 
