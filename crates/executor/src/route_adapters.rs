@@ -287,54 +287,43 @@ impl FastlaneRouteExecutor {
     }
 }
 
-fn parse_submit_payload_object(raw_body: &[u8]) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
-    let payload: Value = serde_json::from_slice(raw_body).map_err(|error| {
-        Reject::terminal(
-            "invalid_request_body",
-            format!("submit payload must be valid JSON object: {}", error),
-        )
-    })?;
-    payload.as_object().cloned().ok_or_else(|| {
-        Reject::terminal(
-            "invalid_request_body",
-            "submit payload must be JSON object",
-        )
-    })
-}
-
-fn parse_simulate_payload_object(
+fn parse_payload_object_for_action(
     raw_body: &[u8],
+    action_label: &str,
 ) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
     let payload: Value = serde_json::from_slice(raw_body).map_err(|error| {
         Reject::terminal(
             "invalid_request_body",
-            format!("simulate payload must be valid JSON object: {}", error),
+            format!("{action_label} payload must be valid JSON object: {}", error),
         )
     })?;
     payload.as_object().cloned().ok_or_else(|| {
         Reject::terminal(
             "invalid_request_body",
-            "simulate payload must be JSON object",
+            format!("{action_label} payload must be JSON object"),
         )
     })
 }
 
-fn validate_submit_payload_for_route(raw_body: &[u8], expected_route: &str) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
-    let payload = parse_submit_payload_object(raw_body)?;
+fn validate_payload_route_for_action(
+    raw_body: &[u8],
+    expected_route: &str,
+    action_label: &str,
+) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
+    let payload = parse_payload_object_for_action(raw_body, action_label)?;
     let expected_normalized_route = normalize_route(expected_route);
     let payload_route = payload.get("route").ok_or_else(|| {
         Reject::terminal(
             "invalid_request_body",
             format!(
-                "submit payload missing route at route-adapter boundary expected={}",
-                expected_normalized_route
+                "{action_label} payload missing route at route-adapter boundary expected={expected_normalized_route}"
             ),
         )
     })?;
     let payload_route_raw = payload_route.as_str().ok_or_else(|| {
         Reject::terminal(
             "invalid_request_body",
-            "submit payload route must be string",
+            format!("{action_label} payload route must be string"),
         )
     })?;
     let payload_normalized_route = normalize_route(payload_route_raw);
@@ -342,48 +331,26 @@ fn validate_submit_payload_for_route(raw_body: &[u8], expected_route: &str) -> s
         return Err(Reject::terminal(
             "invalid_request_body",
             format!(
-                "submit payload route mismatch at route-adapter boundary expected={} got={}",
-                expected_normalized_route, payload_normalized_route
+                "{action_label} payload route mismatch at route-adapter boundary expected={expected_normalized_route} got={payload_normalized_route}"
             ),
         ));
     }
 
     Ok(payload)
+}
+
+fn validate_submit_payload_for_route(
+    raw_body: &[u8],
+    expected_route: &str,
+) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
+    validate_payload_route_for_action(raw_body, expected_route, "submit")
 }
 
 fn validate_simulate_payload_for_route(
     raw_body: &[u8],
     expected_route: &str,
 ) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
-    let payload = parse_simulate_payload_object(raw_body)?;
-    let expected_normalized_route = normalize_route(expected_route);
-    let payload_route = payload.get("route").ok_or_else(|| {
-        Reject::terminal(
-            "invalid_request_body",
-            format!(
-                "simulate payload missing route at route-adapter boundary expected={}",
-                expected_normalized_route
-            ),
-        )
-    })?;
-    let payload_route_raw = payload_route.as_str().ok_or_else(|| {
-        Reject::terminal(
-            "invalid_request_body",
-            "simulate payload route must be string",
-        )
-    })?;
-    let payload_normalized_route = normalize_route(payload_route_raw);
-    if payload_normalized_route != expected_normalized_route {
-        return Err(Reject::terminal(
-            "invalid_request_body",
-            format!(
-                "simulate payload route mismatch at route-adapter boundary expected={} got={}",
-                expected_normalized_route, payload_normalized_route
-            ),
-        ));
-    }
-
-    Ok(payload)
+    validate_payload_route_for_action(raw_body, expected_route, "simulate")
 }
 
 fn validate_rpc_submit_tip_payload(raw_body: &[u8], expected_route: &str) -> std::result::Result<(), Reject> {
@@ -510,6 +477,12 @@ mod tests {
             .expect_err("simulate route mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("route mismatch"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_accepts_matching_route_case_insensitive() {
+        let body = br#"{"route":" RPC ","action":"simulate","dry_run":true}"#;
+        assert!(validate_simulate_payload_for_route(body, "rpc").is_ok());
     }
 
     #[test]

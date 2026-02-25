@@ -109,6 +109,7 @@ contract_guard_tests=(
   "validate_submit_payload_for_route_rejects_missing_route"
   "validate_submit_payload_for_route_rejects_non_string_route"
   "validate_simulate_payload_for_route_rejects_mismatched_route"
+  "validate_simulate_payload_for_route_accepts_matching_route_case_insensitive"
   "validate_simulate_payload_for_route_rejects_missing_route"
   "validate_simulate_payload_for_route_rejects_non_string_route"
   "route_executor_resolve_maps_known_routes_case_insensitive"
