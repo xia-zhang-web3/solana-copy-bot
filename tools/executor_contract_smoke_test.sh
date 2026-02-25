@@ -210,6 +210,7 @@ contract_guard_tests=(
   "response_cleanup_interval_sec_clamps_bounds"
   "stale_cached_response_is_cleaned_when_response_cleanup_due"
   "stale_cached_response_is_not_cleaned_on_submit_claim_path"
+  "response_cleanup_is_bounded_per_run"
   "response_cleanup_worker_tick_sec_clamps_bounds"
   "min_claim_ttl_sec_for_submit_path_applies_500ms_runtime_floor"
   "min_claim_ttl_sec_for_submit_path_respects_submit_total_budget_floor"

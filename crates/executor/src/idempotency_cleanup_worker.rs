@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tracing::warn;
 
 use crate::AppState;
@@ -12,7 +13,10 @@ pub(crate) fn spawn_response_cleanup_worker(state: AppState) -> JoinHandle<()> {
     let response_retention_sec = state.config.idempotency_response_retention_sec;
     let tick_sec = response_cleanup_worker_tick_sec(response_retention_sec);
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(tick_sec));
+        let mut ticker = tokio::time::interval_at(
+            Instant::now() + Duration::from_secs(tick_sec),
+            Duration::from_secs(tick_sec),
+        );
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;

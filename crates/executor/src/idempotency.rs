@@ -17,6 +17,8 @@ const META_KEY_CLAIM_CLEANUP_LAST_UNIX: &str = "claim_cleanup_last_unix";
 const MIN_RESPONSE_CLEANUP_INTERVAL_SEC: i64 = 60;
 const MAX_RESPONSE_CLEANUP_INTERVAL_SEC: i64 = 3_600;
 const META_KEY_RESPONSE_CLEANUP_LAST_UNIX: &str = "response_cleanup_last_unix";
+const RESPONSE_CLEANUP_DELETE_BATCH_SIZE: i64 = 500;
+const RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: usize = 4;
 
 pub(crate) struct SubmitIdempotencyStore {
     conn: Mutex<Connection>,
@@ -233,11 +235,12 @@ impl SubmitIdempotencyStore {
                         )
                     })?
                     .to_rfc3339();
-            conn.execute(
-                "DELETE FROM executor_submit_idempotency WHERE updated_at_utc <= ?1",
-                params![stale_response_before_rfc3339],
-            )
-            .context("idempotency response cleanup failed")?;
+            delete_stale_cached_responses_in_batches(
+                &conn,
+                stale_response_before_rfc3339.as_str(),
+                RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+                RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+            )?;
             store_global_response_cleanup_last_unix(&conn, now_unix)?;
             self.last_response_cleanup_unix
                 .store(now_unix, Ordering::Relaxed);
@@ -334,6 +337,35 @@ fn response_cleanup_interval_sec(response_retention_sec: i64) -> i64 {
     )
 }
 
+fn delete_stale_cached_responses_in_batches(
+    conn: &Connection,
+    stale_response_before_rfc3339: &str,
+    batch_size: i64,
+    max_batches: usize,
+) -> Result<()> {
+    for _ in 0..max_batches.max(1) {
+        let deleted_rows = conn
+            .execute(
+                r#"
+                DELETE FROM executor_submit_idempotency
+                WHERE rowid IN (
+                    SELECT rowid
+                    FROM executor_submit_idempotency
+                    WHERE updated_at_utc <= ?1
+                    ORDER BY updated_at_utc
+                    LIMIT ?2
+                )
+                "#,
+                params![stale_response_before_rfc3339, batch_size.max(1)],
+            )
+            .context("idempotency response cleanup failed")?;
+        if deleted_rows < usize::try_from(batch_size.max(1)).unwrap_or(usize::MAX) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 fn should_run_claim_cleanup(
     now_unix: i64,
     last_cleanup_unix: i64,
@@ -428,7 +460,8 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
 mod tests {
     use super::{
         claim_cleanup_interval_sec, response_cleanup_interval_sec, should_run_claim_cleanup,
-        SubmitClaimOutcome, SubmitIdempotencyStore,
+        SubmitClaimOutcome, SubmitIdempotencyStore, RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+        RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
     };
     use chrono::{Duration, Utc};
     use rusqlite::params;
@@ -462,6 +495,14 @@ mod tests {
             |row| row.get(0),
         )
         .expect("query claim row count")
+    }
+
+    fn response_row_count(store: &SubmitIdempotencyStore) -> i64 {
+        let conn = store.conn.lock().expect("lock conn");
+        conn.query_row("SELECT COUNT(1) FROM executor_submit_idempotency", [], |row| {
+            row.get(0)
+        })
+        .expect("query response row count")
     }
 
     #[test]
@@ -851,6 +892,51 @@ mod tests {
             stale.is_some(),
             "submit claim path must not perform response retention cleanup"
         );
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn response_cleanup_is_bounded_per_run() {
+        let db_path = temp_db_path();
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let stale_updated = (Utc::now() - Duration::hours(3)).to_rfc3339();
+        let total_rows_to_insert = RESPONSE_CLEANUP_DELETE_BATCH_SIZE
+            * i64::try_from(RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).unwrap_or(0)
+            + 3;
+        {
+            let conn = store.conn.lock().expect("lock conn");
+            for index in 0..total_rows_to_insert {
+                conn.execute(
+                    r#"
+                    INSERT INTO executor_submit_idempotency (
+                        client_order_id,
+                        request_id,
+                        response_json,
+                        created_at_utc,
+                        updated_at_utc
+                    ) VALUES (?1, ?2, ?3, ?4, ?4)
+                    "#,
+                    params![
+                        format!("order-stale-bounded-{}", index),
+                        format!("req-stale-bounded-{}", index),
+                        "{\"status\":\"ok\"}",
+                        stale_updated
+                    ],
+                )
+                .expect("insert stale cached response row");
+            }
+        }
+        assert_eq!(response_row_count(&store), total_rows_to_insert);
+
+        store
+            .run_response_cleanup_if_due(60)
+            .expect("run bounded response cleanup");
+
+        let expected_remaining = total_rows_to_insert
+            - (RESPONSE_CLEANUP_DELETE_BATCH_SIZE
+                * i64::try_from(RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).unwrap_or(0));
+        assert_eq!(response_row_count(&store), expected_remaining);
         let _ = std::fs::remove_file(db_path);
     }
 }
