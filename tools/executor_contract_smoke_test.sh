@@ -97,6 +97,7 @@ contract_guard_tests=(
   "validate_response_cleanup_tuning_rejects_excessive_rows_per_run"
   "validate_response_cleanup_worker_tick_sec_rejects_out_of_range_values"
   "validate_response_cleanup_worker_cadence_rejects_tick_slower_than_cleanup_interval"
+  "response_cleanup_worker_initial_delay_sec_from_seed_is_within_tick_bounds"
   "executor_config_from_env_wires_response_cleanup_worker_tick_override"
   "with_clean_executor_env_removes_newly_added_keys_after_scope"
   "response_cleanup_nonblocking_skips_when_mutex_is_busy"
