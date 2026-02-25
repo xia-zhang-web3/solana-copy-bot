@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     env,
+    future::Future,
     net::SocketAddr,
     sync::Arc,
     time::Duration,
@@ -259,23 +260,42 @@ async fn shutdown_signal() {
                     error = %error,
                     "failed to install SIGTERM handler; falling back to CTRL+C only"
                 );
-                ctrl_c.await;
+                await_shutdown_signal_ctrl_c_only(ctrl_c).await;
                 info!("shutdown signal received");
                 return;
             }
         };
-        tokio::select! {
-            _ = ctrl_c => {}
-            _ = terminate.recv() => {}
-        }
+        await_shutdown_signal_unix(ctrl_c, async move {
+            let _ = terminate.recv().await;
+        })
+        .await;
     }
 
     #[cfg(not(unix))]
     {
-        ctrl_c.await;
+        await_shutdown_signal_ctrl_c_only(ctrl_c).await;
     }
 
     info!("shutdown signal received");
+}
+
+async fn await_shutdown_signal_ctrl_c_only<C>(ctrl_c: C)
+where
+    C: Future<Output = ()>,
+{
+    ctrl_c.await;
+}
+
+#[cfg(unix)]
+async fn await_shutdown_signal_unix<C, T>(ctrl_c: C, sigterm: T)
+where
+    C: Future<Output = ()>,
+    T: Future<Output = ()>,
+{
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = sigterm => {}
+    }
 }
 
 #[cfg(test)]
@@ -291,8 +311,43 @@ mod tests {
         thread,
         time::{SystemTime, UNIX_EPOCH},
     };
+    use tokio::sync::oneshot;
+    use tokio::time::timeout;
 
     static TEMP_SECRET_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[tokio::test]
+    async fn shutdown_signal_ctrl_c_helper_completes_when_ctrl_c_source_resolves() {
+        let (tx, rx) = oneshot::channel::<()>();
+        let waiter = tokio::spawn(async move {
+            await_shutdown_signal_ctrl_c_only(async {
+                let _ = rx.await;
+            })
+            .await;
+        });
+        tx.send(()).expect("send ctrl_c source");
+        timeout(Duration::from_millis(200), waiter)
+            .await
+            .expect("ctrl_c helper should complete quickly")
+            .expect("task join must succeed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_signal_unix_helper_completes_when_sigterm_source_resolves() {
+        let (tx, rx) = oneshot::channel::<()>();
+        let waiter = tokio::spawn(async move {
+            await_shutdown_signal_unix(std::future::pending::<()>(), async {
+                let _ = rx.await;
+            })
+            .await;
+        });
+        tx.send(()).expect("send sigterm source");
+        timeout(Duration::from_millis(200), waiter)
+            .await
+            .expect("unix helper should complete quickly")
+            .expect("task join must succeed");
+    }
 
     #[test]
     fn validate_common_contract_rejects_fastlane_when_feature_disabled() {

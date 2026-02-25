@@ -194,7 +194,6 @@ mod tests {
     use crate::auth_crypto::compute_hmac_signature_hex;
     use axum::http::{HeaderMap, HeaderValue};
     use chrono::Utc;
-    use tokio::time::{sleep, Duration};
 
     fn build_hmac_headers(
         key_id: &str,
@@ -298,7 +297,17 @@ mod tests {
         let headers = build_hmac_headers("kid-3", ttl_sec, "nonce-3", timestamp, signature.as_str());
 
         verifier.verify(&headers, body).await.expect("first verify must pass");
-        sleep(Duration::from_millis(1_300)).await;
+        let cache_key = "kid-3:nonce-3";
+        {
+            let seen = verifier.nonce_seen_until_epoch.lock().await;
+            let expires_at = *seen
+                .get(cache_key)
+                .expect("nonce entry must be tracked after first verify");
+            assert!(
+                expires_at > Utc::now().timestamp(),
+                "forward-skew nonce should remain unexpired in replay cache"
+            );
+        }
 
         let reject = verifier
             .verify(&headers, body)
