@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod auth_crypto;
@@ -31,6 +31,7 @@ mod healthz_endpoint;
 mod healthz_payload;
 mod http_utils;
 mod idempotency;
+mod idempotency_cleanup_worker;
 mod key_validation;
 mod request_ingress;
 mod request_endpoints;
@@ -71,6 +72,7 @@ use crate::common_contract::{validate_common_contract_inputs, CommonContractInpu
 use crate::env_parsing::parse_bool_env;
 use crate::healthz_endpoint::healthz;
 use crate::idempotency::SubmitIdempotencyStore;
+use crate::idempotency_cleanup_worker::spawn_response_cleanup_worker;
 #[cfg(test)]
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
 use crate::request_endpoints::simulate;
@@ -237,10 +239,20 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(state.config.bind_addr)
         .await
         .context("failed binding executor listener")?;
-    axum::serve(listener, router)
+    let response_cleanup_worker = spawn_response_cleanup_worker(state.clone());
+    let server_result = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("executor server crashed")
+        .await;
+    response_cleanup_worker.abort();
+    if let Err(error) = response_cleanup_worker.await {
+        if !error.is_cancelled() {
+            warn!(
+                error = %error,
+                "idempotency response cleanup worker terminated unexpectedly"
+            );
+        }
+    }
+    server_result.context("executor server crashed")
 }
 
 async fn shutdown_signal() {

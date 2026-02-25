@@ -109,7 +109,6 @@ pub(crate) async fn handle_submit(
         request.client_order_id.as_str(),
         request.request_id.as_str(),
         state.config.idempotency_claim_ttl_sec,
-        state.config.idempotency_response_retention_sec,
     ) {
         Ok(SubmitClaimOutcome::Cached(cached_response)) => {
             debug!(
