@@ -22,17 +22,23 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
         .to_ascii_lowercase();
     let ok_flag = body.get("ok").and_then(Value::as_bool);
     let accepted_flag = body.get("accepted").and_then(Value::as_bool);
-    let retryable = body
-        .get("retryable")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
     let is_reject = matches!(
         status.as_str(),
         "reject" | "rejected" | "error" | "failed" | "failure"
     ) || ok_flag == Some(false)
         || accepted_flag == Some(false);
     if is_reject {
+        let retryable = match parse_optional_bool_field(body, "retryable") {
+            Ok(Some(value)) => value,
+            Ok(None) => false,
+            Err(detail) => {
+                return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                    retryable: false,
+                    code: "upstream_invalid_response".to_string(),
+                    detail,
+                });
+            }
+        };
         let code = match parse_optional_non_empty_string_field(body, "code") {
             Ok(Some(value)) => value,
             Ok(None) => default_reject_code.to_string(),
@@ -112,6 +118,19 @@ fn parse_optional_non_empty_string_field(
     Ok(Some(normalized.to_string()))
 }
 
+fn parse_optional_bool_field(payload: &Value, field_name: &str) -> Result<Option<bool>, String> {
+    let Some(field_value) = payload.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(normalized) = field_value.as_bool() else {
+        return Err(format!(
+            "upstream reject {} must be boolean when present",
+            field_name
+        ));
+    };
+    Ok(Some(normalized))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_upstream_outcome, UpstreamOutcome};
@@ -184,6 +203,29 @@ mod tests {
                     reject
                         .detail
                         .contains("upstream reject detail must be non-empty string when present")
+                );
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_non_bool_retryable_when_present() {
+        let payload = json!({
+            "status": "reject",
+            "ok": false,
+            "retryable": "true",
+            "code": "busy",
+            "detail": "backpressure"
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(
+                    reject
+                        .detail
+                        .contains("upstream reject retryable must be boolean when present")
                 );
             }
             UpstreamOutcome::Success => panic!("expected reject"),
