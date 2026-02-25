@@ -392,6 +392,13 @@ fn response_cleanup_interval_sec(response_retention_sec: i64) -> i64 {
     )
 }
 
+pub(crate) fn response_cleanup_interval_sec_for_retention(response_retention_sec: u64) -> u64 {
+    (response_retention_sec / 2).clamp(
+        MIN_RESPONSE_CLEANUP_INTERVAL_SEC as u64,
+        MAX_RESPONSE_CLEANUP_INTERVAL_SEC as u64,
+    )
+}
+
 fn delete_stale_cached_responses_in_batches(
     conn: &Connection,
     stale_response_before_rfc3339: &str,

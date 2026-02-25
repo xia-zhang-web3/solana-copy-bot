@@ -22,7 +22,8 @@ use crate::{
     DEFAULT_MAX_NOTIONAL_SOL, DEFAULT_TIMEOUT_MS,
 };
 use crate::idempotency::{
-    DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+    response_cleanup_interval_sec_for_retention, DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+    DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
 };
 use crate::idempotency_cleanup_worker::{
     response_cleanup_worker_tick_sec, MAX_RESPONSE_CLEANUP_WORKER_TICK_SEC,
@@ -380,6 +381,10 @@ impl ExecutorConfig {
             response_cleanup_worker_tick_sec(idempotency_response_retention_sec),
         )?;
         validate_response_cleanup_worker_tick_sec(idempotency_response_cleanup_worker_tick_sec)?;
+        validate_response_cleanup_worker_cadence(
+            idempotency_response_cleanup_worker_tick_sec,
+            idempotency_response_retention_sec,
+        )?;
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -508,6 +513,21 @@ fn validate_response_cleanup_worker_tick_sec(
     Ok(())
 }
 
+fn validate_response_cleanup_worker_cadence(
+    idempotency_response_cleanup_worker_tick_sec: u64,
+    idempotency_response_retention_sec: u64,
+) -> Result<()> {
+    let max_tick_sec = response_cleanup_interval_sec_for_retention(idempotency_response_retention_sec);
+    if idempotency_response_cleanup_worker_tick_sec > max_tick_sec {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC must be <= {} (derived from COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC={})",
+            max_tick_sec,
+            idempotency_response_retention_sec
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::env;
@@ -518,7 +538,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        validate_response_cleanup_tuning, validate_response_cleanup_worker_tick_sec,
+        validate_response_cleanup_tuning, validate_response_cleanup_worker_cadence,
+        validate_response_cleanup_worker_tick_sec,
         validate_response_retention_cutoff,
     };
     use crate::idempotency_cleanup_worker::response_cleanup_worker_tick_sec;
@@ -661,6 +682,25 @@ mod tests {
                 .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC"),
             "unexpected error: {}",
             high
+        );
+    }
+
+    #[test]
+    fn validate_response_cleanup_worker_cadence_rejects_tick_slower_than_cleanup_interval() {
+        let error = validate_response_cleanup_worker_cadence(300, 120).expect_err("must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC"),
+            "unexpected error: {}",
+            error
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC"),
+            "unexpected error: {}",
+            error
         );
     }
 
