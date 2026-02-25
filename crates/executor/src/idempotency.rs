@@ -10,6 +10,7 @@ use std::{
         Mutex, TryLockError,
     },
 };
+use tracing::debug;
 
 const MIN_CLAIM_CLEANUP_INTERVAL_SEC: i64 = 5;
 const MAX_CLAIM_CLEANUP_INTERVAL_SEC: i64 = 60;
@@ -308,6 +309,13 @@ impl SubmitIdempotencyStore {
                 store_global_response_cleanup_last_unix(&conn, now_unix)?;
                 self.last_response_cleanup_unix
                     .store(now_unix, Ordering::Relaxed);
+            } else {
+                debug!(
+                    response_retention_sec = response_retention,
+                    response_cleanup_batch_size = response_cleanup_batch_size_i64,
+                    response_cleanup_max_batches_per_run = response_cleanup_max_batches_usize,
+                    "idempotency response cleanup run reached per-run cap; marker not advanced"
+                );
             }
         } else {
             self.last_response_cleanup_unix
