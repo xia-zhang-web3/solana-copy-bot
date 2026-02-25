@@ -16,6 +16,7 @@ use crate::reject_mapping::{
 use crate::request_types::SubmitRequest;
 use crate::request_validation::validate_submit_request_identity;
 use crate::route_backend::UpstreamAction;
+use crate::route_executor::execute_route_action;
 use crate::route_normalization::normalize_route;
 use crate::submit_claim_guard::SubmitClaimGuard;
 use crate::submit_deadline::SubmitDeadline;
@@ -32,7 +33,6 @@ use crate::tx_build::{
     build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports,
     validate_submit_compute_budget, validate_submit_slippage_policy, ComputeBudgetBounds,
 };
-use crate::upstream_forward::forward_to_upstream;
 use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
 use crate::{AppState, Reject};
 
@@ -135,7 +135,7 @@ pub(crate) async fn handle_submit(
         }
         Err(error) => return Err(map_idempotency_error_to_reject(error)),
     };
-    let backend_response = forward_to_upstream(
+    let backend_response = execute_route_action(
         state,
         route.as_str(),
         UpstreamAction::Submit,

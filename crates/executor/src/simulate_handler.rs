@@ -9,12 +9,12 @@ use crate::reject_mapping::{
 use crate::request_types::SimulateRequest;
 use crate::request_validation::validate_simulate_request_basics;
 use crate::route_backend::UpstreamAction;
+use crate::route_executor::execute_route_action;
 use crate::route_normalization::normalize_route;
 use crate::simulate_response::{
     build_simulate_success_payload, resolve_simulate_response_detail,
     validate_simulate_response_route_and_contract,
 };
-use crate::upstream_forward::forward_to_upstream;
 use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
 use crate::{AppState, Reject};
 
@@ -50,14 +50,9 @@ pub(crate) async fn handle_simulate(
         signal_id = %request.signal_id,
         "handling simulate request"
     );
-    let backend_response = forward_to_upstream(
-        state,
-        route.as_str(),
-        UpstreamAction::Simulate,
-        raw_body,
-        None,
-    )
-    .await?;
+    let backend_response =
+        execute_route_action(state, route.as_str(), UpstreamAction::Simulate, raw_body, None)
+            .await?;
     match parse_upstream_outcome(&backend_response, "simulation_rejected") {
         UpstreamOutcome::Reject(reject) => return Err(map_parsed_upstream_reject(reject)),
         UpstreamOutcome::Success => {}

@@ -99,6 +99,8 @@ contract_guard_tests=(
   "healthz_payload_build_includes_expected_fields"
   "healthz_payload_routes_alias_matches_enabled_routes"
   "normalize_route_trims_and_lowercases"
+  "route_executor_resolve_maps_known_routes_case_insensitive"
+  "route_executor_resolve_rejects_unknown_route"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
   "handle_submit_rejects_compute_budget_limit_out_of_range"

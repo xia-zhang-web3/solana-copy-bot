@@ -41,6 +41,7 @@ mod response_envelope;
 mod rfc3339_time;
 mod route_allowlist;
 mod route_backend;
+mod route_executor;
 mod route_normalization;
 mod route_policy;
 mod secret_source;
