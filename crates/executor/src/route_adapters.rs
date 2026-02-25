@@ -1067,6 +1067,24 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_token_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","token":"22222222222222222222222222222222"}"#;
+        let reject = validate_submit_payload_for_route_with_expectations(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            None,
+            None,
+            Some("11111111111111111111111111111111"),
+        )
+        .expect_err("submit token mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("token mismatch"));
+    }
+
+    #[test]
     fn validate_submit_payload_for_route_rejects_empty_signal_id_when_present() {
         let body =
             br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":" "}"#;
@@ -1235,6 +1253,23 @@ mod tests {
         .expect_err("simulate token mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("token mismatch"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_side_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","side":"sell"}"#;
+        let reject = validate_simulate_payload_for_route_with_expectations(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            Some("buy"),
+            None,
+        )
+        .expect_err("simulate side mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("side mismatch"));
     }
 
     #[test]
