@@ -101,6 +101,7 @@ contract_guard_tests=(
   "normalize_route_trims_and_lowercases"
   "classify_normalized_route_maps_known_and_unknown_values"
   "route_adapter_from_kind_maps_expected_label"
+  "validate_rpc_submit_tip_payload_rejects_nonzero_tip"
   "route_executor_resolve_maps_known_routes_case_insensitive"
   "route_executor_resolve_rejects_unknown_route"
   "route_executor_resolve_normalized_route_for_backend_lookup"
