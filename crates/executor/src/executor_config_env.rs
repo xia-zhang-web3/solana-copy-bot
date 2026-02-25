@@ -525,6 +525,16 @@ mod tests {
 
     static EXECUTOR_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn clear_copybot_executor_env() {
+        let current: Vec<OsString> = env::vars_os()
+            .filter(|(key, _)| key.to_string_lossy().starts_with("COPYBOT_EXECUTOR_"))
+            .map(|(key, _)| key)
+            .collect();
+        for key in current {
+            env::remove_var(key);
+        }
+    }
+
     fn with_clean_executor_env<T>(run: impl FnOnce() -> T) -> T {
         let _guard = EXECUTOR_ENV_LOCK
             .lock()
@@ -532,10 +542,9 @@ mod tests {
         let saved: Vec<(OsString, OsString)> = env::vars_os()
             .filter(|(key, _)| key.to_string_lossy().starts_with("COPYBOT_EXECUTOR_"))
             .collect();
-        for (key, _) in &saved {
-            env::remove_var(key);
-        }
+        clear_copybot_executor_env();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        clear_copybot_executor_env();
         for (key, value) in saved {
             env::set_var(key, value);
         }
@@ -693,5 +702,19 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[test]
+    fn with_clean_executor_env_removes_newly_added_keys_after_scope() {
+        const LEAK_KEY: &str = "COPYBOT_EXECUTOR_TEST_LEAK_KEY";
+        env::remove_var(LEAK_KEY);
+        with_clean_executor_env(|| {
+            env::set_var(LEAK_KEY, "value");
+            assert_eq!(env::var(LEAK_KEY).as_deref(), Ok("value"));
+        });
+        assert!(
+            env::var_os(LEAK_KEY).is_none(),
+            "helper must remove keys created inside isolated scope"
+        );
     }
 }
