@@ -78,6 +78,8 @@ use crate::idempotency::{
     DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
 };
 #[cfg(test)]
+use crate::idempotency_cleanup_worker::response_cleanup_worker_tick_sec;
+#[cfg(test)]
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
 use crate::request_endpoints::simulate;
 use crate::request_endpoints::submit;
@@ -169,6 +171,7 @@ struct ExecutorConfig {
     idempotency_response_retention_sec: u64,
     idempotency_response_cleanup_batch_size: u64,
     idempotency_response_cleanup_max_batches_per_run: u64,
+    idempotency_response_cleanup_worker_tick_sec: u64,
     max_notional_sol: f64,
     allow_nonzero_tip: bool,
     submit_signature_verify: Option<SubmitSignatureVerifyConfig>,
@@ -234,6 +237,7 @@ async fn main() -> Result<()> {
         idempotency_response_retention_sec = state.config.idempotency_response_retention_sec,
         idempotency_response_cleanup_batch_size = state.config.idempotency_response_cleanup_batch_size,
         idempotency_response_cleanup_max_batches_per_run = state.config.idempotency_response_cleanup_max_batches_per_run,
+        idempotency_response_cleanup_worker_tick_sec = state.config.idempotency_response_cleanup_worker_tick_sec,
         submit_total_budget_ms = state.config.submit_total_budget_ms,
         submit_signature_verify_enabled = state.config.submit_signature_verify.is_some(),
         submit_signature_verify_strict = state
@@ -3563,6 +3567,9 @@ mod tests {
             idempotency_response_cleanup_batch_size: DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
             idempotency_response_cleanup_max_batches_per_run:
                 DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+            idempotency_response_cleanup_worker_tick_sec: response_cleanup_worker_tick_sec(
+                DEFAULT_IDEMPOTENCY_RESPONSE_RETENTION_SEC,
+            ),
             max_notional_sol: 10.0,
             allow_nonzero_tip: true,
             submit_signature_verify: None,

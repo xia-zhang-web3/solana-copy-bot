@@ -24,6 +24,10 @@ use crate::{
 use crate::idempotency::{
     DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
 };
+use crate::idempotency_cleanup_worker::{
+    response_cleanup_worker_tick_sec, MAX_RESPONSE_CLEANUP_WORKER_TICK_SEC,
+    MIN_RESPONSE_CLEANUP_WORKER_TICK_SEC,
+};
 
 const MAX_RESPONSE_CLEANUP_BATCH_SIZE: u64 = 1_000_000;
 const MAX_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: u64 = 10_000;
@@ -371,6 +375,11 @@ impl ExecutorConfig {
             idempotency_response_cleanup_batch_size,
             idempotency_response_cleanup_max_batches_per_run,
         )?;
+        let idempotency_response_cleanup_worker_tick_sec = parse_u64_env(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC",
+            response_cleanup_worker_tick_sec(idempotency_response_retention_sec),
+        )?;
+        validate_response_cleanup_worker_tick_sec(idempotency_response_cleanup_worker_tick_sec)?;
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -418,6 +427,7 @@ impl ExecutorConfig {
             idempotency_response_retention_sec,
             idempotency_response_cleanup_batch_size,
             idempotency_response_cleanup_max_batches_per_run,
+            idempotency_response_cleanup_worker_tick_sec,
             max_notional_sol,
             allow_nonzero_tip,
             submit_signature_verify,
@@ -483,9 +493,27 @@ fn validate_response_cleanup_tuning(
     Ok(())
 }
 
+fn validate_response_cleanup_worker_tick_sec(
+    idempotency_response_cleanup_worker_tick_sec: u64,
+) -> Result<()> {
+    if !(MIN_RESPONSE_CLEANUP_WORKER_TICK_SEC..=MAX_RESPONSE_CLEANUP_WORKER_TICK_SEC)
+        .contains(&idempotency_response_cleanup_worker_tick_sec)
+    {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC must be in range [{}..={}]",
+            MIN_RESPONSE_CLEANUP_WORKER_TICK_SEC,
+            MAX_RESPONSE_CLEANUP_WORKER_TICK_SEC
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{validate_response_cleanup_tuning, validate_response_retention_cutoff};
+    use super::{
+        validate_response_cleanup_tuning, validate_response_cleanup_worker_tick_sec,
+        validate_response_retention_cutoff,
+    };
 
     #[test]
     fn validate_response_retention_cutoff_accepts_default_range() {
@@ -541,6 +569,30 @@ mod tests {
                 .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE * COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN"),
             "unexpected error: {}",
             error
+        );
+    }
+
+    #[test]
+    fn validate_response_cleanup_worker_tick_sec_accepts_default_bounds() {
+        validate_response_cleanup_worker_tick_sec(15).expect("lower bound should be valid");
+        validate_response_cleanup_worker_tick_sec(300).expect("upper bound should be valid");
+    }
+
+    #[test]
+    fn validate_response_cleanup_worker_tick_sec_rejects_out_of_range_values() {
+        let low = validate_response_cleanup_worker_tick_sec(14).expect_err("must reject");
+        assert!(
+            low.to_string()
+                .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC"),
+            "unexpected error: {}",
+            low
+        );
+        let high = validate_response_cleanup_worker_tick_sec(301).expect_err("must reject");
+        assert!(
+            high.to_string()
+                .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC"),
+            "unexpected error: {}",
+            high
         );
     }
 }
