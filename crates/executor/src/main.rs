@@ -2038,6 +2038,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_simulate_route_payload_hint_mismatch_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-simulate-route-hint-mismatch-1",
+            "signal_id": "signal-simulate-route-hint-mismatch-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("jito"),
+                request_id: Some("request-simulate-route-hint-mismatch-1"),
+                signal_id: Some("signal-simulate-route-hint-mismatch-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect_err("simulate route hint mismatch must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route payload mismatch"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_simulate_route_payload_hint_missing_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-simulate-route-hint-missing-1",
+            "signal_id": "signal-simulate-route-hint-missing-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: None,
+                request_id: Some("request-simulate-route-hint-missing-1"),
+                signal_id: Some("signal-simulate-route-hint-missing-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect_err("simulate missing route hint must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("route payload hint missing at route-executor boundary"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_allowlisted_route_without_backend_before_forward() {
         let mut state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
