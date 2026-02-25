@@ -14,10 +14,14 @@ use std::{
 const MIN_CLAIM_CLEANUP_INTERVAL_SEC: i64 = 5;
 const MAX_CLAIM_CLEANUP_INTERVAL_SEC: i64 = 60;
 const META_KEY_CLAIM_CLEANUP_LAST_UNIX: &str = "claim_cleanup_last_unix";
+const MIN_RESPONSE_CLEANUP_INTERVAL_SEC: i64 = 60;
+const MAX_RESPONSE_CLEANUP_INTERVAL_SEC: i64 = 3_600;
+const META_KEY_RESPONSE_CLEANUP_LAST_UNIX: &str = "response_cleanup_last_unix";
 
 pub(crate) struct SubmitIdempotencyStore {
     conn: Mutex<Connection>,
     last_claim_cleanup_unix: AtomicI64,
+    last_response_cleanup_unix: AtomicI64,
 }
 
 pub(crate) enum SubmitClaimOutcome {
@@ -70,6 +74,7 @@ impl SubmitIdempotencyStore {
         Ok(Self {
             conn: Mutex::new(conn),
             last_claim_cleanup_unix: AtomicI64::new(0),
+            last_response_cleanup_unix: AtomicI64::new(0),
         })
     }
 
@@ -103,6 +108,7 @@ impl SubmitIdempotencyStore {
         client_order_id: &str,
         request_id: &str,
         claim_ttl_sec: u64,
+        response_retention_sec: u64,
     ) -> Result<SubmitClaimOutcome> {
         let key = client_order_id.trim();
         if key.is_empty() {
@@ -136,6 +142,43 @@ impl SubmitIdempotencyStore {
             } else {
                 self.last_claim_cleanup_unix
                     .store(global_last_cleanup_unix, Ordering::Relaxed);
+            }
+        }
+        let response_retention = i64::try_from(response_retention_sec).unwrap_or(i64::MAX).max(1);
+        let response_cleanup_interval = response_cleanup_interval_sec(response_retention);
+        let last_response_cleanup_unix = self.last_response_cleanup_unix.load(Ordering::Relaxed);
+        if should_run_claim_cleanup(
+            now_unix,
+            last_response_cleanup_unix,
+            response_cleanup_interval,
+        ) {
+            let global_last_response_cleanup_unix =
+                load_global_response_cleanup_last_unix(&conn)?;
+            if should_run_claim_cleanup(
+                now_unix,
+                global_last_response_cleanup_unix,
+                response_cleanup_interval,
+            ) {
+                let stale_response_before_unix = now_unix.saturating_sub(response_retention);
+                let stale_response_before_rfc3339 =
+                    chrono::DateTime::<Utc>::from_timestamp(stale_response_before_unix, 0)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "idempotency response cleanup cutoff timestamp is out of range"
+                            )
+                        })?
+                        .to_rfc3339();
+                conn.execute(
+                    "DELETE FROM executor_submit_idempotency WHERE updated_at_utc <= ?1",
+                    params![stale_response_before_rfc3339],
+                )
+                .context("idempotency response cleanup failed")?;
+                store_global_response_cleanup_last_unix(&conn, now_unix)?;
+                self.last_response_cleanup_unix
+                    .store(now_unix, Ordering::Relaxed);
+            } else {
+                self.last_response_cleanup_unix
+                    .store(global_last_response_cleanup_unix, Ordering::Relaxed);
             }
         }
 
@@ -272,6 +315,13 @@ fn claim_cleanup_interval_sec(claim_ttl_sec: i64) -> i64 {
     )
 }
 
+fn response_cleanup_interval_sec(response_retention_sec: i64) -> i64 {
+    (response_retention_sec / 2).clamp(
+        MIN_RESPONSE_CLEANUP_INTERVAL_SEC,
+        MAX_RESPONSE_CLEANUP_INTERVAL_SEC,
+    )
+}
+
 fn should_run_claim_cleanup(
     now_unix: i64,
     last_cleanup_unix: i64,
@@ -316,6 +366,36 @@ fn store_global_claim_cleanup_last_unix(conn: &Connection, now_unix: i64) -> Res
     Ok(())
 }
 
+fn load_global_response_cleanup_last_unix(conn: &Connection) -> Result<i64> {
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT value_int FROM executor_runtime_meta WHERE meta_key = ?1",
+            params![META_KEY_RESPONSE_CLEANUP_LAST_UNIX],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("idempotency response cleanup metadata lookup failed")?;
+    Ok(stored.unwrap_or(0))
+}
+
+fn store_global_response_cleanup_last_unix(conn: &Connection, now_unix: i64) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO executor_runtime_meta (
+            meta_key,
+            value_int,
+            updated_at_unix
+        ) VALUES (?1, ?2, ?2)
+        ON CONFLICT(meta_key) DO UPDATE SET
+            value_int = excluded.value_int,
+            updated_at_unix = excluded.updated_at_unix
+        "#,
+        params![META_KEY_RESPONSE_CLEANUP_LAST_UNIX, now_unix],
+    )
+    .context("idempotency response cleanup metadata update failed")?;
+    Ok(())
+}
+
 fn ensure_parent_dir(path: &str) -> Result<()> {
     let target = Path::new(path);
     let Some(parent) = target.parent() else {
@@ -335,10 +415,10 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_cleanup_interval_sec, should_run_claim_cleanup, SubmitClaimOutcome,
-        SubmitIdempotencyStore,
+        claim_cleanup_interval_sec, response_cleanup_interval_sec, should_run_claim_cleanup,
+        SubmitClaimOutcome, SubmitIdempotencyStore,
     };
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use rusqlite::params;
     use serde_json::json;
     use std::{
@@ -348,6 +428,7 @@ mod tests {
     };
 
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+    const TEST_RESPONSE_RETENTION_SEC: u64 = 3_600;
 
     fn temp_db_path() -> PathBuf {
         let nanos = SystemTime::now()
@@ -458,12 +539,12 @@ mod tests {
             SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
 
         let first = store
-            .load_cached_or_claim_submit("order-claim-1", "req-1", 30)
+            .load_cached_or_claim_submit("order-claim-1", "req-1", 30, TEST_RESPONSE_RETENTION_SEC)
             .expect("first claim");
         assert!(matches!(first, SubmitClaimOutcome::Claimed));
 
         let second = store
-            .load_cached_or_claim_submit("order-claim-1", "req-2", 30)
+            .load_cached_or_claim_submit("order-claim-1", "req-2", 30, TEST_RESPONSE_RETENTION_SEC)
             .expect("second claim");
         assert!(matches!(second, SubmitClaimOutcome::InFlight));
 
@@ -480,7 +561,7 @@ mod tests {
             .expect("release claim");
 
         let third = store
-            .load_cached_or_claim_submit("order-claim-1", "req-3", 30)
+            .load_cached_or_claim_submit("order-claim-1", "req-3", 30, TEST_RESPONSE_RETENTION_SEC)
             .expect("third claim");
         match third {
             SubmitClaimOutcome::Cached(value) => assert_eq!(value, response),
@@ -509,7 +590,12 @@ mod tests {
             .expect("cached response");
         assert_eq!(loaded, response);
         let outcome = store
-            .load_cached_or_claim_submit("  order-ws-1 ", "req-ws-2", 30)
+            .load_cached_or_claim_submit(
+                "  order-ws-1 ",
+                "req-ws-2",
+                30,
+                TEST_RESPONSE_RETENTION_SEC,
+            )
             .expect("cached outcome");
         assert!(matches!(outcome, SubmitClaimOutcome::Cached(_)));
         let _ = std::fs::remove_file(db_path);
@@ -522,7 +608,12 @@ mod tests {
             SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
 
         let first = store
-            .load_cached_or_claim_submit("order-claim-owner-1", "req-owner-1", 30)
+            .load_cached_or_claim_submit(
+                "order-claim-owner-1",
+                "req-owner-1",
+                30,
+                TEST_RESPONSE_RETENTION_SEC,
+            )
             .expect("first claim");
         assert!(matches!(first, SubmitClaimOutcome::Claimed));
 
@@ -532,7 +623,12 @@ mod tests {
         assert!(!removed_wrong);
 
         let second = store
-            .load_cached_or_claim_submit("order-claim-owner-1", "req-owner-3", 30)
+            .load_cached_or_claim_submit(
+                "order-claim-owner-1",
+                "req-owner-3",
+                30,
+                TEST_RESPONSE_RETENTION_SEC,
+            )
             .expect("second claim");
         assert!(matches!(second, SubmitClaimOutcome::InFlight));
 
@@ -542,7 +638,12 @@ mod tests {
         assert!(removed_right);
 
         let third = store
-            .load_cached_or_claim_submit("order-claim-owner-1", "req-owner-3", 30)
+            .load_cached_or_claim_submit(
+                "order-claim-owner-1",
+                "req-owner-3",
+                30,
+                TEST_RESPONSE_RETENTION_SEC,
+            )
             .expect("third claim");
         assert!(matches!(third, SubmitClaimOutcome::Claimed));
 
@@ -555,6 +656,14 @@ mod tests {
         assert_eq!(claim_cleanup_interval_sec(10), 5);
         assert_eq!(claim_cleanup_interval_sec(30), 15);
         assert_eq!(claim_cleanup_interval_sec(240), 60);
+    }
+
+    #[test]
+    fn response_cleanup_interval_sec_clamps_bounds() {
+        assert_eq!(response_cleanup_interval_sec(1), 60);
+        assert_eq!(response_cleanup_interval_sec(120), 60);
+        assert_eq!(response_cleanup_interval_sec(600), 300);
+        assert_eq!(response_cleanup_interval_sec(20_000), 3_600);
     }
 
     #[test]
@@ -593,7 +702,12 @@ mod tests {
             .store(now_unix, Ordering::Relaxed);
 
         let outcome = store
-            .load_cached_or_claim_submit("order-stale-key-1", "req-new", 30)
+            .load_cached_or_claim_submit(
+                "order-stale-key-1",
+                "req-new",
+                30,
+                TEST_RESPONSE_RETENTION_SEC,
+            )
             .expect("claim outcome");
         assert!(matches!(outcome, SubmitClaimOutcome::Claimed));
 
@@ -624,7 +738,12 @@ mod tests {
         assert_eq!(claim_row_count_for_key(&store1, "order-stale-marker-1"), 1);
 
         let first_outcome = store1
-            .load_cached_or_claim_submit("probe-cleanup-marker-1", "req-probe-1", 30)
+            .load_cached_or_claim_submit(
+                "probe-cleanup-marker-1",
+                "req-probe-1",
+                30,
+                TEST_RESPONSE_RETENTION_SEC,
+            )
             .expect("first probe claim");
         assert!(matches!(first_outcome, SubmitClaimOutcome::Claimed));
         assert_eq!(claim_row_count_for_key(&store1, "order-stale-marker-1"), 0);
@@ -647,7 +766,12 @@ mod tests {
 
         let store2 = SubmitIdempotencyStore::open(db_path_str.as_str()).expect("open store2");
         let second_outcome = store2
-            .load_cached_or_claim_submit("probe-cleanup-marker-2", "req-probe-2", 30)
+            .load_cached_or_claim_submit(
+                "probe-cleanup-marker-2",
+                "req-probe-2",
+                30,
+                TEST_RESPONSE_RETENTION_SEC,
+            )
             .expect("second probe claim");
         assert!(matches!(second_outcome, SubmitClaimOutcome::Claimed));
         assert_eq!(
@@ -656,6 +780,44 @@ mod tests {
             "global cleanup marker should suppress redundant cross-process cleanup"
         );
 
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn stale_cached_response_is_cleaned_when_response_cleanup_due() {
+        let db_path = temp_db_path();
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let stale_updated = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        {
+            let conn = store.conn.lock().expect("lock conn");
+            conn.execute(
+                r#"
+                INSERT INTO executor_submit_idempotency (
+                    client_order_id,
+                    request_id,
+                    response_json,
+                    created_at_utc,
+                    updated_at_utc
+                ) VALUES (?1, ?2, ?3, ?4, ?4)
+                "#,
+                params![
+                    "order-stale-response-1",
+                    "req-stale-response-1",
+                    "{\"status\":\"ok\"}",
+                    stale_updated
+                ],
+            )
+            .expect("insert stale cached response");
+        }
+        let outcome = store
+            .load_cached_or_claim_submit("probe-response-cleanup-1", "req-probe-1", 30, 60)
+            .expect("claim outcome");
+        assert!(matches!(outcome, SubmitClaimOutcome::Claimed));
+        let stale = store
+            .load_submit_response("order-stale-response-1")
+            .expect("lookup stale response");
+        assert!(stale.is_none(), "stale cached response should be cleaned");
         let _ = std::fs::remove_file(db_path);
     }
 }

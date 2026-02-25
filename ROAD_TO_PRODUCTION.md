@@ -717,6 +717,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 189. executor test-runtime optimization: HMAC skew-window replay guard test duration reduced (`ttl=1`, shorter wait), and nonce-eviction capacity guard switched to deterministic pre-seeded expired-entry setup (no sleep), keeping semantics unchanged while speeding up quick/standard audit loops.
 190. executor shutdown/nonce guard coverage hardened: signal wait logic was extracted into testable helpers (`await_shutdown_signal_ctrl_c_only`, unix `await_shutdown_signal_unix`) with dedicated async guard tests, and forward-skew HMAC replay test was made deterministic (no sleep) by asserting nonce expiry horizon directly before replay check.
 191. executor auth-verifier testclock hardening: HMAC verify path now has internal deterministic test clock hook (`verify_with_now_epoch`) used by guard tests, restoring explicit “time progression within forward-skew window” coverage in `auth_verifier_hmac_keeps_nonce_through_forward_skew_window` without reintroducing sleep-based flakiness.
+192. executor idempotency retention hardening: submit-response cache now has configurable retention (`COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC`, default `604800`) with cadence-throttled cleanup coordinated via shared SQLite runtime metadata (`response_cleanup_last_unix`), reducing unbounded growth of `executor_submit_idempotency` while preserving claim-path semantics; guard coverage includes cleanup interval bounds and stale-response eviction.
 
 Остается в next-code-queue:
 

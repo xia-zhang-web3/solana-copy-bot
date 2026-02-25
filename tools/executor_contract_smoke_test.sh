@@ -207,6 +207,8 @@ contract_guard_tests=(
   "global_cleanup_marker_prevents_redundant_cleanup_across_store_instances"
   "idempotency_normalizes_client_order_id_for_store_and_lookup"
   "claim_cleanup_interval_sec_clamps_bounds"
+  "response_cleanup_interval_sec_clamps_bounds"
+  "stale_cached_response_is_cleaned_when_response_cleanup_due"
   "min_claim_ttl_sec_for_submit_path_applies_500ms_runtime_floor"
   "min_claim_ttl_sec_for_submit_path_respects_submit_total_budget_floor"
   "route_backend_send_rpc_endpoint_chain_checked_rejects_fallback_without_primary"

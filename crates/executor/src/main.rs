@@ -129,6 +129,7 @@ const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
 const DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC: u64 = 60;
+const DEFAULT_IDEMPOTENCY_RESPONSE_RETENTION_SEC: u64 = 7 * 24 * 60 * 60;
 const DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES: u64 = 100_000;
 
 #[derive(Clone)]
@@ -159,6 +160,7 @@ struct ExecutorConfig {
     submit_total_budget_ms: u64,
     idempotency_db_path: String,
     idempotency_claim_ttl_sec: u64,
+    idempotency_response_retention_sec: u64,
     max_notional_sol: f64,
     allow_nonzero_tip: bool,
     submit_signature_verify: Option<SubmitSignatureVerifyConfig>,
@@ -221,6 +223,7 @@ async fn main() -> Result<()> {
         hmac_nonce_cache_max_entries = state.config.hmac_nonce_cache_max_entries,
         idempotency_db_path = %state.config.idempotency_db_path,
         idempotency_claim_ttl_sec = state.config.idempotency_claim_ttl_sec,
+        idempotency_response_retention_sec = state.config.idempotency_response_retention_sec,
         submit_total_budget_ms = state.config.submit_total_budget_ms,
         submit_signature_verify_enabled = state.config.submit_signature_verify.is_some(),
         submit_signature_verify_strict = state
@@ -3536,6 +3539,7 @@ mod tests {
             submit_total_budget_ms: default_submit_total_budget_ms(2_000),
             idempotency_db_path: ":memory:".to_string(),
             idempotency_claim_ttl_sec: DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC,
+            idempotency_response_retention_sec: DEFAULT_IDEMPOTENCY_RESPONSE_RETENTION_SEC,
             max_notional_sol: 10.0,
             allow_nonzero_tip: true,
             submit_signature_verify: None,

@@ -17,7 +17,8 @@ use crate::submit_budget::{default_submit_total_budget_ms, min_claim_ttl_sec_for
 use crate::submit_verify_config::parse_submit_signature_verify_config;
 use crate::{
     ExecutorConfig, DEFAULT_BIND_ADDR, DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
-    DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC, DEFAULT_MAX_NOTIONAL_SOL, DEFAULT_TIMEOUT_MS,
+    DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC, DEFAULT_IDEMPOTENCY_RESPONSE_RETENTION_SEC,
+    DEFAULT_MAX_NOTIONAL_SOL, DEFAULT_TIMEOUT_MS,
 };
 
 impl ExecutorConfig {
@@ -330,6 +331,15 @@ impl ExecutorConfig {
                 "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC must be > 0"
             ));
         }
+        let idempotency_response_retention_sec = parse_u64_env(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC",
+            DEFAULT_IDEMPOTENCY_RESPONSE_RETENTION_SEC,
+        )?;
+        if idempotency_response_retention_sec == 0 {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC must be > 0"
+            ));
+        }
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -374,6 +384,7 @@ impl ExecutorConfig {
             submit_total_budget_ms,
             idempotency_db_path,
             idempotency_claim_ttl_sec,
+            idempotency_response_retention_sec,
             max_notional_sol,
             allow_nonzero_tip,
             submit_signature_verify,
