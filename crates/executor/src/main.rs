@@ -99,6 +99,10 @@ use crate::route_adapters::{
     take_submit_instruction_plan_presence_for_test,
 };
 #[cfg(test)]
+use crate::route_executor::{
+    execute_route_action, RouteActionPayloadExpectations, RouteSubmitExecutionContext,
+};
+#[cfg(test)]
 use crate::route_policy::apply_submit_tip_policy;
 #[cfg(test)]
 use crate::secret_source::resolve_secret_source;
@@ -1805,6 +1809,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_submit_without_instruction_plan_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-submit-no-plan-1",
+            "client_order_id": "client-order-submit-no-plan-1",
+            "request_id": "request-submit-no-plan-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                request_id: Some("request-submit-no-plan-1"),
+                signal_id: Some("signal-submit-no-plan-1"),
+                client_order_id: Some("client-order-submit-no-plan-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect_err("submit without instruction plan must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing instruction plan"));
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_instruction_plan_payload_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
@@ -1841,6 +1895,47 @@ mod tests {
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("compute_budget.cu_limit mismatch"));
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_instruction_plan_cu_price_payload_mismatch_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-submit-plan-cu-price-mismatch-1",
+            "client_order_id": "client-order-submit-plan-cu-price-mismatch-1",
+            "request_id": "request-submit-plan-cu-price-mismatch-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let mut request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+        request.compute_budget.cu_price_micro_lamports = 1_500;
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("instruction-plan cu_price mismatch must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("compute_budget.cu_price_micro_lamports mismatch"));
     }
 
     #[tokio::test]

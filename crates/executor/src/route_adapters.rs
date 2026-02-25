@@ -151,6 +151,12 @@ impl RouteAdapter {
             payload_expectations.client_order_id,
             submit_context.instruction_plan.is_some(),
         );
+        let Some(plan) = submit_context.instruction_plan else {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                "submit payload missing instruction plan at route-adapter boundary",
+            ));
+        };
         let payload = if self.requires_rpc_submit_tip_guard() {
             validate_rpc_submit_tip_payload(
                 raw_body,
@@ -174,17 +180,15 @@ impl RouteAdapter {
                 payload_expectations.token,
             )?
         };
-        if let Some(plan) = submit_context.instruction_plan {
-            validate_submit_instruction_plan_payload_consistency(&payload, plan)?;
-            debug!(
-                route = %route,
-                route_adapter = %self.as_str(),
-                cu_limit = plan.compute_budget_cu_limit,
-                cu_price_micro_lamports = plan.compute_budget_cu_price_micro_lamports,
-                tip_instruction_lamports = ?plan.tip_instruction_lamports,
-                "route adapter received submit instruction plan"
-            );
-        }
+        validate_submit_instruction_plan_payload_consistency(&payload, plan)?;
+        debug!(
+            route = %route,
+            route_adapter = %self.as_str(),
+            cu_limit = plan.compute_budget_cu_limit,
+            cu_price_micro_lamports = plan.compute_budget_cu_price_micro_lamports,
+            tip_instruction_lamports = ?plan.tip_instruction_lamports,
+            "route adapter received submit instruction plan"
+        );
         forward_to_upstream(
             state,
             route,
@@ -811,6 +815,22 @@ mod tests {
             .expect_err("compute-budget mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("compute_budget.cu_limit mismatch"));
+    }
+
+    #[test]
+    fn validate_submit_instruction_plan_payload_consistency_rejects_cu_price_mismatch() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","compute_budget":{"cu_limit":300000,"cu_price_micro_lamports":1000}}"#;
+        let plan = SubmitInstructionPlan {
+            compute_budget_cu_limit: 300_000,
+            compute_budget_cu_price_micro_lamports: 1_500,
+            tip_instruction_lamports: None,
+        };
+        let reject = validate_submit_instruction_plan_payload_consistency(body, plan)
+            .expect_err("compute-budget cu_price mismatch must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("compute_budget.cu_price_micro_lamports mismatch"));
     }
 
     #[test]
