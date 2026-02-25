@@ -230,6 +230,8 @@ contract_guard_tests=(
   "send_signed_transaction_via_rpc_treats_blockhash_expired_payload_as_terminal"
   "send_signed_transaction_via_rpc_rejects_fallback_without_primary_url"
   "ata_fee_hint_zero_is_treated_as_absent"
+  "ata_parse_response_fee_hint_fields_normalizes_zero_to_absent"
+  "tx_build_plan_builds_payload_and_tip_policy"
   "resolve_fee_hints_rejects_derived_priority_fee_overflow"
   "parse_response_fee_hint_fields_rejects_invalid_field_type"
   "ata_submit_payload_omits_ata_create_rent_lamports_when_absent"

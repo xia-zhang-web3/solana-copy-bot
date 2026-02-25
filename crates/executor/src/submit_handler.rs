@@ -30,8 +30,7 @@ use crate::submit_transport::{extract_submit_transport_artifact, SubmitTransport
 use crate::submit_verify::verify_submitted_signature_visibility;
 use crate::submit_verify_payload::submit_signature_verification_to_json;
 use crate::tx_build::{
-    build_submit_forward_payload as build_submit_forward_payload_core, resolve_submit_tip_lamports,
-    validate_submit_compute_budget, validate_submit_slippage_policy, ComputeBudgetBounds,
+    build_submit_plan, ComputeBudgetBounds, SubmitBuildPlanError, SubmitBuildPlanInputs,
 };
 use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
 use crate::{AppState, Reject};
@@ -60,35 +59,40 @@ pub(crate) async fn handle_submit(
         request.signal_id.as_str(),
     )
     .map_err(map_request_validation_error_to_reject)?;
-    validate_submit_slippage_policy(
-        request.slippage_bps,
-        request.route_slippage_cap_bps,
-        crate::POLICY_FLOAT_EPSILON,
-    )
-    .map_err(map_slippage_validation_error_to_reject)?;
     let route = normalize_route(request.route.as_str());
-    let (effective_tip_lamports, tip_policy_code) = resolve_submit_tip_lamports(
-        route.as_str(),
-        request.tip_lamports,
-        crate::TIP_MAX_LAMPORTS,
-        state.config.allow_nonzero_tip,
-    )
-    .map_err(map_submit_tip_policy_error_to_reject)?;
-    validate_submit_compute_budget(
-        request.compute_budget.cu_limit,
-        request.compute_budget.cu_price_micro_lamports,
-        ComputeBudgetBounds {
+    let submit_plan = build_submit_plan(SubmitBuildPlanInputs {
+        route: route.as_str(),
+        raw_body,
+        requested_tip_lamports: request.tip_lamports,
+        tip_max_lamports: crate::TIP_MAX_LAMPORTS,
+        allow_nonzero_tip: state.config.allow_nonzero_tip,
+        cu_limit: request.compute_budget.cu_limit,
+        cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
+        compute_budget_bounds: ComputeBudgetBounds {
             cu_limit_min: crate::CU_LIMIT_MIN,
             cu_limit_max: crate::CU_LIMIT_MAX,
             cu_price_min: crate::CU_PRICE_MIN,
             cu_price_max: crate::CU_PRICE_MAX,
         },
-    )
-    .map_err(map_compute_budget_validation_error_to_reject)?;
-
-    let forward_body =
-        build_submit_forward_payload_core(raw_body, request.tip_lamports, effective_tip_lamports)
-            .map_err(map_forward_payload_build_error_to_reject)?;
+        slippage_bps: request.slippage_bps,
+        route_slippage_cap_bps: request.route_slippage_cap_bps,
+        slippage_epsilon: crate::POLICY_FLOAT_EPSILON,
+    })
+    .map_err(|error| match error {
+        SubmitBuildPlanError::SlippagePolicy(inner) => {
+            map_slippage_validation_error_to_reject(inner)
+        }
+        SubmitBuildPlanError::TipPolicy(inner) => map_submit_tip_policy_error_to_reject(inner),
+        SubmitBuildPlanError::ComputeBudget(inner) => {
+            map_compute_budget_validation_error_to_reject(inner)
+        }
+        SubmitBuildPlanError::ForwardPayload(inner) => {
+            map_forward_payload_build_error_to_reject(inner)
+        }
+    })?;
+    let effective_tip_lamports = submit_plan.effective_tip_lamports;
+    let tip_policy_code = submit_plan.tip_policy_code;
+    let forward_body = submit_plan.forward_body;
     if let Some(policy_code) = tip_policy_code {
         debug!(
             route = %route,

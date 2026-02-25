@@ -53,6 +53,9 @@ pub(crate) enum FeeHintFieldParseError {
 pub(crate) fn parse_response_fee_hint_fields(
     body: &Value,
 ) -> Result<ParsedResponseFeeHints, FeeHintFieldParseError> {
+    let ata_create_rent_lamports = normalize_ata_create_rent_hint(
+        parse_optional_non_negative_u64_field(body, "ata_create_rent_lamports")?,
+    );
     Ok(ParsedResponseFeeHints {
         network_fee_lamports: parse_optional_non_negative_u64_field(body, "network_fee_lamports")?,
         base_fee_lamports: parse_optional_non_negative_u64_field(body, "base_fee_lamports")?,
@@ -60,10 +63,7 @@ pub(crate) fn parse_response_fee_hint_fields(
             body,
             "priority_fee_lamports",
         )?,
-        ata_create_rent_lamports: parse_optional_non_negative_u64_field(
-            body,
-            "ata_create_rent_lamports",
-        )?,
+        ata_create_rent_lamports,
     })
 }
 
@@ -190,6 +190,15 @@ mod tests {
                 field: "network_fee_lamports",
             }
         );
+    }
+
+    #[test]
+    fn ata_parse_response_fee_hint_fields_normalizes_zero_to_absent() {
+        let body = json!({
+            "ata_create_rent_lamports": 0
+        });
+        let parsed = parse_response_fee_hint_fields(&body).expect("must parse");
+        assert_eq!(parsed.ata_create_rent_lamports, None);
     }
 
     #[test]

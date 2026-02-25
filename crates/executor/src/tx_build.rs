@@ -39,6 +39,75 @@ pub(crate) enum SlippageValidationError {
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SubmitBuildPlanInputs<'a> {
+    pub(crate) route: &'a str,
+    pub(crate) raw_body: &'a [u8],
+    pub(crate) requested_tip_lamports: u64,
+    pub(crate) tip_max_lamports: u64,
+    pub(crate) allow_nonzero_tip: bool,
+    pub(crate) cu_limit: u32,
+    pub(crate) cu_price_micro_lamports: u64,
+    pub(crate) compute_budget_bounds: ComputeBudgetBounds,
+    pub(crate) slippage_bps: f64,
+    pub(crate) route_slippage_cap_bps: f64,
+    pub(crate) slippage_epsilon: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SubmitBuildPlan {
+    pub(crate) forward_body: Vec<u8>,
+    pub(crate) effective_tip_lamports: u64,
+    pub(crate) tip_policy_code: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum SubmitBuildPlanError {
+    SlippagePolicy(SlippageValidationError),
+    TipPolicy(SubmitTipPolicyError),
+    ComputeBudget(ComputeBudgetValidationError),
+    ForwardPayload(ForwardPayloadBuildError),
+}
+
+pub(crate) fn build_submit_plan(
+    inputs: SubmitBuildPlanInputs<'_>,
+) -> Result<SubmitBuildPlan, SubmitBuildPlanError> {
+    validate_submit_slippage_policy(
+        inputs.slippage_bps,
+        inputs.route_slippage_cap_bps,
+        inputs.slippage_epsilon,
+    )
+    .map_err(SubmitBuildPlanError::SlippagePolicy)?;
+
+    let (effective_tip_lamports, tip_policy_code) = resolve_submit_tip_lamports(
+        inputs.route,
+        inputs.requested_tip_lamports,
+        inputs.tip_max_lamports,
+        inputs.allow_nonzero_tip,
+    )
+    .map_err(SubmitBuildPlanError::TipPolicy)?;
+
+    validate_submit_compute_budget(
+        inputs.cu_limit,
+        inputs.cu_price_micro_lamports,
+        inputs.compute_budget_bounds,
+    )
+    .map_err(SubmitBuildPlanError::ComputeBudget)?;
+
+    let forward_body = build_submit_forward_payload(
+        inputs.raw_body,
+        inputs.requested_tip_lamports,
+        effective_tip_lamports,
+    )
+    .map_err(SubmitBuildPlanError::ForwardPayload)?;
+
+    Ok(SubmitBuildPlan {
+        forward_body,
+        effective_tip_lamports,
+        tip_policy_code,
+    })
+}
+
 pub(crate) fn resolve_submit_tip_lamports(
     route: &str,
     requested_tip_lamports: u64,
@@ -138,9 +207,10 @@ pub(crate) fn validate_submit_slippage_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_submit_forward_payload, resolve_submit_tip_lamports, validate_submit_compute_budget,
-        validate_submit_slippage_policy, ComputeBudgetBounds, ComputeBudgetValidationError,
-        ForwardPayloadBuildError, SlippageValidationError, SubmitTipPolicyError,
+        build_submit_forward_payload, build_submit_plan, resolve_submit_tip_lamports,
+        validate_submit_compute_budget, validate_submit_slippage_policy, ComputeBudgetBounds,
+        ComputeBudgetValidationError, ForwardPayloadBuildError, SlippageValidationError,
+        SubmitBuildPlanError, SubmitBuildPlanInputs, SubmitTipPolicyError,
     };
 
     #[test]
@@ -285,6 +355,89 @@ mod tests {
                 slippage_bps: 25.0,
                 route_slippage_cap_bps: 20.0,
             }
+        );
+    }
+
+    #[test]
+    fn tx_build_plan_builds_payload_and_tip_policy() {
+        let input = br#"{"route":"rpc","tip_lamports":12345,"compute_budget":{"cu_limit":300000,"cu_price_micro_lamports":1000}}"#;
+        let plan = build_submit_plan(SubmitBuildPlanInputs {
+            route: "rpc",
+            raw_body: input,
+            requested_tip_lamports: 12_345,
+            tip_max_lamports: 100_000_000,
+            allow_nonzero_tip: true,
+            cu_limit: 300_000,
+            cu_price_micro_lamports: 1_000,
+            compute_budget_bounds: ComputeBudgetBounds {
+                cu_limit_min: 1,
+                cu_limit_max: 1_400_000,
+                cu_price_min: 1,
+                cu_price_max: 10_000_000,
+            },
+            slippage_bps: 10.0,
+            route_slippage_cap_bps: 20.0,
+            slippage_epsilon: 1e-6,
+        })
+        .expect("submit plan should build");
+        assert_eq!(plan.effective_tip_lamports, 0);
+        assert_eq!(plan.tip_policy_code, Some("rpc_tip_forced_zero"));
+        let payload: serde_json::Value =
+            serde_json::from_slice(plan.forward_body.as_slice()).expect("valid json");
+        assert_eq!(payload.get("tip_lamports").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    #[test]
+    fn tx_build_plan_rejects_slippage_before_other_checks() {
+        let error = build_submit_plan(SubmitBuildPlanInputs {
+            route: "rpc",
+            raw_body: br#"{"route":"rpc","tip_lamports":0}"#,
+            requested_tip_lamports: 0,
+            tip_max_lamports: 100_000_000,
+            allow_nonzero_tip: true,
+            cu_limit: 300_000,
+            cu_price_micro_lamports: 1_000,
+            compute_budget_bounds: ComputeBudgetBounds {
+                cu_limit_min: 1,
+                cu_limit_max: 1_400_000,
+                cu_price_min: 1,
+                cu_price_max: 10_000_000,
+            },
+            slippage_bps: 50.0,
+            route_slippage_cap_bps: 10.0,
+            slippage_epsilon: 1e-6,
+        })
+        .expect_err("slippage above route cap must reject");
+        assert!(matches!(
+            error,
+            SubmitBuildPlanError::SlippagePolicy(SlippageValidationError::ExceedsRouteCap { .. })
+        ));
+    }
+
+    #[test]
+    fn tx_build_plan_rejects_invalid_payload_for_tip_rewrite() {
+        let error = build_submit_plan(SubmitBuildPlanInputs {
+            route: "rpc",
+            raw_body: br#"[]"#,
+            requested_tip_lamports: 5_000,
+            tip_max_lamports: 100_000_000,
+            allow_nonzero_tip: true,
+            cu_limit: 300_000,
+            cu_price_micro_lamports: 1_000,
+            compute_budget_bounds: ComputeBudgetBounds {
+                cu_limit_min: 1,
+                cu_limit_max: 1_400_000,
+                cu_price_min: 1,
+                cu_price_max: 10_000_000,
+            },
+            slippage_bps: 10.0,
+            route_slippage_cap_bps: 20.0,
+            slippage_epsilon: 1e-6,
+        })
+        .expect_err("non-object payload must reject");
+        assert_eq!(
+            error,
+            SubmitBuildPlanError::ForwardPayload(ForwardPayloadBuildError::RootNotObject)
         );
     }
 }
