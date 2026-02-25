@@ -102,7 +102,7 @@ use crate::signer_source::SignerSource;
 #[cfg(test)]
 use crate::simulate_handler::handle_simulate;
 #[cfg(test)]
-use crate::submit_budget::{default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path};
+use crate::submit_budget::default_submit_total_budget_ms;
 #[cfg(test)]
 use crate::submit_handler::handle_submit;
 #[cfg(test)]
@@ -281,81 +281,6 @@ mod tests {
         let routes = parse_route_allowlist("rpc,fastlane".to_string()).unwrap();
         assert!(validate_fastlane_route_policy(&routes, false).is_err());
         assert!(validate_fastlane_route_policy(&routes, true).is_ok());
-    }
-
-    #[test]
-    fn min_claim_ttl_sec_for_submit_path_accounts_for_verify_and_fallback_hops() {
-        let mut route_backends = HashMap::new();
-        route_backends.insert(
-            "rpc".to_string(),
-            RouteBackend {
-                submit_url: "https://submit.primary".to_string(),
-                submit_fallback_url: Some("https://submit.fallback".to_string()),
-                simulate_url: "https://simulate.primary".to_string(),
-                simulate_fallback_url: None,
-                primary_auth_token: None,
-                fallback_auth_token: None,
-                send_rpc_url: Some("https://send-rpc.primary".to_string()),
-                send_rpc_fallback_url: Some("https://send-rpc.fallback".to_string()),
-                send_rpc_primary_auth_token: None,
-                send_rpc_fallback_auth_token: None,
-            },
-        );
-        let verify = SubmitSignatureVerifyConfig {
-            endpoints: vec![
-                "https://verify.primary".to_string(),
-                "https://verify.fallback".to_string(),
-            ],
-            attempts: 3,
-            interval_ms: 250,
-            strict: false,
-        };
-        let ttl = min_claim_ttl_sec_for_submit_path(2_000, 7_000, &route_backends, Some(&verify));
-        assert_eq!(ttl, 22);
-    }
-
-    #[test]
-    fn min_claim_ttl_sec_for_submit_path_applies_500ms_runtime_floor() {
-        let mut route_backends = HashMap::new();
-        route_backends.insert(
-            "rpc".to_string(),
-            RouteBackend {
-                submit_url: "https://submit.primary".to_string(),
-                submit_fallback_url: None,
-                simulate_url: "https://simulate.primary".to_string(),
-                simulate_fallback_url: None,
-                primary_auth_token: None,
-                fallback_auth_token: None,
-                send_rpc_url: None,
-                send_rpc_fallback_url: None,
-                send_rpc_primary_auth_token: None,
-                send_rpc_fallback_auth_token: None,
-            },
-        );
-        let ttl = min_claim_ttl_sec_for_submit_path(100, 1_000, &route_backends, None);
-        assert_eq!(ttl, 2);
-    }
-
-    #[test]
-    fn min_claim_ttl_sec_for_submit_path_respects_submit_total_budget_floor() {
-        let mut route_backends = HashMap::new();
-        route_backends.insert(
-            "rpc".to_string(),
-            RouteBackend {
-                submit_url: "https://submit.primary".to_string(),
-                submit_fallback_url: None,
-                simulate_url: "https://simulate.primary".to_string(),
-                simulate_fallback_url: None,
-                primary_auth_token: None,
-                fallback_auth_token: None,
-                send_rpc_url: None,
-                send_rpc_fallback_url: None,
-                send_rpc_primary_auth_token: None,
-                send_rpc_fallback_auth_token: None,
-            },
-        );
-        let ttl = min_claim_ttl_sec_for_submit_path(1_000, 60_000, &route_backends, None);
-        assert_eq!(ttl, 61);
     }
 
     #[test]
