@@ -33,20 +33,28 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
     ) || ok_flag == Some(false)
         || accepted_flag == Some(false);
     if is_reject {
-        let code = body
-            .get("code")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(default_reject_code)
-            .to_string();
-        let detail = body
-            .get("detail")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("upstream rejected request")
-            .to_string();
+        let code = match parse_optional_non_empty_string_field(body, "code") {
+            Ok(Some(value)) => value,
+            Ok(None) => default_reject_code.to_string(),
+            Err(detail) => {
+                return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                    retryable: false,
+                    code: "upstream_invalid_response".to_string(),
+                    detail,
+                });
+            }
+        };
+        let detail = match parse_optional_non_empty_string_field(body, "detail") {
+            Ok(Some(value)) => value,
+            Ok(None) => "upstream rejected request".to_string(),
+            Err(detail) => {
+                return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                    retryable: false,
+                    code: "upstream_invalid_response".to_string(),
+                    detail,
+                });
+            }
+        };
         return UpstreamOutcome::Reject(ParsedUpstreamReject {
             retryable,
             code,
@@ -81,6 +89,29 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
     UpstreamOutcome::Success
 }
 
+fn parse_optional_non_empty_string_field(
+    payload: &Value,
+    field_name: &str,
+) -> Result<Option<String>, String> {
+    let Some(field_value) = payload.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(raw_value) = field_value.as_str() else {
+        return Err(format!(
+            "upstream reject {} must be non-empty string when present",
+            field_name
+        ));
+    };
+    let normalized = raw_value.trim();
+    if normalized.is_empty() {
+        return Err(format!(
+            "upstream reject {} must be non-empty string when present",
+            field_name
+        ));
+    }
+    Ok(Some(normalized.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_upstream_outcome, UpstreamOutcome};
@@ -110,6 +141,50 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(reject.retryable);
                 assert_eq!(reject.code, "busy");
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_non_string_reject_code_when_present() {
+        let payload = json!({
+            "status": "reject",
+            "ok": false,
+            "code": 123,
+            "detail": "busy"
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(
+                    reject
+                        .detail
+                        .contains("upstream reject code must be non-empty string when present")
+                );
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_null_reject_detail_when_present() {
+        let payload = json!({
+            "status": "reject",
+            "ok": false,
+            "code": "busy",
+            "detail": null
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(
+                    reject
+                        .detail
+                        .contains("upstream reject detail must be non-empty string when present")
+                );
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
