@@ -1023,6 +1023,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_missing_request_id_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", Some("request-expected"), None, None)
+            .expect_err("submit missing request_id must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing request_id"));
+    }
+
+    #[test]
     fn validate_submit_payload_for_route_rejects_signal_id_mismatch_when_expected() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":"signal-other"}"#;
         let reject = validate_submit_payload_for_route(
@@ -1039,6 +1048,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_missing_signal_id_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, Some("signal-expected"), None)
+            .expect_err("submit missing signal_id must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing signal_id"));
+    }
+
+    #[test]
     fn validate_submit_payload_for_route_rejects_client_order_id_mismatch_when_expected() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","client_order_id":"client-other"}"#;
         let reject = validate_submit_payload_for_route(
@@ -1052,6 +1070,15 @@ mod tests {
         .expect_err("submit client_order_id mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("client_order_id mismatch"));
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_missing_client_order_id_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, Some("client-expected"))
+            .expect_err("submit missing client_order_id must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing client_order_id"));
     }
 
     #[test]
@@ -1281,6 +1308,21 @@ mod tests {
     }
 
     #[test]
+    fn validate_simulate_payload_for_route_rejects_missing_request_id_when_expected() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
+        let reject = validate_simulate_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            Some("request-expected"),
+            None,
+        )
+        .expect_err("simulate missing request_id must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing request_id"));
+    }
+
+    #[test]
     fn validate_simulate_payload_for_route_rejects_token_mismatch_when_expected() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","token":"22222222222222222222222222222222"}"#;
         let reject = validate_simulate_payload_for_route_with_expectations(
@@ -1329,6 +1371,21 @@ mod tests {
         .expect_err("simulate side mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("side mismatch"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_missing_signal_id_when_expected() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
+        let reject = validate_simulate_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            None,
+            Some("signal-expected"),
+        )
+        .expect_err("simulate missing signal_id must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing signal_id"));
     }
 
     #[test]

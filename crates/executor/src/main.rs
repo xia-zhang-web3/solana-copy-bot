@@ -868,6 +868,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_simulate_rejects_missing_signal_id_payload_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-signal-missing-1".to_string(),
+            signal_id: "signal-sim-missing-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = br#"{"action":"simulate","contract_version":"v1","request_id":"request-sim-signal-missing-1","side":"buy","token":"11111111111111111111111111111111","notional_sol":1.0,"signal_ts":"2026-02-24T12:00:00Z","route":"rpc","dry_run":true}"#;
+        let reject = handle_simulate(&state, &request, raw_body.as_slice())
+            .await
+            .expect_err("simulate missing signal_id payload must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing signal_id"));
+    }
+
+    #[tokio::test]
     async fn handle_simulate_rejects_request_id_payload_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
@@ -894,6 +923,35 @@ mod tests {
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("request_id mismatch"));
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_rejects_missing_request_id_payload_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-id-missing-1".to_string(),
+            signal_id: "signal-sim-id-missing-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = br#"{"action":"simulate","contract_version":"v1","signal_id":"signal-sim-id-missing-1","side":"buy","token":"11111111111111111111111111111111","notional_sol":1.0,"signal_ts":"2026-02-24T12:00:00Z","route":"rpc","dry_run":true}"#;
+        let reject = handle_simulate(&state, &request, raw_body.as_slice())
+            .await
+            .expect_err("simulate missing request_id payload must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing request_id"));
     }
 
     #[tokio::test]
@@ -1986,6 +2044,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_rejects_missing_request_id_payload_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let request = SubmitRequest {
+            contract_version: Some("v1".to_string()),
+            request_id: "request-submit-id-missing-1".to_string(),
+            signal_id: "signal-submit-id-missing-1".to_string(),
+            client_order_id: "client-order-submit-id-missing-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 0.1,
+            signal_ts: "2026-02-20T00:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            slippage_bps: 10.0,
+            route_slippage_cap_bps: 20.0,
+            tip_lamports: 0,
+            compute_budget: ComputeBudgetRequest {
+                cu_limit: 300_000,
+                cu_price_micro_lamports: 1_000,
+            },
+        };
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-submit-id-missing-1",
+            "client_order_id": "client-order-submit-id-missing-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("submit missing request_id payload must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing request_id"));
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_signal_id_payload_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
@@ -2039,6 +2149,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_rejects_missing_signal_id_payload_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let request = SubmitRequest {
+            contract_version: Some("v1".to_string()),
+            request_id: "request-submit-signal-missing-1".to_string(),
+            signal_id: "signal-submit-missing-1".to_string(),
+            client_order_id: "client-order-submit-signal-missing-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 0.1,
+            signal_ts: "2026-02-20T00:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            slippage_bps: 10.0,
+            route_slippage_cap_bps: 20.0,
+            tip_lamports: 0,
+            compute_budget: ComputeBudgetRequest {
+                cu_limit: 300_000,
+                cu_price_micro_lamports: 1_000,
+            },
+        };
+        let raw_body = json!({
+            "contract_version": "v1",
+            "client_order_id": "client-order-submit-signal-missing-1",
+            "request_id": "request-submit-signal-missing-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("submit missing signal_id payload must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing signal_id"));
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_client_order_id_payload_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
@@ -2089,6 +2251,58 @@ mod tests {
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("client_order_id mismatch"));
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_missing_client_order_id_payload_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let request = SubmitRequest {
+            contract_version: Some("v1".to_string()),
+            request_id: "request-submit-client-order-missing-1".to_string(),
+            signal_id: "signal-submit-client-order-missing-1".to_string(),
+            client_order_id: "client-order-submit-missing-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 0.1,
+            signal_ts: "2026-02-20T00:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            slippage_bps: 10.0,
+            route_slippage_cap_bps: 20.0,
+            tip_lamports: 0,
+            compute_budget: ComputeBudgetRequest {
+                cu_limit: 300_000,
+                cu_price_micro_lamports: 1_000,
+            },
+        };
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-submit-client-order-missing-1",
+            "request_id": "request-submit-client-order-missing-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("submit missing client_order_id payload must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing client_order_id"));
     }
 
     #[tokio::test]
