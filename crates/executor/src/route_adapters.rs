@@ -2,6 +2,7 @@ use serde_json::Value;
 
 use crate::route_backend::UpstreamAction;
 use crate::route_executor::RouteExecutorKind;
+use crate::route_normalization::normalize_route;
 use crate::submit_deadline::SubmitDeadline;
 use crate::upstream_forward::forward_to_upstream;
 use crate::{AppState, Reject};
@@ -117,6 +118,7 @@ impl PaperRouteExecutor {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
     ) -> std::result::Result<Value, Reject> {
+        validate_submit_payload_for_route(raw_body, route)?;
         forward_to_upstream(
             state,
             route,
@@ -167,7 +169,7 @@ impl RpcRouteExecutor {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
     ) -> std::result::Result<Value, Reject> {
-        validate_rpc_submit_tip_payload(raw_body)?;
+        validate_rpc_submit_tip_payload(raw_body, route)?;
         forward_to_upstream(
             state,
             route,
@@ -218,6 +220,7 @@ impl JitoRouteExecutor {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
     ) -> std::result::Result<Value, Reject> {
+        validate_submit_payload_for_route(raw_body, route)?;
         forward_to_upstream(
             state,
             route,
@@ -268,6 +271,7 @@ impl FastlaneRouteExecutor {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
     ) -> std::result::Result<Value, Reject> {
+        validate_submit_payload_for_route(raw_body, route)?;
         forward_to_upstream(
             state,
             route,
@@ -279,30 +283,62 @@ impl FastlaneRouteExecutor {
     }
 }
 
-fn validate_rpc_submit_tip_payload(raw_body: &[u8]) -> std::result::Result<(), Reject> {
+fn parse_submit_payload_object(raw_body: &[u8]) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
     let payload: Value = serde_json::from_slice(raw_body).map_err(|error| {
         Reject::terminal(
             "invalid_request_body",
+            format!("submit payload must be valid JSON object: {}", error),
+        )
+    })?;
+    payload.as_object().cloned().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            "submit payload must be JSON object",
+        )
+    })
+}
+
+fn validate_submit_payload_for_route(raw_body: &[u8], expected_route: &str) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
+    let payload = parse_submit_payload_object(raw_body)?;
+    let expected_normalized_route = normalize_route(expected_route);
+    let payload_route = payload.get("route").ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
             format!(
-                "rpc route submit payload must be valid JSON object: {}",
-                error
+                "submit payload missing route at route-adapter boundary expected={}",
+                expected_normalized_route
             ),
         )
     })?;
-    let object = payload.as_object().ok_or_else(|| {
+    let payload_route_raw = payload_route.as_str().ok_or_else(|| {
         Reject::terminal(
             "invalid_request_body",
-            "rpc route submit payload must be JSON object",
+            "submit payload route must be string",
         )
     })?;
+    let payload_normalized_route = normalize_route(payload_route_raw);
+    if payload_normalized_route != expected_normalized_route {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "submit payload route mismatch at route-adapter boundary expected={} got={}",
+                expected_normalized_route, payload_normalized_route
+            ),
+        ));
+    }
 
-    let tip_lamports = match object.get("tip_lamports") {
+    Ok(payload)
+}
+
+fn validate_rpc_submit_tip_payload(raw_body: &[u8], expected_route: &str) -> std::result::Result<(), Reject> {
+    let payload = validate_submit_payload_for_route(raw_body, expected_route)?;
+    let tip_lamports = match payload.get("tip_lamports") {
         None => 0u64,
         Some(value) if value.is_null() => 0u64,
         Some(value) => value.as_u64().ok_or_else(|| {
             Reject::terminal(
                 "invalid_request_body",
-                "rpc route submit tip_lamports must be non-negative integer when present",
+                "submit payload tip_lamports must be non-negative integer when present",
             )
         })?,
     };
@@ -321,7 +357,7 @@ fn validate_rpc_submit_tip_payload(raw_body: &[u8]) -> std::result::Result<(), R
 
 #[cfg(test)]
 mod tests {
-    use super::validate_rpc_submit_tip_payload;
+    use super::{validate_rpc_submit_tip_payload, validate_submit_payload_for_route};
     use super::RouteAdapter;
     use crate::route_executor::RouteExecutorKind;
 
@@ -348,15 +384,46 @@ mod tests {
     #[test]
     fn validate_rpc_submit_tip_payload_accepts_zero_tip() {
         let body = br#"{"tip_lamports":0,"route":"rpc"}"#;
-        assert!(validate_rpc_submit_tip_payload(body).is_ok());
+        assert!(validate_rpc_submit_tip_payload(body, "rpc").is_ok());
     }
 
     #[test]
     fn validate_rpc_submit_tip_payload_rejects_nonzero_tip() {
         let body = br#"{"tip_lamports":42,"route":"rpc"}"#;
-        let reject = validate_rpc_submit_tip_payload(body)
+        let reject = validate_rpc_submit_tip_payload(body, "rpc")
             .expect_err("non-zero rpc tip must be rejected");
         assert_eq!(reject.code, "tip_not_supported");
         assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn validate_rpc_submit_tip_payload_rejects_invalid_json() {
+        let body = br#"{"tip_lamports":"oops""#;
+        let reject = validate_rpc_submit_tip_payload(body, "rpc")
+            .expect_err("invalid json must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+    }
+
+    #[test]
+    fn validate_rpc_submit_tip_payload_rejects_non_object_payload() {
+        let body = br#"["rpc"]"#;
+        let reject = validate_rpc_submit_tip_payload(body, "rpc")
+            .expect_err("non-object payload must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_mismatched_route() {
+        let body = br#"{"route":"jito","tip_lamports":0}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc")
+            .expect_err("route mismatch must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route mismatch"));
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_accepts_matching_route_case_insensitive() {
+        let body = br#"{"route":" RPC ","tip_lamports":0}"#;
+        assert!(validate_submit_payload_for_route(body, "rpc").is_ok());
     }
 }
