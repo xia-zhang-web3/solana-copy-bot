@@ -628,6 +628,24 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_non_string_contract_version() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":123}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+            .expect_err("submit non-string contract_version must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("contract_version must be string"));
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_empty_contract_version() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":" "}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+            .expect_err("submit empty contract_version must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("contract_version must be non-empty"));
+    }
+
+    #[test]
     fn validate_submit_payload_for_route_rejects_contract_version_mismatch() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v2"}"#;
         let reject = validate_submit_payload_for_route(body, "rpc", "v1")
@@ -703,6 +721,24 @@ mod tests {
             .expect_err("simulate missing contract_version must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing contract_version"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_non_string_contract_version() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":123}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+            .expect_err("simulate non-string contract_version must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("contract_version must be string"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_empty_contract_version() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":" "}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+            .expect_err("simulate empty contract_version must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("contract_version must be non-empty"));
     }
 
     #[test]
