@@ -56,6 +56,10 @@ impl SubmitIdempotencyStore {
     }
 
     pub(crate) fn load_submit_response(&self, client_order_id: &str) -> Result<Option<Value>> {
+        let key = client_order_id.trim();
+        if key.is_empty() {
+            return Err(anyhow::anyhow!("client_order_id must be non-empty"));
+        }
         let conn = self
             .conn
             .lock()
@@ -63,7 +67,7 @@ impl SubmitIdempotencyStore {
         let raw: Option<String> = conn
             .query_row(
                 "SELECT response_json FROM executor_submit_idempotency WHERE client_order_id = ?1",
-                params![client_order_id],
+                params![key],
                 |row| row.get(0),
             )
             .optional()
@@ -153,6 +157,14 @@ impl SubmitIdempotencyStore {
         request_id: &str,
         response: &Value,
     ) -> Result<bool> {
+        let key = client_order_id.trim();
+        if key.is_empty() {
+            return Err(anyhow::anyhow!("client_order_id must be non-empty"));
+        }
+        let req = request_id.trim();
+        if req.is_empty() {
+            return Err(anyhow::anyhow!("request_id must be non-empty"));
+        }
         let response_json =
             serde_json::to_string(response).context("serialize idempotency response failed")?;
         let now = Utc::now().to_rfc3339();
@@ -172,7 +184,7 @@ impl SubmitIdempotencyStore {
             ) VALUES (?1, ?2, ?3, ?4, ?4)
             ON CONFLICT(client_order_id) DO NOTHING
             "#,
-            params![client_order_id, request_id, response_json, now],
+            params![key, req, response_json, now],
         )
         .context("idempotency insert failed")?;
         Ok(changed > 0)
@@ -354,6 +366,31 @@ mod tests {
             _ => panic!("expected cached outcome"),
         }
 
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn idempotency_normalizes_client_order_id_for_store_and_lookup() {
+        let db_path = temp_db_path();
+        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
+            .expect("open store");
+        let response = json!({
+            "status": "ok",
+            "client_order_id": "order-ws-1",
+            "tx_signature": "sig-ws-1"
+        });
+        store
+            .store_submit_response("  order-ws-1  ", "  req-ws-1  ", &response)
+            .expect("store response");
+        let loaded = store
+            .load_submit_response("order-ws-1")
+            .expect("load normalized response")
+            .expect("cached response");
+        assert_eq!(loaded, response);
+        let outcome = store
+            .load_cached_or_claim_submit("  order-ws-1 ", "req-ws-2", 30)
+            .expect("cached outcome");
+        assert!(matches!(outcome, SubmitClaimOutcome::Cached(_)));
         let _ = std::fs::remove_file(db_path);
     }
 

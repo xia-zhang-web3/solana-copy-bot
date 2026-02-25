@@ -331,6 +331,7 @@ impl ExecutorConfig {
         let submit_signature_verify = parse_submit_signature_verify_config()?;
         let min_claim_ttl_sec = min_claim_ttl_sec_for_submit_path(
             request_timeout_ms,
+            submit_total_budget_ms,
             &route_backends,
             submit_signature_verify.as_ref(),
         );

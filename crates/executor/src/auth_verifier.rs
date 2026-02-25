@@ -114,7 +114,17 @@ impl AuthVerifier {
                 ));
             }
 
+            let payload = build_hmac_payload_bytes(timestamp_raw, ttl_raw, nonce, raw_body);
+            let expected_signature =
+                compute_hmac_signature_hex(hmac.secret.as_bytes(), payload.as_slice()).map_err(
+                    |_| Reject::terminal("hmac_invalid", "failed computing HMAC signature"),
+                )?;
+            if !constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()) {
+                return Err(Reject::terminal("hmac_invalid", "HMAC signature mismatch"));
+            }
+
             {
+                let now = Utc::now().timestamp();
                 let mut seen = self.nonce_seen_until_epoch.lock().await;
                 seen.retain(|_, expires_at| *expires_at >= now);
                 let nonce_key = format!("{}:{}", key_id, nonce);
@@ -124,27 +134,31 @@ impl AuthVerifier {
                         "HMAC nonce replay detected",
                     ));
                 }
-                seen.insert(nonce_key, now + max_skew);
-            }
-
-            let payload = format!(
-                "{}\n{}\n{}\n{}",
-                timestamp,
-                ttl,
-                nonce,
-                String::from_utf8_lossy(raw_body)
-            );
-            let expected_signature =
-                compute_hmac_signature_hex(hmac.secret.as_bytes(), payload.as_bytes()).map_err(
-                    |_| Reject::terminal("hmac_invalid", "failed computing HMAC signature"),
-                )?;
-            if !constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()) {
-                return Err(Reject::terminal("hmac_invalid", "HMAC signature mismatch"));
+                let expires_at = timestamp.saturating_add(max_skew);
+                seen.insert(nonce_key, expires_at);
             }
         }
 
         Ok(())
     }
+}
+
+fn build_hmac_payload_bytes(timestamp: &str, ttl: &str, nonce: &str, raw_body: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(
+        timestamp.len()
+            .saturating_add(ttl.len())
+            .saturating_add(nonce.len())
+            .saturating_add(raw_body.len())
+            .saturating_add(3),
+    );
+    payload.extend_from_slice(timestamp.as_bytes());
+    payload.push(b'\n');
+    payload.extend_from_slice(ttl.as_bytes());
+    payload.push(b'\n');
+    payload.extend_from_slice(nonce.as_bytes());
+    payload.push(b'\n');
+    payload.extend_from_slice(raw_body);
+    payload
 }
 
 fn get_required_header<'a>(
@@ -158,4 +172,111 @@ fn get_required_header<'a>(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| Reject::terminal(err_code, format!("missing header {}", key)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_hmac_payload_bytes, AuthVerifier};
+    use crate::auth_crypto::compute_hmac_signature_hex;
+    use axum::http::{HeaderMap, HeaderValue};
+    use chrono::Utc;
+    use tokio::time::{sleep, Duration};
+
+    fn build_hmac_headers(
+        key_id: &str,
+        ttl_sec: u64,
+        nonce: &str,
+        timestamp: i64,
+        signature: &str,
+    ) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-copybot-key-id", HeaderValue::from_str(key_id).unwrap());
+        headers.insert(
+            "x-copybot-signature-alg",
+            HeaderValue::from_static("hmac-sha256-v1"),
+        );
+        headers.insert(
+            "x-copybot-timestamp",
+            HeaderValue::from_str(timestamp.to_string().as_str()).unwrap(),
+        );
+        headers.insert(
+            "x-copybot-auth-ttl-sec",
+            HeaderValue::from_str(ttl_sec.to_string().as_str()).unwrap(),
+        );
+        headers.insert("x-copybot-nonce", HeaderValue::from_str(nonce).unwrap());
+        headers.insert(
+            "x-copybot-signature",
+            HeaderValue::from_str(signature).unwrap(),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_accepts_valid_signature_and_detects_replay() {
+        let verifier = AuthVerifier::new(None, Some("kid-1".to_string()), Some("secret-1".to_string()), 30);
+        let body = br#"{"status":"ok"}"#;
+        let timestamp = Utc::now().timestamp();
+        let payload = build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-1", body);
+        let signature = compute_hmac_signature_hex(b"secret-1", payload.as_slice()).unwrap();
+        let headers = build_hmac_headers("kid-1", 30, "nonce-1", timestamp, signature.as_str());
+
+        verifier.verify(&headers, body).await.expect("first verify must pass");
+        let reject = verifier
+            .verify(&headers, body)
+            .await
+            .expect_err("replay must be rejected");
+        assert_eq!(reject.code, "hmac_replay");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_invalid_signature_does_not_burn_nonce() {
+        let verifier = AuthVerifier::new(None, Some("kid-2".to_string()), Some("secret-2".to_string()), 30);
+        let body = br#"{"side":"buy"}"#;
+        let timestamp = Utc::now().timestamp();
+
+        let bad_headers = build_hmac_headers("kid-2", 30, "nonce-2", timestamp, "deadbeef");
+        let reject = verifier
+            .verify(&bad_headers, body)
+            .await
+            .expect_err("bad signature must reject");
+        assert_eq!(reject.code, "hmac_invalid");
+
+        let payload = build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-2", body);
+        let signature = compute_hmac_signature_hex(b"secret-2", payload.as_slice()).unwrap();
+        let good_headers = build_hmac_headers("kid-2", 30, "nonce-2", timestamp, signature.as_str());
+        verifier
+            .verify(&good_headers, body)
+            .await
+            .expect("nonce must be available after invalid signature");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_keeps_nonce_through_forward_skew_window() {
+        let ttl_sec = 2;
+        let verifier = AuthVerifier::new(
+            None,
+            Some("kid-3".to_string()),
+            Some("secret-3".to_string()),
+            ttl_sec,
+        );
+        let body = br#"{"action":"simulate"}"#;
+        let timestamp = Utc::now().timestamp().saturating_add(ttl_sec as i64);
+        let payload = build_hmac_payload_bytes(
+            timestamp.to_string().as_str(),
+            ttl_sec.to_string().as_str(),
+            "nonce-3",
+            body,
+        );
+        let signature = compute_hmac_signature_hex(b"secret-3", payload.as_slice()).unwrap();
+        let headers = build_hmac_headers("kid-3", ttl_sec, "nonce-3", timestamp, signature.as_str());
+
+        verifier.verify(&headers, body).await.expect("first verify must pass");
+        sleep(Duration::from_millis(3_100)).await;
+
+        let reject = verifier
+            .verify(&headers, body)
+            .await
+            .expect_err("replay within accepted skew window must reject");
+        assert_eq!(reject.code, "hmac_replay");
+    }
 }

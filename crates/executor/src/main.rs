@@ -308,7 +308,7 @@ mod tests {
             interval_ms: 250,
             strict: false,
         };
-        let ttl = min_claim_ttl_sec_for_submit_path(2_000, &route_backends, Some(&verify));
+        let ttl = min_claim_ttl_sec_for_submit_path(2_000, 7_000, &route_backends, Some(&verify));
         assert_eq!(ttl, 22);
     }
 
@@ -330,8 +330,30 @@ mod tests {
                 send_rpc_fallback_auth_token: None,
             },
         );
-        let ttl = min_claim_ttl_sec_for_submit_path(100, &route_backends, None);
+        let ttl = min_claim_ttl_sec_for_submit_path(100, 1_000, &route_backends, None);
         assert_eq!(ttl, 2);
+    }
+
+    #[test]
+    fn min_claim_ttl_sec_for_submit_path_respects_submit_total_budget_floor() {
+        let mut route_backends = HashMap::new();
+        route_backends.insert(
+            "rpc".to_string(),
+            RouteBackend {
+                submit_url: "https://submit.primary".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "https://simulate.primary".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let ttl = min_claim_ttl_sec_for_submit_path(1_000, 60_000, &route_backends, None);
+        assert_eq!(ttl, 61);
     }
 
     #[test]
@@ -1239,6 +1261,57 @@ mod tests {
         );
         let _ = upstream_handle.join();
         let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_request_id_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _) = test_signed_tx_base64_with_signature([35u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","request_id":"request-mismatch-1"}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-request-id-mismatch-1",
+            "client_order_id": "client-order-request-id-mismatch-1",
+            "request_id": "request-expected-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("request_id mismatch must reject before send RPC");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_request_id_mismatch");
+        let _ = upstream_handle.join();
     }
 
     #[tokio::test]

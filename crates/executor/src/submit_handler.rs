@@ -155,6 +155,13 @@ pub(crate) async fn handle_submit(
     )
     .map_err(map_submit_response_validation_error_to_reject)?;
 
+    validate_submit_response_request_identity(
+        &backend_response,
+        request.client_order_id.as_str(),
+        request.request_id.as_str(),
+    )
+    .map_err(map_submit_response_validation_error_to_reject)?;
+
     let (tx_signature, submit_transport) =
         match extract_submit_transport_artifact(&backend_response)
             .map_err(map_submit_transport_artifact_error_to_reject)?
@@ -179,13 +186,6 @@ pub(crate) async fn handle_submit(
         Some(&submit_deadline),
     )
     .await?;
-
-    validate_submit_response_request_identity(
-        &backend_response,
-        request.client_order_id.as_str(),
-        request.request_id.as_str(),
-    )
-    .map_err(map_submit_response_validation_error_to_reject)?;
 
     let submitted_at = resolve_submit_response_submitted_at(&backend_response, Utc::now())
         .map_err(map_submit_response_validation_error_to_reject)?;

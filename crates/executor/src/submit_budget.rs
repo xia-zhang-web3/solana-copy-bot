@@ -10,6 +10,7 @@ const CLAIM_TTL_SAFETY_PADDING_MS: u64 = 1_000;
 
 pub(crate) fn min_claim_ttl_sec_for_submit_path(
     request_timeout_ms: u64,
+    submit_total_budget_ms: u64,
     route_backends: &HashMap<String, RouteBackend>,
     submit_signature_verify: Option<&SubmitSignatureVerifyConfig>,
 ) -> u64 {
@@ -44,10 +45,14 @@ pub(crate) fn min_claim_ttl_sec_for_submit_path(
         .saturating_add(send_rpc_hops)
         .saturating_add(verify_hops)
         .max(1);
-    let budget_ms = effective_request_timeout_ms
+    let hop_budget_ms = effective_request_timeout_ms
         .saturating_mul(total_hops)
         .saturating_add(verify_wait_ms)
         .saturating_add(CLAIM_TTL_SAFETY_PADDING_MS);
+    let submit_budget_floor_ms = submit_total_budget_ms
+        .max(effective_request_timeout_ms)
+        .saturating_add(CLAIM_TTL_SAFETY_PADDING_MS);
+    let budget_ms = hop_budget_ms.max(submit_budget_floor_ms);
     (budget_ms.saturating_add(999) / 1000).max(1)
 }
 
