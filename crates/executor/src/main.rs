@@ -74,6 +74,10 @@ use crate::healthz_endpoint::healthz;
 use crate::idempotency::SubmitIdempotencyStore;
 use crate::idempotency_cleanup_worker::spawn_response_cleanup_worker;
 #[cfg(test)]
+use crate::idempotency::{
+    DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+};
+#[cfg(test)]
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
 use crate::request_endpoints::simulate;
 use crate::request_endpoints::submit;
@@ -163,6 +167,8 @@ struct ExecutorConfig {
     idempotency_db_path: String,
     idempotency_claim_ttl_sec: u64,
     idempotency_response_retention_sec: u64,
+    idempotency_response_cleanup_batch_size: u64,
+    idempotency_response_cleanup_max_batches_per_run: u64,
     max_notional_sol: f64,
     allow_nonzero_tip: bool,
     submit_signature_verify: Option<SubmitSignatureVerifyConfig>,
@@ -226,6 +232,8 @@ async fn main() -> Result<()> {
         idempotency_db_path = %state.config.idempotency_db_path,
         idempotency_claim_ttl_sec = state.config.idempotency_claim_ttl_sec,
         idempotency_response_retention_sec = state.config.idempotency_response_retention_sec,
+        idempotency_response_cleanup_batch_size = state.config.idempotency_response_cleanup_batch_size,
+        idempotency_response_cleanup_max_batches_per_run = state.config.idempotency_response_cleanup_max_batches_per_run,
         submit_total_budget_ms = state.config.submit_total_budget_ms,
         submit_signature_verify_enabled = state.config.submit_signature_verify.is_some(),
         submit_signature_verify_strict = state
@@ -3552,6 +3560,9 @@ mod tests {
             idempotency_db_path: ":memory:".to_string(),
             idempotency_claim_ttl_sec: DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC,
             idempotency_response_retention_sec: DEFAULT_IDEMPOTENCY_RESPONSE_RETENTION_SEC,
+            idempotency_response_cleanup_batch_size: DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+            idempotency_response_cleanup_max_batches_per_run:
+                DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
             max_notional_sol: 10.0,
             allow_nonzero_tip: true,
             submit_signature_verify: None,

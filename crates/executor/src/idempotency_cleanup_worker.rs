@@ -11,6 +11,9 @@ const MAX_RESPONSE_CLEANUP_WORKER_TICK_SEC: u64 = 300;
 
 pub(crate) fn spawn_response_cleanup_worker(state: AppState) -> JoinHandle<()> {
     let response_retention_sec = state.config.idempotency_response_retention_sec;
+    let response_cleanup_batch_size = state.config.idempotency_response_cleanup_batch_size;
+    let response_cleanup_max_batches_per_run =
+        state.config.idempotency_response_cleanup_max_batches_per_run;
     let tick_sec = response_cleanup_worker_tick_sec(response_retention_sec);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval_at(
@@ -22,11 +25,17 @@ pub(crate) fn spawn_response_cleanup_worker(state: AppState) -> JoinHandle<()> {
             ticker.tick().await;
             if let Err(error) = state
                 .idempotency
-                .run_response_cleanup_if_due(response_retention_sec)
+                .run_response_cleanup_if_due(
+                    response_retention_sec,
+                    response_cleanup_batch_size,
+                    response_cleanup_max_batches_per_run,
+                )
             {
                 warn!(
                     error = %error,
                     response_retention_sec,
+                    response_cleanup_batch_size,
+                    response_cleanup_max_batches_per_run,
                     "background idempotency response cleanup tick failed"
                 );
             }

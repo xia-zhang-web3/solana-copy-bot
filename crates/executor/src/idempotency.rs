@@ -17,8 +17,8 @@ const META_KEY_CLAIM_CLEANUP_LAST_UNIX: &str = "claim_cleanup_last_unix";
 const MIN_RESPONSE_CLEANUP_INTERVAL_SEC: i64 = 60;
 const MAX_RESPONSE_CLEANUP_INTERVAL_SEC: i64 = 3_600;
 const META_KEY_RESPONSE_CLEANUP_LAST_UNIX: &str = "response_cleanup_last_unix";
-const RESPONSE_CLEANUP_DELETE_BATCH_SIZE: i64 = 500;
-const RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: usize = 4;
+pub(crate) const DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE: u64 = 500;
+pub(crate) const DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: u64 = 4;
 
 pub(crate) struct SubmitIdempotencyStore {
     conn: Mutex<Connection>,
@@ -201,11 +201,24 @@ impl SubmitIdempotencyStore {
         Ok(SubmitClaimOutcome::InFlight)
     }
 
-    pub(crate) fn run_response_cleanup_if_due(&self, response_retention_sec: u64) -> Result<()> {
+    pub(crate) fn run_response_cleanup_if_due(
+        &self,
+        response_retention_sec: u64,
+        response_cleanup_batch_size: u64,
+        response_cleanup_max_batches_per_run: u64,
+    ) -> Result<()> {
         let now_unix = Utc::now().timestamp();
         let response_retention = i64::try_from(response_retention_sec)
             .map_err(|_| anyhow::anyhow!("idempotency response retention exceeds i64 range"))?
             .max(1);
+        let response_cleanup_batch_size_i64 =
+            i64::try_from(response_cleanup_batch_size).map_err(|_| {
+                anyhow::anyhow!("idempotency response cleanup batch_size exceeds i64 range")
+            })?;
+        let response_cleanup_max_batches_usize = usize::try_from(
+            response_cleanup_max_batches_per_run,
+        )
+        .map_err(|_| anyhow::anyhow!("idempotency response cleanup max_batches exceeds usize range"))?;
         let response_cleanup_interval = response_cleanup_interval_sec(response_retention);
         let last_response_cleanup_unix = self.last_response_cleanup_unix.load(Ordering::Relaxed);
         if !should_run_claim_cleanup(
@@ -238,8 +251,8 @@ impl SubmitIdempotencyStore {
             let cleanup_completed = delete_stale_cached_responses_in_batches(
                 &conn,
                 stale_response_before_rfc3339.as_str(),
-                RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
-                RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+                response_cleanup_batch_size_i64,
+                response_cleanup_max_batches_usize,
             )?;
             if cleanup_completed {
                 store_global_response_cleanup_last_unix(&conn, now_unix)?;
@@ -477,9 +490,8 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
 mod tests {
     use super::{
         claim_cleanup_interval_sec, response_cleanup_interval_sec, should_run_claim_cleanup,
-        META_KEY_RESPONSE_CLEANUP_LAST_UNIX,
-        SubmitClaimOutcome, SubmitIdempotencyStore, RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
-        RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+        DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+        META_KEY_RESPONSE_CLEANUP_LAST_UNIX, SubmitClaimOutcome, SubmitIdempotencyStore,
     };
     use chrono::{Duration, Utc};
     use rusqlite::{params, OptionalExtension};
@@ -874,7 +886,11 @@ mod tests {
             .expect("insert stale cached response");
         }
         store
-            .run_response_cleanup_if_due(60)
+            .run_response_cleanup_if_due(
+                60,
+                DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+                DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+            )
             .expect("run response cleanup");
         let stale = store
             .load_submit_response("order-stale-response-1")
@@ -930,9 +946,11 @@ mod tests {
         let store =
             SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
         let stale_updated = (Utc::now() - Duration::hours(3)).to_rfc3339();
-        let total_rows_to_insert = RESPONSE_CLEANUP_DELETE_BATCH_SIZE
-            * i64::try_from(RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).unwrap_or(0)
-            + 3;
+        let cleanup_batch_size =
+            i64::try_from(DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE).expect("batch size");
+        let cleanup_max_batches =
+            i64::try_from(DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).expect("max batches");
+        let total_rows_to_insert = cleanup_batch_size * cleanup_max_batches + 3;
         {
             let conn = store.conn.lock().expect("lock conn");
             for index in 0..total_rows_to_insert {
@@ -959,18 +977,24 @@ mod tests {
         assert_eq!(response_row_count(&store), total_rows_to_insert);
 
         store
-            .run_response_cleanup_if_due(60)
+            .run_response_cleanup_if_due(
+                60,
+                DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+                DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+            )
             .expect("run bounded response cleanup");
 
-        let expected_remaining = total_rows_to_insert
-            - (RESPONSE_CLEANUP_DELETE_BATCH_SIZE
-                * i64::try_from(RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).unwrap_or(0));
+        let expected_remaining = total_rows_to_insert - (cleanup_batch_size * cleanup_max_batches);
         assert_eq!(response_row_count(&store), expected_remaining);
 
         // Marker must not advance when cleanup hit per-run batch cap, so a subsequent run can
         // continue draining backlog immediately.
         store
-            .run_response_cleanup_if_due(60)
+            .run_response_cleanup_if_due(
+                60,
+                DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+                DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+            )
             .expect("run bounded response cleanup second pass");
         assert_eq!(response_row_count(&store), 0);
         let _ = std::fs::remove_file(db_path);
@@ -982,8 +1006,11 @@ mod tests {
         let store =
             SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
         let stale_updated = (Utc::now() - Duration::hours(3)).to_rfc3339();
-        let total_rows_to_insert = RESPONSE_CLEANUP_DELETE_BATCH_SIZE
-            * i64::try_from(RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).unwrap_or(0);
+        let cleanup_batch_size =
+            i64::try_from(DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE).expect("batch size");
+        let cleanup_max_batches =
+            i64::try_from(DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).expect("max batches");
+        let total_rows_to_insert = cleanup_batch_size * cleanup_max_batches;
         {
             let conn = store.conn.lock().expect("lock conn");
             for index in 0..total_rows_to_insert {
@@ -1014,7 +1041,11 @@ mod tests {
         );
 
         store
-            .run_response_cleanup_if_due(60)
+            .run_response_cleanup_if_due(
+                60,
+                DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+                DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+            )
             .expect("run response cleanup");
 
         assert_eq!(response_row_count(&store), 0);

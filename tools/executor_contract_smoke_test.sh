@@ -93,6 +93,7 @@ contract_guard_tests=(
   "common_contract_validation_rejects_invalid_side"
   "contract_version_token_validation"
   "parse_contract_version_rejects_invalid_value"
+  "validate_response_cleanup_tuning_rejects_out_of_range_values"
   "parse_route_allowlist_rejects_unknown_route"
   "route_allowlist_parse_rejects_unknown_route"
   "key_validation_accepts_pubkey_and_signature_shapes"

@@ -21,6 +21,12 @@ use crate::{
     DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC, DEFAULT_IDEMPOTENCY_RESPONSE_RETENTION_SEC,
     DEFAULT_MAX_NOTIONAL_SOL, DEFAULT_TIMEOUT_MS,
 };
+use crate::idempotency::{
+    DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+};
+
+const MAX_RESPONSE_CLEANUP_BATCH_SIZE: u64 = 1_000_000;
+const MAX_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: u64 = 10_000;
 
 impl ExecutorConfig {
     pub(crate) fn from_env() -> Result<Self> {
@@ -342,6 +348,28 @@ impl ExecutorConfig {
             ));
         }
         validate_response_retention_cutoff(idempotency_response_retention_sec)?;
+        let idempotency_response_cleanup_batch_size = parse_u64_env(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE",
+            DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+        )?;
+        if idempotency_response_cleanup_batch_size == 0 {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE must be > 0"
+            ));
+        }
+        let idempotency_response_cleanup_max_batches_per_run = parse_u64_env(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN",
+            DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+        )?;
+        if idempotency_response_cleanup_max_batches_per_run == 0 {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN must be > 0"
+            ));
+        }
+        validate_response_cleanup_tuning(
+            idempotency_response_cleanup_batch_size,
+            idempotency_response_cleanup_max_batches_per_run,
+        )?;
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -387,6 +415,8 @@ impl ExecutorConfig {
             idempotency_db_path,
             idempotency_claim_ttl_sec,
             idempotency_response_retention_sec,
+            idempotency_response_cleanup_batch_size,
+            idempotency_response_cleanup_max_batches_per_run,
             max_notional_sol,
             allow_nonzero_tip,
             submit_signature_verify,
@@ -409,9 +439,39 @@ fn validate_response_retention_cutoff(idempotency_response_retention_sec: u64) -
     Ok(())
 }
 
+fn validate_response_cleanup_tuning(
+    idempotency_response_cleanup_batch_size: u64,
+    idempotency_response_cleanup_max_batches_per_run: u64,
+) -> Result<()> {
+    if idempotency_response_cleanup_batch_size > MAX_RESPONSE_CLEANUP_BATCH_SIZE {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE must be <= {}",
+            MAX_RESPONSE_CLEANUP_BATCH_SIZE
+        ));
+    }
+    i64::try_from(idempotency_response_cleanup_batch_size).map_err(|_| {
+        anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE must fit into signed 64-bit range"
+        )
+    })?;
+    if idempotency_response_cleanup_max_batches_per_run > MAX_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN
+    {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN must be <= {}",
+            MAX_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN
+        ));
+    }
+    usize::try_from(idempotency_response_cleanup_max_batches_per_run).map_err(|_| {
+        anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN must fit into platform usize range"
+        )
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_response_retention_cutoff;
+    use super::{validate_response_cleanup_tuning, validate_response_retention_cutoff};
 
     #[test]
     fn validate_response_retention_cutoff_accepts_default_range() {
@@ -427,6 +487,33 @@ mod tests {
                 .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC"),
             "unexpected error: {}",
             error
+        );
+    }
+
+    #[test]
+    fn validate_response_cleanup_tuning_accepts_default_range() {
+        validate_response_cleanup_tuning(500, 4).expect("default cleanup tuning should be valid");
+    }
+
+    #[test]
+    fn validate_response_cleanup_tuning_rejects_out_of_range_values() {
+        let batch_error = validate_response_cleanup_tuning(u64::MAX, 4).expect_err("must reject");
+        assert!(
+            batch_error
+                .to_string()
+                .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE"),
+            "unexpected error: {}",
+            batch_error
+        );
+
+        let batch_count_error =
+            validate_response_cleanup_tuning(500, u64::MAX).expect_err("must reject");
+        assert!(
+            batch_count_error
+                .to_string()
+                .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN"),
+            "unexpected error: {}",
+            batch_count_error
         );
     }
 }
