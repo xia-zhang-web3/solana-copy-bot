@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::HashSet;
 use tracing::debug;
 
 use crate::route_adapters::RouteAdapter;
@@ -65,6 +66,19 @@ fn validate_route_executor_feature_gate(
     Ok(())
 }
 
+fn validate_route_executor_allowlist(
+    normalized_route: &str,
+    route_allowlist: &HashSet<String>,
+) -> std::result::Result<(), Reject> {
+    if !route_allowlist.contains(normalized_route) {
+        return Err(Reject::terminal(
+            "route_not_allowed",
+            format!("route={} is not allowed", normalized_route),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_route_executor_action_context(
     action: UpstreamAction,
     submit_context: RouteSubmitExecutionContext,
@@ -109,6 +123,7 @@ pub(crate) async fn execute_route_action(
                 format!("route={} is not supported by route executor", route),
             )
         })?;
+    validate_route_executor_allowlist(normalized_route.as_str(), &state.config.route_allowlist)?;
     validate_route_executor_feature_gate(
         normalized_route.as_str(),
         state.config.submit_fastlane_enabled,
@@ -139,12 +154,14 @@ pub(crate) async fn execute_route_action(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_route_executor_action_context, validate_route_executor_feature_gate,
-        resolve_route_executor_kind, resolve_route_executor_kind_normalized,
+        validate_route_executor_action_context, validate_route_executor_allowlist,
+        validate_route_executor_feature_gate, resolve_route_executor_kind,
+        resolve_route_executor_kind_normalized,
         RouteSubmitExecutionContext, RouteExecutorKind,
     };
     use crate::route_backend::UpstreamAction;
     use crate::tx_build::SubmitInstructionPlan;
+    use std::collections::HashSet;
 
     #[test]
     fn route_executor_resolve_maps_known_routes_case_insensitive() {
@@ -206,6 +223,22 @@ mod tests {
     fn route_executor_feature_gate_allows_fastlane_when_enabled() {
         validate_route_executor_feature_gate("fastlane", true)
             .expect("fastlane should pass when feature enabled");
+    }
+
+    #[test]
+    fn route_executor_allowlist_rejects_route_not_in_allowlist() {
+        let allowlist = HashSet::from([String::from("rpc")]);
+        let reject = validate_route_executor_allowlist("jito", &allowlist)
+            .expect_err("route not in allowlist must be rejected");
+        assert_eq!(reject.code, "route_not_allowed");
+        assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn route_executor_allowlist_accepts_route_in_allowlist() {
+        let allowlist = HashSet::from([String::from("rpc"), String::from("jito")]);
+        validate_route_executor_allowlist("jito", &allowlist)
+            .expect("allowlisted route should pass");
     }
 
     #[test]
