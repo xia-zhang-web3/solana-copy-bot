@@ -1,9 +1,9 @@
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
 use crate::route_adapters::RouteAdapter;
-use crate::route_backend::UpstreamAction;
+use crate::route_backend::{RouteBackend, UpstreamAction};
 use crate::route_normalization::normalize_route;
 use crate::route_policy::{classify_normalized_route, requires_submit_fastlane_enabled, RouteKind};
 use crate::submit_deadline::SubmitDeadline;
@@ -79,6 +79,19 @@ fn validate_route_executor_allowlist(
     Ok(())
 }
 
+fn validate_route_executor_backend_configured(
+    normalized_route: &str,
+    route_backends: &HashMap<String, RouteBackend>,
+) -> std::result::Result<(), Reject> {
+    if !route_backends.contains_key(normalized_route) {
+        return Err(Reject::terminal(
+            "route_not_allowed",
+            format!("route={} not configured", normalized_route),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_route_executor_action_context(
     action: UpstreamAction,
     submit_context: RouteSubmitExecutionContext,
@@ -124,6 +137,7 @@ pub(crate) async fn execute_route_action(
             )
         })?;
     validate_route_executor_allowlist(normalized_route.as_str(), &state.config.route_allowlist)?;
+    validate_route_executor_backend_configured(normalized_route.as_str(), &state.config.route_backends)?;
     validate_route_executor_feature_gate(
         normalized_route.as_str(),
         state.config.submit_fastlane_enabled,
@@ -155,13 +169,14 @@ pub(crate) async fn execute_route_action(
 mod tests {
     use super::{
         validate_route_executor_action_context, validate_route_executor_allowlist,
+        validate_route_executor_backend_configured,
         validate_route_executor_feature_gate, resolve_route_executor_kind,
         resolve_route_executor_kind_normalized,
         RouteSubmitExecutionContext, RouteExecutorKind,
     };
-    use crate::route_backend::UpstreamAction;
+    use crate::route_backend::{RouteBackend, UpstreamAction};
     use crate::tx_build::SubmitInstructionPlan;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn route_executor_resolve_maps_known_routes_case_insensitive() {
@@ -239,6 +254,50 @@ mod tests {
         let allowlist = HashSet::from([String::from("rpc"), String::from("jito")]);
         validate_route_executor_allowlist("jito", &allowlist)
             .expect("allowlisted route should pass");
+    }
+
+    #[test]
+    fn route_executor_backend_configured_rejects_missing_backend() {
+        let backends = HashMap::from([(
+            String::from("rpc"),
+            RouteBackend {
+                submit_url: "https://submit.primary".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "https://simulate.primary".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        )]);
+        let reject = validate_route_executor_backend_configured("jito", &backends)
+            .expect_err("missing route backend must be rejected");
+        assert_eq!(reject.code, "route_not_allowed");
+        assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn route_executor_backend_configured_accepts_present_backend() {
+        let backends = HashMap::from([(
+            String::from("rpc"),
+            RouteBackend {
+                submit_url: "https://submit.primary".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "https://simulate.primary".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        )]);
+        validate_route_executor_backend_configured("rpc", &backends)
+            .expect("present route backend should pass");
     }
 
     #[test]
