@@ -436,6 +436,30 @@ fn validate_required_payload_contract_version_field(
     Ok(())
 }
 
+fn validate_optional_payload_non_empty_string_field(
+    payload: &serde_json::Map<String, Value>,
+    action_label: &str,
+    field_name: &'static str,
+) -> std::result::Result<(), Reject> {
+    let Some(field_value) = payload.get(field_name) else {
+        return Ok(());
+    };
+    let field_raw = field_value.as_str().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload {field_name} must be string when present"),
+        )
+    })?;
+    if field_raw.trim().is_empty() {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload {field_name} must be non-empty when present"),
+        ));
+    }
+
+    Ok(())
+}
+
 fn validate_submit_payload_for_route(
     raw_body: &[u8],
     expected_route: &str,
@@ -448,6 +472,9 @@ fn validate_submit_payload_for_route(
         "submit",
         expected_contract_version,
     )?;
+    validate_optional_payload_non_empty_string_field(&payload, "submit", "request_id")?;
+    validate_optional_payload_non_empty_string_field(&payload, "submit", "signal_id")?;
+    validate_optional_payload_non_empty_string_field(&payload, "submit", "client_order_id")?;
     Ok(payload)
 }
 
@@ -463,6 +490,8 @@ fn validate_simulate_payload_for_route(
         "simulate",
         expected_contract_version,
     )?;
+    validate_optional_payload_non_empty_string_field(&payload, "simulate", "request_id")?;
+    validate_optional_payload_non_empty_string_field(&payload, "simulate", "signal_id")?;
     Ok(payload)
 }
 
@@ -655,6 +684,24 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_empty_client_order_id_when_present() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","client_order_id":" "}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+            .expect_err("submit empty client_order_id must reject when present");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("client_order_id must be non-empty"));
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_non_string_request_id_when_present() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","request_id":123}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+            .expect_err("submit non-string request_id must reject when present");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("request_id must be string"));
+    }
+
+    #[test]
     fn validate_simulate_payload_for_route_rejects_mismatched_route() {
         let body = br#"{"route":"jito","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
         let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
@@ -748,5 +795,23 @@ mod tests {
             .expect_err("simulate contract_version mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("contract_version mismatch"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_empty_signal_id_when_present() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","signal_id":" "}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+            .expect_err("simulate empty signal_id must reject when present");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("signal_id must be non-empty"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_non_string_request_id_when_present() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","request_id":123}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+            .expect_err("simulate non-string request_id must reject when present");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("request_id must be string"));
     }
 }
