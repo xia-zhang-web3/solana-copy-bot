@@ -9,6 +9,7 @@ pub(crate) enum SubmitTransportArtifact {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SubmitTransportArtifactError {
+    InvalidSubmitArtifactType { field_name: String },
     InvalidUpstreamSignature { error: String },
     ConflictingSubmitArtifacts,
     MissingSubmitArtifact,
@@ -17,34 +18,50 @@ pub(crate) enum SubmitTransportArtifactError {
 pub(crate) fn extract_submit_transport_artifact(
     backend_response: &Value,
 ) -> Result<SubmitTransportArtifact, SubmitTransportArtifactError> {
-    let upstream_tx_signature = backend_response
-        .get("tx_signature")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let signed_tx_base64 = backend_response
-        .get("signed_tx_base64")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let upstream_tx_signature =
+        parse_optional_non_empty_submit_transport_field(backend_response, "tx_signature")?;
+    let signed_tx_base64 =
+        parse_optional_non_empty_submit_transport_field(backend_response, "signed_tx_base64")?;
 
     if upstream_tx_signature.is_some() && signed_tx_base64.is_some() {
         return Err(SubmitTransportArtifactError::ConflictingSubmitArtifacts);
     }
 
     if let Some(value) = upstream_tx_signature {
-        validate_signature_like(value).map_err(|error| {
+        validate_signature_like(value.as_str()).map_err(|error| {
             SubmitTransportArtifactError::InvalidUpstreamSignature {
                 error: error.to_string(),
             }
         })?;
-        return Ok(SubmitTransportArtifact::UpstreamSignature(value.to_string()));
+        return Ok(SubmitTransportArtifact::UpstreamSignature(value));
     }
     if let Some(value) = signed_tx_base64 {
         return Ok(SubmitTransportArtifact::SignedTransactionBase64(value.to_string()));
     }
 
     Err(SubmitTransportArtifactError::MissingSubmitArtifact)
+}
+
+fn parse_optional_non_empty_submit_transport_field(
+    backend_response: &Value,
+    field_name: &str,
+) -> Result<Option<String>, SubmitTransportArtifactError> {
+    let Some(field_value) = backend_response.get(field_name) else {
+        return Ok(None);
+    };
+    if field_value.is_null() {
+        return Ok(None);
+    }
+    let Some(raw_value) = field_value.as_str() else {
+        return Err(SubmitTransportArtifactError::InvalidSubmitArtifactType {
+            field_name: field_name.to_string(),
+        });
+    };
+    let normalized = raw_value.trim();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(normalized.to_string()))
 }
 
 #[cfg(test)]
@@ -97,5 +114,31 @@ mod tests {
         let body = json!({});
         let error = extract_submit_transport_artifact(&body).expect_err("must reject");
         assert_eq!(error, SubmitTransportArtifactError::MissingSubmitArtifact);
+    }
+
+    #[test]
+    fn submit_transport_extract_rejects_non_string_tx_signature_type() {
+        let body = json!({
+            "tx_signature": 123,
+        });
+        let error = extract_submit_transport_artifact(&body).expect_err("must reject");
+        assert!(matches!(
+            error,
+            SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name }
+            if field_name == "tx_signature"
+        ));
+    }
+
+    #[test]
+    fn submit_transport_extract_rejects_non_string_signed_tx_base64_type() {
+        let body = json!({
+            "signed_tx_base64": 123,
+        });
+        let error = extract_submit_transport_artifact(&body).expect_err("must reject");
+        assert!(matches!(
+            error,
+            SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name }
+            if field_name == "signed_tx_base64"
+        ));
     }
 }

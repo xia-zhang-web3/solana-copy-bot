@@ -231,6 +231,12 @@ pub(crate) fn map_submit_transport_artifact_error_to_reject(
     error: SubmitTransportArtifactError,
 ) -> Reject {
     match error {
+        SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name } => {
+            Reject::retryable(
+                "submit_adapter_invalid_response",
+                format!("upstream {} must be string when present", field_name),
+            )
+        }
         SubmitTransportArtifactError::InvalidUpstreamSignature { error } => Reject::retryable(
             "submit_adapter_invalid_response",
             format!(
