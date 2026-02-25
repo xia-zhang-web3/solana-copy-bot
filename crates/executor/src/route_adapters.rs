@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use crate::route_backend::UpstreamAction;
-use crate::route_executor::RouteExecutorKind;
+use crate::route_executor::{RouteActionPayloadExpectations, RouteExecutorKind};
 use crate::route_normalization::normalize_route;
 use crate::submit_deadline::SubmitDeadline;
 use crate::upstream_forward::forward_to_upstream;
@@ -53,26 +53,55 @@ impl RouteAdapter {
         action: UpstreamAction,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
         match self {
             Self::Paper(adapter) => {
                 adapter
-                    .execute_action(state, route, action, raw_body, submit_deadline)
+                    .execute_action(
+                        state,
+                        route,
+                        action,
+                        raw_body,
+                        submit_deadline,
+                        payload_expectations,
+                    )
                     .await
             }
             Self::Rpc(adapter) => {
                 adapter
-                    .execute_action(state, route, action, raw_body, submit_deadline)
+                    .execute_action(
+                        state,
+                        route,
+                        action,
+                        raw_body,
+                        submit_deadline,
+                        payload_expectations,
+                    )
                     .await
             }
             Self::Jito(adapter) => {
                 adapter
-                    .execute_action(state, route, action, raw_body, submit_deadline)
+                    .execute_action(
+                        state,
+                        route,
+                        action,
+                        raw_body,
+                        submit_deadline,
+                        payload_expectations,
+                    )
                     .await
             }
             Self::Fastlane(adapter) => {
                 adapter
-                    .execute_action(state, route, action, raw_body, submit_deadline)
+                    .execute_action(
+                        state,
+                        route,
+                        action,
+                        raw_body,
+                        submit_deadline,
+                        payload_expectations,
+                    )
                     .await
             }
         }
@@ -87,10 +116,17 @@ impl PaperRouteExecutor {
         action: UpstreamAction,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
         match action {
-            UpstreamAction::Simulate => self.simulate(state, route, raw_body, submit_deadline).await,
-            UpstreamAction::Submit => self.submit(state, route, raw_body, submit_deadline).await,
+            UpstreamAction::Simulate => {
+                self.simulate(state, route, raw_body, submit_deadline, payload_expectations)
+                    .await
+            }
+            UpstreamAction::Submit => {
+                self.submit(state, route, raw_body, submit_deadline, payload_expectations)
+                    .await
+            }
         }
     }
 
@@ -100,8 +136,15 @@ impl PaperRouteExecutor {
         route: &str,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_simulate_payload_for_route(raw_body, route, state.config.contract_version.as_str())?;
+        validate_simulate_payload_for_route(
+            raw_body,
+            route,
+            state.config.contract_version.as_str(),
+            payload_expectations.request_id,
+            payload_expectations.signal_id,
+        )?;
         forward_to_upstream(
             state,
             route,
@@ -118,8 +161,16 @@ impl PaperRouteExecutor {
         route: &str,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_submit_payload_for_route(raw_body, route, state.config.contract_version.as_str())?;
+        validate_submit_payload_for_route(
+            raw_body,
+            route,
+            state.config.contract_version.as_str(),
+            payload_expectations.request_id,
+            payload_expectations.signal_id,
+            payload_expectations.client_order_id,
+        )?;
         forward_to_upstream(
             state,
             route,
@@ -139,10 +190,17 @@ impl RpcRouteExecutor {
         action: UpstreamAction,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
         match action {
-            UpstreamAction::Simulate => self.simulate(state, route, raw_body, submit_deadline).await,
-            UpstreamAction::Submit => self.submit(state, route, raw_body, submit_deadline).await,
+            UpstreamAction::Simulate => {
+                self.simulate(state, route, raw_body, submit_deadline, payload_expectations)
+                    .await
+            }
+            UpstreamAction::Submit => {
+                self.submit(state, route, raw_body, submit_deadline, payload_expectations)
+                    .await
+            }
         }
     }
 
@@ -152,8 +210,15 @@ impl RpcRouteExecutor {
         route: &str,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_simulate_payload_for_route(raw_body, route, state.config.contract_version.as_str())?;
+        validate_simulate_payload_for_route(
+            raw_body,
+            route,
+            state.config.contract_version.as_str(),
+            payload_expectations.request_id,
+            payload_expectations.signal_id,
+        )?;
         forward_to_upstream(
             state,
             route,
@@ -170,8 +235,16 @@ impl RpcRouteExecutor {
         route: &str,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_rpc_submit_tip_payload(raw_body, route, state.config.contract_version.as_str())?;
+        validate_rpc_submit_tip_payload(
+            raw_body,
+            route,
+            state.config.contract_version.as_str(),
+            payload_expectations.request_id,
+            payload_expectations.signal_id,
+            payload_expectations.client_order_id,
+        )?;
         forward_to_upstream(
             state,
             route,
@@ -191,10 +264,17 @@ impl JitoRouteExecutor {
         action: UpstreamAction,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
         match action {
-            UpstreamAction::Simulate => self.simulate(state, route, raw_body, submit_deadline).await,
-            UpstreamAction::Submit => self.submit(state, route, raw_body, submit_deadline).await,
+            UpstreamAction::Simulate => {
+                self.simulate(state, route, raw_body, submit_deadline, payload_expectations)
+                    .await
+            }
+            UpstreamAction::Submit => {
+                self.submit(state, route, raw_body, submit_deadline, payload_expectations)
+                    .await
+            }
         }
     }
 
@@ -204,8 +284,15 @@ impl JitoRouteExecutor {
         route: &str,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_simulate_payload_for_route(raw_body, route, state.config.contract_version.as_str())?;
+        validate_simulate_payload_for_route(
+            raw_body,
+            route,
+            state.config.contract_version.as_str(),
+            payload_expectations.request_id,
+            payload_expectations.signal_id,
+        )?;
         forward_to_upstream(
             state,
             route,
@@ -222,8 +309,16 @@ impl JitoRouteExecutor {
         route: &str,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_submit_payload_for_route(raw_body, route, state.config.contract_version.as_str())?;
+        validate_submit_payload_for_route(
+            raw_body,
+            route,
+            state.config.contract_version.as_str(),
+            payload_expectations.request_id,
+            payload_expectations.signal_id,
+            payload_expectations.client_order_id,
+        )?;
         forward_to_upstream(
             state,
             route,
@@ -243,10 +338,17 @@ impl FastlaneRouteExecutor {
         action: UpstreamAction,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
         match action {
-            UpstreamAction::Simulate => self.simulate(state, route, raw_body, submit_deadline).await,
-            UpstreamAction::Submit => self.submit(state, route, raw_body, submit_deadline).await,
+            UpstreamAction::Simulate => {
+                self.simulate(state, route, raw_body, submit_deadline, payload_expectations)
+                    .await
+            }
+            UpstreamAction::Submit => {
+                self.submit(state, route, raw_body, submit_deadline, payload_expectations)
+                    .await
+            }
         }
     }
 
@@ -256,8 +358,15 @@ impl FastlaneRouteExecutor {
         route: &str,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_simulate_payload_for_route(raw_body, route, state.config.contract_version.as_str())?;
+        validate_simulate_payload_for_route(
+            raw_body,
+            route,
+            state.config.contract_version.as_str(),
+            payload_expectations.request_id,
+            payload_expectations.signal_id,
+        )?;
         forward_to_upstream(
             state,
             route,
@@ -274,8 +383,16 @@ impl FastlaneRouteExecutor {
         route: &str,
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
+        payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_submit_payload_for_route(raw_body, route, state.config.contract_version.as_str())?;
+        validate_submit_payload_for_route(
+            raw_body,
+            route,
+            state.config.contract_version.as_str(),
+            payload_expectations.request_id,
+            payload_expectations.signal_id,
+            payload_expectations.client_order_id,
+        )?;
         forward_to_upstream(
             state,
             route,
@@ -440,6 +557,7 @@ fn validate_optional_payload_non_empty_string_field(
     payload: &serde_json::Map<String, Value>,
     action_label: &str,
     field_name: &'static str,
+    expected_value: Option<&str>,
 ) -> std::result::Result<(), Reject> {
     let Some(field_value) = payload.get(field_name) else {
         return Ok(());
@@ -456,6 +574,18 @@ fn validate_optional_payload_non_empty_string_field(
             format!("{action_label} payload {field_name} must be non-empty when present"),
         ));
     }
+    if let Some(expected) = expected_value {
+        let expected = expected.trim();
+        if field_raw.trim() != expected {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                format!(
+                    "{action_label} payload {field_name} mismatch at route-adapter boundary expected={expected} got={}",
+                    field_raw.trim()
+                ),
+            ));
+        }
+    }
 
     Ok(())
 }
@@ -464,6 +594,9 @@ fn validate_submit_payload_for_route(
     raw_body: &[u8],
     expected_route: &str,
     expected_contract_version: &str,
+    expected_request_id: Option<&str>,
+    expected_signal_id: Option<&str>,
+    expected_client_order_id: Option<&str>,
 ) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
     let payload = validate_payload_route_for_action(raw_body, expected_route, "submit")?;
     validate_optional_payload_action_field(&payload, "submit", "submit")?;
@@ -472,9 +605,24 @@ fn validate_submit_payload_for_route(
         "submit",
         expected_contract_version,
     )?;
-    validate_optional_payload_non_empty_string_field(&payload, "submit", "request_id")?;
-    validate_optional_payload_non_empty_string_field(&payload, "submit", "signal_id")?;
-    validate_optional_payload_non_empty_string_field(&payload, "submit", "client_order_id")?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "submit",
+        "request_id",
+        expected_request_id,
+    )?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "submit",
+        "signal_id",
+        expected_signal_id,
+    )?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "submit",
+        "client_order_id",
+        expected_client_order_id,
+    )?;
     Ok(payload)
 }
 
@@ -482,6 +630,8 @@ fn validate_simulate_payload_for_route(
     raw_body: &[u8],
     expected_route: &str,
     expected_contract_version: &str,
+    expected_request_id: Option<&str>,
+    expected_signal_id: Option<&str>,
 ) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
     let payload = validate_payload_route_for_action(raw_body, expected_route, "simulate")?;
     validate_required_payload_action_field(&payload, "simulate", "simulate")?;
@@ -490,8 +640,18 @@ fn validate_simulate_payload_for_route(
         "simulate",
         expected_contract_version,
     )?;
-    validate_optional_payload_non_empty_string_field(&payload, "simulate", "request_id")?;
-    validate_optional_payload_non_empty_string_field(&payload, "simulate", "signal_id")?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "simulate",
+        "request_id",
+        expected_request_id,
+    )?;
+    validate_optional_payload_non_empty_string_field(
+        &payload,
+        "simulate",
+        "signal_id",
+        expected_signal_id,
+    )?;
     Ok(payload)
 }
 
@@ -499,9 +659,18 @@ fn validate_rpc_submit_tip_payload(
     raw_body: &[u8],
     expected_route: &str,
     expected_contract_version: &str,
+    expected_request_id: Option<&str>,
+    expected_signal_id: Option<&str>,
+    expected_client_order_id: Option<&str>,
 ) -> std::result::Result<(), Reject> {
-    let payload =
-        validate_submit_payload_for_route(raw_body, expected_route, expected_contract_version)?;
+    let payload = validate_submit_payload_for_route(
+        raw_body,
+        expected_route,
+        expected_contract_version,
+        expected_request_id,
+        expected_signal_id,
+        expected_client_order_id,
+    )?;
     let tip_lamports = match payload.get("tip_lamports") {
         None => 0u64,
         Some(value) if value.is_null() => 0u64,
@@ -556,13 +725,13 @@ mod tests {
     #[test]
     fn validate_rpc_submit_tip_payload_accepts_zero_tip() {
         let body = br#"{"tip_lamports":0,"route":"rpc","contract_version":"v1"}"#;
-        assert!(validate_rpc_submit_tip_payload(body, "rpc", "v1").is_ok());
+        assert!(validate_rpc_submit_tip_payload(body, "rpc", "v1", None, None, None).is_ok());
     }
 
     #[test]
     fn validate_rpc_submit_tip_payload_rejects_nonzero_tip() {
         let body = br#"{"tip_lamports":42,"route":"rpc","contract_version":"v1"}"#;
-        let reject = validate_rpc_submit_tip_payload(body, "rpc", "v1")
+        let reject = validate_rpc_submit_tip_payload(body, "rpc", "v1", None, None, None)
             .expect_err("non-zero rpc tip must be rejected");
         assert_eq!(reject.code, "tip_not_supported");
         assert!(!reject.retryable);
@@ -571,7 +740,7 @@ mod tests {
     #[test]
     fn validate_rpc_submit_tip_payload_rejects_invalid_json() {
         let body = br#"{"tip_lamports":"oops""#;
-        let reject = validate_rpc_submit_tip_payload(body, "rpc", "v1")
+        let reject = validate_rpc_submit_tip_payload(body, "rpc", "v1", None, None, None)
             .expect_err("invalid json must reject");
         assert_eq!(reject.code, "invalid_request_body");
     }
@@ -579,7 +748,7 @@ mod tests {
     #[test]
     fn validate_rpc_submit_tip_payload_rejects_non_object_payload() {
         let body = br#"["rpc"]"#;
-        let reject = validate_rpc_submit_tip_payload(body, "rpc", "v1")
+        let reject = validate_rpc_submit_tip_payload(body, "rpc", "v1", None, None, None)
             .expect_err("non-object payload must reject");
         assert_eq!(reject.code, "invalid_request_body");
     }
@@ -587,7 +756,7 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_mismatched_route() {
         let body = br#"{"route":"jito","tip_lamports":0,"contract_version":"v1"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("route mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("route mismatch"));
@@ -596,13 +765,13 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_accepts_matching_route_case_insensitive() {
         let body = br#"{"route":" RPC ","tip_lamports":0,"contract_version":"v1"}"#;
-        assert!(validate_submit_payload_for_route(body, "rpc", "v1").is_ok());
+        assert!(validate_submit_payload_for_route(body, "rpc", "v1", None, None, None).is_ok());
     }
 
     #[test]
     fn validate_submit_payload_for_route_rejects_missing_route() {
         let body = br#"{"tip_lamports":0,"contract_version":"v1"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("missing route must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing route"));
@@ -611,7 +780,7 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_non_string_route() {
         let body = br#"{"route":123,"tip_lamports":0,"contract_version":"v1"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("non-string route must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("route must be string"));
@@ -620,13 +789,13 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_accepts_missing_action() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
-        assert!(validate_submit_payload_for_route(body, "rpc", "v1").is_ok());
+        assert!(validate_submit_payload_for_route(body, "rpc", "v1", None, None, None).is_ok());
     }
 
     #[test]
     fn validate_submit_payload_for_route_rejects_mismatched_action_when_present() {
         let body = br#"{"route":"rpc","tip_lamports":0,"action":"simulate","contract_version":"v1"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("mismatched submit action must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("action mismatch"));
@@ -635,7 +804,7 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_non_string_action_when_present() {
         let body = br#"{"route":"rpc","tip_lamports":0,"action":123,"contract_version":"v1"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("non-string submit action must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("action must be string"));
@@ -644,13 +813,13 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_accepts_matching_action_case_insensitive_when_present() {
         let body = br#"{"route":"rpc","tip_lamports":0,"action":" SUBMIT ","contract_version":"v1"}"#;
-        assert!(validate_submit_payload_for_route(body, "rpc", "v1").is_ok());
+        assert!(validate_submit_payload_for_route(body, "rpc", "v1", None, None, None).is_ok());
     }
 
     #[test]
     fn validate_submit_payload_for_route_rejects_missing_contract_version() {
         let body = br#"{"route":"rpc","tip_lamports":0}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit missing contract_version must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing contract_version"));
@@ -659,7 +828,7 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_non_string_contract_version() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":123}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit non-string contract_version must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("contract_version must be string"));
@@ -668,7 +837,7 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_empty_contract_version() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":" "}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit empty contract_version must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("contract_version must be non-empty"));
@@ -677,7 +846,7 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_contract_version_mismatch() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v2"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit contract_version mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("contract_version mismatch"));
@@ -686,7 +855,7 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_empty_client_order_id_when_present() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","client_order_id":" "}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit empty client_order_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("client_order_id must be non-empty"));
@@ -695,17 +864,33 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_non_string_request_id_when_present() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","request_id":123}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit non-string request_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("request_id must be string"));
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_request_id_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","request_id":"request-other"}"#;
+        let reject = validate_submit_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            Some("request-expected"),
+            None,
+            None,
+        )
+        .expect_err("submit request_id mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("request_id mismatch"));
+    }
+
+    #[test]
     fn validate_submit_payload_for_route_rejects_empty_signal_id_when_present() {
         let body =
             br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":" "}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1")
+        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit empty signal_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("signal_id must be non-empty"));
@@ -714,7 +899,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_mismatched_route() {
         let body = br#"{"route":"jito","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate route mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("route mismatch"));
@@ -723,13 +908,13 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_accepts_matching_route_case_insensitive() {
         let body = br#"{"route":" RPC ","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
-        assert!(validate_simulate_payload_for_route(body, "rpc", "v1").is_ok());
+        assert!(validate_simulate_payload_for_route(body, "rpc", "v1", None, None).is_ok());
     }
 
     #[test]
     fn validate_simulate_payload_for_route_rejects_missing_route() {
         let body = br#"{"action":"simulate","dry_run":true,"contract_version":"v1"}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate missing route must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing route"));
@@ -738,7 +923,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_non_string_route() {
         let body = br#"{"route":123,"action":"simulate","dry_run":true,"contract_version":"v1"}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate non-string route must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("route must be string"));
@@ -747,7 +932,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_missing_action() {
         let body = br#"{"route":"rpc","dry_run":true,"contract_version":"v1"}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate missing action must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing action"));
@@ -756,7 +941,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_non_string_action() {
         let body = br#"{"route":"rpc","action":123,"dry_run":true,"contract_version":"v1"}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate non-string action must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("action must be string"));
@@ -765,7 +950,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_mismatched_action() {
         let body = br#"{"route":"rpc","action":"submit","dry_run":true,"contract_version":"v1"}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate mismatched action must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("action mismatch"));
@@ -774,7 +959,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_missing_contract_version() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate missing contract_version must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing contract_version"));
@@ -783,7 +968,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_non_string_contract_version() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":123}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate non-string contract_version must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("contract_version must be string"));
@@ -792,7 +977,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_empty_contract_version() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":" "}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate empty contract_version must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("contract_version must be non-empty"));
@@ -801,7 +986,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_contract_version_mismatch() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v2"}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate contract_version mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("contract_version mismatch"));
@@ -810,7 +995,7 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_empty_signal_id_when_present() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","signal_id":" "}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate empty signal_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("signal_id must be non-empty"));
@@ -819,17 +1004,32 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_non_string_request_id_when_present() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","request_id":123}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate non-string request_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("request_id must be string"));
     }
 
     #[test]
+    fn validate_simulate_payload_for_route_rejects_signal_id_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","signal_id":"signal-other"}"#;
+        let reject = validate_simulate_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            None,
+            Some("signal-expected"),
+        )
+        .expect_err("simulate signal_id mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("signal_id mismatch"));
+    }
+
+    #[test]
     fn validate_simulate_payload_for_route_rejects_empty_request_id_when_present() {
         let body =
             br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","request_id":" "}"#;
-        let reject = validate_simulate_payload_for_route(body, "rpc", "v1")
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate empty request_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("request_id must be non-empty"));

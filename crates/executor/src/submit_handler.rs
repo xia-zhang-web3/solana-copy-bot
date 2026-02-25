@@ -16,7 +16,7 @@ use crate::reject_mapping::{
 use crate::request_types::SubmitRequest;
 use crate::request_validation::validate_submit_request_identity;
 use crate::route_backend::UpstreamAction;
-use crate::route_executor::execute_route_action;
+use crate::route_executor::{execute_route_action, RouteActionPayloadExpectations};
 use crate::route_normalization::normalize_route;
 use crate::submit_claim_guard::SubmitClaimGuard;
 use crate::submit_deadline::SubmitDeadline;
@@ -141,6 +141,11 @@ pub(crate) async fn handle_submit(
         UpstreamAction::Submit,
         forward_body.as_slice(),
         Some(&submit_deadline),
+        RouteActionPayloadExpectations {
+            request_id: Some(request.request_id.as_str()),
+            signal_id: Some(request.signal_id.as_str()),
+            client_order_id: Some(request.client_order_id.as_str()),
+        },
     )
     .await?;
     match parse_upstream_outcome(&backend_response, "submit_adapter_rejected") {

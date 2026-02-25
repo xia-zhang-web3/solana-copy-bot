@@ -16,6 +16,13 @@ pub(crate) enum RouteExecutorKind {
     Fastlane,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RouteActionPayloadExpectations<'a> {
+    pub(crate) request_id: Option<&'a str>,
+    pub(crate) signal_id: Option<&'a str>,
+    pub(crate) client_order_id: Option<&'a str>,
+}
+
 impl RouteExecutorKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
@@ -49,6 +56,7 @@ pub(crate) async fn execute_route_action(
     action: UpstreamAction,
     raw_body: &[u8],
     submit_deadline: Option<&SubmitDeadline>,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
 ) -> std::result::Result<Value, Reject> {
     let normalized_route = normalize_route(route);
     let route_executor_kind =
@@ -73,6 +81,7 @@ pub(crate) async fn execute_route_action(
             action,
             raw_body,
             submit_deadline,
+            payload_expectations,
         )
         .await
 }
