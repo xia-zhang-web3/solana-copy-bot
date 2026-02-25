@@ -426,4 +426,22 @@ mod tests {
         let body = br#"{"route":" RPC ","tip_lamports":0}"#;
         assert!(validate_submit_payload_for_route(body, "rpc").is_ok());
     }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_missing_route() {
+        let body = br#"{"tip_lamports":0}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc")
+            .expect_err("missing route must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing route"));
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_non_string_route() {
+        let body = br#"{"route":123,"tip_lamports":0}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc")
+            .expect_err("non-string route must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route must be string"));
+    }
 }
