@@ -8,42 +8,34 @@ use crate::upstream_forward::forward_to_upstream;
 use crate::{AppState, Reject};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PaperRouteExecutor;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RpcRouteExecutor;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct JitoRouteExecutor;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FastlaneRouteExecutor;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteAdapter {
-    Paper(PaperRouteExecutor),
-    Rpc(RpcRouteExecutor),
-    Jito(JitoRouteExecutor),
-    Fastlane(FastlaneRouteExecutor),
+    Paper,
+    Rpc,
+    Jito,
+    Fastlane,
 }
 
 impl RouteAdapter {
     pub(crate) fn from_kind(kind: RouteExecutorKind) -> Self {
         match kind {
-            RouteExecutorKind::Paper => Self::Paper(PaperRouteExecutor),
-            RouteExecutorKind::Rpc => Self::Rpc(RpcRouteExecutor),
-            RouteExecutorKind::Jito => Self::Jito(JitoRouteExecutor),
-            RouteExecutorKind::Fastlane => Self::Fastlane(FastlaneRouteExecutor),
+            RouteExecutorKind::Paper => Self::Paper,
+            RouteExecutorKind::Rpc => Self::Rpc,
+            RouteExecutorKind::Jito => Self::Jito,
+            RouteExecutorKind::Fastlane => Self::Fastlane,
         }
     }
 
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Paper(_) => "paper",
-            Self::Rpc(_) => "rpc",
-            Self::Jito(_) => "jito",
-            Self::Fastlane(_) => "fastlane",
+            Self::Paper => "paper",
+            Self::Rpc => "rpc",
+            Self::Jito => "jito",
+            Self::Fastlane => "fastlane",
         }
+    }
+
+    fn requires_rpc_submit_tip_guard(self) -> bool {
+        matches!(self, Self::Rpc)
     }
 
     pub(crate) async fn execute(
@@ -55,82 +47,19 @@ impl RouteAdapter {
         submit_deadline: Option<&SubmitDeadline>,
         payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        match self {
-            Self::Paper(adapter) => {
-                adapter
-                    .execute_action(
-                        state,
-                        route,
-                        action,
-                        raw_body,
-                        submit_deadline,
-                        payload_expectations,
-                    )
-                    .await
-            }
-            Self::Rpc(adapter) => {
-                adapter
-                    .execute_action(
-                        state,
-                        route,
-                        action,
-                        raw_body,
-                        submit_deadline,
-                        payload_expectations,
-                    )
-                    .await
-            }
-            Self::Jito(adapter) => {
-                adapter
-                    .execute_action(
-                        state,
-                        route,
-                        action,
-                        raw_body,
-                        submit_deadline,
-                        payload_expectations,
-                    )
-                    .await
-            }
-            Self::Fastlane(adapter) => {
-                adapter
-                    .execute_action(
-                        state,
-                        route,
-                        action,
-                        raw_body,
-                        submit_deadline,
-                        payload_expectations,
-                    )
-                    .await
-            }
-        }
-    }
-}
-
-impl PaperRouteExecutor {
-    async fn execute_action(
-        self,
-        state: &AppState,
-        route: &str,
-        action: UpstreamAction,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
         match action {
             UpstreamAction::Simulate => {
-                self.simulate(state, route, raw_body, submit_deadline, payload_expectations)
+                self.execute_simulate(state, route, raw_body, submit_deadline, payload_expectations)
                     .await
             }
             UpstreamAction::Submit => {
-                self.submit(state, route, raw_body, submit_deadline, payload_expectations)
+                self.execute_submit(state, route, raw_body, submit_deadline, payload_expectations)
                     .await
             }
         }
     }
 
-    async fn simulate(
+    async fn execute_simulate(
         self,
         state: &AppState,
         route: &str,
@@ -157,7 +86,7 @@ impl PaperRouteExecutor {
         .await
     }
 
-    async fn submit(
+    async fn execute_submit(
         self,
         state: &AppState,
         route: &str,
@@ -165,250 +94,29 @@ impl PaperRouteExecutor {
         submit_deadline: Option<&SubmitDeadline>,
         payload_expectations: RouteActionPayloadExpectations<'_>,
     ) -> std::result::Result<Value, Reject> {
-        validate_submit_payload_for_route(
-            raw_body,
-            route,
-            state.config.contract_version.as_str(),
-            payload_expectations.request_id,
-            payload_expectations.signal_id,
-            payload_expectations.client_order_id,
-            payload_expectations.side,
-            payload_expectations.token,
-        )?;
-        forward_to_upstream(
-            state,
-            route,
-            UpstreamAction::Submit,
-            raw_body,
-            submit_deadline,
-        )
-        .await
-    }
-}
-
-impl RpcRouteExecutor {
-    async fn execute_action(
-        self,
-        state: &AppState,
-        route: &str,
-        action: UpstreamAction,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        match action {
-            UpstreamAction::Simulate => {
-                self.simulate(state, route, raw_body, submit_deadline, payload_expectations)
-                    .await
-            }
-            UpstreamAction::Submit => {
-                self.submit(state, route, raw_body, submit_deadline, payload_expectations)
-                    .await
-            }
+        if self.requires_rpc_submit_tip_guard() {
+            validate_rpc_submit_tip_payload(
+                raw_body,
+                route,
+                state.config.contract_version.as_str(),
+                payload_expectations.request_id,
+                payload_expectations.signal_id,
+                payload_expectations.client_order_id,
+                payload_expectations.side,
+                payload_expectations.token,
+            )?;
+        } else {
+            validate_submit_payload_for_route(
+                raw_body,
+                route,
+                state.config.contract_version.as_str(),
+                payload_expectations.request_id,
+                payload_expectations.signal_id,
+                payload_expectations.client_order_id,
+                payload_expectations.side,
+                payload_expectations.token,
+            )?;
         }
-    }
-
-    async fn simulate(
-        self,
-        state: &AppState,
-        route: &str,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        validate_simulate_payload_for_route(
-            raw_body,
-            route,
-            state.config.contract_version.as_str(),
-            payload_expectations.request_id,
-            payload_expectations.signal_id,
-            payload_expectations.side,
-            payload_expectations.token,
-        )?;
-        forward_to_upstream(
-            state,
-            route,
-            UpstreamAction::Simulate,
-            raw_body,
-            submit_deadline,
-        )
-        .await
-    }
-
-    async fn submit(
-        self,
-        state: &AppState,
-        route: &str,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        validate_rpc_submit_tip_payload(
-            raw_body,
-            route,
-            state.config.contract_version.as_str(),
-            payload_expectations.request_id,
-            payload_expectations.signal_id,
-            payload_expectations.client_order_id,
-            payload_expectations.side,
-            payload_expectations.token,
-        )?;
-        forward_to_upstream(
-            state,
-            route,
-            UpstreamAction::Submit,
-            raw_body,
-            submit_deadline,
-        )
-        .await
-    }
-}
-
-impl JitoRouteExecutor {
-    async fn execute_action(
-        self,
-        state: &AppState,
-        route: &str,
-        action: UpstreamAction,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        match action {
-            UpstreamAction::Simulate => {
-                self.simulate(state, route, raw_body, submit_deadline, payload_expectations)
-                    .await
-            }
-            UpstreamAction::Submit => {
-                self.submit(state, route, raw_body, submit_deadline, payload_expectations)
-                    .await
-            }
-        }
-    }
-
-    async fn simulate(
-        self,
-        state: &AppState,
-        route: &str,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        validate_simulate_payload_for_route(
-            raw_body,
-            route,
-            state.config.contract_version.as_str(),
-            payload_expectations.request_id,
-            payload_expectations.signal_id,
-            payload_expectations.side,
-            payload_expectations.token,
-        )?;
-        forward_to_upstream(
-            state,
-            route,
-            UpstreamAction::Simulate,
-            raw_body,
-            submit_deadline,
-        )
-        .await
-    }
-
-    async fn submit(
-        self,
-        state: &AppState,
-        route: &str,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        validate_submit_payload_for_route(
-            raw_body,
-            route,
-            state.config.contract_version.as_str(),
-            payload_expectations.request_id,
-            payload_expectations.signal_id,
-            payload_expectations.client_order_id,
-            payload_expectations.side,
-            payload_expectations.token,
-        )?;
-        forward_to_upstream(
-            state,
-            route,
-            UpstreamAction::Submit,
-            raw_body,
-            submit_deadline,
-        )
-        .await
-    }
-}
-
-impl FastlaneRouteExecutor {
-    async fn execute_action(
-        self,
-        state: &AppState,
-        route: &str,
-        action: UpstreamAction,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        match action {
-            UpstreamAction::Simulate => {
-                self.simulate(state, route, raw_body, submit_deadline, payload_expectations)
-                    .await
-            }
-            UpstreamAction::Submit => {
-                self.submit(state, route, raw_body, submit_deadline, payload_expectations)
-                    .await
-            }
-        }
-    }
-
-    async fn simulate(
-        self,
-        state: &AppState,
-        route: &str,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        validate_simulate_payload_for_route(
-            raw_body,
-            route,
-            state.config.contract_version.as_str(),
-            payload_expectations.request_id,
-            payload_expectations.signal_id,
-            payload_expectations.side,
-            payload_expectations.token,
-        )?;
-        forward_to_upstream(
-            state,
-            route,
-            UpstreamAction::Simulate,
-            raw_body,
-            submit_deadline,
-        )
-        .await
-    }
-
-    async fn submit(
-        self,
-        state: &AppState,
-        route: &str,
-        raw_body: &[u8],
-        submit_deadline: Option<&SubmitDeadline>,
-        payload_expectations: RouteActionPayloadExpectations<'_>,
-    ) -> std::result::Result<Value, Reject> {
-        validate_submit_payload_for_route(
-            raw_body,
-            route,
-            state.config.contract_version.as_str(),
-            payload_expectations.request_id,
-            payload_expectations.signal_id,
-            payload_expectations.client_order_id,
-            payload_expectations.side,
-            payload_expectations.token,
-        )?;
         forward_to_upstream(
             state,
             route,
@@ -856,6 +564,14 @@ mod tests {
             RouteAdapter::from_kind(RouteExecutorKind::Fastlane).as_str(),
             "fastlane"
         );
+    }
+
+    #[test]
+    fn route_adapter_rpc_tip_guard_applies_only_to_rpc_submit() {
+        assert!(RouteAdapter::Rpc.requires_rpc_submit_tip_guard());
+        assert!(!RouteAdapter::Paper.requires_rpc_submit_tip_guard());
+        assert!(!RouteAdapter::Jito.requires_rpc_submit_tip_guard());
+        assert!(!RouteAdapter::Fastlane.requires_rpc_submit_tip_guard());
     }
 
     #[test]

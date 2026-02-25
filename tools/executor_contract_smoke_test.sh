@@ -115,6 +115,7 @@ contract_guard_tests=(
   "normalize_route_trims_and_lowercases"
   "classify_normalized_route_maps_known_and_unknown_values"
   "route_adapter_from_kind_maps_expected_label"
+  "route_adapter_rpc_tip_guard_applies_only_to_rpc_submit"
   "validate_rpc_submit_tip_payload_rejects_nonzero_tip"
   "validate_rpc_submit_tip_payload_rejects_invalid_json"
   "validate_rpc_submit_tip_payload_rejects_non_object_payload"
