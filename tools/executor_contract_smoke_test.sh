@@ -321,8 +321,12 @@ contract_guard_tests=(
   "simulate_response_validation_rejects_null_route"
   "simulate_response_validation_rejects_non_string_contract_version"
   "simulate_response_validation_rejects_empty_contract_version"
+  "simulate_response_detail_rejects_non_string_when_present"
+  "simulate_response_detail_rejects_null_when_present"
+  "simulate_response_detail_rejects_empty_when_present"
   "handle_simulate_rejects_upstream_contract_version_type_invalid"
   "handle_simulate_rejects_upstream_route_null"
+  "handle_simulate_rejects_upstream_detail_type_invalid"
   "submit_deadline_remaining_timeout_rejects_when_budget_exhausted"
   "upstream_outcome_rejects_unknown_status"
 )

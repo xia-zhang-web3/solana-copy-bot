@@ -71,14 +71,11 @@ fn parse_optional_non_empty_string_field(
 pub(crate) fn resolve_simulate_response_detail(
     backend_response: &Value,
     default_detail: &str,
-) -> String {
-    backend_response
-        .get("detail")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(default_detail)
-        .to_string()
+) -> Result<String, SimulateResponseValidationError> {
+    Ok(
+        parse_optional_non_empty_string_field(backend_response, "detail")?
+            .unwrap_or_else(|| default_detail.to_string()),
+    )
 }
 
 pub(crate) fn build_simulate_success_payload(
@@ -183,8 +180,45 @@ mod tests {
     #[test]
     fn simulate_response_detail_defaults_when_missing() {
         let backend = json!({});
-        let detail = resolve_simulate_response_detail(&backend, "adapter_simulation_ok");
+        let detail = resolve_simulate_response_detail(&backend, "adapter_simulation_ok")
+            .expect("missing detail should resolve to default");
         assert_eq!(detail, "adapter_simulation_ok");
+    }
+
+    #[test]
+    fn simulate_response_detail_rejects_non_string_when_present() {
+        let backend = json!({ "detail": 123 });
+        let error = resolve_simulate_response_detail(&backend, "adapter_simulation_ok")
+            .expect_err("non-string detail should reject");
+        assert!(matches!(
+            error,
+            SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name }
+            if field_name == "detail"
+        ));
+    }
+
+    #[test]
+    fn simulate_response_detail_rejects_null_when_present() {
+        let backend = json!({ "detail": null });
+        let error = resolve_simulate_response_detail(&backend, "adapter_simulation_ok")
+            .expect_err("null detail should reject");
+        assert!(matches!(
+            error,
+            SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name }
+            if field_name == "detail"
+        ));
+    }
+
+    #[test]
+    fn simulate_response_detail_rejects_empty_when_present() {
+        let backend = json!({ "detail": "   " });
+        let error = resolve_simulate_response_detail(&backend, "adapter_simulation_ok")
+            .expect_err("empty detail should reject");
+        assert!(matches!(
+            error,
+            SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name }
+            if field_name == "detail"
+        ));
     }
 
     #[test]

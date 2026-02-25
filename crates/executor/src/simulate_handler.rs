@@ -82,7 +82,8 @@ pub(crate) async fn handle_simulate(
     )
     .map_err(map_simulate_response_validation_error_to_reject)?;
 
-    let detail = resolve_simulate_response_detail(&backend_response, "adapter_simulation_ok");
+    let detail = resolve_simulate_response_detail(&backend_response, "adapter_simulation_ok")
+        .map_err(map_simulate_response_validation_error_to_reject)?;
 
     Ok(build_simulate_success_payload(
         route.as_str(),
