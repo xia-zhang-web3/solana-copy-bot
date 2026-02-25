@@ -346,7 +346,6 @@ fn delete_stale_cached_responses_in_batches(
     max_batches: usize,
 ) -> Result<bool> {
     let batch_size_usize = usize::try_from(batch_size.max(1)).unwrap_or(usize::MAX);
-    let mut cleanup_completed = true;
     for _ in 0..max_batches.max(1) {
         let deleted_rows = conn
             .execute(
@@ -366,9 +365,22 @@ fn delete_stale_cached_responses_in_batches(
         if deleted_rows < batch_size_usize {
             return Ok(true);
         }
-        cleanup_completed = false;
     }
-    Ok(cleanup_completed)
+    let has_stale_rows = conn
+        .query_row(
+            r#"
+            SELECT 1
+            FROM executor_submit_idempotency
+            WHERE updated_at_utc <= ?1
+            LIMIT 1
+            "#,
+            params![stale_response_before_rfc3339],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .context("idempotency response cleanup stale-row probe failed")?
+        .is_some();
+    Ok(!has_stale_rows)
 }
 
 fn should_run_claim_cleanup(
@@ -465,11 +477,12 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
 mod tests {
     use super::{
         claim_cleanup_interval_sec, response_cleanup_interval_sec, should_run_claim_cleanup,
+        META_KEY_RESPONSE_CLEANUP_LAST_UNIX,
         SubmitClaimOutcome, SubmitIdempotencyStore, RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
         RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
     };
     use chrono::{Duration, Utc};
-    use rusqlite::params;
+    use rusqlite::{params, OptionalExtension};
     use serde_json::json;
     use std::{
         path::PathBuf,
@@ -508,6 +521,17 @@ mod tests {
             row.get(0)
         })
         .expect("query response row count")
+    }
+
+    fn response_cleanup_marker_value(store: &SubmitIdempotencyStore) -> Option<i64> {
+        let conn = store.conn.lock().expect("lock conn");
+        conn.query_row(
+            "SELECT value_int FROM executor_runtime_meta WHERE meta_key = ?1",
+            params![META_KEY_RESPONSE_CLEANUP_LAST_UNIX],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("query response cleanup marker")
     }
 
     #[test]
@@ -949,6 +973,55 @@ mod tests {
             .run_response_cleanup_if_due(60)
             .expect("run bounded response cleanup second pass");
         assert_eq!(response_row_count(&store), 0);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn response_cleanup_exact_batch_limit_advances_marker_when_fully_drained() {
+        let db_path = temp_db_path();
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let stale_updated = (Utc::now() - Duration::hours(3)).to_rfc3339();
+        let total_rows_to_insert = RESPONSE_CLEANUP_DELETE_BATCH_SIZE
+            * i64::try_from(RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).unwrap_or(0);
+        {
+            let conn = store.conn.lock().expect("lock conn");
+            for index in 0..total_rows_to_insert {
+                conn.execute(
+                    r#"
+                    INSERT INTO executor_submit_idempotency (
+                        client_order_id,
+                        request_id,
+                        response_json,
+                        created_at_utc,
+                        updated_at_utc
+                    ) VALUES (?1, ?2, ?3, ?4, ?4)
+                    "#,
+                    params![
+                        format!("order-stale-exact-{}", index),
+                        format!("req-stale-exact-{}", index),
+                        "{\"status\":\"ok\"}",
+                        stale_updated
+                    ],
+                )
+                .expect("insert stale cached response row");
+            }
+        }
+        assert_eq!(response_row_count(&store), total_rows_to_insert);
+        assert!(
+            response_cleanup_marker_value(&store).is_none(),
+            "marker should be absent before first cleanup"
+        );
+
+        store
+            .run_response_cleanup_if_due(60)
+            .expect("run response cleanup");
+
+        assert_eq!(response_row_count(&store), 0);
+        assert!(
+            response_cleanup_marker_value(&store).unwrap_or(0) > 0,
+            "marker should advance when exact-limit run fully drains stale rows"
+        );
         let _ = std::fs::remove_file(db_path);
     }
 }
