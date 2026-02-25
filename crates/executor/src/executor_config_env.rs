@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use std::{collections::HashMap, env};
 
 use crate::auth_mode::{require_authenticated_mode, validate_hmac_auth_config};
@@ -340,6 +341,7 @@ impl ExecutorConfig {
                 "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC must be > 0"
             ));
         }
+        validate_response_retention_cutoff(idempotency_response_retention_sec)?;
         let max_notional_sol = parse_f64_env(
             "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
             DEFAULT_MAX_NOTIONAL_SOL,
@@ -389,5 +391,42 @@ impl ExecutorConfig {
             allow_nonzero_tip,
             submit_signature_verify,
         })
+    }
+}
+
+fn validate_response_retention_cutoff(idempotency_response_retention_sec: u64) -> Result<()> {
+    let retention_i64 = i64::try_from(idempotency_response_retention_sec).map_err(|_| {
+        anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC must fit into signed 64-bit seconds"
+        )
+    })?;
+    let cutoff_unix = Utc::now().timestamp().saturating_sub(retention_i64.max(1));
+    if DateTime::<Utc>::from_timestamp(cutoff_unix, 0).is_none() {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC is out of supported timestamp range"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_response_retention_cutoff;
+
+    #[test]
+    fn validate_response_retention_cutoff_accepts_default_range() {
+        validate_response_retention_cutoff(604_800).expect("default retention should be valid");
+    }
+
+    #[test]
+    fn validate_response_retention_cutoff_rejects_out_of_range_value() {
+        let error = validate_response_retention_cutoff(u64::MAX).expect_err("must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC"),
+            "unexpected error: {}",
+            error
+        );
     }
 }

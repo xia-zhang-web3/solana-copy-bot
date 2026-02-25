@@ -56,6 +56,8 @@ impl SubmitIdempotencyStore {
             );
             CREATE INDEX IF NOT EXISTS idx_executor_submit_idempotency_request_id
                 ON executor_submit_idempotency(request_id);
+            CREATE INDEX IF NOT EXISTS idx_executor_submit_idempotency_updated_at
+                ON executor_submit_idempotency(updated_at_utc);
             CREATE TABLE IF NOT EXISTS executor_submit_idempotency_claims (
                 client_order_id TEXT PRIMARY KEY,
                 request_id TEXT NOT NULL,
@@ -144,7 +146,9 @@ impl SubmitIdempotencyStore {
                     .store(global_last_cleanup_unix, Ordering::Relaxed);
             }
         }
-        let response_retention = i64::try_from(response_retention_sec).unwrap_or(i64::MAX).max(1);
+        let response_retention = i64::try_from(response_retention_sec)
+            .map_err(|_| anyhow::anyhow!("idempotency response retention exceeds i64 range"))?
+            .max(1);
         let response_cleanup_interval = response_cleanup_interval_sec(response_retention);
         let last_response_cleanup_unix = self.last_response_cleanup_unix.load(Ordering::Relaxed);
         if should_run_claim_cleanup(
@@ -498,6 +502,24 @@ mod tests {
             .expect("load response")
             .expect("cached response");
         assert_eq!(loaded, response);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn schema_includes_updated_at_index_for_response_cleanup() {
+        let db_path = temp_db_path();
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let conn = store.conn.lock().expect("lock conn");
+        let index_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                params!["idx_executor_submit_idempotency_updated_at"],
+                |row| row.get(0),
+            )
+            .expect("query index metadata");
+        assert_eq!(index_exists, 1);
+        drop(conn);
         let _ = std::fs::remove_file(db_path);
     }
 
