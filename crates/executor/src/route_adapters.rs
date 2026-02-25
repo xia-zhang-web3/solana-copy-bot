@@ -339,18 +339,81 @@ fn validate_payload_route_for_action(
     Ok(payload)
 }
 
+fn validate_required_payload_action_field(
+    payload: &serde_json::Map<String, Value>,
+    action_label: &str,
+    expected_action: &str,
+) -> std::result::Result<(), Reject> {
+    let action_value = payload.get("action").ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "{action_label} payload missing action at route-adapter boundary expected={expected_action}"
+            ),
+        )
+    })?;
+    let action_raw = action_value.as_str().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload action must be string"),
+        )
+    })?;
+    let normalized_action = action_raw.trim().to_ascii_lowercase();
+    if normalized_action != expected_action {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "{action_label} payload action mismatch at route-adapter boundary expected={expected_action} got={normalized_action}"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_optional_payload_action_field(
+    payload: &serde_json::Map<String, Value>,
+    action_label: &str,
+    expected_action: &str,
+) -> std::result::Result<(), Reject> {
+    let Some(action_value) = payload.get("action") else {
+        return Ok(());
+    };
+    let action_raw = action_value.as_str().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload action must be string when present"),
+        )
+    })?;
+    let normalized_action = action_raw.trim().to_ascii_lowercase();
+    if normalized_action != expected_action {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "{action_label} payload action mismatch at route-adapter boundary expected={expected_action} got={normalized_action}"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 fn validate_submit_payload_for_route(
     raw_body: &[u8],
     expected_route: &str,
 ) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
-    validate_payload_route_for_action(raw_body, expected_route, "submit")
+    let payload = validate_payload_route_for_action(raw_body, expected_route, "submit")?;
+    validate_optional_payload_action_field(&payload, "submit", "submit")?;
+    Ok(payload)
 }
 
 fn validate_simulate_payload_for_route(
     raw_body: &[u8],
     expected_route: &str,
 ) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
-    validate_payload_route_for_action(raw_body, expected_route, "simulate")
+    let payload = validate_payload_route_for_action(raw_body, expected_route, "simulate")?;
+    validate_required_payload_action_field(&payload, "simulate", "simulate")?;
+    Ok(payload)
 }
 
 fn validate_rpc_submit_tip_payload(raw_body: &[u8], expected_route: &str) -> std::result::Result<(), Reject> {
@@ -471,6 +534,21 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_accepts_missing_action() {
+        let body = br#"{"route":"rpc","tip_lamports":0}"#;
+        assert!(validate_submit_payload_for_route(body, "rpc").is_ok());
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_mismatched_action_when_present() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"action":"simulate"}"#;
+        let reject = validate_submit_payload_for_route(body, "rpc")
+            .expect_err("mismatched submit action must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("action mismatch"));
+    }
+
+    #[test]
     fn validate_simulate_payload_for_route_rejects_mismatched_route() {
         let body = br#"{"route":"jito","action":"simulate","dry_run":true}"#;
         let reject = validate_simulate_payload_for_route(body, "rpc")
@@ -501,5 +579,32 @@ mod tests {
             .expect_err("simulate non-string route must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("route must be string"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_missing_action() {
+        let body = br#"{"route":"rpc","dry_run":true}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc")
+            .expect_err("simulate missing action must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing action"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_non_string_action() {
+        let body = br#"{"route":"rpc","action":123,"dry_run":true}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc")
+            .expect_err("simulate non-string action must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("action must be string"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_mismatched_action() {
+        let body = br#"{"route":"rpc","action":"submit","dry_run":true}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc")
+            .expect_err("simulate mismatched action must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("action mismatch"));
     }
 }
