@@ -65,6 +65,27 @@ fn validate_route_executor_feature_gate(
     Ok(())
 }
 
+fn validate_route_executor_action_context(
+    action: UpstreamAction,
+    submit_context: RouteSubmitExecutionContext,
+) -> std::result::Result<(), Reject> {
+    match action {
+        UpstreamAction::Submit if submit_context.instruction_plan.is_none() => Err(
+            Reject::terminal(
+                "invalid_request_body",
+                "submit route action missing instruction plan at route-executor boundary",
+            ),
+        ),
+        UpstreamAction::Simulate if submit_context.instruction_plan.is_some() => Err(
+            Reject::terminal(
+                "invalid_request_body",
+                "simulate route action must not include submit instruction plan at route-executor boundary",
+            ),
+        ),
+        _ => Ok(()),
+    }
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resolve_route_executor_kind(route: &str) -> Option<RouteExecutorKind> {
     let normalized_route = normalize_route(route);
@@ -92,6 +113,7 @@ pub(crate) async fn execute_route_action(
         normalized_route.as_str(),
         state.config.submit_fastlane_enabled,
     )?;
+    validate_route_executor_action_context(action, submit_context)?;
     let route_adapter = RouteAdapter::from_kind(route_executor_kind);
     debug!(
         route = %normalized_route,
@@ -117,10 +139,12 @@ pub(crate) async fn execute_route_action(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_route_executor_feature_gate,
+        validate_route_executor_action_context, validate_route_executor_feature_gate,
         resolve_route_executor_kind, resolve_route_executor_kind_normalized,
         RouteSubmitExecutionContext, RouteExecutorKind,
     };
+    use crate::route_backend::UpstreamAction;
+    use crate::tx_build::SubmitInstructionPlan;
 
     #[test]
     fn route_executor_resolve_maps_known_routes_case_insensitive() {
@@ -182,5 +206,31 @@ mod tests {
     fn route_executor_feature_gate_allows_fastlane_when_enabled() {
         validate_route_executor_feature_gate("fastlane", true)
             .expect("fastlane should pass when feature enabled");
+    }
+
+    #[test]
+    fn route_executor_action_context_rejects_submit_without_plan() {
+        let reject =
+            validate_route_executor_action_context(UpstreamAction::Submit, RouteSubmitExecutionContext::default())
+                .expect_err("submit without plan must be rejected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn route_executor_action_context_rejects_simulate_with_plan() {
+        let reject = validate_route_executor_action_context(
+            UpstreamAction::Simulate,
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+            },
+        )
+        .expect_err("simulate with submit plan must be rejected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
     }
 }

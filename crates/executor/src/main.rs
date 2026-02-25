@@ -1933,6 +1933,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_simulate_with_submit_instruction_plan_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-simulate-with-plan-1",
+            "signal_id": "signal-simulate-with-plan-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                request_id: Some("request-simulate-with-plan-1"),
+                signal_id: Some("signal-simulate-with-plan-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+            },
+        )
+        .await
+        .expect_err("simulate with submit instruction plan must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("must not include submit instruction plan"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_submit_without_instruction_plan_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
