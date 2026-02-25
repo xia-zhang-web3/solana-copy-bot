@@ -2,7 +2,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::route_backend::UpstreamAction;
-use crate::route_policy::{classify_route, RouteKind};
+use crate::route_normalization::normalize_route;
 use crate::submit_deadline::SubmitDeadline;
 use crate::upstream_forward::forward_to_upstream;
 use crate::{AppState, Reject};
@@ -26,14 +26,19 @@ impl RouteExecutorKind {
     }
 }
 
-pub(crate) fn resolve_route_executor_kind(route: &str) -> Option<RouteExecutorKind> {
-    match classify_route(route) {
-        RouteKind::Paper => Some(RouteExecutorKind::Paper),
-        RouteKind::Rpc => Some(RouteExecutorKind::Rpc),
-        RouteKind::Jito => Some(RouteExecutorKind::Jito),
-        RouteKind::Fastlane => Some(RouteExecutorKind::Fastlane),
-        RouteKind::Other => None,
+fn resolve_route_executor_kind_normalized(route: &str) -> Option<RouteExecutorKind> {
+    match route {
+        "paper" => Some(RouteExecutorKind::Paper),
+        "rpc" => Some(RouteExecutorKind::Rpc),
+        "jito" => Some(RouteExecutorKind::Jito),
+        "fastlane" => Some(RouteExecutorKind::Fastlane),
+        _ => None,
     }
+}
+
+pub(crate) fn resolve_route_executor_kind(route: &str) -> Option<RouteExecutorKind> {
+    let normalized_route = normalize_route(route);
+    resolve_route_executor_kind_normalized(normalized_route.as_str())
 }
 
 pub(crate) async fn execute_route_action(
@@ -43,6 +48,7 @@ pub(crate) async fn execute_route_action(
     raw_body: &[u8],
     submit_deadline: Option<&SubmitDeadline>,
 ) -> std::result::Result<Value, Reject> {
+    let normalized_route = normalize_route(route);
     let route_executor_kind = resolve_route_executor_kind(route).ok_or_else(|| {
         Reject::terminal(
             "route_not_allowed",
@@ -50,7 +56,7 @@ pub(crate) async fn execute_route_action(
         )
     })?;
     debug!(
-        route = %route,
+        route = %normalized_route,
         action = %action.as_str(),
         route_executor = %route_executor_kind.as_str(),
         "executing route action"
@@ -58,16 +64,44 @@ pub(crate) async fn execute_route_action(
 
     match route_executor_kind {
         RouteExecutorKind::Paper => {
-            execute_paper_route_action(state, route, action, raw_body, submit_deadline).await
+            execute_paper_route_action(
+                state,
+                normalized_route.as_str(),
+                action,
+                raw_body,
+                submit_deadline,
+            )
+            .await
         }
         RouteExecutorKind::Rpc => {
-            execute_rpc_route_action(state, route, action, raw_body, submit_deadline).await
+            execute_rpc_route_action(
+                state,
+                normalized_route.as_str(),
+                action,
+                raw_body,
+                submit_deadline,
+            )
+            .await
         }
         RouteExecutorKind::Jito => {
-            execute_jito_route_action(state, route, action, raw_body, submit_deadline).await
+            execute_jito_route_action(
+                state,
+                normalized_route.as_str(),
+                action,
+                raw_body,
+                submit_deadline,
+            )
+            .await
         }
         RouteExecutorKind::Fastlane => {
-            execute_fastlane_route_action(state, route, action, raw_body, submit_deadline).await
+            execute_fastlane_route_action(
+                state,
+                normalized_route.as_str(),
+                action,
+                raw_body,
+                submit_deadline,
+            )
+            .await
         }
     }
 }
@@ -114,7 +148,9 @@ async fn execute_fastlane_route_action(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_route_executor_kind, RouteExecutorKind};
+    use super::{
+        resolve_route_executor_kind, resolve_route_executor_kind_normalized, RouteExecutorKind,
+    };
 
     #[test]
     fn route_executor_resolve_maps_known_routes_case_insensitive() {
@@ -144,5 +180,17 @@ mod tests {
         assert_eq!(RouteExecutorKind::Rpc.as_str(), "rpc");
         assert_eq!(RouteExecutorKind::Jito.as_str(), "jito");
         assert_eq!(RouteExecutorKind::Fastlane.as_str(), "fastlane");
+    }
+
+    #[test]
+    fn route_executor_resolve_normalized_route_for_backend_lookup() {
+        assert_eq!(
+            resolve_route_executor_kind_normalized("rpc"),
+            Some(RouteExecutorKind::Rpc)
+        );
+        assert_eq!(
+            resolve_route_executor_kind(" RPC "),
+            Some(RouteExecutorKind::Rpc)
+        );
     }
 }

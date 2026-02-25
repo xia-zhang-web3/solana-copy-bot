@@ -101,6 +101,7 @@ contract_guard_tests=(
   "normalize_route_trims_and_lowercases"
   "route_executor_resolve_maps_known_routes_case_insensitive"
   "route_executor_resolve_rejects_unknown_route"
+  "route_executor_resolve_normalized_route_for_backend_lookup"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
   "handle_submit_rejects_compute_budget_limit_out_of_range"
