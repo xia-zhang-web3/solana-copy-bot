@@ -114,6 +114,28 @@ fn validate_route_executor_action_context(
     }
 }
 
+fn validate_route_executor_deadline_context(
+    action: UpstreamAction,
+    submit_context: RouteSubmitExecutionContext,
+    submit_deadline: Option<&SubmitDeadline>,
+) -> std::result::Result<(), Reject> {
+    match action {
+        UpstreamAction::Submit
+            if submit_context.instruction_plan.is_some() && submit_deadline.is_none() =>
+        {
+            Err(Reject::terminal(
+                "invalid_request_body",
+                "submit route action missing deadline at route-executor boundary",
+            ))
+        }
+        UpstreamAction::Simulate if submit_deadline.is_some() => Err(Reject::terminal(
+            "invalid_request_body",
+            "simulate route action must not include submit deadline at route-executor boundary",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn validate_route_executor_payload_expectations_shape(
     action: UpstreamAction,
     payload_expectations: RouteActionPayloadExpectations<'_>,
@@ -211,6 +233,7 @@ pub(crate) async fn execute_route_action(
         normalized_route.as_str(),
         state.config.submit_fastlane_enabled,
     )?;
+    validate_route_executor_deadline_context(action, submit_context, submit_deadline)?;
     validate_route_executor_action_context(action, submit_context)?;
     let route_adapter = RouteAdapter::from_kind(route_executor_kind);
     debug!(
@@ -238,7 +261,7 @@ pub(crate) async fn execute_route_action(
 mod tests {
     use super::{
         validate_route_executor_action_context, validate_route_executor_allowlist,
-        validate_route_executor_backend_configured,
+        validate_route_executor_backend_configured, validate_route_executor_deadline_context,
         validate_route_executor_feature_gate,
         validate_route_executor_payload_expectations_shape,
         validate_route_executor_payload_route_expectation,
@@ -247,6 +270,7 @@ mod tests {
         RouteActionPayloadExpectations, RouteSubmitExecutionContext, RouteExecutorKind,
     };
     use crate::route_backend::{RouteBackend, UpstreamAction};
+    use crate::submit_deadline::SubmitDeadline;
     use crate::tx_build::SubmitInstructionPlan;
     use std::collections::{HashMap, HashSet};
 
@@ -396,6 +420,64 @@ mod tests {
         .expect_err("simulate with submit plan must be rejected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn route_executor_deadline_context_rejects_submit_with_plan_without_deadline() {
+        let reject = validate_route_executor_deadline_context(
+            UpstreamAction::Submit,
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+            },
+            None,
+        )
+        .expect_err("submit with plan must require deadline");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[test]
+    fn route_executor_deadline_context_rejects_simulate_with_deadline() {
+        let deadline = SubmitDeadline::new(1_000);
+        let reject = validate_route_executor_deadline_context(
+            UpstreamAction::Simulate,
+            RouteSubmitExecutionContext::default(),
+            Some(&deadline),
+        )
+        .expect_err("simulate must not include submit deadline");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("must not include submit deadline"));
+    }
+
+    #[test]
+    fn route_executor_deadline_context_accepts_submit_with_plan_and_deadline() {
+        let deadline = SubmitDeadline::new(1_000);
+        validate_route_executor_deadline_context(
+            UpstreamAction::Submit,
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+            },
+            Some(&deadline),
+        )
+        .expect("submit with deadline should pass");
+    }
+
+    #[test]
+    fn route_executor_deadline_context_accepts_simulate_without_deadline() {
+        validate_route_executor_deadline_context(
+            UpstreamAction::Simulate,
+            RouteSubmitExecutionContext::default(),
+            None,
+        )
+        .expect("simulate without deadline should pass");
     }
 
     #[test]
