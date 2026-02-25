@@ -200,6 +200,7 @@ contract_guard_tests=(
   "claim_flow_returns_claimed_inflight_then_cached"
   "release_claim_requires_request_id_owner_match"
   "stale_claim_is_reclaimed_for_same_key_when_global_cleanup_throttled"
+  "global_cleanup_marker_prevents_redundant_cleanup_across_store_instances"
   "idempotency_normalizes_client_order_id_for_store_and_lookup"
   "claim_cleanup_interval_sec_clamps_bounds"
   "min_claim_ttl_sec_for_submit_path_applies_500ms_runtime_floor"

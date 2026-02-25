@@ -13,6 +13,7 @@ use std::{
 
 const MIN_CLAIM_CLEANUP_INTERVAL_SEC: i64 = 5;
 const MAX_CLAIM_CLEANUP_INTERVAL_SEC: i64 = 60;
+const META_KEY_CLAIM_CLEANUP_LAST_UNIX: &str = "claim_cleanup_last_unix";
 
 pub(crate) struct SubmitIdempotencyStore {
     conn: Mutex<Connection>,
@@ -58,6 +59,11 @@ impl SubmitIdempotencyStore {
             );
             CREATE INDEX IF NOT EXISTS idx_executor_submit_idempotency_claims_claimed_at
                 ON executor_submit_idempotency_claims(claimed_at_unix);
+            CREATE TABLE IF NOT EXISTS executor_runtime_meta (
+                meta_key TEXT PRIMARY KEY,
+                value_int INTEGER NOT NULL,
+                updated_at_unix INTEGER NOT NULL
+            );
             "#,
         )
         .context("initialize idempotency schema failed")?;
@@ -117,13 +123,20 @@ impl SubmitIdempotencyStore {
         let cleanup_interval_sec = claim_cleanup_interval_sec(ttl);
         let last_cleanup_unix = self.last_claim_cleanup_unix.load(Ordering::Relaxed);
         if should_run_claim_cleanup(now_unix, last_cleanup_unix, cleanup_interval_sec) {
-            conn.execute(
-                "DELETE FROM executor_submit_idempotency_claims WHERE claimed_at_unix <= ?1",
-                params![stale_before],
-            )
-            .context("idempotency stale claim cleanup failed")?;
-            self.last_claim_cleanup_unix
-                .store(now_unix, Ordering::Relaxed);
+            let global_last_cleanup_unix = load_global_claim_cleanup_last_unix(&conn)?;
+            if should_run_claim_cleanup(now_unix, global_last_cleanup_unix, cleanup_interval_sec) {
+                conn.execute(
+                    "DELETE FROM executor_submit_idempotency_claims WHERE claimed_at_unix <= ?1",
+                    params![stale_before],
+                )
+                .context("idempotency stale claim cleanup failed")?;
+                store_global_claim_cleanup_last_unix(&conn, now_unix)?;
+                self.last_claim_cleanup_unix
+                    .store(now_unix, Ordering::Relaxed);
+            } else {
+                self.last_claim_cleanup_unix
+                    .store(global_last_cleanup_unix, Ordering::Relaxed);
+            }
         }
 
         let raw: Option<String> = conn
@@ -273,6 +286,36 @@ fn should_run_claim_cleanup(
     now_unix.saturating_sub(last_cleanup_unix) >= cleanup_interval_sec
 }
 
+fn load_global_claim_cleanup_last_unix(conn: &Connection) -> Result<i64> {
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT value_int FROM executor_runtime_meta WHERE meta_key = ?1",
+            params![META_KEY_CLAIM_CLEANUP_LAST_UNIX],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("idempotency cleanup metadata lookup failed")?;
+    Ok(stored.unwrap_or(0))
+}
+
+fn store_global_claim_cleanup_last_unix(conn: &Connection, now_unix: i64) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO executor_runtime_meta (
+            meta_key,
+            value_int,
+            updated_at_unix
+        ) VALUES (?1, ?2, ?2)
+        ON CONFLICT(meta_key) DO UPDATE SET
+            value_int = excluded.value_int,
+            updated_at_unix = excluded.updated_at_unix
+        "#,
+        params![META_KEY_CLAIM_CLEANUP_LAST_UNIX, now_unix],
+    )
+    .context("idempotency cleanup metadata update failed")?;
+    Ok(())
+}
+
 fn ensure_parent_dir(path: &str) -> Result<()> {
     let target = Path::new(path);
     let Some(parent) = target.parent() else {
@@ -318,6 +361,16 @@ mod tests {
             nanos,
             seq
         ))
+    }
+
+    fn claim_row_count_for_key(store: &SubmitIdempotencyStore, client_order_id: &str) -> i64 {
+        let conn = store.conn.lock().expect("lock conn");
+        conn.query_row(
+            "SELECT COUNT(1) FROM executor_submit_idempotency_claims WHERE client_order_id = ?1",
+            params![client_order_id],
+            |row| row.get(0),
+        )
+        .expect("query claim row count")
     }
 
     #[test]
@@ -543,6 +596,65 @@ mod tests {
             .load_cached_or_claim_submit("order-stale-key-1", "req-new", 30)
             .expect("claim outcome");
         assert!(matches!(outcome, SubmitClaimOutcome::Claimed));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn global_cleanup_marker_prevents_redundant_cleanup_across_store_instances() {
+        let db_path = temp_db_path();
+        let db_path_str = db_path.to_string_lossy().to_string();
+        let store1 = SubmitIdempotencyStore::open(db_path_str.as_str()).expect("open store1");
+        let now_unix = Utc::now().timestamp();
+
+        {
+            let conn = store1.conn.lock().expect("lock conn");
+            conn.execute(
+                r#"
+                INSERT INTO executor_submit_idempotency_claims (
+                    client_order_id,
+                    request_id,
+                    claimed_at_unix
+                ) VALUES (?1, ?2, ?3)
+                "#,
+                params!["order-stale-marker-1", "req-old-1", now_unix.saturating_sub(300)],
+            )
+            .expect("insert stale claim 1");
+        }
+        assert_eq!(claim_row_count_for_key(&store1, "order-stale-marker-1"), 1);
+
+        let first_outcome = store1
+            .load_cached_or_claim_submit("probe-cleanup-marker-1", "req-probe-1", 30)
+            .expect("first probe claim");
+        assert!(matches!(first_outcome, SubmitClaimOutcome::Claimed));
+        assert_eq!(claim_row_count_for_key(&store1, "order-stale-marker-1"), 0);
+
+        {
+            let conn = store1.conn.lock().expect("lock conn");
+            conn.execute(
+                r#"
+                INSERT INTO executor_submit_idempotency_claims (
+                    client_order_id,
+                    request_id,
+                    claimed_at_unix
+                ) VALUES (?1, ?2, ?3)
+                "#,
+                params!["order-stale-marker-2", "req-old-2", now_unix.saturating_sub(300)],
+            )
+            .expect("insert stale claim 2");
+        }
+        assert_eq!(claim_row_count_for_key(&store1, "order-stale-marker-2"), 1);
+
+        let store2 = SubmitIdempotencyStore::open(db_path_str.as_str()).expect("open store2");
+        let second_outcome = store2
+            .load_cached_or_claim_submit("probe-cleanup-marker-2", "req-probe-2", 30)
+            .expect("second probe claim");
+        assert!(matches!(second_outcome, SubmitClaimOutcome::Claimed));
+        assert_eq!(
+            claim_row_count_for_key(&store2, "order-stale-marker-2"),
+            1,
+            "global cleanup marker should suppress redundant cross-process cleanup"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
