@@ -2,10 +2,21 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use std::{fs, path::Path, sync::Mutex};
+use std::{
+    fs,
+    path::Path,
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Mutex,
+    },
+};
+
+const MIN_CLAIM_CLEANUP_INTERVAL_SEC: i64 = 5;
+const MAX_CLAIM_CLEANUP_INTERVAL_SEC: i64 = 60;
 
 pub(crate) struct SubmitIdempotencyStore {
     conn: Mutex<Connection>,
+    last_claim_cleanup_unix: AtomicI64,
 }
 
 pub(crate) enum SubmitClaimOutcome {
@@ -52,6 +63,7 @@ impl SubmitIdempotencyStore {
         .context("initialize idempotency schema failed")?;
         Ok(Self {
             conn: Mutex::new(conn),
+            last_claim_cleanup_unix: AtomicI64::new(0),
         })
     }
 
@@ -75,8 +87,8 @@ impl SubmitIdempotencyStore {
         let Some(raw_json) = raw else {
             return Ok(None);
         };
-        let parsed: Value =
-            serde_json::from_str(&raw_json).context("idempotency cached response is invalid JSON")?;
+        let parsed: Value = serde_json::from_str(&raw_json)
+            .context("idempotency cached response is invalid JSON")?;
         Ok(Some(parsed))
     }
 
@@ -102,11 +114,17 @@ impl SubmitIdempotencyStore {
         let now_unix = Utc::now().timestamp();
         let ttl = i64::try_from(claim_ttl_sec).unwrap_or(i64::MAX).max(1);
         let stale_before = now_unix.saturating_sub(ttl);
-        conn.execute(
-            "DELETE FROM executor_submit_idempotency_claims WHERE claimed_at_unix <= ?1",
-            params![stale_before],
-        )
-        .context("idempotency stale claim cleanup failed")?;
+        let cleanup_interval_sec = claim_cleanup_interval_sec(ttl);
+        let last_cleanup_unix = self.last_claim_cleanup_unix.load(Ordering::Relaxed);
+        if should_run_claim_cleanup(now_unix, last_cleanup_unix, cleanup_interval_sec) {
+            conn.execute(
+                "DELETE FROM executor_submit_idempotency_claims WHERE claimed_at_unix <= ?1",
+                params![stale_before],
+            )
+            .context("idempotency stale claim cleanup failed")?;
+            self.last_claim_cleanup_unix
+                .store(now_unix, Ordering::Relaxed);
+        }
 
         let raw: Option<String> = conn
             .query_row(
@@ -122,8 +140,8 @@ impl SubmitIdempotencyStore {
             return Ok(SubmitClaimOutcome::Cached(parsed));
         }
 
-        let inserted = conn
-            .execute(
+        let insert_claim = |conn: &Connection| -> Result<usize> {
+            conn.execute(
                 r#"
                 INSERT INTO executor_submit_idempotency_claims (
                     client_order_id,
@@ -134,12 +152,32 @@ impl SubmitIdempotencyStore {
                 "#,
                 params![key, req, now_unix],
             )
-            .context("idempotency claim insert failed")?;
+            .context("idempotency claim insert failed")
+        };
+
+        let inserted = insert_claim(&conn)?;
         if inserted > 0 {
-            Ok(SubmitClaimOutcome::Claimed)
-        } else {
-            Ok(SubmitClaimOutcome::InFlight)
+            return Ok(SubmitClaimOutcome::Claimed);
         }
+
+        // If claim insert conflicted, the row may still be stale. Reap stale entry for this key
+        // and retry once so stale claims are self-healed even when global cleanup is throttled.
+        let removed_stale_for_key = conn
+            .execute(
+                r#"
+                DELETE FROM executor_submit_idempotency_claims
+                WHERE client_order_id = ?1 AND claimed_at_unix <= ?2
+                "#,
+                params![key, stale_before],
+            )
+            .context("idempotency stale claim reclaim failed")?;
+        if removed_stale_for_key > 0 {
+            let inserted_after_reclaim = insert_claim(&conn)?;
+            if inserted_after_reclaim > 0 {
+                return Ok(SubmitClaimOutcome::Claimed);
+            }
+        }
+        Ok(SubmitClaimOutcome::InFlight)
     }
 
     pub(crate) fn probe(&self) -> Result<()> {
@@ -174,7 +212,7 @@ impl SubmitIdempotencyStore {
             .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?;
         let changed = conn
             .execute(
-            r#"
+                r#"
             INSERT INTO executor_submit_idempotency (
                 client_order_id,
                 request_id,
@@ -184,9 +222,9 @@ impl SubmitIdempotencyStore {
             ) VALUES (?1, ?2, ?3, ?4, ?4)
             ON CONFLICT(client_order_id) DO NOTHING
             "#,
-            params![key, req, response_json, now],
-        )
-        .context("idempotency insert failed")?;
+                params![key, req, response_json, now],
+            )
+            .context("idempotency insert failed")?;
         Ok(changed > 0)
     }
 
@@ -214,6 +252,27 @@ impl SubmitIdempotencyStore {
     }
 }
 
+fn claim_cleanup_interval_sec(claim_ttl_sec: i64) -> i64 {
+    (claim_ttl_sec / 2).clamp(
+        MIN_CLAIM_CLEANUP_INTERVAL_SEC,
+        MAX_CLAIM_CLEANUP_INTERVAL_SEC,
+    )
+}
+
+fn should_run_claim_cleanup(
+    now_unix: i64,
+    last_cleanup_unix: i64,
+    cleanup_interval_sec: i64,
+) -> bool {
+    if cleanup_interval_sec <= 0 {
+        return true;
+    }
+    if last_cleanup_unix <= 0 {
+        return true;
+    }
+    now_unix.saturating_sub(last_cleanup_unix) >= cleanup_interval_sec
+}
+
 fn ensure_parent_dir(path: &str) -> Result<()> {
     let target = Path::new(path);
     let Some(parent) = target.parent() else {
@@ -222,13 +281,22 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create idempotency parent dir failed path={}", parent.display()))
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "create idempotency parent dir failed path={}",
+            parent.display()
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SubmitClaimOutcome, SubmitIdempotencyStore};
+    use super::{
+        claim_cleanup_interval_sec, should_run_claim_cleanup, SubmitClaimOutcome,
+        SubmitIdempotencyStore,
+    };
+    use chrono::Utc;
+    use rusqlite::params;
     use serde_json::json;
     use std::{
         path::PathBuf,
@@ -255,8 +323,8 @@ mod tests {
     #[test]
     fn store_and_load_submit_response_round_trip() {
         let db_path = temp_db_path();
-        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
-            .expect("open store");
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
         let response = json!({
             "status": "ok",
             "client_order_id": "order-1",
@@ -302,8 +370,8 @@ mod tests {
     #[test]
     fn store_does_not_overwrite_existing_response() {
         let db_path = temp_db_path();
-        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
-            .expect("open store");
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
         let original = json!({
             "status": "ok",
             "client_order_id": "order-immutable-1",
@@ -333,8 +401,8 @@ mod tests {
     #[test]
     fn claim_flow_returns_claimed_inflight_then_cached() {
         let db_path = temp_db_path();
-        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
-            .expect("open store");
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
 
         let first = store
             .load_cached_or_claim_submit("order-claim-1", "req-1", 30)
@@ -372,8 +440,8 @@ mod tests {
     #[test]
     fn idempotency_normalizes_client_order_id_for_store_and_lookup() {
         let db_path = temp_db_path();
-        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
-            .expect("open store");
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
         let response = json!({
             "status": "ok",
             "client_order_id": "order-ws-1",
@@ -397,8 +465,8 @@ mod tests {
     #[test]
     fn release_claim_requires_request_id_owner_match() {
         let db_path = temp_db_path();
-        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref())
-            .expect("open store");
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
 
         let first = store
             .load_cached_or_claim_submit("order-claim-owner-1", "req-owner-1", 30)
@@ -424,6 +492,57 @@ mod tests {
             .load_cached_or_claim_submit("order-claim-owner-1", "req-owner-3", 30)
             .expect("third claim");
         assert!(matches!(third, SubmitClaimOutcome::Claimed));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn claim_cleanup_interval_sec_clamps_bounds() {
+        assert_eq!(claim_cleanup_interval_sec(1), 5);
+        assert_eq!(claim_cleanup_interval_sec(10), 5);
+        assert_eq!(claim_cleanup_interval_sec(30), 15);
+        assert_eq!(claim_cleanup_interval_sec(240), 60);
+    }
+
+    #[test]
+    fn should_run_claim_cleanup_respects_interval() {
+        assert!(should_run_claim_cleanup(100, 0, 10));
+        assert!(!should_run_claim_cleanup(100, 95, 10));
+        assert!(should_run_claim_cleanup(100, 90, 10));
+        assert!(should_run_claim_cleanup(100, 99, 0));
+    }
+
+    #[test]
+    fn stale_claim_is_reclaimed_for_same_key_when_global_cleanup_throttled() {
+        let db_path = temp_db_path();
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let now_unix = Utc::now().timestamp();
+
+        {
+            let conn = store.conn.lock().expect("lock conn");
+            conn.execute(
+                r#"
+                INSERT INTO executor_submit_idempotency_claims (
+                    client_order_id,
+                    request_id,
+                    claimed_at_unix
+                ) VALUES (?1, ?2, ?3)
+                "#,
+                params!["order-stale-key-1", "req-old", now_unix.saturating_sub(300)],
+            )
+            .expect("insert stale claim");
+        }
+
+        // Force global cleanup throttle window so this call relies on per-key stale reclaim.
+        store
+            .last_claim_cleanup_unix
+            .store(now_unix, Ordering::Relaxed);
+
+        let outcome = store
+            .load_cached_or_claim_submit("order-stale-key-1", "req-new", 30)
+            .expect("claim outcome");
+        assert!(matches!(outcome, SubmitClaimOutcome::Claimed));
 
         let _ = std::fs::remove_file(db_path);
     }
