@@ -238,6 +238,10 @@ pub(crate) fn map_submit_transport_artifact_error_to_reject(
                 error
             ),
         ),
+        SubmitTransportArtifactError::ConflictingSubmitArtifacts => Reject::retryable(
+            "submit_adapter_invalid_response",
+            "upstream response must include exactly one of tx_signature or signed_tx_base64",
+        ),
         SubmitTransportArtifactError::MissingSubmitArtifact => Reject::retryable(
             "submit_adapter_invalid_response",
             "upstream response missing tx_signature and signed_tx_base64",

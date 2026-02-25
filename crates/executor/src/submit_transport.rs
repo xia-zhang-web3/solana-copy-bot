@@ -10,6 +10,7 @@ pub(crate) enum SubmitTransportArtifact {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SubmitTransportArtifactError {
     InvalidUpstreamSignature { error: String },
+    ConflictingSubmitArtifacts,
     MissingSubmitArtifact,
 }
 
@@ -26,6 +27,10 @@ pub(crate) fn extract_submit_transport_artifact(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
+
+    if upstream_tx_signature.is_some() && signed_tx_base64.is_some() {
+        return Err(SubmitTransportArtifactError::ConflictingSubmitArtifacts);
+    }
 
     if let Some(value) = upstream_tx_signature {
         validate_signature_like(value).map_err(|error| {
@@ -50,16 +55,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn submit_transport_extract_prefers_upstream_signature_when_present() {
+    fn submit_transport_extract_rejects_conflicting_artifacts_when_both_present() {
         let signature = bs58::encode([42u8; 64]).into_string();
         let body = json!({
             "tx_signature": signature,
             "signed_tx_base64": "AQID",
         });
-        let artifact = extract_submit_transport_artifact(&body).expect("must parse transport");
+        let error = extract_submit_transport_artifact(&body).expect_err("must reject");
         assert!(matches!(
-            artifact,
-            SubmitTransportArtifact::UpstreamSignature(_)
+            error,
+            SubmitTransportArtifactError::ConflictingSubmitArtifacts
         ));
     }
 

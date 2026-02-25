@@ -4180,6 +4180,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_rejects_when_upstream_returns_conflicting_transport_artifacts() {
+        let tx_signature = bs58::encode([19u8; 64]).into_string();
+        let (signed_tx_base64, _) = test_signed_tx_base64_with_signature([20u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","signed_tx_base64":"{}"}}"#,
+            tx_signature, signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-conflicting-transport-1",
+            "client_order_id": "client-order-conflicting-transport-1",
+            "request_id": "request-conflicting-transport-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("conflicting submit transport artifacts should reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("exactly one of tx_signature or signed_tx_base64"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_invalid_submitted_at_in_upstream_response() {
         let signature = bs58::encode([18u8; 64]).into_string();
         let upstream_body = format!(
