@@ -132,7 +132,12 @@ impl SubmitIdempotencyStore {
         let cleanup_interval_sec = claim_cleanup_interval_sec(ttl);
         let last_cleanup_unix = self.last_claim_cleanup_unix.load(Ordering::Relaxed);
         if should_run_claim_cleanup(now_unix, last_cleanup_unix, cleanup_interval_sec) {
-            let global_last_cleanup_unix = load_global_claim_cleanup_last_unix(&conn)?;
+            let raw_global_last_cleanup_unix = load_global_claim_cleanup_last_unix(&conn)?;
+            let global_last_cleanup_unix =
+                clamp_cleanup_marker_to_now(raw_global_last_cleanup_unix, now_unix);
+            if global_last_cleanup_unix != raw_global_last_cleanup_unix {
+                store_global_claim_cleanup_last_unix(&conn, global_last_cleanup_unix)?;
+            }
             if should_run_claim_cleanup(now_unix, global_last_cleanup_unix, cleanup_interval_sec) {
                 conn.execute(
                     "DELETE FROM executor_submit_idempotency_claims WHERE claimed_at_unix <= ?1",
@@ -273,7 +278,12 @@ impl SubmitIdempotencyStore {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?
         };
-        let global_last_response_cleanup_unix = load_global_response_cleanup_last_unix(&conn)?;
+        let raw_global_last_response_cleanup_unix = load_global_response_cleanup_last_unix(&conn)?;
+        let global_last_response_cleanup_unix =
+            clamp_cleanup_marker_to_now(raw_global_last_response_cleanup_unix, now_unix);
+        if global_last_response_cleanup_unix != raw_global_last_response_cleanup_unix {
+            store_global_response_cleanup_last_unix(&conn, global_last_response_cleanup_unix)?;
+        }
         if should_run_claim_cleanup(
             now_unix,
             global_last_response_cleanup_unix,
@@ -457,6 +467,13 @@ fn should_run_claim_cleanup(
     now_unix.saturating_sub(last_cleanup_unix) >= cleanup_interval_sec
 }
 
+fn clamp_cleanup_marker_to_now(marker_unix: i64, now_unix: i64) -> i64 {
+    if marker_unix > now_unix {
+        return now_unix;
+    }
+    marker_unix
+}
+
 fn load_global_claim_cleanup_last_unix(conn: &Connection) -> Result<i64> {
     let stored: Option<i64> = conn
         .query_row(
@@ -536,8 +553,10 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_cleanup_interval_sec, response_cleanup_interval_sec, should_run_claim_cleanup,
-        DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+        claim_cleanup_interval_sec, clamp_cleanup_marker_to_now, response_cleanup_interval_sec,
+        should_run_claim_cleanup, store_global_claim_cleanup_last_unix,
+        store_global_response_cleanup_last_unix, DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+        DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN, META_KEY_CLAIM_CLEANUP_LAST_UNIX,
         META_KEY_RESPONSE_CLEANUP_LAST_UNIX, SubmitClaimOutcome, SubmitIdempotencyStore,
     };
     use chrono::{Duration, Utc};
@@ -591,6 +610,17 @@ mod tests {
         )
         .optional()
         .expect("query response cleanup marker")
+    }
+
+    fn claim_cleanup_marker_value(store: &SubmitIdempotencyStore) -> Option<i64> {
+        let conn = store.conn.lock().expect("lock conn");
+        conn.query_row(
+            "SELECT value_int FROM executor_runtime_meta WHERE meta_key = ?1",
+            params![META_KEY_CLAIM_CLEANUP_LAST_UNIX],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("query claim cleanup marker")
     }
 
     #[test]
@@ -812,6 +842,13 @@ mod tests {
     }
 
     #[test]
+    fn clamp_cleanup_marker_to_now_limits_future_marker() {
+        assert_eq!(clamp_cleanup_marker_to_now(50, 100), 50);
+        assert_eq!(clamp_cleanup_marker_to_now(100, 100), 100);
+        assert_eq!(clamp_cleanup_marker_to_now(150, 100), 100);
+    }
+
+    #[test]
     fn stale_claim_is_reclaimed_for_same_key_when_global_cleanup_throttled() {
         let db_path = temp_db_path();
         let store =
@@ -906,6 +943,34 @@ mod tests {
     }
 
     #[test]
+    fn claim_cleanup_clamps_future_global_marker_to_now() {
+        let db_path = temp_db_path();
+        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let now_unix = Utc::now().timestamp();
+        let future_marker = now_unix.saturating_add(3600);
+        {
+            let conn = store.conn.lock().expect("lock conn");
+            store_global_claim_cleanup_last_unix(&conn, future_marker).expect("store future marker");
+        }
+
+        let _ = store
+            .load_cached_or_claim_submit("claim-clamp-probe", "request-clamp-probe", 30)
+            .expect("claim path should pass");
+
+        let persisted_marker = claim_cleanup_marker_value(&store).expect("marker must exist");
+        let in_memory_marker = store.last_claim_cleanup_unix.load(Ordering::Relaxed);
+        let latest_now = Utc::now().timestamp();
+        assert!(persisted_marker >= now_unix, "marker should not move backwards");
+        assert!(
+            persisted_marker <= latest_now,
+            "marker must be clamped to now and not stay in the future"
+        );
+        assert_eq!(persisted_marker, in_memory_marker);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn stale_cached_response_is_cleaned_when_response_cleanup_due() {
         let db_path = temp_db_path();
         let store =
@@ -943,6 +1008,35 @@ mod tests {
             .load_submit_response("order-stale-response-1")
             .expect("lookup stale response");
         assert!(stale.is_none(), "stale cached response should be cleaned");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn response_cleanup_clamps_future_global_marker_to_now() {
+        let db_path = temp_db_path();
+        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let now_unix = Utc::now().timestamp();
+        let future_marker = now_unix.saturating_add(3600);
+        {
+            let conn = store.conn.lock().expect("lock conn");
+            store_global_response_cleanup_last_unix(&conn, future_marker)
+                .expect("store future response marker");
+        }
+
+        store
+            .run_response_cleanup_if_due(60, DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN)
+            .expect("response cleanup should pass");
+
+        let persisted_marker = response_cleanup_marker_value(&store).expect("marker must exist");
+        let in_memory_marker = store.last_response_cleanup_unix.load(Ordering::Relaxed);
+        let latest_now = Utc::now().timestamp();
+        assert!(persisted_marker >= now_unix, "marker should not move backwards");
+        assert!(
+            persisted_marker <= latest_now,
+            "response marker must be clamped to now and not stay in the future"
+        );
+        assert_eq!(persisted_marker, in_memory_marker);
+
         let _ = std::fs::remove_file(db_path);
     }
 
