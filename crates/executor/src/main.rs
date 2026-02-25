@@ -1295,6 +1295,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_rejects_submit_without_deadline_before_request() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
+            .await
+            .expect_err("submit without deadline must fail closed before request");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_rejects_simulate_with_deadline_before_request() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            b"{}",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("simulate with submit deadline must fail closed before request");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("must not include submit deadline"));
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_uses_fallback_after_primary_send_error() {
         let Some((fallback_url, handle)) = spawn_one_shot_upstream_raw(
             200,
@@ -1337,7 +1366,14 @@ mod tests {
             primary_url.as_str(),
             Some(fallback_url.as_str()),
         );
-        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let body = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{}",
+            Some(&submit_deadline),
+        )
             .await
             .expect("fallback should succeed after retryable status");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
@@ -1359,9 +1395,16 @@ mod tests {
             primary_url.as_str(),
             Some("http://127.0.0.1:1/upstream"),
         );
-        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
-            .await
-            .expect_err("terminal status should short-circuit");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{}",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("terminal status should short-circuit");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "upstream_http_rejected");
         let _ = primary_handle.join();
@@ -1394,7 +1437,14 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let body = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{}",
+            Some(&submit_deadline),
+        )
             .await
             .expect("fallback with dedicated token should succeed");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));

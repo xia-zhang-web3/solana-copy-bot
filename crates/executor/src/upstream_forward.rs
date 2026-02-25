@@ -8,6 +8,23 @@ use crate::{
 };
 use crate::route_backend::UpstreamAction;
 
+fn validate_upstream_forward_deadline_context(
+    action: UpstreamAction,
+    submit_deadline: Option<&SubmitDeadline>,
+) -> std::result::Result<(), Reject> {
+    match action {
+        UpstreamAction::Submit if submit_deadline.is_none() => Err(Reject::terminal(
+            "invalid_request_body",
+            "submit upstream forward missing deadline at upstream-forward boundary",
+        )),
+        UpstreamAction::Simulate if submit_deadline.is_some() => Err(Reject::terminal(
+            "invalid_request_body",
+            "simulate upstream forward must not include submit deadline at upstream-forward boundary",
+        )),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) async fn forward_to_upstream(
     state: &AppState,
     route: &str,
@@ -15,6 +32,7 @@ pub(crate) async fn forward_to_upstream(
     raw_body: &[u8],
     submit_deadline: Option<&SubmitDeadline>,
 ) -> std::result::Result<Value, Reject> {
+    validate_upstream_forward_deadline_context(action, submit_deadline)?;
     let backend = state.config.route_backends.get(route).ok_or_else(|| {
         Reject::terminal(
             "route_not_allowed",
@@ -156,4 +174,42 @@ pub(crate) async fn forward_to_upstream(
             ),
         )
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_upstream_forward_deadline_context;
+    use crate::route_backend::UpstreamAction;
+    use crate::submit_deadline::SubmitDeadline;
+
+    #[test]
+    fn upstream_forward_deadline_context_rejects_submit_without_deadline() {
+        let reject = validate_upstream_forward_deadline_context(UpstreamAction::Submit, None)
+            .expect_err("submit without deadline must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[test]
+    fn upstream_forward_deadline_context_rejects_simulate_with_deadline() {
+        let deadline = SubmitDeadline::new(1_000);
+        let reject =
+            validate_upstream_forward_deadline_context(UpstreamAction::Simulate, Some(&deadline))
+                .expect_err("simulate with deadline must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("must not include submit deadline"));
+    }
+
+    #[test]
+    fn upstream_forward_deadline_context_accepts_submit_with_deadline() {
+        let deadline = SubmitDeadline::new(1_000);
+        validate_upstream_forward_deadline_context(UpstreamAction::Submit, Some(&deadline))
+            .expect("submit with deadline should pass");
+    }
+
+    #[test]
+    fn upstream_forward_deadline_context_accepts_simulate_without_deadline() {
+        validate_upstream_forward_deadline_context(UpstreamAction::Simulate, None)
+            .expect("simulate without deadline should pass");
+    }
 }
