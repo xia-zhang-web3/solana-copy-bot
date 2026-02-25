@@ -577,6 +577,12 @@ fn validate_optional_payload_non_empty_string_field(
     normalize_for_compare: bool,
 ) -> std::result::Result<(), Reject> {
     let Some(field_value) = payload.get(field_name) else {
+        if expected_value.is_some() {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                format!("{action_label} payload missing {field_name} at route-adapter boundary"),
+            ));
+        }
         return Ok(());
     };
     let field_raw = field_value.as_str().ok_or_else(|| {
@@ -1067,6 +1073,24 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_missing_side_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
+        let reject = validate_submit_payload_for_route_with_expectations(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            None,
+            Some("buy"),
+            None,
+        )
+        .expect_err("submit missing side must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing side"));
+    }
+
+    #[test]
     fn validate_submit_payload_for_route_rejects_token_mismatch_when_expected() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","token":"22222222222222222222222222222222"}"#;
         let reject = validate_submit_payload_for_route_with_expectations(
@@ -1082,6 +1106,24 @@ mod tests {
         .expect_err("submit token mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("token mismatch"));
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_missing_token_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
+        let reject = validate_submit_payload_for_route_with_expectations(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            None,
+            None,
+            Some("11111111111111111111111111111111"),
+        )
+        .expect_err("submit missing token must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing token"));
     }
 
     #[test]
@@ -1256,6 +1298,23 @@ mod tests {
     }
 
     #[test]
+    fn validate_simulate_payload_for_route_rejects_missing_token_when_expected() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
+        let reject = validate_simulate_payload_for_route_with_expectations(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            None,
+            Some("11111111111111111111111111111111"),
+        )
+        .expect_err("simulate missing token must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing token"));
+    }
+
+    #[test]
     fn validate_simulate_payload_for_route_rejects_side_mismatch_when_expected() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","side":"sell"}"#;
         let reject = validate_simulate_payload_for_route_with_expectations(
@@ -1270,6 +1329,23 @@ mod tests {
         .expect_err("simulate side mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("side mismatch"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_missing_side_when_expected() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
+        let reject = validate_simulate_payload_for_route_with_expectations(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            Some("buy"),
+            None,
+        )
+        .expect_err("simulate missing side must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing side"));
     }
 
     #[test]
