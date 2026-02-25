@@ -101,6 +101,7 @@ impl PaperRouteExecutor {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
     ) -> std::result::Result<Value, Reject> {
+        validate_simulate_payload_for_route(raw_body, route)?;
         forward_to_upstream(
             state,
             route,
@@ -152,6 +153,7 @@ impl RpcRouteExecutor {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
     ) -> std::result::Result<Value, Reject> {
+        validate_simulate_payload_for_route(raw_body, route)?;
         forward_to_upstream(
             state,
             route,
@@ -203,6 +205,7 @@ impl JitoRouteExecutor {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
     ) -> std::result::Result<Value, Reject> {
+        validate_simulate_payload_for_route(raw_body, route)?;
         forward_to_upstream(
             state,
             route,
@@ -254,6 +257,7 @@ impl FastlaneRouteExecutor {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
     ) -> std::result::Result<Value, Reject> {
+        validate_simulate_payload_for_route(raw_body, route)?;
         forward_to_upstream(
             state,
             route,
@@ -298,6 +302,23 @@ fn parse_submit_payload_object(raw_body: &[u8]) -> std::result::Result<serde_jso
     })
 }
 
+fn parse_simulate_payload_object(
+    raw_body: &[u8],
+) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
+    let payload: Value = serde_json::from_slice(raw_body).map_err(|error| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("simulate payload must be valid JSON object: {}", error),
+        )
+    })?;
+    payload.as_object().cloned().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            "simulate payload must be JSON object",
+        )
+    })
+}
+
 fn validate_submit_payload_for_route(raw_body: &[u8], expected_route: &str) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
     let payload = parse_submit_payload_object(raw_body)?;
     let expected_normalized_route = normalize_route(expected_route);
@@ -322,6 +343,41 @@ fn validate_submit_payload_for_route(raw_body: &[u8], expected_route: &str) -> s
             "invalid_request_body",
             format!(
                 "submit payload route mismatch at route-adapter boundary expected={} got={}",
+                expected_normalized_route, payload_normalized_route
+            ),
+        ));
+    }
+
+    Ok(payload)
+}
+
+fn validate_simulate_payload_for_route(
+    raw_body: &[u8],
+    expected_route: &str,
+) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
+    let payload = parse_simulate_payload_object(raw_body)?;
+    let expected_normalized_route = normalize_route(expected_route);
+    let payload_route = payload.get("route").ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "simulate payload missing route at route-adapter boundary expected={}",
+                expected_normalized_route
+            ),
+        )
+    })?;
+    let payload_route_raw = payload_route.as_str().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            "simulate payload route must be string",
+        )
+    })?;
+    let payload_normalized_route = normalize_route(payload_route_raw);
+    if payload_normalized_route != expected_normalized_route {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "simulate payload route mismatch at route-adapter boundary expected={} got={}",
                 expected_normalized_route, payload_normalized_route
             ),
         ));
@@ -357,8 +413,10 @@ fn validate_rpc_submit_tip_payload(raw_body: &[u8], expected_route: &str) -> std
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_rpc_submit_tip_payload, validate_submit_payload_for_route};
-    use super::RouteAdapter;
+    use super::{
+        validate_rpc_submit_tip_payload, validate_simulate_payload_for_route,
+        validate_submit_payload_for_route, RouteAdapter,
+    };
     use crate::route_executor::RouteExecutorKind;
 
     #[test]
@@ -441,6 +499,33 @@ mod tests {
         let body = br#"{"route":123,"tip_lamports":0}"#;
         let reject = validate_submit_payload_for_route(body, "rpc")
             .expect_err("non-string route must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route must be string"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_mismatched_route() {
+        let body = br#"{"route":"jito","action":"simulate","dry_run":true}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc")
+            .expect_err("simulate route mismatch must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route mismatch"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_missing_route() {
+        let body = br#"{"action":"simulate","dry_run":true}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc")
+            .expect_err("simulate missing route must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing route"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_non_string_route() {
+        let body = br#"{"route":123,"action":"simulate","dry_run":true}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc")
+            .expect_err("simulate non-string route must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("route must be string"));
     }

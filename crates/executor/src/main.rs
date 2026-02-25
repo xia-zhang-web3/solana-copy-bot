@@ -771,6 +771,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_simulate_rejects_route_payload_mismatch_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-route-payload-mismatch-1".to_string(),
+            signal_id: "signal-sim-route-payload-mismatch-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = br#"{"action":"simulate","contract_version":"v1","request_id":"request-sim-route-payload-mismatch-1","signal_id":"signal-sim-route-payload-mismatch-1","side":"buy","token":"11111111111111111111111111111111","notional_sol":1.0,"signal_ts":"2026-02-24T12:00:00Z","route":"jito","dry_run":true}"#;
+        let reject = handle_simulate(&state, &request, raw_body.as_slice())
+            .await
+            .expect_err("simulate route payload mismatch must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route mismatch"));
+    }
+
+    #[tokio::test]
     async fn handle_simulate_rejects_upstream_route_mismatch() {
         let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"route":"jito"}"#;
         let Some((upstream_url, upstream_handle)) =
