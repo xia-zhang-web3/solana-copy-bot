@@ -495,4 +495,64 @@ mod tests {
         )
         .expect("simulate with complete expectations should pass");
     }
+
+    #[test]
+    fn route_executor_payload_expectations_shape_rejects_missing_shared_fields() {
+        let cases = [
+            (
+                "request_id",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: None,
+                    signal_id: Some("signal-id-1"),
+                    client_order_id: Some("client-order-id-1"),
+                    side: Some("buy"),
+                    token: Some("11111111111111111111111111111111"),
+                },
+            ),
+            (
+                "signal_id",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: Some("request-id-1"),
+                    signal_id: None,
+                    client_order_id: Some("client-order-id-1"),
+                    side: Some("buy"),
+                    token: Some("11111111111111111111111111111111"),
+                },
+            ),
+            (
+                "side",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: Some("request-id-1"),
+                    signal_id: Some("signal-id-1"),
+                    client_order_id: Some("client-order-id-1"),
+                    side: None,
+                    token: Some("11111111111111111111111111111111"),
+                },
+            ),
+            (
+                "token",
+                RouteActionPayloadExpectations {
+                    route_hint: Some("rpc"),
+                    request_id: Some("request-id-1"),
+                    signal_id: Some("signal-id-1"),
+                    client_order_id: Some("client-order-id-1"),
+                    side: Some("buy"),
+                    token: None,
+                },
+            ),
+        ];
+
+        for (missing_field, expectations) in cases {
+            let reject =
+                validate_route_executor_payload_expectations_shape(UpstreamAction::Submit, expectations)
+                    .expect_err("missing shared expectation must reject");
+            assert_eq!(reject.code, "invalid_request_body");
+            assert!(reject
+                .detail
+                .contains(format!("missing {} expectation", missing_field).as_str()));
+        }
+    }
 }

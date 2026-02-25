@@ -190,6 +190,7 @@ contract_guard_tests=(
   "route_executor_action_context_rejects_simulate_with_plan"
   "route_executor_payload_expectations_shape_rejects_submit_missing_client_order_id"
   "route_executor_payload_expectations_shape_rejects_simulate_with_client_order_id"
+  "route_executor_payload_expectations_shape_rejects_missing_shared_fields"
   "handle_submit_forces_rpc_tip_to_zero_and_emits_trace"
   "handle_submit_wires_instruction_plan_presence_into_route_adapter_context"
   "handle_submit_allows_rpc_tip_when_nonzero_tip_disabled"
