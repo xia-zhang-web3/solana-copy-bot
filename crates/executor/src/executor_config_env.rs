@@ -510,10 +510,69 @@ fn validate_response_cleanup_worker_tick_sec(
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
         validate_response_cleanup_tuning, validate_response_cleanup_worker_tick_sec,
         validate_response_retention_cutoff,
     };
+    use crate::idempotency_cleanup_worker::response_cleanup_worker_tick_sec;
+
+    static EXECUTOR_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_clean_executor_env<T>(run: impl FnOnce() -> T) -> T {
+        let _guard = EXECUTOR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved: Vec<(OsString, OsString)> = env::vars_os()
+            .filter(|(key, _)| key.to_string_lossy().starts_with("COPYBOT_EXECUTOR_"))
+            .collect();
+        for (key, _) in &saved {
+            env::remove_var(key);
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        for (key, value) in saved {
+            env::set_var(key, value);
+        }
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn with_temp_signer_keypair_file<T>(run: impl FnOnce(&Path) -> T) -> T {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "copybot-executor-config-test-keypair-{}-{nanos}.json",
+            std::process::id()
+        ));
+        let bytes = vec![0u8; 64];
+        let json = serde_json::to_string(&bytes).expect("serialize keypair fixture");
+        fs::write(&path, json).expect("write keypair fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path)
+                .expect("stat keypair fixture")
+                .permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&path, perms).expect("set restrictive keypair permissions");
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&path)));
+        let _ = fs::remove_file(&path);
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
 
     #[test]
     fn validate_response_retention_cutoff_accepts_default_range() {
@@ -594,5 +653,45 @@ mod tests {
             "unexpected error: {}",
             high
         );
+    }
+
+    #[test]
+    fn executor_config_from_env_wires_response_cleanup_worker_tick_override() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                env::set_var(
+                    "COPYBOT_EXECUTOR_SIGNER_PUBKEY",
+                    "11111111111111111111111111111111",
+                );
+                env::set_var("COPYBOT_EXECUTOR_SIGNER_SOURCE", "file");
+                env::set_var(
+                    "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE",
+                    keypair_path.to_str().expect("utf8 path"),
+                );
+                env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "rpc");
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
+                    "https://submit.example.com",
+                );
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL",
+                    "https://simulate.example.com",
+                );
+                env::set_var("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", "true");
+                env::set_var(
+                    "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC",
+                    "42",
+                );
+
+                let config =
+                    crate::ExecutorConfig::from_env().expect("config should parse from env");
+                assert_eq!(config.idempotency_response_cleanup_worker_tick_sec, 42);
+                assert_ne!(
+                    config.idempotency_response_cleanup_worker_tick_sec,
+                    response_cleanup_worker_tick_sec(config.idempotency_response_retention_sec),
+                    "explicit tick override must take precedence over retention-derived default"
+                );
+            });
+        });
     }
 }
