@@ -102,7 +102,9 @@ pub(crate) fn resolve_fee_hints(inputs: FeeHintInputs) -> Result<ResolvedFeeHint
         }
     }
 
-    if let Some(value) = inputs.response_ata_create_rent_lamports {
+    let ata_create_rent_lamports =
+        normalize_ata_create_rent_hint(inputs.response_ata_create_rent_lamports);
+    if let Some(value) = ata_create_rent_lamports {
         if value > i64::MAX as u64 {
             return Err(FeeHintError::FieldExceedsI64 {
                 field: "ata_create_rent_lamports",
@@ -115,7 +117,7 @@ pub(crate) fn resolve_fee_hints(inputs: FeeHintInputs) -> Result<ResolvedFeeHint
         network_fee_lamports,
         base_fee_lamports,
         priority_fee_lamports,
-        ata_create_rent_lamports: inputs.response_ata_create_rent_lamports,
+        ata_create_rent_lamports,
     })
 }
 
@@ -133,6 +135,13 @@ fn parse_optional_non_negative_u64_field(
         return Ok(Some(parsed));
     }
     Err(FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent { field })
+}
+
+fn normalize_ata_create_rent_hint(value: Option<u64>) -> Option<u64> {
+    match value {
+        Some(0) => None,
+        other => other,
+    }
 }
 
 fn derive_priority_fee_lamports(
@@ -266,5 +275,56 @@ mod tests {
             }
             _ => panic!("unexpected error variant: {:?}", error),
         }
+    }
+
+    #[test]
+    fn ata_fee_hint_zero_is_treated_as_absent() {
+        let resolved = resolve_fee_hints(FeeHintInputs {
+            response_network_fee_lamports: None,
+            response_base_fee_lamports: None,
+            response_priority_fee_lamports: None,
+            response_ata_create_rent_lamports: Some(0),
+            request_cu_limit: 300_000,
+            request_cu_price_micro_lamports: 1_500,
+            default_base_fee_lamports: 5_000,
+        })
+        .expect("zero ATA hint should normalize to absent");
+        assert_eq!(resolved.ata_create_rent_lamports, None);
+    }
+
+    #[test]
+    fn ata_fee_hint_positive_value_is_preserved() {
+        let resolved = resolve_fee_hints(FeeHintInputs {
+            response_network_fee_lamports: None,
+            response_base_fee_lamports: None,
+            response_priority_fee_lamports: None,
+            response_ata_create_rent_lamports: Some(2_039_280),
+            request_cu_limit: 300_000,
+            request_cu_price_micro_lamports: 1_500,
+            default_base_fee_lamports: 5_000,
+        })
+        .expect("positive ATA hint must be preserved");
+        assert_eq!(resolved.ata_create_rent_lamports, Some(2_039_280));
+    }
+
+    #[test]
+    fn ata_fee_hint_rejects_values_exceeding_i64() {
+        let error = resolve_fee_hints(FeeHintInputs {
+            response_network_fee_lamports: None,
+            response_base_fee_lamports: None,
+            response_priority_fee_lamports: None,
+            response_ata_create_rent_lamports: Some(i64::MAX as u64 + 1),
+            request_cu_limit: 300_000,
+            request_cu_price_micro_lamports: 1_500,
+            default_base_fee_lamports: 5_000,
+        })
+        .expect_err("ATA hint exceeding i64 must fail");
+        assert_eq!(
+            error,
+            FeeHintError::FieldExceedsI64 {
+                field: "ata_create_rent_lamports",
+                value: i64::MAX as u64 + 1,
+            }
+        );
     }
 }

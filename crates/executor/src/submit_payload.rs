@@ -40,7 +40,6 @@ pub(crate) fn build_submit_success_payload(inputs: SubmitSuccessPayloadInputs<'_
         "network_fee_lamports": inputs.resolved_fee_hints.network_fee_lamports,
         "base_fee_lamports": inputs.resolved_fee_hints.base_fee_lamports,
         "priority_fee_lamports": inputs.resolved_fee_hints.priority_fee_lamports,
-        "ata_create_rent_lamports": inputs.resolved_fee_hints.ata_create_rent_lamports,
     });
     if let Some(policy_code) = inputs.tip_policy_code {
         response["tip_policy"] = json!({
@@ -48,6 +47,9 @@ pub(crate) fn build_submit_success_payload(inputs: SubmitSuccessPayloadInputs<'_
             "requested_tip_lamports": inputs.requested_tip_lamports,
             "effective_tip_lamports": inputs.effective_tip_lamports,
         });
+    }
+    if let Some(ata_create_rent_lamports) = inputs.resolved_fee_hints.ata_create_rent_lamports {
+        response["ata_create_rent_lamports"] = json!(ata_create_rent_lamports);
     }
     response["submit_signature_verify"] = inputs.submit_signature_verify;
     response
@@ -78,7 +80,7 @@ mod tests {
                 network_fee_lamports: 5_300,
                 base_fee_lamports: 5_000,
                 priority_fee_lamports: 300,
-                ata_create_rent_lamports: Some(0),
+                ata_create_rent_lamports: None,
             },
             submit_signature_verify: json!({"status":"seen"}),
         }
@@ -102,6 +104,28 @@ mod tests {
         assert!(
             payload.get("tip_policy").is_none(),
             "tip_policy must be absent when no policy code is provided"
+        );
+    }
+
+    #[test]
+    fn ata_submit_payload_omits_ata_create_rent_lamports_when_absent() {
+        let payload = build_submit_success_payload(sample_inputs(None));
+        assert!(
+            payload.get("ata_create_rent_lamports").is_none(),
+            "ATA fee hint must be omitted when absent"
+        );
+    }
+
+    #[test]
+    fn ata_submit_payload_includes_ata_create_rent_lamports_when_present() {
+        let mut inputs = sample_inputs(None);
+        inputs.resolved_fee_hints.ata_create_rent_lamports = Some(2_039_280);
+        let payload = build_submit_success_payload(inputs);
+        assert_eq!(
+            payload
+                .get("ata_create_rent_lamports")
+                .and_then(Value::as_u64),
+            Some(2_039_280)
         );
     }
 }
