@@ -887,6 +887,38 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_payload_for_route_rejects_signal_id_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":"signal-other"}"#;
+        let reject = validate_submit_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            None,
+            Some("signal-expected"),
+            None,
+        )
+        .expect_err("submit signal_id mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("signal_id mismatch"));
+    }
+
+    #[test]
+    fn validate_submit_payload_for_route_rejects_client_order_id_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","client_order_id":"client-other"}"#;
+        let reject = validate_submit_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            Some("client-expected"),
+        )
+        .expect_err("submit client_order_id mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("client_order_id mismatch"));
+    }
+
+    #[test]
     fn validate_submit_payload_for_route_rejects_empty_signal_id_when_present() {
         let body =
             br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":" "}"#;
@@ -1023,6 +1055,21 @@ mod tests {
         .expect_err("simulate signal_id mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("signal_id mismatch"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_request_id_mismatch_when_expected() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","request_id":"request-other"}"#;
+        let reject = validate_simulate_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            Some("request-expected"),
+            None,
+        )
+        .expect_err("simulate request_id mismatch must reject when expected");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("request_id mismatch"));
     }
 
     #[test]
