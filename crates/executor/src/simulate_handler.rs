@@ -9,7 +9,9 @@ use crate::reject_mapping::{
 use crate::request_types::SimulateRequest;
 use crate::request_validation::validate_simulate_request_basics;
 use crate::route_backend::UpstreamAction;
-use crate::route_executor::{execute_route_action, RouteActionPayloadExpectations};
+use crate::route_executor::{
+    execute_route_action, RouteActionPayloadExpectations, RouteSubmitExecutionContext,
+};
 use crate::route_normalization::normalize_route;
 use crate::simulate_response::{
     build_simulate_success_payload, resolve_simulate_response_detail,
@@ -64,6 +66,7 @@ pub(crate) async fn handle_simulate(
                 side: Some(request.side.as_str()),
                 token: Some(request.token.as_str()),
             },
+            RouteSubmitExecutionContext::default(),
         )
         .await?;
     match parse_upstream_outcome(&backend_response, "simulation_rejected") {

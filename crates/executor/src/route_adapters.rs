@@ -1,7 +1,10 @@
 use serde_json::Value;
+use tracing::debug;
 
 use crate::route_backend::UpstreamAction;
-use crate::route_executor::{RouteActionPayloadExpectations, RouteExecutorKind};
+use crate::route_executor::{
+    RouteActionPayloadExpectations, RouteExecutorKind, RouteSubmitExecutionContext,
+};
 use crate::route_normalization::normalize_route;
 use crate::submit_deadline::SubmitDeadline;
 use crate::upstream_forward::forward_to_upstream;
@@ -46,6 +49,7 @@ impl RouteAdapter {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
         payload_expectations: RouteActionPayloadExpectations<'_>,
+        submit_context: RouteSubmitExecutionContext,
     ) -> std::result::Result<Value, Reject> {
         match action {
             UpstreamAction::Simulate => {
@@ -53,8 +57,15 @@ impl RouteAdapter {
                     .await
             }
             UpstreamAction::Submit => {
-                self.execute_submit(state, route, raw_body, submit_deadline, payload_expectations)
-                    .await
+                self.execute_submit(
+                    state,
+                    route,
+                    raw_body,
+                    submit_deadline,
+                    payload_expectations,
+                    submit_context,
+                )
+                .await
             }
         }
     }
@@ -93,7 +104,18 @@ impl RouteAdapter {
         raw_body: &[u8],
         submit_deadline: Option<&SubmitDeadline>,
         payload_expectations: RouteActionPayloadExpectations<'_>,
+        submit_context: RouteSubmitExecutionContext,
     ) -> std::result::Result<Value, Reject> {
+        if let Some(plan) = submit_context.instruction_plan {
+            debug!(
+                route = %route,
+                route_adapter = %self.as_str(),
+                cu_limit = plan.compute_budget_cu_limit,
+                cu_price_micro_lamports = plan.compute_budget_cu_price_micro_lamports,
+                tip_instruction_lamports = ?plan.tip_instruction_lamports,
+                "route adapter received submit instruction plan"
+            );
+        }
         if self.requires_rpc_submit_tip_guard() {
             validate_rpc_submit_tip_payload(
                 raw_body,

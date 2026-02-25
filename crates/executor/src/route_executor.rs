@@ -6,6 +6,7 @@ use crate::route_backend::UpstreamAction;
 use crate::route_normalization::normalize_route;
 use crate::route_policy::{classify_normalized_route, RouteKind};
 use crate::submit_deadline::SubmitDeadline;
+use crate::tx_build::SubmitInstructionPlan;
 use crate::{AppState, Reject};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +24,11 @@ pub(crate) struct RouteActionPayloadExpectations<'a> {
     pub(crate) client_order_id: Option<&'a str>,
     pub(crate) side: Option<&'a str>,
     pub(crate) token: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RouteSubmitExecutionContext {
+    pub(crate) instruction_plan: Option<SubmitInstructionPlan>,
 }
 
 impl RouteExecutorKind {
@@ -59,6 +65,7 @@ pub(crate) async fn execute_route_action(
     raw_body: &[u8],
     submit_deadline: Option<&SubmitDeadline>,
     payload_expectations: RouteActionPayloadExpectations<'_>,
+    submit_context: RouteSubmitExecutionContext,
 ) -> std::result::Result<Value, Reject> {
     let normalized_route = normalize_route(route);
     let route_executor_kind =
@@ -74,6 +81,7 @@ pub(crate) async fn execute_route_action(
         action = %action.as_str(),
         route_executor = %route_executor_kind.as_str(),
         route_adapter = %route_adapter.as_str(),
+        submit_instruction_plan_present = submit_context.instruction_plan.is_some(),
         "executing route action"
     );
     route_adapter
@@ -84,6 +92,7 @@ pub(crate) async fn execute_route_action(
             raw_body,
             submit_deadline,
             payload_expectations,
+            submit_context,
         )
         .await
 }
@@ -91,7 +100,8 @@ pub(crate) async fn execute_route_action(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_route_executor_kind, resolve_route_executor_kind_normalized, RouteExecutorKind,
+        resolve_route_executor_kind, resolve_route_executor_kind_normalized,
+        RouteSubmitExecutionContext, RouteExecutorKind,
     };
 
     #[test]
@@ -134,5 +144,11 @@ mod tests {
             resolve_route_executor_kind(" RPC "),
             Some(RouteExecutorKind::Rpc)
         );
+    }
+
+    #[test]
+    fn route_executor_submit_execution_context_defaults_none() {
+        let context = RouteSubmitExecutionContext::default();
+        assert!(context.instruction_plan.is_none());
     }
 }
