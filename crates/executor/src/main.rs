@@ -2384,6 +2384,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_deadline_context_before_allowlist_check() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-deadline-before-allowlist-1",
+            "signal_id": "signal-deadline-before-allowlist-1",
+            "client_order_id": "client-order-deadline-before-allowlist-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "jito",
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+
+        let reject = execute_route_action(
+            &state,
+            "jito",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("jito"),
+                request_id: Some("request-deadline-before-allowlist-1"),
+                signal_id: Some("signal-deadline-before-allowlist-1"),
+                client_order_id: Some("client-order-deadline-before-allowlist-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+            },
+        )
+        .await
+        .expect_err("deadline context must reject before allowlist checks");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_deadline_context_before_fastlane_feature_gate() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.route_allowlist.insert("fastlane".to_string());
+        state.config.route_backends.insert(
+            "fastlane".to_string(),
+            RouteBackend {
+                submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-deadline-before-fastlane-gate-1",
+            "signal_id": "signal-deadline-before-fastlane-gate-1",
+            "client_order_id": "client-order-deadline-before-fastlane-gate-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "fastlane",
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+
+        let reject = execute_route_action(
+            &state,
+            "fastlane",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("fastlane"),
+                request_id: Some("request-deadline-before-fastlane-gate-1"),
+                signal_id: Some("signal-deadline-before-fastlane-gate-1"),
+                client_order_id: Some("client-order-deadline-before-fastlane-gate-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+            },
+        )
+        .await
+        .expect_err("deadline context must reject before fastlane feature gate");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_submit_with_plan_without_deadline_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",

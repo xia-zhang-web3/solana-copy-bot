@@ -227,13 +227,13 @@ pub(crate) async fn execute_route_action(
         })?;
     validate_route_executor_payload_route_expectation(normalized_route.as_str(), payload_expectations)?;
     validate_route_executor_payload_expectations_shape(action, payload_expectations)?;
+    validate_route_executor_deadline_context(action, submit_context, submit_deadline)?;
     validate_route_executor_allowlist(normalized_route.as_str(), &state.config.route_allowlist)?;
     validate_route_executor_backend_configured(normalized_route.as_str(), &state.config.route_backends)?;
     validate_route_executor_feature_gate(
         normalized_route.as_str(),
         state.config.submit_fastlane_enabled,
     )?;
-    validate_route_executor_deadline_context(action, submit_context, submit_deadline)?;
     validate_route_executor_action_context(action, submit_context)?;
     let route_adapter = RouteAdapter::from_kind(route_executor_kind);
     debug!(
