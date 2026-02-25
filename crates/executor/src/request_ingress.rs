@@ -62,7 +62,13 @@ mod tests {
 
     #[tokio::test]
     async fn request_ingress_verify_auth_or_reject_returns_auth_reject_payload() {
-        let auth = AuthVerifier::new(Some("expected-token".to_string()), None, None, 30);
+        let auth = AuthVerifier::new(
+            Some("expected-token".to_string()),
+            None,
+            None,
+            30,
+            100_000,
+        );
         let response = verify_auth_or_reject(&auth, &HeaderMap::new(), b"{}", "v1")
             .await
             .expect("missing auth must reject");
@@ -75,7 +81,13 @@ mod tests {
 
     #[tokio::test]
     async fn request_ingress_verify_auth_or_reject_returns_none_on_valid_auth() {
-        let auth = AuthVerifier::new(Some("expected-token".to_string()), None, None, 30);
+        let auth = AuthVerifier::new(
+            Some("expected-token".to_string()),
+            None,
+            None,
+            30,
+            100_000,
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",

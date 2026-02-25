@@ -15,7 +15,10 @@ use crate::secret_source::resolve_secret_source;
 use crate::signer_source::resolve_signer_source_config;
 use crate::submit_budget::{default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path};
 use crate::submit_verify_config::parse_submit_signature_verify_config;
-use crate::{ExecutorConfig, DEFAULT_BIND_ADDR, DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC, DEFAULT_MAX_NOTIONAL_SOL, DEFAULT_TIMEOUT_MS};
+use crate::{
+    ExecutorConfig, DEFAULT_BIND_ADDR, DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
+    DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC, DEFAULT_MAX_NOTIONAL_SOL, DEFAULT_TIMEOUT_MS,
+};
 
 impl ExecutorConfig {
     pub(crate) fn from_env() -> Result<Self> {
@@ -279,6 +282,15 @@ impl ExecutorConfig {
             optional_non_empty_env("COPYBOT_EXECUTOR_HMAC_SECRET_FILE").as_deref(),
         )?;
         let hmac_ttl_sec = parse_u64_env("COPYBOT_EXECUTOR_HMAC_TTL_SEC", 30)?;
+        let hmac_nonce_cache_max_entries = parse_u64_env(
+            "COPYBOT_EXECUTOR_HMAC_NONCE_CACHE_MAX_ENTRIES",
+            DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
+        )?;
+        if hmac_nonce_cache_max_entries == 0 {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_HMAC_NONCE_CACHE_MAX_ENTRIES must be > 0"
+            ));
+        }
         let allow_unauthenticated = parse_bool_env("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", false);
         validate_hmac_auth_config(
             hmac_key_id.as_deref(),
@@ -357,6 +369,7 @@ impl ExecutorConfig {
             hmac_key_id,
             hmac_secret,
             hmac_ttl_sec,
+            hmac_nonce_cache_max_entries,
             request_timeout_ms,
             submit_total_budget_ms,
             idempotency_db_path,

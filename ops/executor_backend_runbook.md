@@ -49,6 +49,9 @@ Auth policy:
 3. HMAC (`COPYBOT_EXECUTOR_HMAC_KEY_ID` + `COPYBOT_EXECUTOR_HMAC_SECRET[_FILE]`) is optional additional guard, not a Bearer replacement.
 4. Unauthenticated mode allowed only with explicit override:
    1. `COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true`
+5. Optional replay-cache cap for HMAC nonces:
+   1. `COPYBOT_EXECUTOR_HMAC_NONCE_CACHE_MAX_ENTRIES` (default `100000`, must be `> 0`)
+   2. overflow is fail-closed (`hmac_replay_cache_overflow`) until old nonce entries expire
 
 ## 3) Local Run
 

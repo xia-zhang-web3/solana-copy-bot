@@ -128,6 +128,7 @@ const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
 const DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC: u64 = 60;
+const DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES: u64 = 100_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -152,6 +153,7 @@ struct ExecutorConfig {
     hmac_key_id: Option<String>,
     hmac_secret: Option<String>,
     hmac_ttl_sec: u64,
+    hmac_nonce_cache_max_entries: u64,
     request_timeout_ms: u64,
     submit_total_budget_ms: u64,
     idempotency_db_path: String,
@@ -186,6 +188,7 @@ async fn main() -> Result<()> {
         config.hmac_key_id.clone(),
         config.hmac_secret.clone(),
         config.hmac_ttl_sec,
+        config.hmac_nonce_cache_max_entries,
     ));
     let idempotency = Arc::new(
         SubmitIdempotencyStore::open(config.idempotency_db_path.as_str())
@@ -214,6 +217,7 @@ async fn main() -> Result<()> {
         contract_version = %state.config.contract_version,
         routes = ?state.config.route_allowlist,
         submit_fastlane_enabled = state.config.submit_fastlane_enabled,
+        hmac_nonce_cache_max_entries = state.config.hmac_nonce_cache_max_entries,
         idempotency_db_path = %state.config.idempotency_db_path,
         idempotency_claim_ttl_sec = state.config.idempotency_claim_ttl_sec,
         submit_total_budget_ms = state.config.submit_total_budget_ms,
@@ -586,7 +590,13 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_rejects_wrong_bearer_token() {
-        let verifier = AuthVerifier::new(Some("correct-token".to_string()), None, None, 30);
+        let verifier = AuthVerifier::new(
+            Some("correct-token".to_string()),
+            None,
+            None,
+            30,
+            DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
@@ -601,7 +611,13 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_accepts_correct_bearer_token() {
-        let verifier = AuthVerifier::new(Some("correct-token".to_string()), None, None, 30);
+        let verifier = AuthVerifier::new(
+            Some("correct-token".to_string()),
+            None,
+            None,
+            30,
+            DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
@@ -3420,6 +3436,7 @@ mod tests {
             hmac_key_id: None,
             hmac_secret: None,
             hmac_ttl_sec: 30,
+            hmac_nonce_cache_max_entries: DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
             request_timeout_ms: 2_000,
             submit_total_budget_ms: default_submit_total_budget_ms(2_000),
             idempotency_db_path: ":memory:".to_string(),
@@ -3433,6 +3450,7 @@ mod tests {
             config.hmac_key_id.clone(),
             config.hmac_secret.clone(),
             config.hmac_ttl_sec,
+            config.hmac_nonce_cache_max_entries,
         ));
         let idempotency = Arc::new(
             SubmitIdempotencyStore::open(config.idempotency_db_path.as_str())

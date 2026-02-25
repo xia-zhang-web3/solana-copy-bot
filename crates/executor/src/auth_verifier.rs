@@ -14,6 +14,7 @@ pub(crate) struct AuthVerifier {
     bearer_token: Option<String>,
     hmac: Option<HmacConfig>,
     nonce_seen_until_epoch: Arc<Mutex<HashMap<String, i64>>>,
+    nonce_cache_max_entries: usize,
 }
 
 #[derive(Clone)]
@@ -29,6 +30,7 @@ impl AuthVerifier {
         hmac_key_id: Option<String>,
         hmac_secret: Option<String>,
         hmac_ttl_sec: u64,
+        hmac_nonce_cache_max_entries: u64,
     ) -> Self {
         let hmac = match (hmac_key_id, hmac_secret) {
             (Some(key_id), Some(secret)) => Some(HmacConfig {
@@ -42,6 +44,9 @@ impl AuthVerifier {
             bearer_token,
             hmac,
             nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+            nonce_cache_max_entries: usize::try_from(hmac_nonce_cache_max_entries)
+                .unwrap_or(usize::MAX)
+                .max(1),
         }
     }
 
@@ -134,6 +139,15 @@ impl AuthVerifier {
                         "HMAC nonce replay detected",
                     ));
                 }
+                if seen.len() >= self.nonce_cache_max_entries {
+                    return Err(Reject::retryable(
+                        "hmac_replay_cache_overflow",
+                        format!(
+                            "HMAC nonce replay cache capacity reached (max_entries={})",
+                            self.nonce_cache_max_entries
+                        ),
+                    ));
+                }
                 let expires_at = timestamp.saturating_add(max_skew);
                 seen.insert(nonce_key, expires_at);
             }
@@ -213,7 +227,13 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_hmac_accepts_valid_signature_and_detects_replay() {
-        let verifier = AuthVerifier::new(None, Some("kid-1".to_string()), Some("secret-1".to_string()), 30);
+        let verifier = AuthVerifier::new(
+            None,
+            Some("kid-1".to_string()),
+            Some("secret-1".to_string()),
+            30,
+            100_000,
+        );
         let body = br#"{"status":"ok"}"#;
         let timestamp = Utc::now().timestamp();
         let payload = build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-1", body);
@@ -230,7 +250,13 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_hmac_invalid_signature_does_not_burn_nonce() {
-        let verifier = AuthVerifier::new(None, Some("kid-2".to_string()), Some("secret-2".to_string()), 30);
+        let verifier = AuthVerifier::new(
+            None,
+            Some("kid-2".to_string()),
+            Some("secret-2".to_string()),
+            30,
+            100_000,
+        );
         let body = br#"{"side":"buy"}"#;
         let timestamp = Utc::now().timestamp();
 
@@ -258,6 +284,7 @@ mod tests {
             Some("kid-3".to_string()),
             Some("secret-3".to_string()),
             ttl_sec,
+            100_000,
         );
         let body = br#"{"action":"simulate"}"#;
         let timestamp = Utc::now().timestamp().saturating_add(ttl_sec as i64);
@@ -278,5 +305,49 @@ mod tests {
             .await
             .expect_err("replay within accepted skew window must reject");
         assert_eq!(reject.code, "hmac_replay");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_rejects_when_nonce_cache_capacity_reached() {
+        let ttl_sec = 30;
+        let verifier = AuthVerifier::new(
+            None,
+            Some("kid-cap".to_string()),
+            Some("secret-cap".to_string()),
+            ttl_sec,
+            1,
+        );
+        let body = br#"{"action":"submit"}"#;
+        let timestamp = Utc::now().timestamp();
+
+        let payload_1 = build_hmac_payload_bytes(
+            timestamp.to_string().as_str(),
+            ttl_sec.to_string().as_str(),
+            "nonce-cap-1",
+            body,
+        );
+        let signature_1 = compute_hmac_signature_hex(b"secret-cap", payload_1.as_slice()).unwrap();
+        let headers_1 =
+            build_hmac_headers("kid-cap", ttl_sec, "nonce-cap-1", timestamp, signature_1.as_str());
+        verifier
+            .verify(&headers_1, body)
+            .await
+            .expect("first nonce should pass");
+
+        let payload_2 = build_hmac_payload_bytes(
+            timestamp.to_string().as_str(),
+            ttl_sec.to_string().as_str(),
+            "nonce-cap-2",
+            body,
+        );
+        let signature_2 = compute_hmac_signature_hex(b"secret-cap", payload_2.as_slice()).unwrap();
+        let headers_2 =
+            build_hmac_headers("kid-cap", ttl_sec, "nonce-cap-2", timestamp, signature_2.as_str());
+        let reject = verifier
+            .verify(&headers_2, body)
+            .await
+            .expect_err("nonce cache overflow should reject");
+        assert_eq!(reject.code, "hmac_replay_cache_overflow");
+        assert!(reject.retryable);
     }
 }

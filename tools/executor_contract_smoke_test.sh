@@ -63,6 +63,7 @@ contract_guard_tests=(
   "auth_verifier_hmac_accepts_valid_signature_and_detects_replay"
   "auth_verifier_hmac_invalid_signature_does_not_burn_nonce"
   "auth_verifier_hmac_keeps_nonce_through_forward_skew_window"
+  "auth_verifier_hmac_rejects_when_nonce_cache_capacity_reached"
   "resolve_signer_source_config_rejects_keypair_pubkey_mismatch"
   "resolve_secret_source_rejects_inline_and_file_conflict"
   "resolve_secret_source_reads_trimmed_file"
