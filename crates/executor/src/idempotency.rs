@@ -7,7 +7,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicI64, Ordering},
-        Mutex,
+        Mutex, TryLockError,
     },
 };
 
@@ -201,12 +201,43 @@ impl SubmitIdempotencyStore {
         Ok(SubmitClaimOutcome::InFlight)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn run_response_cleanup_if_due(
         &self,
         response_retention_sec: u64,
         response_cleanup_batch_size: u64,
         response_cleanup_max_batches_per_run: u64,
     ) -> Result<()> {
+        self.run_response_cleanup_if_due_internal(
+            response_retention_sec,
+            response_cleanup_batch_size,
+            response_cleanup_max_batches_per_run,
+            false,
+        )
+        .map(|_| ())
+    }
+
+    pub(crate) fn run_response_cleanup_if_due_nonblocking(
+        &self,
+        response_retention_sec: u64,
+        response_cleanup_batch_size: u64,
+        response_cleanup_max_batches_per_run: u64,
+    ) -> Result<bool> {
+        self.run_response_cleanup_if_due_internal(
+            response_retention_sec,
+            response_cleanup_batch_size,
+            response_cleanup_max_batches_per_run,
+            true,
+        )
+    }
+
+    fn run_response_cleanup_if_due_internal(
+        &self,
+        response_retention_sec: u64,
+        response_cleanup_batch_size: u64,
+        response_cleanup_max_batches_per_run: u64,
+        nonblocking: bool,
+    ) -> Result<bool> {
         let now_unix = Utc::now().timestamp();
         let response_retention = i64::try_from(response_retention_sec)
             .map_err(|_| anyhow::anyhow!("idempotency response retention exceeds i64 range"))?
@@ -226,13 +257,22 @@ impl SubmitIdempotencyStore {
             last_response_cleanup_unix,
             response_cleanup_interval,
         ) {
-            return Ok(());
+            return Ok(true);
         }
 
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?;
+        let conn = if nonblocking {
+            match self.conn.try_lock() {
+                Ok(guard) => guard,
+                Err(TryLockError::WouldBlock) => return Ok(false),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(anyhow::anyhow!("idempotency db mutex poisoned"));
+                }
+            }
+        } else {
+            self.conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?
+        };
         let global_last_response_cleanup_unix = load_global_response_cleanup_last_unix(&conn)?;
         if should_run_claim_cleanup(
             now_unix,
@@ -263,7 +303,7 @@ impl SubmitIdempotencyStore {
             self.last_response_cleanup_unix
                 .store(global_last_response_cleanup_unix, Ordering::Relaxed);
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn probe(&self) -> Result<()> {
@@ -998,6 +1038,23 @@ mod tests {
             .expect("run bounded response cleanup second pass");
         assert_eq!(response_row_count(&store), 0);
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn response_cleanup_nonblocking_skips_when_mutex_is_busy() {
+        let store = SubmitIdempotencyStore::open(":memory:").expect("open in-memory store");
+        let _held_lock = store.conn.lock().expect("hold idempotency lock");
+        let ran_cleanup = store
+            .run_response_cleanup_if_due_nonblocking(
+                60,
+                DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+                DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+            )
+            .expect("nonblocking cleanup call should not fail");
+        assert!(
+            !ran_cleanup,
+            "nonblocking cleanup should report skipped when mutex is busy"
+        );
     }
 
     #[test]

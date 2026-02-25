@@ -98,6 +98,7 @@ contract_guard_tests=(
   "validate_response_cleanup_worker_tick_sec_rejects_out_of_range_values"
   "executor_config_from_env_wires_response_cleanup_worker_tick_override"
   "with_clean_executor_env_removes_newly_added_keys_after_scope"
+  "response_cleanup_nonblocking_skips_when_mutex_is_busy"
   "parse_route_allowlist_rejects_unknown_route"
   "route_allowlist_parse_rejects_unknown_route"
   "key_validation_accepts_pubkey_and_signature_shapes"

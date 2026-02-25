@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::AppState;
 
@@ -23,21 +23,31 @@ pub(crate) fn spawn_response_cleanup_worker(state: AppState) -> JoinHandle<()> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            if let Err(error) = state
+            match state
                 .idempotency
-                .run_response_cleanup_if_due(
+                .run_response_cleanup_if_due_nonblocking(
                     response_retention_sec,
                     response_cleanup_batch_size,
                     response_cleanup_max_batches_per_run,
                 )
             {
-                warn!(
+                Ok(true) => {}
+                Ok(false) => {
+                    debug!(
+                        response_cleanup_batch_size,
+                        response_cleanup_max_batches_per_run,
+                        "background idempotency response cleanup tick skipped: idempotency store lock busy"
+                    );
+                }
+                Err(error) => {
+                    warn!(
                     error = %error,
                     response_retention_sec,
                     response_cleanup_batch_size,
                     response_cleanup_max_batches_per_run,
                     "background idempotency response cleanup tick failed"
                 );
+                }
             }
         }
     })
