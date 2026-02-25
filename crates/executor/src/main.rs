@@ -1920,6 +1920,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_submit_route_not_in_allowlist_before_forward() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.route_backends.insert(
+            "jito".to_string(),
+            RouteBackend {
+                submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-jito-submit-not-allowlisted-1",
+            "signal_id": "signal-jito-submit-not-allowlisted-1",
+            "client_order_id": "client-order-jito-submit-not-allowlisted-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "jito",
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+
+        let reject = execute_route_action(
+            &state,
+            "jito",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                request_id: Some("request-jito-submit-not-allowlisted-1"),
+                signal_id: Some("signal-jito-submit-not-allowlisted-1"),
+                client_order_id: Some("client-order-jito-submit-not-allowlisted-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect_err("non-allowlisted submit route must reject before action/context checks");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "route_not_allowed");
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_fastlane_submit_when_feature_disabled_before_forward() {
         let mut state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
