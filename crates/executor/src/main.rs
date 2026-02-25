@@ -1805,6 +1805,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_rejects_instruction_plan_payload_mismatch_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-submit-plan-mismatch-1",
+            "client_order_id": "client-order-submit-plan-mismatch-1",
+            "request_id": "request-submit-plan-mismatch-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let mut request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+        request.compute_budget.cu_limit = 350_000;
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("instruction-plan mismatch must reject before forwarding");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("compute_budget.cu_limit mismatch"));
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_action_payload_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",

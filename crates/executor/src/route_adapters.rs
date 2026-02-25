@@ -12,6 +12,7 @@ use crate::route_executor::{
 };
 use crate::route_normalization::normalize_route;
 use crate::submit_deadline::SubmitDeadline;
+use crate::tx_build::SubmitInstructionPlan;
 use crate::upstream_forward::forward_to_upstream;
 use crate::{AppState, Reject};
 
@@ -150,17 +151,7 @@ impl RouteAdapter {
             payload_expectations.client_order_id,
             submit_context.instruction_plan.is_some(),
         );
-        if let Some(plan) = submit_context.instruction_plan {
-            debug!(
-                route = %route,
-                route_adapter = %self.as_str(),
-                cu_limit = plan.compute_budget_cu_limit,
-                cu_price_micro_lamports = plan.compute_budget_cu_price_micro_lamports,
-                tip_instruction_lamports = ?plan.tip_instruction_lamports,
-                "route adapter received submit instruction plan"
-            );
-        }
-        if self.requires_rpc_submit_tip_guard() {
+        let payload = if self.requires_rpc_submit_tip_guard() {
             validate_rpc_submit_tip_payload(
                 raw_body,
                 route,
@@ -170,7 +161,7 @@ impl RouteAdapter {
                 payload_expectations.client_order_id,
                 payload_expectations.side,
                 payload_expectations.token,
-            )?;
+            )?
         } else {
             validate_submit_payload_for_route(
                 raw_body,
@@ -181,7 +172,18 @@ impl RouteAdapter {
                 payload_expectations.client_order_id,
                 payload_expectations.side,
                 payload_expectations.token,
-            )?;
+            )?
+        };
+        if let Some(plan) = submit_context.instruction_plan {
+            validate_submit_instruction_plan_payload_consistency(&payload, plan)?;
+            debug!(
+                route = %route,
+                route_adapter = %self.as_str(),
+                cu_limit = plan.compute_budget_cu_limit,
+                cu_price_micro_lamports = plan.compute_budget_cu_price_micro_lamports,
+                tip_instruction_lamports = ?plan.tip_instruction_lamports,
+                "route adapter received submit instruction plan"
+            );
         }
         forward_to_upstream(
             state,
@@ -507,7 +509,7 @@ fn validate_rpc_submit_tip_payload(
     expected_client_order_id: Option<&str>,
     expected_side: Option<&str>,
     expected_token: Option<&str>,
-) -> std::result::Result<(), Reject> {
+) -> std::result::Result<serde_json::Map<String, Value>, Reject> {
     let payload = validate_submit_payload_for_route(
         raw_body,
         expected_route,
@@ -538,12 +540,104 @@ fn validate_rpc_submit_tip_payload(
         ));
     }
 
+    Ok(payload)
+}
+
+fn validate_required_payload_u64_field(
+    payload: &serde_json::Map<String, Value>,
+    action_label: &str,
+    field_lookup: &'static str,
+    field_label: &'static str,
+) -> std::result::Result<u64, Reject> {
+    let field_value = payload.get(field_lookup).ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload missing {field_label} at route-adapter boundary"),
+        )
+    })?;
+    field_value.as_u64().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload {field_label} must be non-negative integer"),
+        )
+    })
+}
+
+fn validate_submit_instruction_plan_payload_consistency(
+    payload: &serde_json::Map<String, Value>,
+    instruction_plan: SubmitInstructionPlan,
+) -> std::result::Result<(), Reject> {
+    let expected_tip = instruction_plan.tip_instruction_lamports.unwrap_or(0);
+    let actual_tip = validate_required_payload_u64_field(
+        payload,
+        "submit",
+        "tip_lamports",
+        "tip_lamports",
+    )?;
+    if actual_tip != expected_tip {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "submit payload tip_lamports mismatch at route-adapter boundary expected={} got={}",
+                expected_tip, actual_tip
+            ),
+        ));
+    }
+
+    let compute_budget_value = payload.get("compute_budget").ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            "submit payload missing compute_budget at route-adapter boundary",
+        )
+    })?;
+    let compute_budget = compute_budget_value.as_object().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            "submit payload compute_budget must be object",
+        )
+    })?;
+
+    let expected_cu_limit = u64::from(instruction_plan.compute_budget_cu_limit);
+    let actual_cu_limit = validate_required_payload_u64_field(
+        compute_budget,
+        "submit",
+        "cu_limit",
+        "compute_budget.cu_limit",
+    )?;
+    if actual_cu_limit != expected_cu_limit {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "submit payload compute_budget.cu_limit mismatch at route-adapter boundary expected={} got={}",
+                expected_cu_limit, actual_cu_limit
+            ),
+        ));
+    }
+
+    let expected_cu_price = instruction_plan.compute_budget_cu_price_micro_lamports;
+    let actual_cu_price = validate_required_payload_u64_field(
+        compute_budget,
+        "submit",
+        "cu_price_micro_lamports",
+        "compute_budget.cu_price_micro_lamports",
+    )?;
+    if actual_cu_price != expected_cu_price {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "submit payload compute_budget.cu_price_micro_lamports mismatch at route-adapter boundary expected={} got={}",
+                expected_cu_price, actual_cu_price
+            ),
+        ));
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
+        validate_submit_instruction_plan_payload_consistency as validate_submit_instruction_plan_payload_consistency_with_payload,
         validate_rpc_submit_tip_payload as validate_rpc_submit_tip_payload_with_expectations,
         validate_simulate_payload_for_route as validate_simulate_payload_for_route_with_expectations,
         validate_submit_payload_for_route as validate_submit_payload_for_route_with_expectations,
@@ -551,6 +645,7 @@ mod tests {
     };
     use crate::Reject;
     use crate::route_executor::RouteExecutorKind;
+    use crate::tx_build::SubmitInstructionPlan;
     use serde_json::Map;
     use serde_json::Value;
 
@@ -599,7 +694,7 @@ mod tests {
         expected_request_id: Option<&str>,
         expected_signal_id: Option<&str>,
         expected_client_order_id: Option<&str>,
-    ) -> std::result::Result<(), Reject> {
+    ) -> std::result::Result<Map<String, Value>, Reject> {
         validate_rpc_submit_tip_payload_with_expectations(
             raw_body,
             expected_route,
@@ -610,6 +705,14 @@ mod tests {
             None,
             None,
         )
+    }
+
+    fn validate_submit_instruction_plan_payload_consistency(
+        raw_body: &[u8],
+        instruction_plan: SubmitInstructionPlan,
+    ) -> std::result::Result<(), Reject> {
+        let payload = validate_submit_payload_for_route(raw_body, "rpc", "v1", None, None, None)?;
+        validate_submit_instruction_plan_payload_consistency_with_payload(&payload, instruction_plan)
     }
 
     #[test]
@@ -669,6 +772,45 @@ mod tests {
         let reject = validate_rpc_submit_tip_payload(body, "rpc", "v1", None, None, None)
             .expect_err("non-object payload must reject");
         assert_eq!(reject.code, "invalid_request_body");
+    }
+
+    #[test]
+    fn validate_submit_instruction_plan_payload_consistency_accepts_matching_payload() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","compute_budget":{"cu_limit":300000,"cu_price_micro_lamports":1000}}"#;
+        let plan = SubmitInstructionPlan {
+            compute_budget_cu_limit: 300_000,
+            compute_budget_cu_price_micro_lamports: 1_000,
+            tip_instruction_lamports: None,
+        };
+        assert!(validate_submit_instruction_plan_payload_consistency(body, plan).is_ok());
+    }
+
+    #[test]
+    fn validate_submit_instruction_plan_payload_consistency_rejects_tip_mismatch() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","compute_budget":{"cu_limit":300000,"cu_price_micro_lamports":1000}}"#;
+        let plan = SubmitInstructionPlan {
+            compute_budget_cu_limit: 300_000,
+            compute_budget_cu_price_micro_lamports: 1_000,
+            tip_instruction_lamports: Some(42),
+        };
+        let reject = validate_submit_instruction_plan_payload_consistency(body, plan)
+            .expect_err("tip mismatch must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("tip_lamports mismatch"));
+    }
+
+    #[test]
+    fn validate_submit_instruction_plan_payload_consistency_rejects_cu_limit_mismatch() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","compute_budget":{"cu_limit":300000,"cu_price_micro_lamports":1000}}"#;
+        let plan = SubmitInstructionPlan {
+            compute_budget_cu_limit: 350_000,
+            compute_budget_cu_price_micro_lamports: 1_000,
+            tip_instruction_lamports: None,
+        };
+        let reject = validate_submit_instruction_plan_payload_consistency(body, plan)
+            .expect_err("compute-budget mismatch must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("compute_budget.cu_limit mismatch"));
     }
 
     #[test]
