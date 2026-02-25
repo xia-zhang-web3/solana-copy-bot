@@ -231,4 +231,27 @@ mod tests {
             UpstreamOutcome::Success => panic!("expected reject"),
         }
     }
+
+    #[test]
+    fn upstream_outcome_rejects_null_retryable_when_present() {
+        let payload = json!({
+            "status": "reject",
+            "ok": false,
+            "retryable": null,
+            "code": "busy",
+            "detail": "backpressure"
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(
+                    reject
+                        .detail
+                        .contains("upstream reject retryable must be boolean when present")
+                );
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
 }
