@@ -14,12 +14,17 @@ pub(crate) enum UpstreamOutcome {
 }
 
 pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) -> UpstreamOutcome {
-    let status = body
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
+    let status = match parse_optional_status_field(body) {
+        Ok(Some(value)) => value,
+        Ok(None) => String::new(),
+        Err(detail) => {
+            return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                retryable: false,
+                code: "upstream_invalid_response".to_string(),
+                detail,
+            });
+        }
+    };
     let ok_flag = body.get("ok").and_then(Value::as_bool);
     let accepted_flag = body.get("accepted").and_then(Value::as_bool);
     let is_reject = matches!(
@@ -129,6 +134,20 @@ fn parse_optional_bool_field(payload: &Value, field_name: &str) -> Result<Option
         ));
     };
     Ok(Some(normalized))
+}
+
+fn parse_optional_status_field(payload: &Value) -> Result<Option<String>, String> {
+    let Some(field_value) = payload.get("status") else {
+        return Ok(None);
+    };
+    let Some(raw_status) = field_value.as_str() else {
+        return Err("upstream status must be non-empty string when present".to_string());
+    };
+    let normalized = raw_status.trim();
+    if normalized.is_empty() {
+        return Err("upstream status must be non-empty string when present".to_string());
+    }
+    Ok(Some(normalized.to_ascii_lowercase()))
 }
 
 #[cfg(test)]
@@ -249,6 +268,48 @@ mod tests {
                     reject
                         .detail
                         .contains("upstream reject retryable must be boolean when present")
+                );
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_non_string_status_when_present() {
+        let payload = json!({
+            "status": 123,
+            "ok": true,
+            "accepted": true
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(
+                    reject
+                        .detail
+                        .contains("upstream status must be non-empty string when present")
+                );
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_empty_status_when_present() {
+        let payload = json!({
+            "status": " ",
+            "ok": true,
+            "accepted": true
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(
+                    reject
+                        .detail
+                        .contains("upstream status must be non-empty string when present")
                 );
             }
             UpstreamOutcome::Success => panic!("expected reject"),
