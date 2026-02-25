@@ -501,4 +501,43 @@ mod tests {
             SubmitBuildPlanError::ForwardPayload(ForwardPayloadBuildError::RootNotObject)
         );
     }
+
+    #[test]
+    fn tx_build_plan_preserves_positive_tip_for_jito_route() {
+        let input = br#"{"route":"jito","tip_lamports":12000,"compute_budget":{"cu_limit":350000,"cu_price_micro_lamports":2000}}"#;
+        let plan = build_submit_plan(SubmitBuildPlanInputs {
+            route: "jito",
+            raw_body: input,
+            requested_tip_lamports: 12_000,
+            tip_max_lamports: 100_000_000,
+            allow_nonzero_tip: true,
+            cu_limit: 350_000,
+            cu_price_micro_lamports: 2_000,
+            compute_budget_bounds: ComputeBudgetBounds {
+                cu_limit_min: 1,
+                cu_limit_max: 1_400_000,
+                cu_price_min: 1,
+                cu_price_max: 10_000_000,
+            },
+            slippage_bps: 10.0,
+            route_slippage_cap_bps: 20.0,
+            slippage_epsilon: 1e-6,
+        })
+        .expect("submit plan should keep positive tip for jito");
+
+        assert_eq!(plan.effective_tip_lamports, 12_000);
+        assert_eq!(plan.tip_policy_code, None);
+        assert_eq!(
+            plan.instruction_plan,
+            SubmitInstructionPlan {
+                compute_budget_cu_limit: 350_000,
+                compute_budget_cu_price_micro_lamports: 2_000,
+                tip_instruction_lamports: Some(12_000),
+            }
+        );
+
+        let payload: serde_json::Value =
+            serde_json::from_slice(plan.forward_body.as_slice()).expect("valid json");
+        assert_eq!(payload.get("tip_lamports").and_then(|v| v.as_u64()), Some(12_000));
+    }
 }

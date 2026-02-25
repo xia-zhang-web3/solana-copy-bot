@@ -97,7 +97,8 @@ pub(crate) async fn handle_submit(
         route = %route,
         cu_limit = instruction_plan.compute_budget_cu_limit,
         cu_price_micro_lamports = instruction_plan.compute_budget_cu_price_micro_lamports,
-        tip_instruction_lamports = instruction_plan.tip_instruction_lamports.unwrap_or(0),
+        tip_instruction_lamports = ?instruction_plan.tip_instruction_lamports,
+        tip_instruction_present = instruction_plan.tip_instruction_lamports.is_some(),
         "prepared submit instruction plan"
     );
     let forward_body = submit_plan.forward_body;

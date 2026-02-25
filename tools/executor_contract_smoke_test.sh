@@ -233,6 +233,7 @@ contract_guard_tests=(
   "ata_parse_response_fee_hint_fields_normalizes_zero_to_absent"
   "tx_build_instruction_plan_omits_tip_when_zero"
   "tx_build_plan_builds_payload_and_tip_policy"
+  "tx_build_plan_preserves_positive_tip_for_jito_route"
   "resolve_fee_hints_rejects_derived_priority_fee_overflow"
   "parse_response_fee_hint_fields_rejects_invalid_field_type"
   "ata_submit_payload_omits_ata_create_rent_lamports_when_absent"
