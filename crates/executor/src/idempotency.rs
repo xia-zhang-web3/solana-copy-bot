@@ -235,15 +235,17 @@ impl SubmitIdempotencyStore {
                         )
                     })?
                     .to_rfc3339();
-            delete_stale_cached_responses_in_batches(
+            let cleanup_completed = delete_stale_cached_responses_in_batches(
                 &conn,
                 stale_response_before_rfc3339.as_str(),
                 RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
                 RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
             )?;
-            store_global_response_cleanup_last_unix(&conn, now_unix)?;
-            self.last_response_cleanup_unix
-                .store(now_unix, Ordering::Relaxed);
+            if cleanup_completed {
+                store_global_response_cleanup_last_unix(&conn, now_unix)?;
+                self.last_response_cleanup_unix
+                    .store(now_unix, Ordering::Relaxed);
+            }
         } else {
             self.last_response_cleanup_unix
                 .store(global_last_response_cleanup_unix, Ordering::Relaxed);
@@ -342,7 +344,9 @@ fn delete_stale_cached_responses_in_batches(
     stale_response_before_rfc3339: &str,
     batch_size: i64,
     max_batches: usize,
-) -> Result<()> {
+) -> Result<bool> {
+    let batch_size_usize = usize::try_from(batch_size.max(1)).unwrap_or(usize::MAX);
+    let mut cleanup_completed = true;
     for _ in 0..max_batches.max(1) {
         let deleted_rows = conn
             .execute(
@@ -359,11 +363,12 @@ fn delete_stale_cached_responses_in_batches(
                 params![stale_response_before_rfc3339, batch_size.max(1)],
             )
             .context("idempotency response cleanup failed")?;
-        if deleted_rows < usize::try_from(batch_size.max(1)).unwrap_or(usize::MAX) {
-            break;
+        if deleted_rows < batch_size_usize {
+            return Ok(true);
         }
+        cleanup_completed = false;
     }
-    Ok(())
+    Ok(cleanup_completed)
 }
 
 fn should_run_claim_cleanup(
@@ -937,6 +942,13 @@ mod tests {
             - (RESPONSE_CLEANUP_DELETE_BATCH_SIZE
                 * i64::try_from(RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN).unwrap_or(0));
         assert_eq!(response_row_count(&store), expected_remaining);
+
+        // Marker must not advance when cleanup hit per-run batch cap, so a subsequent run can
+        // continue draining backlog immediately.
+        store
+            .run_response_cleanup_if_due(60)
+            .expect("run bounded response cleanup second pass");
+        assert_eq!(response_row_count(&store), 0);
         let _ = std::fs::remove_file(db_path);
     }
 }
