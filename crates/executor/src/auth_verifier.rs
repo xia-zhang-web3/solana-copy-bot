@@ -350,4 +350,61 @@ mod tests {
         assert_eq!(reject.code, "hmac_replay_cache_overflow");
         assert!(reject.retryable);
     }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_evicts_expired_nonce_before_capacity_check() {
+        let ttl_sec = 1;
+        let verifier = AuthVerifier::new(
+            None,
+            Some("kid-evict".to_string()),
+            Some("secret-evict".to_string()),
+            ttl_sec,
+            1,
+        );
+        let body = br#"{"action":"simulate"}"#;
+
+        let timestamp_1 = Utc::now().timestamp();
+        let payload_1 = build_hmac_payload_bytes(
+            timestamp_1.to_string().as_str(),
+            ttl_sec.to_string().as_str(),
+            "nonce-evict-1",
+            body,
+        );
+        let signature_1 =
+            compute_hmac_signature_hex(b"secret-evict", payload_1.as_slice()).unwrap();
+        let headers_1 = build_hmac_headers(
+            "kid-evict",
+            ttl_sec,
+            "nonce-evict-1",
+            timestamp_1,
+            signature_1.as_str(),
+        );
+        verifier
+            .verify(&headers_1, body)
+            .await
+            .expect("first nonce should pass");
+
+        sleep(Duration::from_millis(2_100)).await;
+
+        let timestamp_2 = Utc::now().timestamp();
+        let payload_2 = build_hmac_payload_bytes(
+            timestamp_2.to_string().as_str(),
+            ttl_sec.to_string().as_str(),
+            "nonce-evict-2",
+            body,
+        );
+        let signature_2 =
+            compute_hmac_signature_hex(b"secret-evict", payload_2.as_slice()).unwrap();
+        let headers_2 = build_hmac_headers(
+            "kid-evict",
+            ttl_sec,
+            "nonce-evict-2",
+            timestamp_2,
+            signature_2.as_str(),
+        );
+        verifier
+            .verify(&headers_2, body)
+            .await
+            .expect("expired nonce entry must be evicted before capacity check");
+    }
 }
