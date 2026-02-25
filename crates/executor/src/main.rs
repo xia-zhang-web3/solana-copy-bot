@@ -4915,6 +4915,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_submit_signature_rejects_missing_deadline_before_config_check() {
+        let signature = bs58::encode([8u8; 64]).into_string();
+        let state = test_state("http://127.0.0.1:1/upstream");
+
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None)
+            .await
+            .expect_err("submit verify without deadline must fail closed before config check");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_rejects_missing_deadline_before_request() {
+        let signature = bs58::encode([7u8; 64]).into_string();
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec!["http://127.0.0.1:1/verify"],
+            true,
+        );
+
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None)
+            .await
+            .expect_err("submit verify without deadline must fail closed before request");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_seen_when_rpc_reports_confirmation() {
         let signature = bs58::encode([9u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
@@ -4931,8 +4964,14 @@ mod tests {
             vec![verify_url.as_str()],
             true,
         );
-        let result =
-            verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None).await;
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let result = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await;
         let Ok(SubmitSignatureVerification::Seen {
             confirmation_status,
         }) = result
@@ -4960,8 +4999,14 @@ mod tests {
             vec![verify_url.as_str()],
             false,
         );
-        let result =
-            verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None).await;
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let result = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await;
         let Ok(SubmitSignatureVerification::Unseen { reason }) = result else {
             panic!("expected unseen verification result");
         };
@@ -4990,9 +5035,15 @@ mod tests {
             vec![verify_url.as_str()],
             true,
         );
-        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None)
-            .await
-            .expect_err("strict mode must reject unseen signature");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("strict mode must reject unseen signature");
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_submit_signature_unseen");
         let _ = handle.join();
@@ -5016,9 +5067,15 @@ mod tests {
             vec![verify_url.as_str()],
             false,
         );
-        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str(), None)
-            .await
-            .expect_err("on-chain err must be terminal reject");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("on-chain err must be terminal reject");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "upstream_submit_failed_onchain");
         let _ = handle.join();

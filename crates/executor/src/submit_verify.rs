@@ -16,12 +16,25 @@ pub(crate) enum SubmitSignatureVerification {
     Unseen { reason: String },
 }
 
+fn validate_submit_verify_deadline_context(
+    submit_deadline: Option<&SubmitDeadline>,
+) -> std::result::Result<(), Reject> {
+    if submit_deadline.is_none() {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            "submit signature verify missing deadline at submit-verify boundary",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn verify_submitted_signature_visibility(
     state: &AppState,
     route: &str,
     tx_signature: &str,
     submit_deadline: Option<&SubmitDeadline>,
 ) -> std::result::Result<SubmitSignatureVerification, Reject> {
+    validate_submit_verify_deadline_context(submit_deadline)?;
     let Some(config) = state.config.submit_signature_verify.as_ref() else {
         return Ok(SubmitSignatureVerification::Skipped);
     };
@@ -148,4 +161,26 @@ pub(crate) async fn verify_submitted_signature_visibility(
     Ok(SubmitSignatureVerification::Unseen {
         reason: last_reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_submit_verify_deadline_context;
+    use crate::submit_deadline::SubmitDeadline;
+
+    #[test]
+    fn submit_verify_deadline_context_rejects_missing_deadline() {
+        let reject = validate_submit_verify_deadline_context(None)
+            .expect_err("submit verify without deadline must reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[test]
+    fn submit_verify_deadline_context_accepts_present_deadline() {
+        let submit_deadline = SubmitDeadline::new(1_000);
+        validate_submit_verify_deadline_context(Some(&submit_deadline))
+            .expect("submit verify with deadline should pass");
+    }
 }
