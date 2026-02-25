@@ -27,6 +27,7 @@ use crate::idempotency::{
 
 const MAX_RESPONSE_CLEANUP_BATCH_SIZE: u64 = 1_000_000;
 const MAX_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: u64 = 10_000;
+const MAX_RESPONSE_CLEANUP_ROWS_PER_RUN: u64 = 200_000;
 
 impl ExecutorConfig {
     pub(crate) fn from_env() -> Result<Self> {
@@ -466,6 +467,19 @@ fn validate_response_cleanup_tuning(
             "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN must fit into platform usize range"
         )
     })?;
+    let rows_per_run = idempotency_response_cleanup_batch_size
+        .checked_mul(idempotency_response_cleanup_max_batches_per_run)
+        .ok_or_else(|| {
+            anyhow!(
+                "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE * COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN overflowed u64"
+            )
+        })?;
+    if rows_per_run > MAX_RESPONSE_CLEANUP_ROWS_PER_RUN {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE * COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN must be <= {}",
+            MAX_RESPONSE_CLEANUP_ROWS_PER_RUN
+        ));
+    }
     Ok(())
 }
 
@@ -493,6 +507,7 @@ mod tests {
     #[test]
     fn validate_response_cleanup_tuning_accepts_default_range() {
         validate_response_cleanup_tuning(500, 4).expect("default cleanup tuning should be valid");
+        validate_response_cleanup_tuning(50_000, 4).expect("boundary rows-per-run should be valid");
     }
 
     #[test]
@@ -514,6 +529,18 @@ mod tests {
                 .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN"),
             "unexpected error: {}",
             batch_count_error
+        );
+    }
+
+    #[test]
+    fn validate_response_cleanup_tuning_rejects_excessive_rows_per_run() {
+        let error = validate_response_cleanup_tuning(50_000, 5).expect_err("must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE * COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN"),
+            "unexpected error: {}",
+            error
         );
     }
 }
