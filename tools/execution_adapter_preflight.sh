@@ -378,19 +378,27 @@ cfg_or_env_bool_into() {
   local key="$2"
   local env_name="$3"
   local output_var="$4"
-  local file_value parsed_env
-  file_value="$(normalize_bool_token "$(cfg_value "$section" "$key")")"
+  local fallback_value cfg_raw parsed_cfg parsed_env
+  fallback_value="false"
+  cfg_raw="$(trim_string "$(cfg_value "$section" "$key")")"
+  if [[ -n "$cfg_raw" ]]; then
+    if parsed_cfg="$(parse_env_bool_token "$cfg_raw")"; then
+      fallback_value="$parsed_cfg"
+    else
+      errors+=("config [$section].$key must be a boolean token (true/false/1/0/yes/no/on/off), got: $cfg_raw")
+    fi
+  fi
   if [[ -n "${!env_name+x}" ]]; then
     if parsed_env="$(parse_env_bool_token "${!env_name}")"; then
       printf -v "$output_var" '%s' "$parsed_env"
       return
     else
       errors+=("${env_name} must be a boolean token (true/false/1/0/yes/no/on/off), got: ${!env_name}")
-      printf -v "$output_var" '%s' "$file_value"
+      printf -v "$output_var" '%s' "$fallback_value"
       return
     fi
   fi
-  printf -v "$output_var" '%s' "$file_value"
+  printf -v "$output_var" '%s' "$fallback_value"
 }
 
 cfg_or_env_u64_string() {
@@ -959,6 +967,20 @@ fi
 
 cfg_or_env_bool_into execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED execution_enabled
 execution_mode="$(normalize_route_token "$(cfg_or_env_trimmed_nonempty_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE)")"
+
+if (( ${#errors[@]} > 0 )); then
+  echo "=== Execution Adapter Preflight ==="
+  echo "config: $CONFIG_PATH"
+  echo "system_env: $system_env"
+  echo "execution_enabled: $execution_enabled"
+  echo "execution_mode: ${execution_mode:-paper}"
+  echo "preflight_verdict: FAIL"
+  echo "error_count: ${#errors[@]}"
+  for error in "${errors[@]}"; do
+    echo "error: $error"
+  done
+  exit 1
+fi
 
 if [[ "$execution_enabled" != "true" ]]; then
   cat <<EOF

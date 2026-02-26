@@ -1936,6 +1936,18 @@ run_adapter_preflight_case() {
   assert_contains "$env_invalid_bool_output" "preflight_verdict: FAIL"
   assert_contains "$env_invalid_bool_output" "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO must be a boolean token"
 
+  local execution_enabled_invalid_bool_output
+  if execution_enabled_invalid_bool_output="$(
+    CONFIG_PATH="$pass_cfg" \
+      SOLANA_COPY_BOT_EXECUTION_ENABLED="sometimes" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for invalid execution.enabled bool token override" >&2
+    exit 1
+  fi
+  assert_contains "$execution_enabled_invalid_bool_output" "preflight_verdict: FAIL"
+  assert_contains "$execution_enabled_invalid_bool_output" "SOLANA_COPY_BOT_EXECUTION_ENABLED must be a boolean token"
+
   write_config_adapter_preflight_fail "$fail_cfg" "$db_path"
   local fail_output
   if fail_output="$(
