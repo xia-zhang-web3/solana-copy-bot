@@ -34,6 +34,23 @@ use crate::idempotency_cleanup_worker::{
 const MAX_RESPONSE_CLEANUP_BATCH_SIZE: u64 = 1_000_000;
 const MAX_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: u64 = 10_000;
 const MAX_RESPONSE_CLEANUP_ROWS_PER_RUN: u64 = 200_000;
+const ROUTE_SCOPED_ENV_PREFIX: &str = "COPYBOT_EXECUTOR_ROUTE_";
+const ROUTE_SCOPED_ENV_SUFFIXES: &[&str] = &[
+    "SUBMIT_URL",
+    "SUBMIT_FALLBACK_URL",
+    "SIMULATE_URL",
+    "SIMULATE_FALLBACK_URL",
+    "SEND_RPC_URL",
+    "SEND_RPC_FALLBACK_URL",
+    "AUTH_TOKEN",
+    "AUTH_TOKEN_FILE",
+    "FALLBACK_AUTH_TOKEN",
+    "FALLBACK_AUTH_TOKEN_FILE",
+    "SEND_RPC_AUTH_TOKEN",
+    "SEND_RPC_AUTH_TOKEN_FILE",
+    "SEND_RPC_FALLBACK_AUTH_TOKEN",
+    "SEND_RPC_FALLBACK_AUTH_TOKEN_FILE",
+];
 
 impl ExecutorConfig {
     pub(crate) fn from_env() -> Result<Self> {
@@ -72,6 +89,7 @@ impl ExecutorConfig {
             ));
         }
         validate_fastlane_route_policy(&route_allowlist, submit_fastlane_enabled)?;
+        validate_route_scoped_env_targets_allowlist(&route_allowlist)?;
 
         let default_submit = optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL");
         let default_submit_fallback =
@@ -478,6 +496,59 @@ fn validate_route_backend_allowlist_consistency(
     Ok(())
 }
 
+fn parse_route_scoped_env_key(key: &str) -> Option<(&str, &str)> {
+    let remainder = key.strip_prefix(ROUTE_SCOPED_ENV_PREFIX)?;
+    let mut best_match: Option<(&str, &str)> = None;
+    for suffix in ROUTE_SCOPED_ENV_SUFFIXES {
+        if remainder.len() <= suffix.len() + 1 {
+            continue;
+        }
+        if !remainder.ends_with(suffix) {
+            continue;
+        }
+        let split_idx = remainder.len() - suffix.len() - 1;
+        if remainder.as_bytes().get(split_idx) != Some(&b'_') {
+            continue;
+        }
+        let route = &remainder[..split_idx];
+        if route.is_empty() {
+            continue;
+        }
+        match best_match {
+            Some((_, current_suffix)) if current_suffix.len() >= suffix.len() => {}
+            _ => {
+                best_match = Some((route, *suffix));
+            }
+        }
+    }
+    best_match
+}
+
+fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>) -> Result<()> {
+    let mut violations: Vec<String> = Vec::new();
+    for (key, value) in env::vars() {
+        if value.trim().is_empty() {
+            continue;
+        }
+        let Some((route_raw, _suffix)) = parse_route_scoped_env_key(key.as_str()) else {
+            continue;
+        };
+        let route = route_raw.to_ascii_lowercase();
+        if !route_allowlist.contains(route.as_str()) {
+            violations.push(format!("{} (route={})", key, route));
+        }
+    }
+
+    if !violations.is_empty() {
+        violations.sort();
+        return Err(anyhow!(
+            "route-scoped env keys target routes outside COPYBOT_EXECUTOR_ROUTE_ALLOWLIST: {}",
+            violations.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 fn validate_response_retention_cutoff(idempotency_response_retention_sec: u64) -> Result<()> {
     let retention_i64 = i64::try_from(idempotency_response_retention_sec).map_err(|_| {
         anyhow!(
@@ -577,6 +648,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
+        parse_route_scoped_env_key, validate_route_scoped_env_targets_allowlist,
         validate_route_backend_allowlist_consistency,
         validate_response_cleanup_tuning, validate_response_cleanup_worker_cadence,
         validate_response_cleanup_worker_tick_sec,
@@ -731,6 +803,50 @@ mod tests {
         ]);
         validate_route_backend_allowlist_consistency(&allowlist, &route_backends)
             .expect("exact route backend coverage should pass");
+    }
+
+    #[test]
+    fn parse_route_scoped_env_key_extracts_route_and_suffix() {
+        let parsed = parse_route_scoped_env_key(
+            "COPYBOT_EXECUTOR_ROUTE_JITO_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE",
+        )
+        .expect("must parse known route-scoped key");
+        assert_eq!(parsed.0, "JITO");
+        assert_eq!(parsed.1, "SEND_RPC_FALLBACK_AUTH_TOKEN_FILE");
+    }
+
+    #[test]
+    fn parse_route_scoped_env_key_ignores_non_scoped_keys() {
+        assert!(parse_route_scoped_env_key("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST").is_none());
+        assert!(parse_route_scoped_env_key("COPYBOT_EXECUTOR_ROUTE").is_none());
+    }
+
+    #[test]
+    fn route_scoped_env_targets_allowlist_rejects_outside_route() {
+        with_clean_executor_env(|| {
+            env::set_var(
+                "COPYBOT_EXECUTOR_ROUTE_JITO_SUBMIT_URL",
+                "https://submit-jito.example.com",
+            );
+            let allowlist = HashSet::from([String::from("rpc")]);
+            let error = validate_route_scoped_env_targets_allowlist(&allowlist)
+                .expect_err("route-scoped key outside allowlist must reject");
+            assert!(error.to_string().contains("outside COPYBOT_EXECUTOR_ROUTE_ALLOWLIST"));
+            assert!(error.to_string().contains("ROUTE_JITO_SUBMIT_URL"));
+        });
+    }
+
+    #[test]
+    fn route_scoped_env_targets_allowlist_accepts_allowlisted_route() {
+        with_clean_executor_env(|| {
+            env::set_var(
+                "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
+                "https://submit-rpc.example.com",
+            );
+            let allowlist = HashSet::from([String::from("rpc")]);
+            validate_route_scoped_env_targets_allowlist(&allowlist)
+                .expect("allowlisted route-scoped key should pass");
+        });
     }
 
     #[test]
@@ -919,6 +1035,31 @@ mod tests {
                     error
                         .to_string()
                         .contains("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_route_scoped_env_outside_allowlist() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_JITO_SUBMIT_URL",
+                    "https://submit-jito.example.com",
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("route-scoped key outside allowlist must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("outside COPYBOT_EXECUTOR_ROUTE_ALLOWLIST"),
                     "unexpected error: {}",
                     error
                 );
