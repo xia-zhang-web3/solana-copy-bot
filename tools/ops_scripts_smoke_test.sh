@@ -2701,6 +2701,29 @@ run_executor_rollout_evidence_case() {
     exit 1
   fi
 
+  local invalid_bool_output=""
+  if invalid_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$TMP_DIR/missing-executor.env" \
+      ADAPTER_ENV_PATH="$TMP_DIR/missing-adapter.env" \
+      CONFIG_PATH="$TMP_DIR/missing-config.toml" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="maybe" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor rollout helper when GO_NOGO_REQUIRE_JITO_RPC_POLICY token is invalid" >&2
+    exit 1
+  else
+    local invalid_bool_exit_code=$?
+    if [[ "$invalid_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for invalid executor rollout bool token, got $invalid_bool_exit_code" >&2
+      echo "$invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_bool_output" "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token"
+  assert_contains "$invalid_bool_output" "got: maybe"
+
   write_adapter_env_preflight "$adapter_env_path" "$port" "mismatch-token"
   local preflight_fail_output=""
   if preflight_fail_output="$(
@@ -3024,6 +3047,28 @@ run_adapter_rollout_evidence_case() {
     echo "expected adapter rollout manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
+
+  local invalid_bool_output=""
+  if invalid_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$TMP_DIR/missing-adapter.env" \
+      CONFIG_PATH="$TMP_DIR/missing-config.toml" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="perhaps" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for adapter rollout helper when REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED token is invalid" >&2
+    exit 1
+  else
+    local invalid_bool_exit_code=$?
+    if [[ "$invalid_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for invalid adapter rollout bool token, got $invalid_bool_exit_code" >&2
+      echo "$invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_bool_output" "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED must be a boolean token"
+  assert_contains "$invalid_bool_output" "got: perhaps"
 
   local final_artifacts_dir="$TMP_DIR/adapter-rollout-final-package"
   local final_output
