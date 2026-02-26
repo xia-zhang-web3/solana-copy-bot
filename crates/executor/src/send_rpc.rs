@@ -5,7 +5,8 @@ use tracing::warn;
 
 use crate::{
     http_utils::{
-        classify_request_error, read_response_body_limited, redacted_endpoint_label,
+        body_text_was_truncated, classify_request_error, read_response_body_limited,
+        redacted_endpoint_label,
         truncate_detail_chars, MAX_HTTP_ERROR_BODY_DETAIL_CHARS, MAX_HTTP_ERROR_BODY_READ_BYTES,
         MAX_HTTP_JSON_BODY_READ_BYTES,
     },
@@ -177,6 +178,15 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         }
         let body_text = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
         let body: Value = serde_json::from_str(body_text.as_str()).map_err(|error| {
+            if body_text_was_truncated(body_text.as_str()) {
+                return Reject::terminal(
+                    "send_rpc_response_too_large",
+                    format!(
+                        "send RPC response exceeded max bytes endpoint={} max_bytes={} err={}",
+                        endpoint_label, MAX_HTTP_JSON_BODY_READ_BYTES, error
+                    ),
+                );
+            }
             Reject::terminal(
                 "send_rpc_invalid_json",
                 format!(

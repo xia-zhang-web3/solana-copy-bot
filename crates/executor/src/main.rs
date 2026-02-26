@@ -2383,10 +2383,10 @@ mod tests {
         .await
         .expect_err("oversized JSON response should fail closed");
         assert!(!reject.retryable);
-        assert_eq!(reject.code, "send_rpc_invalid_json");
+        assert_eq!(reject.code, "send_rpc_response_too_large");
         assert!(
-            reject.detail.contains("invalid JSON"),
-            "detail should report invalid json: {}",
+            reject.detail.contains("exceeded max bytes"),
+            "detail should report response-too-large: {}",
             reject.detail
         );
         assert!(

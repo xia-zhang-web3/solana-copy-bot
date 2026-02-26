@@ -136,9 +136,13 @@ pub(crate) async fn read_response_body_limited(
     text
 }
 
+pub(crate) fn body_text_was_truncated(body_text: &str) -> bool {
+    body_text.ends_with("...[truncated]")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{read_response_body_limited, truncate_detail_chars};
+    use super::{body_text_was_truncated, read_response_body_limited, truncate_detail_chars};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -199,5 +203,11 @@ mod tests {
         assert!(body.contains("...[truncated]"), "body={}", body);
         assert!(body.len() >= 128, "body length={}", body.len());
         let _ = handle.join();
+    }
+
+    #[test]
+    fn body_text_was_truncated_detects_truncation_marker() {
+        assert!(body_text_was_truncated("hello...[truncated]"));
+        assert!(!body_text_was_truncated("hello"));
     }
 }
