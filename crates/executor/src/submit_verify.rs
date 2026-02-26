@@ -59,8 +59,23 @@ pub(crate) async fn verify_submitted_signature_visibility(
 
     let mut last_reason = String::from("signature status row is missing");
     for attempt_idx in 0..config.attempts {
-        for endpoint in &config.endpoints {
+        for (endpoint_idx, endpoint) in config.endpoints.iter().enumerate() {
             let endpoint_label = redacted_endpoint_label(endpoint.as_str());
+            let mut set_reason_and_continue = |reason: String| {
+                last_reason = reason;
+                if endpoint_idx + 1 < config.endpoints.len() {
+                    warn!(
+                        route = %route,
+                        endpoint = %endpoint_label,
+                        attempt = attempt_idx + 1,
+                        total_attempts = config.attempts,
+                        endpoint_try = endpoint_idx + 1,
+                        endpoint_total = config.endpoints.len(),
+                        reason = %last_reason,
+                        "submit verify endpoint failed, trying fallback endpoint"
+                    );
+                }
+            };
             let payload = json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -75,11 +90,11 @@ pub(crate) async fn verify_submitted_signature_visibility(
             let response = match request.send().await {
                 Ok(value) => value,
                 Err(error) => {
-                    last_reason = format!(
+                    set_reason_and_continue(format!(
                         "rpc send failed endpoint={} class={}",
                         endpoint_label,
                         classify_request_error(&error)
-                    );
+                    ));
                     continue;
                 }
             };
@@ -89,43 +104,43 @@ pub(crate) async fn verify_submitted_signature_visibility(
                     read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
                 let body_detail =
                     truncate_detail_chars(body.text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
-                last_reason = format!(
+                set_reason_and_continue(format!(
                     "rpc status={} endpoint={} body={}",
                     status, endpoint_label, body_detail
-                );
+                ));
                 continue;
             }
             if let Some(content_length) = response.content_length() {
                 if content_length > MAX_HTTP_JSON_BODY_READ_BYTES as u64 {
-                    last_reason = format!(
+                    set_reason_and_continue(format!(
                         "rpc response_too_large endpoint={} declared_content_length={} max_bytes={}",
                         endpoint_label, content_length, MAX_HTTP_JSON_BODY_READ_BYTES
-                    );
+                    ));
                     continue;
                 }
             }
             let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
             if let Some(read_error_class) = body_read.read_error_class {
-                last_reason = format!(
+                set_reason_and_continue(format!(
                     "rpc response_read_failed endpoint={} class={}",
                     endpoint_label, read_error_class
-                );
+                ));
                 continue;
             }
             if body_read.was_truncated {
-                last_reason = format!(
+                set_reason_and_continue(format!(
                     "rpc response_too_large endpoint={} max_bytes={}",
                     endpoint_label, MAX_HTTP_JSON_BODY_READ_BYTES
-                );
+                ));
                 continue;
             }
             let body: Value = match serde_json::from_slice(body_read.bytes.as_slice()) {
                 Ok(value) => value,
                 Err(error) => {
-                    last_reason = format!(
+                    set_reason_and_continue(format!(
                         "rpc invalid_json endpoint={} err={}",
                         endpoint_label, error
-                    );
+                    ));
                     continue;
                 }
             };
@@ -135,7 +150,7 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 .map(|value| !value)
                 .unwrap_or(false)
             {
-                last_reason = format!("rpc error payload endpoint={}", endpoint_label);
+                set_reason_and_continue(format!("rpc error payload endpoint={}", endpoint_label));
                 continue;
             }
 
@@ -144,11 +159,17 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 .and_then(|result| result.get("value"))
                 .and_then(|value| value.get(0));
             let Some(status_row) = status_row else {
-                last_reason = format!("signature status missing endpoint={}", endpoint_label);
+                set_reason_and_continue(format!(
+                    "signature status missing endpoint={}",
+                    endpoint_label
+                ));
                 continue;
             };
             if status_row.is_null() {
-                last_reason = format!("signature status pending endpoint={}", endpoint_label);
+                set_reason_and_continue(format!(
+                    "signature status pending endpoint={}",
+                    endpoint_label
+                ));
                 continue;
             }
             if let Some(err_payload) = status_row.get("err") {

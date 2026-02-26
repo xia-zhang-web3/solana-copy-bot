@@ -9743,6 +9743,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_submit_signature_uses_fallback_after_primary_declared_oversized_content_length()
+    {
+        let signature = bs58::encode([68u8; 64]).into_string();
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+        let fallback_body =
+            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![primary_url.as_str(), fallback_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let verification = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback verify endpoint should succeed after primary declared oversize");
+        match verification {
+            SubmitSignatureVerification::Seen { confirmation_status } => {
+                assert_eq!(confirmation_status, "confirmed");
+            }
+            other => panic!("expected Seen verification, got {:?}", other),
+        }
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_uses_fallback_after_primary_truncated_success_body() {
+        let signature = bs58::encode([69u8; 64]).into_string();
+        let primary_body = build_truncated_valid_json_prefix_body(
+            r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
+        );
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            primary_body.as_bytes(),
+        ) else {
+            return;
+        };
+        let fallback_body =
+            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"finalized"}]}}"#;
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![primary_url.as_str(), fallback_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let verification = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback verify endpoint should succeed after primary truncated oversized body");
+        match verification {
+            SubmitSignatureVerification::Seen { confirmation_status } => {
+                assert_eq!(confirmation_status, "finalized");
+            }
+            other => panic!("expected Seen verification, got {:?}", other),
+        }
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_classifies_truncated_valid_json_prefix_as_response_too_large() {
         let signature = bs58::encode([67u8; 64]).into_string();
         let primary_body = build_truncated_valid_json_prefix_body(
