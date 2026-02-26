@@ -648,6 +648,100 @@ fn starts_with_prefix_case_insensitive(value: &str, prefix: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn levenshtein_distance(left: &str, right: &str) -> usize {
+    if left == right {
+        return 0;
+    }
+    let right_len = right.chars().count();
+    if right_len == 0 {
+        return left.chars().count();
+    }
+    let left_len = left.chars().count();
+    if left_len == 0 {
+        return right_len;
+    }
+    let mut prev: Vec<usize> = (0..=right_len).collect();
+    let mut curr = vec![0usize; right_len + 1];
+    for (i, left_char) in left.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, right_char) in right.chars().enumerate() {
+            let cost = usize::from(left_char != right_char);
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[right_len]
+}
+
+fn suggestion_threshold(candidate: &str, suggestion: &str) -> usize {
+    let max_len = candidate.len().max(suggestion.len());
+    (max_len / 8).clamp(2, 8)
+}
+
+fn best_match_key<'a>(candidate: &str, options: &'a [&str]) -> Option<&'a str> {
+    let mut best: Option<(&str, usize)> = None;
+    for option in options {
+        let distance = levenshtein_distance(candidate, option);
+        match best {
+            Some((_, best_distance)) if best_distance <= distance => {}
+            _ => best = Some((option, distance)),
+        }
+    }
+    best.and_then(|(option, distance)| {
+        if distance <= suggestion_threshold(candidate, option) {
+            Some(option)
+        } else {
+            None
+        }
+    })
+}
+
+fn format_key_with_optional_suggestion(key: &str, suggestion: Option<String>) -> String {
+    if let Some(suggestion) = suggestion {
+        format!("{} (did you mean {}?)", key, suggestion)
+    } else {
+        key.to_string()
+    }
+}
+
+fn suggest_route_scoped_key(key: &str) -> Option<String> {
+    if let Some(suggestion) = best_match_key(key, ROUTE_NON_SCOPED_ENV_KEYS) {
+        return Some(suggestion.to_string());
+    }
+    let remainder = key.strip_prefix(ROUTE_SCOPED_ENV_PREFIX)?;
+    let split_idx = remainder.find('_')?;
+    let route = remainder.get(..split_idx)?;
+    let suffix_raw = remainder.get(split_idx + 1..)?;
+    if route.is_empty() || suffix_raw.is_empty() {
+        return None;
+    }
+    let candidate_keys: Vec<String> = ROUTE_SCOPED_ENV_SUFFIXES
+        .iter()
+        .map(|suffix| format!("{}{}_{}", ROUTE_SCOPED_ENV_PREFIX, route, suffix))
+        .collect();
+    let candidate_refs: Vec<&str> = candidate_keys.iter().map(String::as_str).collect();
+    best_match_key(key, candidate_refs.as_slice()).map(str::to_string)
+}
+
+fn suggest_non_route_executor_key(key: &str) -> Option<String> {
+    best_match_key(key, KNOWN_NON_ROUTE_EXECUTOR_ENV_KEYS).map(str::to_string)
+}
+
+fn canonical_uppercase_executor_key_suggestion(key: &str) -> Option<String> {
+    let uppercase = key.to_ascii_uppercase();
+    if !uppercase.starts_with(EXECUTOR_ENV_PREFIX) {
+        return None;
+    }
+    if KNOWN_NON_ROUTE_EXECUTOR_ENV_KEYS.contains(&uppercase.as_str())
+        || ROUTE_NON_SCOPED_ENV_KEYS.contains(&uppercase.as_str())
+        || uppercase.starts_with(EXECUTOR_TEST_ENV_PREFIX)
+        || parse_route_scoped_env_key(uppercase.as_str()).is_some()
+    {
+        return Some(uppercase);
+    }
+    None
+}
+
 fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>) -> Result<()> {
     let mut violations: Vec<String> = Vec::new();
     let mut unknown_scoped_keys: Vec<String> = Vec::new();
@@ -675,7 +769,10 @@ fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>
             continue;
         }
         let Some((route_raw, _suffix)) = parse_route_scoped_env_key(key) else {
-            unknown_scoped_keys.push(key.to_string());
+            unknown_scoped_keys.push(format_key_with_optional_suggestion(
+                key,
+                suggest_route_scoped_key(key),
+            ));
             continue;
         };
         let route = route_raw.to_ascii_lowercase();
@@ -732,7 +829,10 @@ fn validate_known_executor_env_keys() -> Result<()> {
             continue;
         }
         if !key.starts_with(EXECUTOR_ENV_PREFIX) {
-            casing_violations.push(key.to_string());
+            casing_violations.push(format_key_with_optional_suggestion(
+                key,
+                canonical_uppercase_executor_key_suggestion(key),
+            ));
             continue;
         }
         if key.starts_with(ROUTE_SCOPED_ENV_PREFIX)
@@ -740,7 +840,10 @@ fn validate_known_executor_env_keys() -> Result<()> {
         {
             continue;
         }
-        unknown_keys.push(key.to_string());
+        unknown_keys.push(format_key_with_optional_suggestion(
+            key,
+            suggest_non_route_executor_key(key),
+        ));
     }
     let mut errors: Vec<String> = Vec::new();
     if !casing_violations.is_empty() {
@@ -1118,6 +1221,13 @@ mod tests {
                 error
             );
             assert!(error.to_string().contains("ROUTE_RPC_SUBMITURL"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("did you mean COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL?"),
+                "unexpected error: {}",
+                error
+            );
         });
     }
 
@@ -1440,6 +1550,13 @@ mod tests {
                     error
                 );
                 assert!(error.to_string().contains("ROUTE_RPC_SUBMITURL"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("did you mean COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL?"),
+                    "unexpected error: {}",
+                    error
+                );
             });
         });
     }
@@ -1466,6 +1583,13 @@ mod tests {
                     error
                         .to_string()
                         .contains("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLD"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("did you mean COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED?"),
                     "unexpected error: {}",
                     error
                 );
@@ -1516,6 +1640,20 @@ mod tests {
                     error
                         .to_string()
                         .contains("copybot_executor_route_rpc_submit_url"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("did you mean COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED?"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("did you mean COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL?"),
                     "unexpected error: {}",
                     error
                 );
