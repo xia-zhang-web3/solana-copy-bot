@@ -159,6 +159,8 @@ contract_guard_tests=(
   "parse_bool_token_accepts_true_forms"
   "parse_bool_token_rejects_false_forms"
   "parse_socket_addr_str_rejects_invalid_socket_addr"
+  "non_empty_env_rejects_non_utf8_value"
+  "optional_non_empty_env_rejects_non_utf8_value"
   "request_validation_rejects_invalid_simulate_action"
   "request_validation_rejects_empty_client_order_id"
   "request_validation_validate_simulate_request_basics_accepts_valid_inputs"

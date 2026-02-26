@@ -1,9 +1,17 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use std::net::SocketAddr;
 use std::env;
 
 pub(crate) fn non_empty_env(name: &str) -> Result<String> {
-    let value = env::var(name).with_context(|| format!("{} is required", name))?;
+    let value = match env::var(name) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => {
+            return Err(anyhow!("{} is required", name));
+        }
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(anyhow!("{} must be valid UTF-8 string", name));
+        }
+    };
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(anyhow!("{} must be non-empty", name));
@@ -87,7 +95,35 @@ pub(crate) fn parse_socket_addr_str(name: &str, value: &str) -> Result<SocketAdd
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_bool_token, parse_socket_addr_str};
+    use std::env;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    use super::{
+        non_empty_env, optional_non_empty_env, parse_bool_token, parse_socket_addr_str,
+    };
+
+    static ENV_PARSING_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_env_var<T>(name: &str, value: Option<OsString>, run: impl FnOnce() -> T) -> T {
+        let _guard = ENV_PARSING_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved = env::var_os(name);
+        env::remove_var(name);
+        if let Some(value) = value {
+            env::set_var(name, value);
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        env::remove_var(name);
+        if let Some(saved) = saved {
+            env::set_var(name, saved);
+        }
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
 
     #[test]
     fn parse_bool_token_accepts_true_forms() {
@@ -124,6 +160,60 @@ mod tests {
                 .contains("invalid COPYBOT_EXECUTOR_BIND_ADDR"),
             "error={}",
             error
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_empty_env_rejects_non_utf8_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_temp_env_var(
+            "COPYBOT_EXECUTOR_TEST_NON_EMPTY",
+            Some(OsString::from_vec(vec![0xff])),
+            || {
+                let error = non_empty_env("COPYBOT_EXECUTOR_TEST_NON_EMPTY")
+                    .expect_err("non-UTF8 value must reject");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_TEST_NON_EMPTY"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error.to_string().contains("UTF-8"),
+                    "unexpected error: {}",
+                    error
+                );
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn optional_non_empty_env_rejects_non_utf8_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_temp_env_var(
+            "COPYBOT_EXECUTOR_TEST_OPTIONAL",
+            Some(OsString::from_vec(vec![0xff])),
+            || {
+                let error = optional_non_empty_env("COPYBOT_EXECUTOR_TEST_OPTIONAL")
+                    .expect_err("non-UTF8 optional value must reject");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_TEST_OPTIONAL"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error.to_string().contains("UTF-8"),
+                    "unexpected error: {}",
+                    error
+                );
+            },
         );
     }
 }
