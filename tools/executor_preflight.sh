@@ -67,35 +67,36 @@ parse_bool_token() {
   esac
 }
 
-cfg_or_env_bool() {
+cfg_or_env_bool_into() {
   local section="$1"
   local key="$2"
   local env_key="$3"
   local default_value="$4"
+  local output_var="$5"
   local env_raw cfg_raw parsed
   env_raw="$(trim_string "${!env_key-}")"
   if [[ -n "$env_raw" ]]; then
     parsed="$(parse_bool_token "$env_raw")"
     if [[ -z "$parsed" ]]; then
-      errors+=("$env_key must be boolean token (true/false/1/0/yes/no/on/off)")
-      printf '%s' "$default_value"
+      errors+=("$env_key must be boolean token (true/false/1/0/yes/no/on/off), got: $env_raw")
+      printf -v "$output_var" '%s' "$default_value"
       return
     fi
-    printf '%s' "$parsed"
+    printf -v "$output_var" '%s' "$parsed"
     return
   fi
   cfg_raw="$(trim_string "$(cfg_value "$section" "$key")")"
   if [[ -z "$cfg_raw" ]]; then
-    printf '%s' "$default_value"
+    printf -v "$output_var" '%s' "$default_value"
     return
   fi
   parsed="$(parse_bool_token "$cfg_raw")"
   if [[ -z "$parsed" ]]; then
-    errors+=("config [$section].$key must be boolean token")
-    printf '%s' "$default_value"
+    errors+=("config [$section].$key must be boolean token (true/false/1/0/yes/no/on/off), got: $cfg_raw")
+    printf -v "$output_var" '%s' "$default_value"
     return
   fi
-  printf '%s' "$parsed"
+  printf -v "$output_var" '%s' "$parsed"
 }
 
 cfg_or_env_string() {
@@ -427,8 +428,27 @@ PY
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
-execution_enabled="$(cfg_or_env_bool execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED false)"
+cfg_or_env_bool_into execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED false execution_enabled
 execution_mode="$(normalize_route_token "$(cfg_or_env_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE paper)")"
+
+if (( ${#errors[@]} > 0 )); then
+  cat <<EOF
+=== Executor Preflight ===
+config: $CONFIG_PATH
+timestamp_utc: $timestamp_utc
+execution_enabled: $execution_enabled
+execution_mode: ${execution_mode:-paper}
+preflight_verdict: FAIL
+preflight_reason_code: config_error
+preflight_reason: bool parsing failed before preflight gate evaluation
+error_count: ${#errors[@]}
+artifacts_written: false
+EOF
+  for error in "${errors[@]}"; do
+    echo "error: $error"
+  done
+  exit 1
+fi
 
 if [[ "$execution_enabled" != "true" ]]; then
   cat <<EOF

@@ -2110,6 +2110,23 @@ run_executor_preflight_case() {
     exit 1
   fi
 
+  local invalid_enabled_output
+  if invalid_enabled_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      SOLANA_COPY_BOT_EXECUTION_ENABLED="sometimes" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for invalid SOLANA_COPY_BOT_EXECUTION_ENABLED bool token" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_enabled_output" "preflight_verdict: FAIL"
+  assert_field_equals "$invalid_enabled_output" "preflight_reason_code" "config_error"
+  assert_contains "$invalid_enabled_output" "SOLANA_COPY_BOT_EXECUTION_ENABLED must be boolean token"
+
   write_adapter_env_preflight "$adapter_env_path" "$port" "mismatch-token"
   local fail_output
   if fail_output="$(
