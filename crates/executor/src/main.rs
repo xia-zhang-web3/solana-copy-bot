@@ -664,6 +664,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_signer_source_config_accepts_file_source_with_matching_pubkey() {
+        let signer_pubkey_bytes = [2u8; 32];
+        let signer_pubkey = bs58::encode(signer_pubkey_bytes).into_string();
+        let path = write_temp_signer_keypair_file(signer_pubkey_bytes);
+        let source = resolve_signer_source_config(
+            Some("file"),
+            Some(path.to_str().expect("utf8 path")),
+            None,
+            signer_pubkey.as_str(),
+        )
+        .expect("matching file pubkey must validate");
+        assert_eq!(source, SignerSource::File);
+        cleanup_temp_secret_file(path);
+    }
+
+    #[test]
     fn resolve_signer_source_config_rejects_keypair_pubkey_mismatch() {
         let path = write_temp_signer_keypair_file([1u8; 32]);
         let error = resolve_signer_source_config(

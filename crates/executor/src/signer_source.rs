@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use std::fs;
 use zeroize::Zeroizing;
 
+use crate::auth_crypto::constant_time_eq;
 use crate::secret_source::secret_file_has_restrictive_permissions;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,7 +125,7 @@ fn validate_signer_keypair_file(path: &str, signer_pubkey: &str) -> Result<()> {
             "COPYBOT_EXECUTOR_SIGNER_PUBKEY must decode to 32 bytes"
         ));
     }
-    if expected_pubkey_bytes.as_slice() != &keypair_bytes[32..64] {
+    if !constant_time_eq(expected_pubkey_bytes.as_slice(), &keypair_bytes[32..64]) {
         return Err(anyhow!(
             "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE pubkey mismatch with COPYBOT_EXECUTOR_SIGNER_PUBKEY"
         ));
