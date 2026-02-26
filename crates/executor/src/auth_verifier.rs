@@ -69,9 +69,12 @@ impl AuthVerifier {
         if let Some(expected) = self.bearer_token.as_ref() {
             let auth_header = headers
                 .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .map(str::trim)
-                .ok_or_else(|| Reject::terminal("auth_missing", "missing Authorization header"))?;
+                .ok_or_else(|| Reject::terminal("auth_missing", "missing Authorization header"))?
+                .to_str()
+                .map_err(|_| {
+                    Reject::terminal("auth_invalid", "Authorization header must be valid ASCII")
+                })?
+                .trim();
             let provided = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
                 Reject::terminal("auth_invalid", "Authorization header must use Bearer token")
             })?;
@@ -81,30 +84,49 @@ impl AuthVerifier {
         }
 
         if let Some(hmac) = self.hmac.as_ref() {
-            let key_id = get_required_header(headers, "x-copybot-key-id", "hmac_missing")?;
-            if !constant_time_eq(key_id.as_bytes(), hmac.key_id.as_bytes()) {
+            let provided_key_id = get_required_header(
+                headers,
+                "x-copybot-key-id",
+                "hmac_missing",
+                "hmac_invalid",
+            )?;
+            if !constant_time_eq(provided_key_id.as_bytes(), hmac.key_id.as_bytes()) {
                 return Err(Reject::terminal(
                     "hmac_invalid",
                     "x-copybot-key-id mismatch",
                 ));
             }
-            let alg = get_required_header(headers, "x-copybot-signature-alg", "hmac_missing")?;
+            let alg = get_required_header(
+                headers,
+                "x-copybot-signature-alg",
+                "hmac_missing",
+                "hmac_invalid",
+            )?;
             if alg != "hmac-sha256-v1" {
                 return Err(Reject::terminal(
                     "hmac_invalid",
                     "x-copybot-signature-alg must be hmac-sha256-v1",
                 ));
             }
-            let timestamp_raw =
-                get_required_header(headers, "x-copybot-timestamp", "hmac_missing")?;
-            let timestamp = timestamp_raw.parse::<i64>().map_err(|_| {
+            let timestamp_text = get_required_header(
+                headers,
+                "x-copybot-timestamp",
+                "hmac_missing",
+                "hmac_invalid",
+            )?;
+            let timestamp = timestamp_text.parse::<i64>().map_err(|_| {
                 Reject::terminal(
                     "hmac_invalid",
                     "x-copybot-timestamp must be integer seconds",
                 )
             })?;
-            let ttl_raw = get_required_header(headers, "x-copybot-auth-ttl-sec", "hmac_missing")?;
-            let ttl = ttl_raw.parse::<u64>().map_err(|_| {
+            let ttl_text = get_required_header(
+                headers,
+                "x-copybot-auth-ttl-sec",
+                "hmac_missing",
+                "hmac_invalid",
+            )?;
+            let ttl = ttl_text.parse::<u64>().map_err(|_| {
                 Reject::terminal("hmac_invalid", "x-copybot-auth-ttl-sec must be integer")
             })?;
             if ttl != hmac.ttl_sec {
@@ -113,14 +135,24 @@ impl AuthVerifier {
                     "x-copybot-auth-ttl-sec mismatch",
                 ));
             }
-            let nonce = get_required_header(headers, "x-copybot-nonce", "hmac_missing")?;
+            let nonce = get_required_header(
+                headers,
+                "x-copybot-nonce",
+                "hmac_missing",
+                "hmac_invalid",
+            )?;
             if nonce.is_empty() || nonce.len() > 128 {
                 return Err(Reject::terminal(
                     "hmac_invalid",
                     "x-copybot-nonce must be 1..=128 chars",
                 ));
             }
-            let signature = get_required_header(headers, "x-copybot-signature", "hmac_missing")?;
+            let signature = get_required_header(
+                headers,
+                "x-copybot-signature",
+                "hmac_missing",
+                "hmac_invalid",
+            )?;
             let max_skew = hmac.ttl_sec as i64;
             if (now_epoch - timestamp).abs() > max_skew {
                 return Err(Reject::terminal(
@@ -129,7 +161,7 @@ impl AuthVerifier {
                 ));
             }
 
-            let payload = build_hmac_payload_bytes(timestamp_raw, ttl_raw, nonce, raw_body);
+            let payload = build_hmac_payload_bytes(timestamp_text, ttl_text, nonce, raw_body);
             let expected_signature =
                 compute_hmac_signature_hex(hmac.secret.as_bytes(), payload.as_slice()).map_err(
                     |_| Reject::terminal("hmac_invalid", "failed computing HMAC signature"),
@@ -141,7 +173,7 @@ impl AuthVerifier {
             {
                 let mut seen = self.nonce_seen_until_epoch.lock().await;
                 seen.retain(|_, expires_at| *expires_at >= now_epoch);
-                let nonce_key = format!("{}:{}", key_id, nonce);
+                let nonce_key = format!("{}:{}", provided_key_id, nonce);
                 if seen.contains_key(&nonce_key) {
                     return Err(Reject::terminal(
                         "hmac_replay",
@@ -187,14 +219,23 @@ fn build_hmac_payload_bytes(timestamp: &str, ttl: &str, nonce: &str, raw_body: &
 fn get_required_header<'a>(
     headers: &'a HeaderMap,
     key: &str,
-    err_code: &str,
+    missing_code: &str,
+    invalid_code: &str,
 ) -> std::result::Result<&'a str, Reject> {
-    headers
+    let value = headers
         .get(key)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| Reject::terminal(err_code, format!("missing header {}", key)))
+        .ok_or_else(|| Reject::terminal(missing_code, format!("missing header {}", key)))?;
+    let text = value.to_str().map_err(|_| {
+        Reject::terminal(
+            invalid_code,
+            format!("invalid header {}: must be valid ASCII", key),
+        )
+    })?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(Reject::terminal(missing_code, format!("missing header {}", key)));
+    }
+    Ok(trimmed)
 }
 
 #[cfg(test)]
@@ -257,6 +298,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auth_verifier_rejects_non_ascii_authorization_header() {
+        let verifier = AuthVerifier::new(
+            Some("token-1".to_string().into()),
+            None,
+            None,
+            30,
+            100_000,
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_bytes(&[0xff]).expect("non-ascii header value fixture"),
+        );
+
+        let reject = verifier
+            .verify(&headers, br#"{"status":"ok"}"#)
+            .await
+            .expect_err("non-ascii Authorization header must reject");
+        assert_eq!(reject.code, "auth_invalid");
+        assert!(
+            reject.detail.contains("Authorization header must be valid ASCII"),
+            "detail={}",
+            reject.detail
+        );
+    }
+
+    #[tokio::test]
     async fn auth_verifier_hmac_invalid_signature_does_not_burn_nonce() {
         let verifier = AuthVerifier::new(
             None,
@@ -312,6 +380,41 @@ mod tests {
             .expect_err("mismatched key-id must reject");
         assert_eq!(reject.code, "hmac_invalid");
         assert!(reject.detail.contains("x-copybot-key-id mismatch"));
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_rejects_non_ascii_required_header() {
+        let verifier = AuthVerifier::new(
+            None,
+            Some("kid-ascii".to_string()),
+            Some("secret-ascii".to_string().into()),
+            30,
+            100_000,
+        );
+        let body = br#"{"status":"ok"}"#;
+        let timestamp = Utc::now().timestamp();
+        let payload =
+            build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-ascii", body);
+        let signature = compute_hmac_signature_hex(b"secret-ascii", payload.as_slice()).unwrap();
+        let mut headers =
+            build_hmac_headers("kid-ascii", 30, "nonce-ascii", timestamp, signature.as_str());
+        headers.insert(
+            "x-copybot-key-id",
+            HeaderValue::from_bytes(&[0xff]).expect("non-ascii header value fixture"),
+        );
+
+        let reject = verifier
+            .verify(&headers, body)
+            .await
+            .expect_err("non-ascii required hmac header must reject");
+        assert_eq!(reject.code, "hmac_invalid");
+        assert!(
+            reject
+                .detail
+                .contains("invalid header x-copybot-key-id: must be valid ASCII"),
+            "detail={}",
+            reject.detail
+        );
     }
 
     #[tokio::test]
