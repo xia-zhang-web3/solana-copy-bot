@@ -53,12 +53,23 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
             });
         }
     };
-    let is_reject = matches!(
+    let is_known_success_status = matches!(status.as_str(), "ok" | "accepted" | "success");
+    let is_known_reject_status = matches!(
         status.as_str(),
         "reject" | "rejected" | "error" | "failed" | "failure"
-    ) || ok_flag == Some(false)
-        || accepted_flag == Some(false);
-    if matches!(status.as_str(), "ok" | "accepted" | "success")
+    );
+    let is_known_status = is_known_success_status || is_known_reject_status;
+
+    if !status.is_empty() && !is_known_status {
+        return UpstreamOutcome::Reject(ParsedUpstreamReject {
+            retryable: false,
+            code: "upstream_invalid_status".to_string(),
+            detail: format!("unknown upstream status={}", status),
+        });
+    }
+
+    let is_reject = is_known_reject_status || ok_flag == Some(false) || accepted_flag == Some(false);
+    if is_known_success_status
         && (ok_flag == Some(false) || accepted_flag == Some(false))
     {
         return UpstreamOutcome::Reject(ParsedUpstreamReject {
@@ -67,7 +78,7 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
             detail: "upstream status=ok conflicts with reject flags".to_string(),
         });
     }
-    if matches!(status.as_str(), "reject" | "rejected" | "error" | "failed" | "failure")
+    if is_known_reject_status
         && (ok_flag == Some(true) || accepted_flag == Some(true))
     {
         return UpstreamOutcome::Reject(ParsedUpstreamReject {
@@ -129,21 +140,6 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
             retryable,
             code,
             detail,
-        });
-    }
-
-    let is_known_success_status = matches!(status.as_str(), "ok" | "accepted" | "success");
-    let is_known_status = is_known_success_status
-        || matches!(
-            status.as_str(),
-            "reject" | "rejected" | "error" | "failed" | "failure"
-        );
-
-    if !status.is_empty() && !is_known_status {
-        return UpstreamOutcome::Reject(ParsedUpstreamReject {
-            retryable: false,
-            code: "upstream_invalid_status".to_string(),
-            detail: format!("unknown upstream status={}", status),
         });
     }
 
@@ -223,6 +219,24 @@ mod tests {
         });
         match parse_upstream_outcome(&payload, "default") {
             UpstreamOutcome::Reject(reject) => assert_eq!(reject.code, "upstream_invalid_status"),
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_unknown_status_even_with_reject_flags() {
+        let payload = json!({
+            "status": "pending",
+            "ok": false,
+            "code": "busy",
+            "detail": "backpressure"
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_status");
+                assert!(reject.detail.contains("unknown upstream status=pending"));
+            }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
     }

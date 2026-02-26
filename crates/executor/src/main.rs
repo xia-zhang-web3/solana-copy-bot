@@ -1698,6 +1698,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_simulate_rejects_unknown_upstream_status_even_with_reject_flags() {
+        let upstream_body =
+            r#"{"status":"pending","ok":false,"accepted":false,"code":"busy","detail":"backpressure"}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-invalid-upstream-unknown-status-reject-flags-1".to_string(),
+            signal_id: "signal-invalid-upstream-unknown-status-reject-flags-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = br#"{"action":"simulate","contract_version":"v1","request_id":"request-invalid-upstream-unknown-status-reject-flags-1","signal_id":"signal-invalid-upstream-unknown-status-reject-flags-1","side":"buy","token":"11111111111111111111111111111111","notional_sol":1.0,"signal_ts":"2026-02-24T12:00:00Z","route":"rpc","dry_run":true}"#;
+        let reject = handle_simulate(&state, &request, raw_body.as_slice())
+            .await
+            .expect_err("unknown status must reject even with reject flags");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_invalid_status");
+        assert!(
+            reject.detail.contains("unknown upstream status=pending"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_empty_signal_id() {
         let state = test_state("http://127.0.0.1:1/upstream");
         let request = SubmitRequest {
