@@ -803,6 +803,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 275. executor runtime hardening coverage completed for send-rpc truncation path: added integration guards proving oversized send-rpc HTTP body and oversized JSON-RPC `error` payload details are truncated with marker (`...[truncated]`) and do not leak tail markers, then registered both guards in executor contract smoke.
 276. executor runtime hardening extended into signature-verify path: `upstream_submit_failed_onchain` detail now truncates oversized on-chain `err` payloads via shared `truncate_detail_chars` limit, with integration guard `verify_submit_signature_truncates_large_onchain_error_detail` ensuring truncation marker is present and tail marker does not leak.
 277. executor transport-memory hardening: upstream/send-rpc non-2xx paths now read response bodies via bounded reader (`read_response_body_limited`, `MAX_HTTP_ERROR_BODY_READ_BYTES=4096`) before detail truncation, preventing unbounded error-body reads; updated oversized-body integration guards to exceed byte-cap and added helper coverage (`read_response_body_limited_truncates_large_http_body`) to contract smoke.
+278. executor smoke stability fix: `read_response_body_limited_truncates_large_http_body` now follows fail-soft network-test pattern (early-return skip when local `TcpListener::bind`/`local_addr` is unavailable), preventing hard panic in restricted environments (`cargo test -q >/dev/null`) while keeping functional coverage where bind is permitted.
 
 Остается в next-code-queue:
 
