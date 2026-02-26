@@ -3650,6 +3650,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_simulate_action_context_before_allowlist_check() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.route_backends.insert(
+            "jito".to_string(),
+            RouteBackend {
+                submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-sim-action-context-before-allowlist-1",
+            "signal_id": "signal-sim-action-context-before-allowlist-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "jito"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "jito",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("jito"),
+                request_id: Some("request-sim-action-context-before-allowlist-1"),
+                signal_id: Some("signal-sim-action-context-before-allowlist-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                ..RouteSubmitExecutionContext::default()
+            },
+        )
+        .await
+        .expect_err("simulate action context must reject before allowlist checks");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("must not include submit instruction plan"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_simulate_action_context_before_backend_check() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state
+            .config
+            .route_backends
+            .remove("rpc")
+            .expect("rpc backend should exist in test setup");
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-sim-action-context-before-backend-1",
+            "signal_id": "signal-sim-action-context-before-backend-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-sim-action-context-before-backend-1"),
+                signal_id: Some("signal-sim-action-context-before-backend-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                ..RouteSubmitExecutionContext::default()
+            },
+        )
+        .await
+        .expect_err("simulate action context must reject before backend checks");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("must not include submit instruction plan"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_simulate_action_context_before_fastlane_feature_gate() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.route_allowlist.insert("fastlane".to_string());
+        state.config.route_backends.insert(
+            "fastlane".to_string(),
+            RouteBackend {
+                submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-sim-action-context-before-fastlane-gate-1",
+            "signal_id": "signal-sim-action-context-before-fastlane-gate-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "fastlane"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "fastlane",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("fastlane"),
+                request_id: Some("request-sim-action-context-before-fastlane-gate-1"),
+                signal_id: Some("signal-sim-action-context-before-fastlane-gate-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                ..RouteSubmitExecutionContext::default()
+            },
+        )
+        .await
+        .expect_err("simulate action context must reject before fastlane feature gate");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("must not include submit instruction plan"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_submit_with_plan_without_deadline_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
