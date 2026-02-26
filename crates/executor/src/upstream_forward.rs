@@ -2,7 +2,10 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::{
-    http_utils::{classify_request_error, redacted_endpoint_label},
+    http_utils::{
+        classify_request_error, redacted_endpoint_label, truncate_detail_chars,
+        MAX_HTTP_ERROR_BODY_DETAIL_CHARS,
+    },
     submit_deadline::SubmitDeadline,
     AppState, Reject,
 };
@@ -109,16 +112,15 @@ pub(crate) async fn forward_to_upstream(
 
         if !status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
+            let body_detail =
+                truncate_detail_chars(body_text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
             let retryable = status.as_u16() == 429 || status.is_server_error();
             let reject = if retryable {
                 Reject::retryable(
                     "upstream_http_unavailable",
                     format!(
                         "upstream {} status={} endpoint={} body={}",
-                        action.as_str(),
-                        status,
-                        endpoint_label,
-                        body_text
+                        action.as_str(), status, endpoint_label, body_detail
                     ),
                 )
             } else {
@@ -126,10 +128,7 @@ pub(crate) async fn forward_to_upstream(
                     "upstream_http_rejected",
                     format!(
                         "upstream {} status={} endpoint={} body={}",
-                        action.as_str(),
-                        status,
-                        endpoint_label,
-                        body_text
+                        action.as_str(), status, endpoint_label, body_detail
                     ),
                 )
             };

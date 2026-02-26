@@ -799,6 +799,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 271. executor phase-2B route-hint allowlist/backend symmetry completed: added submit integration priority guards proving `route_hint` rejects fire before `allowlist` and `backend` policy gates (parity with existing simulate coverage), closing the remaining low-gap in route-hint ordering matrix.
 272. executor phase-2B ordering governance policy codified: persistent policy document `ops/executor_ordering_coverage_policy.md` added with finite matrix scope, explicit residual count (`N=2`), closure criteria, post-closure freeze rules, and KPI limiting consecutive coverage-only slices; this is now the mandatory coordination source for cross-session executor continuation.
 273. executor phase-2B ordering matrix v1 closure completed: added missing integration priority guards for `payload_shape > allowlist` (submit) and `payload_shape > feature_gate` (simulate), updated smoke registry, and closed governance residual count from `N=2` to `N=0` in `ops/executor_ordering_coverage_policy.md`.
+274. executor runtime hardening: upstream/send-rpc HTTP error details now truncate oversized response bodies via shared helper (`MAX_HTTP_ERROR_BODY_DETAIL_CHARS`) to prevent reject-detail/log bloat from large upstream payloads while preserving fail-closed classification; added helper unit coverage and integration guard `forward_to_upstream_truncates_large_http_error_body_detail`.
 
 Остается в next-code-queue:
 

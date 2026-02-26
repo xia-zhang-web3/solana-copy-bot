@@ -4,7 +4,10 @@ use serde_json::{json, Value};
 use tracing::warn;
 
 use crate::{
-    http_utils::{classify_request_error, redacted_endpoint_label},
+    http_utils::{
+        classify_request_error, redacted_endpoint_label, truncate_detail_chars,
+        MAX_HTTP_ERROR_BODY_DETAIL_CHARS,
+    },
     key_validation::validate_signature_like,
     route_backend::SendRpcEndpointChainError,
     submit_deadline::SubmitDeadline,
@@ -137,12 +140,14 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         let status = response.status();
         if !status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
+            let body_detail =
+                truncate_detail_chars(body_text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
             let reject = if status.as_u16() == 429 || status.is_server_error() {
                 Reject::retryable(
                     "send_rpc_http_unavailable",
                     format!(
                         "send RPC status={} endpoint={} body={}",
-                        status, endpoint_label, body_text
+                        status, endpoint_label, body_detail
                     ),
                 )
             } else {
@@ -150,7 +155,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
                     "send_rpc_http_rejected",
                     format!(
                         "send RPC status={} endpoint={} body={}",
-                        status, endpoint_label, body_text
+                        status, endpoint_label, body_detail
                     ),
                 )
             };
@@ -179,6 +184,10 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         })?;
         if let Some(error_payload) = body.get("error") {
             if !error_payload.is_null() {
+                let payload_detail = truncate_detail_chars(
+                    error_payload.to_string().as_str(),
+                    MAX_HTTP_ERROR_BODY_DETAIL_CHARS,
+                );
                 match classify_send_rpc_error_payload(error_payload) {
                     SendRpcErrorPayloadDisposition::AlreadyProcessed => {
                         warn!(
@@ -194,7 +203,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
                             "send_rpc_error_payload_retryable",
                             format!(
                                 "send RPC returned retryable error endpoint={} payload={}",
-                                endpoint_label, error_payload
+                                endpoint_label, payload_detail
                             ),
                         );
                         if attempt_idx + 1 < endpoints.len() {
@@ -215,7 +224,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
                             "executor_blockhash_expired",
                             format!(
                                 "send RPC returned blockhash-expired error endpoint={} payload={}",
-                                endpoint_label, error_payload
+                                endpoint_label, payload_detail
                             ),
                         ));
                     }
@@ -224,7 +233,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
                             "send_rpc_error_payload_terminal",
                             format!(
                                 "send RPC returned terminal error endpoint={} payload={}",
-                                endpoint_label, error_payload
+                                endpoint_label, payload_detail
                             ),
                         ));
                     }

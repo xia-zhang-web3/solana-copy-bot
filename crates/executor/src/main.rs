@@ -2002,6 +2002,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_truncates_large_http_error_body_detail() {
+        let tail_marker = "TAIL_MARKER_MUST_NOT_LEAK";
+        let long_body = format!(
+            "{}{}",
+            "x".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_DETAIL_CHARS + 128),
+            tail_marker
+        );
+        let Some((url, handle)) = spawn_one_shot_upstream_raw(503, "text/plain", long_body.as_str())
+        else {
+            return;
+        };
+        let state = test_state(url.as_str());
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect_err("503 upstream should be retryable");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_http_unavailable");
+        assert!(
+            reject.detail.contains("...[truncated]"),
+            "detail should mark truncation: {}",
+            reject.detail
+        );
+        assert!(
+            !reject.detail.contains(tail_marker),
+            "detail leaked body tail marker: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_rejects_submit_without_deadline_before_request() {
         let state = test_state("http://127.0.0.1:1/upstream");
         let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)

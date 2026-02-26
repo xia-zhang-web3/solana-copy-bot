@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 
+pub(crate) const MAX_HTTP_ERROR_BODY_DETAIL_CHARS: usize = 1024;
+
 pub(crate) fn validate_endpoint_url(url: &str) -> Result<()> {
     let parsed = reqwest::Url::parse(url).context("invalid URL parse")?;
     let scheme = parsed.scheme().to_ascii_lowercase();
@@ -73,5 +75,40 @@ pub(crate) fn classify_request_error(error: &reqwest::Error) -> &'static str {
         "status"
     } else {
         "other"
+    }
+}
+
+pub(crate) fn truncate_detail_chars(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if let Some((cutoff_idx, _)) = value.char_indices().nth(max_chars) {
+        return format!("{}...[truncated]", &value[..cutoff_idx]);
+    }
+    value.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_detail_chars;
+
+    #[test]
+    fn truncate_detail_chars_keeps_short_text_unchanged() {
+        assert_eq!(truncate_detail_chars("short", 16), "short");
+    }
+
+    #[test]
+    fn truncate_detail_chars_truncates_long_text_with_marker() {
+        let input = "abcdefghij";
+        let output = truncate_detail_chars(input, 5);
+        assert_eq!(output, "abcde...[truncated]");
+        assert!(!output.contains("fghij"));
+    }
+
+    #[test]
+    fn truncate_detail_chars_preserves_utf8_boundaries() {
+        let input = "a🙂b🙂c";
+        let output = truncate_detail_chars(input, 3);
+        assert_eq!(output, "a🙂b...[truncated]");
     }
 }
