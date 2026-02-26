@@ -131,6 +131,8 @@ contract_guard_tests=(
   "executor_config_from_env_rejects_non_utf8_idempotency_db_path_value"
   "executor_config_from_env_rejects_non_utf8_request_timeout_value"
   "executor_config_from_env_rejects_non_utf8_max_notional_sol_value"
+  "executor_config_from_env_rejects_non_utf8_bearer_token_value"
+  "executor_config_from_env_rejects_non_utf8_submit_verify_rpc_url_value"
   "parse_route_scoped_env_key_extracts_route_and_suffix"
   "parse_route_scoped_env_key_ignores_non_scoped_keys"
   "route_scoped_env_targets_allowlist_rejects_outside_route"

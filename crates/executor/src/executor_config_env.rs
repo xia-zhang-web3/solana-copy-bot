@@ -82,9 +82,9 @@ impl ExecutorConfig {
             )
         })?;
         let signer_source = resolve_signer_source_config(
-            optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_SOURCE").as_deref(),
-            optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE").as_deref(),
-            optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_SOURCE")?.as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE")?.as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID")?.as_deref(),
             signer_pubkey.as_str(),
         )?;
         let submit_fastlane_enabled =
@@ -106,38 +106,38 @@ impl ExecutorConfig {
         validate_fastlane_route_policy(&route_allowlist, submit_fastlane_enabled)?;
         validate_route_scoped_env_targets_allowlist(&route_allowlist)?;
 
-        let default_submit = optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL");
+        let default_submit = optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL")?;
         let default_submit_fallback =
-            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_FALLBACK_URL");
-        let default_simulate = optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL");
+            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_FALLBACK_URL")?;
+        let default_simulate = optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL")?;
         let default_simulate_fallback =
-            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_FALLBACK_URL");
-        let default_send_rpc = optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_URL");
+            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_FALLBACK_URL")?;
+        let default_send_rpc = optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_URL")?;
         let default_send_rpc_fallback =
-            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL");
+            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL")?;
         let default_auth_token = resolve_secret_source(
             "COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN",
-            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN")?.as_deref(),
             "COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN_FILE",
-            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN_FILE").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN_FILE")?.as_deref(),
         )?;
         let default_fallback_auth_token = resolve_secret_source(
             "COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN",
-            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN")?.as_deref(),
             "COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE",
-            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE")?.as_deref(),
         )?;
         let default_send_rpc_auth_token = resolve_secret_source(
             "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN",
-            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN")?.as_deref(),
             "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE",
-            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE")?.as_deref(),
         )?;
         let default_send_rpc_fallback_auth_token = resolve_secret_source(
             "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN",
-            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN")?.as_deref(),
             "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE",
-            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE")?.as_deref(),
         )?;
 
         let mut route_backends = HashMap::new();
@@ -179,7 +179,7 @@ impl ExecutorConfig {
                 route_upper
             );
 
-            let submit_url = optional_non_empty_env(submit_key.as_str())
+            let submit_url = optional_non_empty_env(submit_key.as_str())?
                 .or_else(|| default_submit.clone())
                 .ok_or_else(|| {
                     anyhow!(
@@ -188,7 +188,7 @@ impl ExecutorConfig {
                         submit_key
                     )
                 })?;
-            let simulate_url = optional_non_empty_env(simulate_key.as_str())
+            let simulate_url = optional_non_empty_env(simulate_key.as_str())?
                 .or_else(|| default_simulate.clone())
                 .ok_or_else(|| {
                     anyhow!(
@@ -197,13 +197,13 @@ impl ExecutorConfig {
                         simulate_key
                     )
                 })?;
-            let submit_fallback_url = optional_non_empty_env(submit_fallback_key.as_str())
+            let submit_fallback_url = optional_non_empty_env(submit_fallback_key.as_str())?
                 .or_else(|| default_submit_fallback.clone());
-            let simulate_fallback_url = optional_non_empty_env(simulate_fallback_key.as_str())
+            let simulate_fallback_url = optional_non_empty_env(simulate_fallback_key.as_str())?
                 .or_else(|| default_simulate_fallback.clone());
-            let send_rpc_url =
-                optional_non_empty_env(send_rpc_key.as_str()).or_else(|| default_send_rpc.clone());
-            let send_rpc_fallback_url = optional_non_empty_env(send_rpc_fallback_key.as_str())
+            let send_rpc_url = optional_non_empty_env(send_rpc_key.as_str())?
+                .or_else(|| default_send_rpc.clone());
+            let send_rpc_fallback_url = optional_non_empty_env(send_rpc_fallback_key.as_str())?
                 .or_else(|| default_send_rpc_fallback.clone());
             validate_endpoint_url(submit_url.as_str())
                 .map_err(|error| anyhow!("invalid submit URL for route={}: {}", route, error))?;
@@ -270,31 +270,31 @@ impl ExecutorConfig {
 
             let primary_auth_token = resolve_secret_source(
                 auth_key.as_str(),
-                optional_non_empty_env(auth_key.as_str()).as_deref(),
+                optional_non_empty_env(auth_key.as_str())?.as_deref(),
                 auth_file_key.as_str(),
-                optional_non_empty_env(auth_file_key.as_str()).as_deref(),
+                optional_non_empty_env(auth_file_key.as_str())?.as_deref(),
             )?
             .or_else(|| default_auth_token.clone());
             let fallback_auth_token = resolve_secret_source(
                 fallback_auth_key.as_str(),
-                optional_non_empty_env(fallback_auth_key.as_str()).as_deref(),
+                optional_non_empty_env(fallback_auth_key.as_str())?.as_deref(),
                 fallback_auth_file_key.as_str(),
-                optional_non_empty_env(fallback_auth_file_key.as_str()).as_deref(),
+                optional_non_empty_env(fallback_auth_file_key.as_str())?.as_deref(),
             )?
             .or_else(|| default_fallback_auth_token.clone())
             .or_else(|| primary_auth_token.clone());
             let send_rpc_primary_auth_token = resolve_secret_source(
                 send_rpc_auth_key.as_str(),
-                optional_non_empty_env(send_rpc_auth_key.as_str()).as_deref(),
+                optional_non_empty_env(send_rpc_auth_key.as_str())?.as_deref(),
                 send_rpc_auth_file_key.as_str(),
-                optional_non_empty_env(send_rpc_auth_file_key.as_str()).as_deref(),
+                optional_non_empty_env(send_rpc_auth_file_key.as_str())?.as_deref(),
             )?
             .or_else(|| default_send_rpc_auth_token.clone());
             let send_rpc_fallback_auth_token = resolve_secret_source(
                 send_rpc_fallback_auth_key.as_str(),
-                optional_non_empty_env(send_rpc_fallback_auth_key.as_str()).as_deref(),
+                optional_non_empty_env(send_rpc_fallback_auth_key.as_str())?.as_deref(),
                 send_rpc_fallback_auth_file_key.as_str(),
-                optional_non_empty_env(send_rpc_fallback_auth_file_key.as_str()).as_deref(),
+                optional_non_empty_env(send_rpc_fallback_auth_file_key.as_str())?.as_deref(),
             )?
             .or_else(|| default_send_rpc_fallback_auth_token.clone())
             .or_else(|| send_rpc_primary_auth_token.clone());
@@ -319,16 +319,16 @@ impl ExecutorConfig {
 
         let bearer_token = resolve_secret_source(
             "COPYBOT_EXECUTOR_BEARER_TOKEN",
-            optional_non_empty_env("COPYBOT_EXECUTOR_BEARER_TOKEN").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_BEARER_TOKEN")?.as_deref(),
             "COPYBOT_EXECUTOR_BEARER_TOKEN_FILE",
-            optional_non_empty_env("COPYBOT_EXECUTOR_BEARER_TOKEN_FILE").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_BEARER_TOKEN_FILE")?.as_deref(),
         )?;
-        let hmac_key_id = optional_non_empty_env("COPYBOT_EXECUTOR_HMAC_KEY_ID");
+        let hmac_key_id = optional_non_empty_env("COPYBOT_EXECUTOR_HMAC_KEY_ID")?;
         let hmac_secret = resolve_secret_source(
             "COPYBOT_EXECUTOR_HMAC_SECRET",
-            optional_non_empty_env("COPYBOT_EXECUTOR_HMAC_SECRET").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_HMAC_SECRET")?.as_deref(),
             "COPYBOT_EXECUTOR_HMAC_SECRET_FILE",
-            optional_non_empty_env("COPYBOT_EXECUTOR_HMAC_SECRET_FILE").as_deref(),
+            optional_non_empty_env("COPYBOT_EXECUTOR_HMAC_SECRET_FILE")?.as_deref(),
         )?;
         let hmac_ttl_sec = parse_u64_env("COPYBOT_EXECUTOR_HMAC_TTL_SEC", 30)?;
         let hmac_nonce_cache_max_entries = parse_u64_env(
@@ -461,8 +461,8 @@ impl ExecutorConfig {
             contract_version,
             signer_pubkey,
             signer_source,
-            signer_keypair_file: optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE"),
-            signer_kms_key_id: optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID"),
+            signer_keypair_file: optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE")?,
+            signer_kms_key_id: optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID")?,
             submit_fastlane_enabled,
             route_allowlist,
             route_backends,
@@ -1376,6 +1376,60 @@ mod tests {
                     error
                         .to_string()
                         .contains("COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_config_from_env_rejects_non_utf8_bearer_token_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_BEARER_TOKEN",
+                    OsString::from_vec(vec![0xff]),
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("non-UTF8 bearer token must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.to_string().contains("COPYBOT_EXECUTOR_BEARER_TOKEN"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_config_from_env_rejects_non_utf8_submit_verify_rpc_url_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL",
+                    OsString::from_vec(vec![0xff]),
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("non-UTF8 submit verify URL must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"),
                     "unexpected error: {}",
                     error
                 );

@@ -11,15 +11,21 @@ pub(crate) fn non_empty_env(name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-pub(crate) fn optional_non_empty_env(name: &str) -> Option<String> {
-    env::var(name).ok().and_then(|raw| {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
+pub(crate) fn optional_non_empty_env(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
         }
-    })
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(anyhow!("{} must be valid UTF-8 string when present", name))
+        }
+    }
 }
 
 pub(crate) fn parse_u64_env(name: &str, default: u64) -> Result<u64> {

@@ -16,8 +16,8 @@ pub(crate) struct SubmitSignatureVerifyConfig {
 
 pub(crate) fn parse_submit_signature_verify_config() -> Result<Option<SubmitSignatureVerifyConfig>>
 {
-    let primary = optional_non_empty_env("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL");
-    let fallback = optional_non_empty_env("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL");
+    let primary = optional_non_empty_env("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL")?;
+    let fallback = optional_non_empty_env("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL")?;
     let attempts = parse_u64_env(
         "COPYBOT_EXECUTOR_SUBMIT_VERIFY_ATTEMPTS",
         DEFAULT_SUBMIT_VERIFY_ATTEMPTS,
