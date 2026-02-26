@@ -3870,6 +3870,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_rejects_when_send_rpc_primary_declared_oversized_without_fallback() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([77u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+        let Some((send_rpc_url, send_rpc_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"jsonrpc":"2.0","result":"x"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+            backend.send_rpc_fallback_url = None;
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-send-rpc-declared-oversized-no-fallback-1",
+            "client_order_id": "client-order-send-rpc-declared-oversized-no-fallback-1",
+            "request_id": "request-send-rpc-declared-oversized-no-fallback-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("declared oversized send-rpc response without fallback must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "send_rpc_response_too_large");
+        assert!(
+            reject.detail.contains("declared content-length"),
+            "detail={}",
+            reject.detail
+        );
+        assert!(
+            reject.detail.contains("max_bytes=65536"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_when_send_rpc_primary_truncated_without_fallback() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([78u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+        let send_rpc_body = build_truncated_valid_json_prefix_body(
+            r#"{"jsonrpc":"2.0","result":"1111111111111111111111111111111111111111111111111111111111111111"}"#,
+        );
+        let Some((send_rpc_url, send_rpc_handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            send_rpc_body.as_bytes(),
+        ) else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+            backend.send_rpc_fallback_url = None;
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-send-rpc-truncated-no-fallback-1",
+            "client_order_id": "client-order-send-rpc-truncated-no-fallback-1",
+            "request_id": "request-send-rpc-truncated-no-fallback-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("truncated send-rpc response without fallback must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "send_rpc_response_too_large");
+        assert!(
+            reject.detail.contains("max_bytes=65536"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_uses_send_rpc_and_records_seen_signature_verification_when_enabled() {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([63u8; 64]);
         let upstream_body = format!(
