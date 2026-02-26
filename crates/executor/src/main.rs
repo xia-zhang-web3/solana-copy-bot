@@ -3594,6 +3594,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_action_context_before_backend_check() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state
+            .config
+            .route_backends
+            .remove("rpc")
+            .expect("rpc backend should exist in test setup");
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-action-context-before-backend-1",
+            "signal_id": "signal-action-context-before-backend-1",
+            "client_order_id": "client-order-action-context-before-backend-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-action-context-before-backend-1"),
+                signal_id: Some("signal-action-context-before-backend-1"),
+                client_order_id: Some("client-order-action-context-before-backend-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect_err("action context must reject before backend checks");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing instruction plan"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_submit_with_plan_without_deadline_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
