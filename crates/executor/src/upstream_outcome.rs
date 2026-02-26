@@ -58,6 +58,24 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
         "reject" | "rejected" | "error" | "failed" | "failure"
     ) || ok_flag == Some(false)
         || accepted_flag == Some(false);
+    if matches!(status.as_str(), "ok" | "accepted" | "success")
+        && (ok_flag == Some(false) || accepted_flag == Some(false))
+    {
+        return UpstreamOutcome::Reject(ParsedUpstreamReject {
+            retryable: false,
+            code: "upstream_invalid_response".to_string(),
+            detail: "upstream status=ok conflicts with reject flags".to_string(),
+        });
+    }
+    if matches!(status.as_str(), "reject" | "rejected" | "error" | "failed" | "failure")
+        && (ok_flag == Some(true) || accepted_flag == Some(true))
+    {
+        return UpstreamOutcome::Reject(ParsedUpstreamReject {
+            retryable: false,
+            code: "upstream_invalid_response".to_string(),
+            detail: "upstream status=reject conflicts with success flags".to_string(),
+        });
+    }
     if is_reject {
         let retryable = match parse_optional_bool_field(
             body,
@@ -384,6 +402,44 @@ mod tests {
                         .detail
                         .contains("upstream accepted must be boolean when present")
                 );
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_conflicting_success_status_with_reject_flags() {
+        let payload = json!({
+            "status": "ok",
+            "ok": false,
+            "accepted": true
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(reject
+                    .detail
+                    .contains("upstream status=ok conflicts with reject flags"));
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_conflicting_reject_status_with_success_flags() {
+        let payload = json!({
+            "status": "reject",
+            "ok": true,
+            "accepted": false
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(reject
+                    .detail
+                    .contains("upstream status=reject conflicts with success flags"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
