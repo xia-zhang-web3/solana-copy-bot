@@ -83,3 +83,25 @@ Any new agent/session continuing executor work must:
 2. report current residual count `N`,
 3. state whether the next slice is `coverage-only` or `runtime/e2e`,
 4. map it to next-code-queue before coding.
+
+## 8) Decision Record — Deferred `M-1` Reorder
+
+Date: 2026-02-26
+
+Decision: `NO-GO` for now (deferred by design).
+
+Context:
+
+1. Matrix v1 is already closed (`N = 0`) for the current canonical guard chain.
+2. Main submit/simulate handler paths already enforce route/allowlist checks before route-executor invocation.
+3. Reordering to policy-first (`allowlist/backend` before payload/context) would change reject precedence, require matrix rebuild, and create high churn for low immediate runtime gain.
+
+Revisit condition:
+
+1. Re-open only if there is an explicit new product/security requirement that mandates policy-first rejects at route-executor boundary for all call-sites.
+
+If reopened:
+
+1. Approve new canonical order first.
+2. Rebuild ordering matrix to `N = 0` under the new order.
+3. Sync integration guards + smoke + ROAD/evidence before closure.
