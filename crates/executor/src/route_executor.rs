@@ -100,19 +100,48 @@ fn validate_route_executor_action_context(
     submit_context: RouteSubmitExecutionContext,
 ) -> std::result::Result<(), Reject> {
     match action {
-        UpstreamAction::Submit if submit_context.instruction_plan.is_none() => Err(
-            Reject::terminal(
-                "invalid_request_body",
-                "submit route action missing instruction plan at route-executor boundary",
-            ),
-        ),
-        UpstreamAction::Simulate if submit_context.instruction_plan.is_some() => Err(
-            Reject::terminal(
-                "invalid_request_body",
-                "simulate route action must not include submit instruction plan at route-executor boundary",
-            ),
-        ),
-        _ => Ok(()),
+        UpstreamAction::Submit => {
+            if submit_context.instruction_plan.is_none() {
+                return Err(Reject::terminal(
+                    "invalid_request_body",
+                    "submit route action missing instruction plan at route-executor boundary",
+                ));
+            }
+            if submit_context.expected_slippage_bps.is_none() {
+                return Err(Reject::terminal(
+                    "invalid_request_body",
+                    "submit route action missing slippage_bps expectation at route-executor boundary",
+                ));
+            }
+            if submit_context.expected_route_slippage_cap_bps.is_none() {
+                return Err(Reject::terminal(
+                    "invalid_request_body",
+                    "submit route action missing route_slippage_cap_bps expectation at route-executor boundary",
+                ));
+            }
+            Ok(())
+        }
+        UpstreamAction::Simulate => {
+            if submit_context.instruction_plan.is_some() {
+                return Err(Reject::terminal(
+                    "invalid_request_body",
+                    "simulate route action must not include submit instruction plan at route-executor boundary",
+                ));
+            }
+            if submit_context.expected_slippage_bps.is_some() {
+                return Err(Reject::terminal(
+                    "invalid_request_body",
+                    "simulate route action must not include slippage_bps expectation at route-executor boundary",
+                ));
+            }
+            if submit_context.expected_route_slippage_cap_bps.is_some() {
+                return Err(Reject::terminal(
+                    "invalid_request_body",
+                    "simulate route action must not include route_slippage_cap_bps expectation at route-executor boundary",
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -423,6 +452,99 @@ mod tests {
         .expect_err("simulate with submit plan must be rejected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(!reject.retryable);
+    }
+
+    #[test]
+    fn route_executor_action_context_rejects_submit_missing_slippage_expectation() {
+        let reject = validate_route_executor_action_context(
+            UpstreamAction::Submit,
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: None,
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .expect_err("submit must require slippage expectation");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
+        assert!(reject.detail.contains("missing slippage_bps expectation"));
+    }
+
+    #[test]
+    fn route_executor_action_context_rejects_submit_missing_route_slippage_cap_expectation() {
+        let reject = validate_route_executor_action_context(
+            UpstreamAction::Submit,
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: None,
+            },
+        )
+        .expect_err("submit must require route slippage cap expectation");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
+        assert!(reject
+            .detail
+            .contains("missing route_slippage_cap_bps expectation"));
+    }
+
+    #[test]
+    fn route_executor_action_context_rejects_simulate_with_slippage_expectation() {
+        let reject = validate_route_executor_action_context(
+            UpstreamAction::Simulate,
+            RouteSubmitExecutionContext {
+                expected_slippage_bps: Some(10.0),
+                ..RouteSubmitExecutionContext::default()
+            },
+        )
+        .expect_err("simulate must not include slippage expectation");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
+        assert!(reject
+            .detail
+            .contains("must not include slippage_bps expectation"));
+    }
+
+    #[test]
+    fn route_executor_action_context_rejects_simulate_with_route_slippage_cap_expectation() {
+        let reject = validate_route_executor_action_context(
+            UpstreamAction::Simulate,
+            RouteSubmitExecutionContext {
+                expected_route_slippage_cap_bps: Some(20.0),
+                ..RouteSubmitExecutionContext::default()
+            },
+        )
+        .expect_err("simulate must not include route slippage cap expectation");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
+        assert!(reject
+            .detail
+            .contains("must not include route_slippage_cap_bps expectation"));
+    }
+
+    #[test]
+    fn route_executor_action_context_accepts_submit_with_plan_and_slippage_expectations() {
+        validate_route_executor_action_context(
+            UpstreamAction::Submit,
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .expect("submit with complete expectations should pass");
     }
 
     #[test]

@@ -3983,6 +3983,226 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_submit_missing_slippage_expectation_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "signal_id": "signal-submit-missing-slippage-expectation-1",
+            "client_order_id": "client-order-submit-missing-slippage-expectation-1",
+            "request_id": "request-submit-missing-slippage-expectation-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-submit-missing-slippage-expectation-1"),
+                signal_id: Some("signal-submit-missing-slippage-expectation-1"),
+                client_order_id: Some("client-order-submit-missing-slippage-expectation-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: None,
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .await
+        .expect_err("submit missing slippage expectation must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing slippage_bps expectation"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_submit_missing_route_slippage_cap_expectation_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "signal_id": "signal-submit-missing-route-slippage-cap-expectation-1",
+            "client_order_id": "client-order-submit-missing-route-slippage-cap-expectation-1",
+            "request_id": "request-submit-missing-route-slippage-cap-expectation-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-submit-missing-route-slippage-cap-expectation-1"),
+                signal_id: Some("signal-submit-missing-route-slippage-cap-expectation-1"),
+                client_order_id: Some("client-order-submit-missing-route-slippage-cap-expectation-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: None,
+            },
+        )
+        .await
+        .expect_err(
+            "submit missing route_slippage_cap expectation must reject before forward",
+        );
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("missing route_slippage_cap_bps expectation"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_simulate_with_slippage_expectation_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-simulate-with-slippage-expectation-1",
+            "signal_id": "signal-simulate-with-slippage-expectation-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-simulate-with-slippage-expectation-1"),
+                signal_id: Some("signal-simulate-with-slippage-expectation-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                expected_slippage_bps: Some(10.0),
+                ..RouteSubmitExecutionContext::default()
+            },
+        )
+        .await
+        .expect_err("simulate with slippage expectation must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("must not include slippage_bps expectation"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_simulate_with_route_slippage_cap_expectation_before_forward() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-simulate-with-route-slippage-cap-expectation-1",
+            "signal_id": "signal-simulate-with-route-slippage-cap-expectation-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-simulate-with-route-slippage-cap-expectation-1"),
+                signal_id: Some("signal-simulate-with-route-slippage-cap-expectation-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                expected_route_slippage_cap_bps: Some(20.0),
+                ..RouteSubmitExecutionContext::default()
+            },
+        )
+        .await
+        .expect_err("simulate with route slippage cap expectation must reject before forward");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("must not include route_slippage_cap_bps expectation"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_submit_without_instruction_plan_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
