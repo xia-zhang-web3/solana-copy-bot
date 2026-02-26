@@ -13,6 +13,7 @@ use crate::key_validation::validate_pubkey_like;
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::RouteBackend;
 use crate::secret_source::resolve_secret_source;
+use crate::secret_value::SecretValue;
 use crate::signer_source::resolve_signer_source_config;
 use crate::submit_budget::{default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path};
 use crate::submit_verify_config::parse_submit_signature_verify_config;
@@ -309,10 +310,13 @@ impl ExecutorConfig {
             parse_bool_env("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", false)?;
         validate_hmac_auth_config(
             hmac_key_id.as_deref(),
-            hmac_secret.as_deref(),
+            hmac_secret.as_ref().map(SecretValue::as_str),
             hmac_ttl_sec,
         )?;
-        require_authenticated_mode(bearer_token.as_deref(), allow_unauthenticated)?;
+        require_authenticated_mode(
+            bearer_token.as_ref().map(SecretValue::as_str),
+            allow_unauthenticated,
+        )?;
 
         let request_timeout_ms =
             parse_u64_env("COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;

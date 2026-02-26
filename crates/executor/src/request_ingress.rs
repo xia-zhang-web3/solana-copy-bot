@@ -63,7 +63,7 @@ mod tests {
     #[tokio::test]
     async fn request_ingress_verify_auth_or_reject_returns_auth_reject_payload() {
         let auth = AuthVerifier::new(
-            Some("expected-token".to_string()),
+            Some("expected-token".to_string().into()),
             None,
             None,
             30,
@@ -82,7 +82,7 @@ mod tests {
     #[tokio::test]
     async fn request_ingress_verify_auth_or_reject_returns_none_on_valid_auth() {
         let auth = AuthVerifier::new(
-            Some("expected-token".to_string()),
+            Some("expected-token".to_string().into()),
             None,
             None,
             30,

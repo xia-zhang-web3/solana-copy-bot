@@ -48,6 +48,7 @@ mod route_executor;
 mod route_normalization;
 mod route_policy;
 mod secret_source;
+mod secret_value;
 mod send_rpc;
 mod signer_source;
 mod simulate_handler;
@@ -108,6 +109,7 @@ use crate::route_policy::apply_submit_tip_policy;
 use crate::secret_source::resolve_secret_source;
 #[cfg(test)]
 use crate::secret_source::secret_file_has_restrictive_permissions;
+use crate::secret_value::SecretValue;
 #[cfg(test)]
 use crate::send_rpc::send_signed_transaction_via_rpc;
 #[cfg(test)]
@@ -168,9 +170,9 @@ struct ExecutorConfig {
     submit_fastlane_enabled: bool,
     route_allowlist: HashSet<String>,
     route_backends: HashMap<String, RouteBackend>,
-    bearer_token: Option<String>,
+    bearer_token: Option<SecretValue>,
     hmac_key_id: Option<String>,
-    hmac_secret: Option<String>,
+    hmac_secret: Option<SecretValue>,
     hmac_ttl_sec: u64,
     hmac_nonce_cache_max_entries: u64,
     request_timeout_ms: u64,
@@ -201,15 +203,15 @@ async fn main() -> Result<()> {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
-    let config = ExecutorConfig::from_env()?;
+    let mut config = ExecutorConfig::from_env()?;
     let http = Client::builder()
         .timeout(Duration::from_millis(config.request_timeout_ms.max(500)))
         .build()
         .context("failed to build reqwest client")?;
     let auth = Arc::new(AuthVerifier::new(
-        config.bearer_token.clone(),
+        config.bearer_token.take(),
         config.hmac_key_id.clone(),
-        config.hmac_secret.clone(),
+        config.hmac_secret.take(),
         config.hmac_ttl_sec,
         config.hmac_nonce_cache_max_entries,
     ));
@@ -653,7 +655,7 @@ mod tests {
             Some(path.to_str().expect("utf8 path")),
         )
         .expect("file-backed secret must resolve");
-        assert_eq!(resolved.as_deref(), Some("secret-value"));
+        assert_eq!(resolved.as_ref().map(SecretValue::as_str), Some("secret-value"));
         cleanup_temp_secret_file(path);
     }
 
@@ -722,7 +724,7 @@ mod tests {
     #[tokio::test]
     async fn auth_verifier_rejects_wrong_bearer_token() {
         let verifier = AuthVerifier::new(
-            Some("correct-token".to_string()),
+            Some("correct-token".to_string().into()),
             None,
             None,
             30,
@@ -743,7 +745,7 @@ mod tests {
     #[tokio::test]
     async fn auth_verifier_accepts_correct_bearer_token() {
         let verifier = AuthVerifier::new(
-            Some("correct-token".to_string()),
+            Some("correct-token".to_string().into()),
             None,
             None,
             30,
@@ -2241,8 +2243,8 @@ mod tests {
             Some(fallback_url.as_str()),
         );
         if let Some(backend) = state.config.route_backends.get_mut("rpc") {
-            backend.primary_auth_token = Some("primary-token".to_string());
-            backend.fallback_auth_token = Some(fallback_token.to_string());
+            backend.primary_auth_token = Some("primary-token".to_string().into());
+            backend.fallback_auth_token = Some(fallback_token.to_string().into());
         } else {
             panic!("rpc backend must exist");
         }
@@ -2649,8 +2651,9 @@ mod tests {
         if let Some(backend) = state.config.route_backends.get_mut("rpc") {
             backend.send_rpc_url = Some(primary_url);
             backend.send_rpc_fallback_url = Some(fallback_url);
-            backend.send_rpc_primary_auth_token = Some("send-rpc-primary-token".to_string());
-            backend.send_rpc_fallback_auth_token = Some(fallback_token.to_string());
+            backend.send_rpc_primary_auth_token =
+                Some("send-rpc-primary-token".to_string().into());
+            backend.send_rpc_fallback_auth_token = Some(fallback_token.to_string().into());
         } else {
             panic!("rpc backend must exist");
         }

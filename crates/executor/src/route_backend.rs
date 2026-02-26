@@ -1,15 +1,17 @@
+use crate::secret_value::SecretValue;
+
 #[derive(Clone, Debug)]
 pub(crate) struct RouteBackend {
     pub(crate) submit_url: String,
     pub(crate) submit_fallback_url: Option<String>,
     pub(crate) simulate_url: String,
     pub(crate) simulate_fallback_url: Option<String>,
-    pub(crate) primary_auth_token: Option<String>,
-    pub(crate) fallback_auth_token: Option<String>,
+    pub(crate) primary_auth_token: Option<SecretValue>,
+    pub(crate) fallback_auth_token: Option<SecretValue>,
     pub(crate) send_rpc_url: Option<String>,
     pub(crate) send_rpc_fallback_url: Option<String>,
-    pub(crate) send_rpc_primary_auth_token: Option<String>,
-    pub(crate) send_rpc_fallback_auth_token: Option<String>,
+    pub(crate) send_rpc_primary_auth_token: Option<SecretValue>,
+    pub(crate) send_rpc_fallback_auth_token: Option<SecretValue>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,18 +60,28 @@ impl RouteBackend {
         attempt_idx: usize,
     ) -> Option<&str> {
         if attempt_idx == 0 {
-            return self.primary_auth_token.as_deref();
+            return self.primary_auth_token.as_ref().map(SecretValue::as_str);
         }
-        self.fallback_auth_token.as_deref()
+        self.fallback_auth_token.as_ref().map(SecretValue::as_str)
     }
 
     pub(crate) fn send_rpc_endpoint_chain(&self) -> Vec<(&str, Option<&str>)> {
         let mut endpoints = Vec::with_capacity(2);
         if let Some(url) = self.send_rpc_url.as_deref() {
-            endpoints.push((url, self.send_rpc_primary_auth_token.as_deref()));
+            endpoints.push((
+                url,
+                self.send_rpc_primary_auth_token
+                    .as_ref()
+                    .map(SecretValue::as_str),
+            ));
         }
         if let Some(url) = self.send_rpc_fallback_url.as_deref() {
-            endpoints.push((url, self.send_rpc_fallback_auth_token.as_deref()));
+            endpoints.push((
+                url,
+                self.send_rpc_fallback_auth_token
+                    .as_ref()
+                    .map(SecretValue::as_str),
+            ));
         }
         endpoints
     }
@@ -94,8 +106,8 @@ mod tests {
             submit_fallback_url: Some("https://submit.fallback".to_string()),
             simulate_url: "https://simulate.primary".to_string(),
             simulate_fallback_url: Some("https://simulate.fallback".to_string()),
-            primary_auth_token: Some("primary-token".to_string()),
-            fallback_auth_token: Some("fallback-token".to_string()),
+            primary_auth_token: Some("primary-token".to_string().into()),
+            fallback_auth_token: Some("fallback-token".to_string().into()),
             send_rpc_url: None,
             send_rpc_fallback_url: None,
             send_rpc_primary_auth_token: None,
@@ -141,8 +153,8 @@ mod tests {
         let mut backend = sample_backend();
         backend.send_rpc_url = Some("https://send-rpc.primary".to_string());
         backend.send_rpc_fallback_url = Some("https://send-rpc.fallback".to_string());
-        backend.send_rpc_primary_auth_token = Some("send-primary-token".to_string());
-        backend.send_rpc_fallback_auth_token = Some("send-fallback-token".to_string());
+        backend.send_rpc_primary_auth_token = Some("send-primary-token".to_string().into());
+        backend.send_rpc_fallback_auth_token = Some("send-fallback-token".to_string().into());
 
         let chain = backend.send_rpc_endpoint_chain();
         assert_eq!(chain.len(), 2);

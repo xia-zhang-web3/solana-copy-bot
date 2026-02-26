@@ -6,12 +6,13 @@ use tokio::sync::Mutex;
 
 use crate::{
     auth_crypto::{compute_hmac_signature_hex, constant_time_eq},
+    secret_value::SecretValue,
     Reject,
 };
 
 #[derive(Clone)]
 pub(crate) struct AuthVerifier {
-    bearer_token: Option<String>,
+    bearer_token: Option<SecretValue>,
     hmac: Option<HmacConfig>,
     nonce_seen_until_epoch: Arc<Mutex<HashMap<String, i64>>>,
     nonce_cache_max_entries: usize,
@@ -20,15 +21,15 @@ pub(crate) struct AuthVerifier {
 #[derive(Clone)]
 struct HmacConfig {
     key_id: String,
-    secret: String,
+    secret: SecretValue,
     ttl_sec: u64,
 }
 
 impl AuthVerifier {
     pub(crate) fn new(
-        bearer_token: Option<String>,
+        bearer_token: Option<SecretValue>,
         hmac_key_id: Option<String>,
-        hmac_secret: Option<String>,
+        hmac_secret: Option<SecretValue>,
         hmac_ttl_sec: u64,
         hmac_nonce_cache_max_entries: u64,
     ) -> Self {
@@ -65,7 +66,7 @@ impl AuthVerifier {
         raw_body: &[u8],
         now_epoch: i64,
     ) -> std::result::Result<(), Reject> {
-        if let Some(expected) = self.bearer_token.as_deref() {
+        if let Some(expected) = self.bearer_token.as_ref() {
             let auth_header = headers
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
@@ -237,7 +238,7 @@ mod tests {
         let verifier = AuthVerifier::new(
             None,
             Some("kid-1".to_string()),
-            Some("secret-1".to_string()),
+            Some("secret-1".to_string().into()),
             30,
             100_000,
         );
@@ -260,7 +261,7 @@ mod tests {
         let verifier = AuthVerifier::new(
             None,
             Some("kid-2".to_string()),
-            Some("secret-2".to_string()),
+            Some("secret-2".to_string().into()),
             30,
             100_000,
         );
@@ -288,7 +289,7 @@ mod tests {
         let verifier = AuthVerifier::new(
             None,
             Some("kid-expected".to_string()),
-            Some("secret-key-id".to_string()),
+            Some("secret-key-id".to_string().into()),
             30,
             100_000,
         );
@@ -319,7 +320,7 @@ mod tests {
         let verifier = AuthVerifier::new(
             None,
             Some("kid-3".to_string()),
-            Some("secret-3".to_string()),
+            Some("secret-3".to_string().into()),
             ttl_sec,
             100_000,
         );
@@ -353,7 +354,7 @@ mod tests {
         let verifier = AuthVerifier::new(
             None,
             Some("kid-cap".to_string()),
-            Some("secret-cap".to_string()),
+            Some("secret-cap".to_string().into()),
             ttl_sec,
             1,
         );
@@ -397,7 +398,7 @@ mod tests {
         let verifier = AuthVerifier::new(
             None,
             Some("kid-evict".to_string()),
-            Some("secret-evict".to_string()),
+            Some("secret-evict".to_string().into()),
             ttl_sec,
             1,
         );

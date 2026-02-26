@@ -1,17 +1,21 @@
 use anyhow::{anyhow, Context, Result};
 use std::fs;
 use tracing::warn;
+use zeroize::Zeroizing;
+
+use crate::secret_value::SecretValue;
 
 pub(crate) fn resolve_secret_source(
     inline_name: &str,
     inline_value: Option<&str>,
     file_name: &str,
     file_value: Option<&str>,
-) -> Result<Option<String>> {
+) -> Result<Option<SecretValue>> {
     let inline_secret = inline_value
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
+        .map(ToString::to_string)
+        .map(SecretValue::from);
     let file_path = file_value.map(str::trim).filter(|value| !value.is_empty());
 
     if inline_secret.is_some() && file_path.is_some() {
@@ -31,9 +35,11 @@ pub(crate) fn resolve_secret_source(
     Ok(inline_secret)
 }
 
-fn read_trimmed_secret_file(path: &str) -> Result<String> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("secret file not found/readable path={}", path))?;
+fn read_trimmed_secret_file(path: &str) -> Result<SecretValue> {
+    let raw =
+        Zeroizing::new(fs::read_to_string(path).with_context(|| {
+            format!("secret file not found/readable path={}", path)
+        })?);
     match secret_file_has_restrictive_permissions(path) {
         Ok(false) => {
             warn!(
@@ -54,7 +60,7 @@ fn read_trimmed_secret_file(path: &str) -> Result<String> {
     if secret.is_empty() {
         return Err(anyhow!("secret file is empty path={}", path));
     }
-    Ok(secret)
+    Ok(secret.into())
 }
 
 #[cfg(unix)]

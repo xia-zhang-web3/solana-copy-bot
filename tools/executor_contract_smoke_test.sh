@@ -129,6 +129,7 @@ contract_guard_tests=(
   "constant_time_eq_checks_content"
   "constant_time_eq_rejects_length_mismatch"
   "to_hex_lower_matches_expected"
+  "secret_value_debug_redacts_plaintext"
   "parse_bool_token_accepts_true_forms"
   "parse_bool_token_rejects_false_forms"
   "parse_socket_addr_str_rejects_invalid_socket_addr"

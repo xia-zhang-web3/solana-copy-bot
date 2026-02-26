@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use std::fs;
+use zeroize::Zeroizing;
 
 use crate::secret_source::secret_file_has_restrictive_permissions;
 
@@ -76,12 +77,12 @@ pub(crate) fn resolve_signer_source_config(
 }
 
 fn validate_signer_keypair_file(path: &str, signer_pubkey: &str) -> Result<()> {
-    let raw = fs::read_to_string(path).with_context(|| {
+    let raw = Zeroizing::new(fs::read_to_string(path).with_context(|| {
         format!(
             "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE not found/readable path={}",
             path
         )
-    })?;
+    })?);
     if !secret_file_has_restrictive_permissions(path).with_context(|| {
         format!(
             "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE permission check failed path={}",
@@ -99,12 +100,13 @@ fn validate_signer_keypair_file(path: &str, signer_pubkey: &str) -> Result<()> {
             path
         ));
     }
-    let keypair_bytes: Vec<u8> = serde_json::from_str(raw.trim()).with_context(|| {
-        format!(
-            "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must be JSON array with 64 u8 values path={}",
-            path
-        )
-    })?;
+    let keypair_bytes: Zeroizing<Vec<u8>> =
+        Zeroizing::new(serde_json::from_str(raw.trim()).with_context(|| {
+            format!(
+                "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must be JSON array with 64 u8 values path={}",
+                path
+            )
+        })?);
     if keypair_bytes.len() != 64 {
         return Err(anyhow!(
             "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must contain 64-byte keypair, got {} path={}",
