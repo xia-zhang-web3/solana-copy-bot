@@ -1924,6 +1924,18 @@ run_adapter_preflight_case() {
   assert_contains "$env_override_output" "preflight_verdict: FAIL"
   assert_contains "$env_override_output" "submit_adapter_require_policy_echo must be true in production-like env profiles"
 
+  local env_invalid_bool_output
+  if env_invalid_bool_output="$(
+    CONFIG_PATH="$pass_cfg" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO="sometimes" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for invalid strict echo bool token" >&2
+    exit 1
+  fi
+  assert_contains "$env_invalid_bool_output" "preflight_verdict: FAIL"
+  assert_contains "$env_invalid_bool_output" "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO must be a boolean token"
+
   write_config_adapter_preflight_fail "$fail_cfg" "$db_path"
   local fail_output
   if fail_output="$(
@@ -2308,6 +2320,27 @@ run_adapter_secret_rotation_report_case() {
   fi
   assert_contains "$route_conflict_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$route_conflict_output" "COPYBOT_ADAPTER_ROUTE_FAST_LANE_AUTH_TOKEN and COPYBOT_ADAPTER_ROUTE_FAST_LANE_AUTH_TOKEN_FILE cannot both be set"
+
+  local invalid_allow_unauth_env_path="$TMP_DIR/adapter-rotation-invalid-allow-unauth.env"
+  cp "$env_path" "$invalid_allow_unauth_env_path"
+  echo 'COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED="maybe"' >>"$invalid_allow_unauth_env_path"
+  local invalid_allow_unauth_output=""
+  if invalid_allow_unauth_output="$(
+    ADAPTER_ENV_PATH="$invalid_allow_unauth_env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh" 2>&1
+  )"; then
+    echo "expected FAIL exit for invalid COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED bool token" >&2
+    exit 1
+  else
+    local invalid_allow_unauth_exit_code=$?
+    if [[ "$invalid_allow_unauth_exit_code" -ne 1 ]]; then
+      echo "expected FAIL exit code 1 for invalid COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED token, got $invalid_allow_unauth_exit_code" >&2
+      echo "$invalid_allow_unauth_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_allow_unauth_output" "rotation_readiness_verdict: FAIL"
+  assert_contains "$invalid_allow_unauth_output" "COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED must be a boolean token"
 
   chmod 644 "$secrets_dir/adapter_bearer.token"
   local warn_output=""

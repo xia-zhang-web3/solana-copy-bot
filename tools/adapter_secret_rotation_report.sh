@@ -232,6 +232,23 @@ raise SystemExit(0)
 PY
 }
 
+parse_bool_token_strict() {
+  local raw="$1"
+  raw="$(trim_string "$raw")"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    0|false|no|off)
+      printf 'false'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 declare -a report_lines=()
 declare -a secret_keys=()
 declare -a errors=()
@@ -280,7 +297,14 @@ send_rpc_auth_inline="$(trim_string "$(env_value COPYBOT_ADAPTER_SEND_RPC_AUTH_T
 send_rpc_auth_file="$(trim_string "$(env_value COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE)")"
 send_rpc_fallback_auth_inline="$(trim_string "$(env_value COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN)")"
 send_rpc_fallback_auth_file="$(trim_string "$(env_value COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE)")"
-allow_unauthenticated="$(normalize_bool_token "$(env_value COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED)")"
+allow_unauthenticated_raw="$(trim_string "$(env_value COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED)")"
+allow_unauthenticated="false"
+if [[ -n "$allow_unauthenticated_raw" ]]; then
+  if ! allow_unauthenticated="$(parse_bool_token_strict "$allow_unauthenticated_raw")"; then
+    errors+=("COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED must be a boolean token (true/false/1/0/yes/no/on/off), got: ${allow_unauthenticated_raw}")
+    allow_unauthenticated="false"
+  fi
+fi
 
 if [[ -n "$bearer_inline" && -n "$bearer_file" ]]; then
   errors+=("COPYBOT_ADAPTER_BEARER_TOKEN and COPYBOT_ADAPTER_BEARER_TOKEN_FILE cannot both be set")

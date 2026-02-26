@@ -261,7 +261,7 @@ parse_env_bool_token() {
       printf 'false'
       ;;
     *)
-      printf ''
+      return 1
       ;;
   esac
 }
@@ -373,20 +373,24 @@ cfg_or_env_trimmed_nonempty_string() {
   cfg_value "$section" "$key"
 }
 
-cfg_or_env_bool() {
+cfg_or_env_bool_into() {
   local section="$1"
   local key="$2"
   local env_name="$3"
+  local output_var="$4"
   local file_value parsed_env
   file_value="$(normalize_bool_token "$(cfg_value "$section" "$key")")"
   if [[ -n "${!env_name+x}" ]]; then
-    parsed_env="$(parse_env_bool_token "${!env_name}")"
-    if [[ -n "$parsed_env" ]]; then
-      printf "%s" "$parsed_env"
+    if parsed_env="$(parse_env_bool_token "${!env_name}")"; then
+      printf -v "$output_var" '%s' "$parsed_env"
+      return
+    else
+      errors+=("${env_name} must be a boolean token (true/false/1/0/yes/no/on/off), got: ${!env_name}")
+      printf -v "$output_var" '%s' "$file_value"
       return
     fi
   fi
-  printf "%s" "$file_value"
+  printf -v "$output_var" '%s' "$file_value"
 }
 
 cfg_or_env_u64_string() {
@@ -953,7 +957,7 @@ if is_production_env_profile "$system_env"; then
   prod_like="true"
 fi
 
-execution_enabled="$(cfg_or_env_bool execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED)"
+cfg_or_env_bool_into execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED execution_enabled
 execution_mode="$(normalize_route_token "$(cfg_or_env_trimmed_nonempty_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE)")"
 
 if [[ "$execution_enabled" != "true" ]]; then
@@ -986,8 +990,8 @@ signer_pubkey="$(trim_string "$(cfg_or_env_string execution execution_signer_pub
 submit_primary="$(trim_string "$(cfg_or_env_string execution submit_adapter_http_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HTTP_URL)")"
 submit_fallback="$(trim_string "$(cfg_or_env_string execution submit_adapter_fallback_http_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_FALLBACK_HTTP_URL)")"
 contract_version="$(trim_string "$(cfg_or_env_trimmed_nonempty_string execution submit_adapter_contract_version SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_CONTRACT_VERSION)")"
-strict_policy_echo="$(cfg_or_env_bool execution submit_adapter_require_policy_echo SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO)"
-submit_fastlane_enabled="$(cfg_or_env_bool execution submit_fastlane_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED)"
+cfg_or_env_bool_into execution submit_adapter_require_policy_echo SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO strict_policy_echo
+cfg_or_env_bool_into execution submit_fastlane_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED submit_fastlane_enabled
 if ! submit_allowed_routes_csv="$(cfg_or_env_route_list_csv execution submit_allowed_routes SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES 2>&1)"; then
   errors+=("$submit_allowed_routes_csv")
   submit_allowed_routes_csv=""
