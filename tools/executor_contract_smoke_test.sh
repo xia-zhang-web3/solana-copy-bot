@@ -127,6 +127,7 @@ contract_guard_tests=(
   "route_allowlist_parse_rejects_unknown_route"
   "key_validation_accepts_pubkey_and_signature_shapes"
   "constant_time_eq_checks_content"
+  "constant_time_eq_rejects_length_mismatch"
   "to_hex_lower_matches_expected"
   "parse_bool_token_accepts_true_forms"
   "parse_bool_token_rejects_false_forms"

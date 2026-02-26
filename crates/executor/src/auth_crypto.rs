@@ -20,12 +20,13 @@ pub(crate) fn to_hex_lower(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (lhs, rhs) in left.iter().zip(right.iter()) {
-        diff |= lhs ^ rhs;
+    // Do not early-return on length mismatch to avoid a fast-fail branch.
+    let mut diff = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+    for idx in 0..max_len {
+        let lhs = *left.get(idx).unwrap_or(&0);
+        let rhs = *right.get(idx).unwrap_or(&0);
+        diff |= usize::from(lhs ^ rhs);
     }
     diff == 0
 }
@@ -39,6 +40,12 @@ mod tests {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"ab"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_length_mismatch() {
+        assert!(!constant_time_eq(b"", b"a"));
+        assert!(!constant_time_eq(b"abc", b"abcd"));
     }
 
     #[test]
