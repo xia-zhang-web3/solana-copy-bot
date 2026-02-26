@@ -2006,7 +2006,7 @@ mod tests {
         let tail_marker = "TAIL_MARKER_MUST_NOT_LEAK";
         let long_body = format!(
             "{}{}",
-            "x".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_DETAIL_CHARS + 128),
+            "x".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_READ_BYTES + 512),
             tail_marker
         );
         let Some((url, handle)) = spawn_one_shot_upstream_raw(503, "text/plain", long_body.as_str())
@@ -2242,7 +2242,7 @@ mod tests {
         let tail_marker = "SEND_RPC_HTTP_TAIL_MARKER_MUST_NOT_LEAK";
         let long_body = format!(
             "{}{}",
-            "h".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_DETAIL_CHARS + 128),
+            "h".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_READ_BYTES + 512),
             tail_marker
         );
         let Some((send_rpc_url, send_rpc_handle)) =
@@ -2294,7 +2294,7 @@ mod tests {
         let tail_marker = "SEND_RPC_PAYLOAD_TAIL_MARKER_MUST_NOT_LEAK";
         let long_message = format!(
             "{}{}",
-            "p".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_DETAIL_CHARS + 128),
+            "p".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_READ_BYTES + 512),
             tail_marker
         );
         let rpc_body = format!(

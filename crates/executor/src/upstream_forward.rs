@@ -3,8 +3,8 @@ use tracing::{debug, warn};
 
 use crate::{
     http_utils::{
-        classify_request_error, redacted_endpoint_label, truncate_detail_chars,
-        MAX_HTTP_ERROR_BODY_DETAIL_CHARS,
+        classify_request_error, read_response_body_limited, redacted_endpoint_label,
+        truncate_detail_chars, MAX_HTTP_ERROR_BODY_DETAIL_CHARS, MAX_HTTP_ERROR_BODY_READ_BYTES,
     },
     submit_deadline::SubmitDeadline,
     AppState, Reject,
@@ -111,7 +111,8 @@ pub(crate) async fn forward_to_upstream(
         let status = response.status();
 
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text =
+                read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
             let body_detail =
                 truncate_detail_chars(body_text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
             let retryable = status.as_u16() == 429 || status.is_server_error();

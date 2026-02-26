@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 
 pub(crate) const MAX_HTTP_ERROR_BODY_DETAIL_CHARS: usize = 1024;
+pub(crate) const MAX_HTTP_ERROR_BODY_READ_BYTES: usize = 4096;
 
 pub(crate) fn validate_endpoint_url(url: &str) -> Result<()> {
     let parsed = reqwest::Url::parse(url).context("invalid URL parse")?;
@@ -88,9 +89,58 @@ pub(crate) fn truncate_detail_chars(value: &str, max_chars: usize) -> String {
     value.to_string()
 }
 
+pub(crate) async fn read_response_body_limited(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> String {
+    if max_bytes == 0 {
+        return String::new();
+    }
+
+    let mut body_bytes: Vec<u8> = Vec::with_capacity(max_bytes.min(1024));
+    let mut was_truncated = false;
+
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if body_bytes.len() >= max_bytes {
+                    was_truncated = true;
+                    break;
+                }
+                let remaining = max_bytes.saturating_sub(body_bytes.len());
+                if chunk.len() > remaining {
+                    body_bytes.extend_from_slice(&chunk[..remaining]);
+                    was_truncated = true;
+                    break;
+                }
+                body_bytes.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                let error_class = classify_request_error(&error);
+                if body_bytes.is_empty() {
+                    return format!("response body read failed class={}", error_class);
+                }
+                let mut partial = String::from_utf8_lossy(body_bytes.as_slice()).to_string();
+                partial.push_str(format!("...[body_read_failed:{}]", error_class).as_str());
+                return partial;
+            }
+        }
+    }
+
+    let mut text = String::from_utf8_lossy(body_bytes.as_slice()).to_string();
+    if was_truncated {
+        text.push_str("...[truncated]");
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
-    use super::truncate_detail_chars;
+    use super::{read_response_body_limited, truncate_detail_chars};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn truncate_detail_chars_keeps_short_text_unchanged() {
@@ -110,5 +160,38 @@ mod tests {
         let input = "a🙂b🙂c";
         let output = truncate_detail_chars(input, 3);
         assert_eq!(output, "a🙂b...[truncated]");
+    }
+
+    #[tokio::test]
+    async fn read_response_body_limited_truncates_large_http_body() {
+        let long_body = "z".repeat(5000);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 2048];
+                let _ = stream.read(&mut request_buf);
+                let response = format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    long_body.len(),
+                    long_body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{}/", addr))
+            .send()
+            .await
+            .expect("send request");
+        assert_eq!(response.status(), 503);
+
+        let body = read_response_body_limited(response, 128).await;
+        assert!(body.contains("...[truncated]"), "body={}", body);
+        assert!(body.len() >= 128, "body length={}", body.len());
+        let _ = handle.join();
     }
 }

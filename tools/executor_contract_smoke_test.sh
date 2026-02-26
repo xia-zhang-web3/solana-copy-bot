@@ -326,6 +326,7 @@ contract_guard_tests=(
   "min_claim_ttl_sec_for_submit_path_applies_500ms_runtime_floor"
   "min_claim_ttl_sec_for_submit_path_respects_submit_total_budget_floor"
   "route_backend_send_rpc_endpoint_chain_checked_rejects_fallback_without_primary"
+  "read_response_body_limited_truncates_large_http_body"
   "send_rpc_deadline_context_rejects_missing_deadline"
   "send_rpc_deadline_context_accepts_present_deadline"
   "send_signed_transaction_via_rpc_rejects_missing_deadline_before_request"
