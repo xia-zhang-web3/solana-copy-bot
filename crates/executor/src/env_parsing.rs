@@ -28,7 +28,10 @@ pub(crate) fn parse_u64_env(name: &str, default: u64) -> Result<u64> {
             .trim()
             .parse::<u64>()
             .map_err(|error| anyhow!("{} must be u64: {}", name, error)),
-        Err(_) => Ok(default),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(anyhow!("{} must be valid UTF-8 u64 token", name))
+        }
     }
 }
 
@@ -38,7 +41,10 @@ pub(crate) fn parse_f64_env(name: &str, default: f64) -> Result<f64> {
             .trim()
             .parse::<f64>()
             .map_err(|error| anyhow!("{} must be f64: {}", name, error)),
-        Err(_) => Ok(default),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(anyhow!("{} must be valid UTF-8 f64 token", name))
+        }
     }
 }
 

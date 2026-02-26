@@ -55,13 +55,23 @@ const ROUTE_SCOPED_ENV_SUFFIXES: &[&str] = &[
 
 impl ExecutorConfig {
     pub(crate) fn from_env() -> Result<Self> {
-        let bind_addr_raw =
-            env::var("COPYBOT_EXECUTOR_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string());
+        let bind_addr_raw = match env::var("COPYBOT_EXECUTOR_BIND_ADDR") {
+            Ok(value) => value,
+            Err(env::VarError::NotPresent) => DEFAULT_BIND_ADDR.to_string(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(anyhow!("COPYBOT_EXECUTOR_BIND_ADDR must be valid UTF-8"));
+            }
+        };
         let bind_addr =
             parse_socket_addr_str("COPYBOT_EXECUTOR_BIND_ADDR", bind_addr_raw.as_str())?;
 
-        let contract_version_raw =
-            env::var("COPYBOT_EXECUTOR_CONTRACT_VERSION").unwrap_or_else(|_| "v1".to_string());
+        let contract_version_raw = match env::var("COPYBOT_EXECUTOR_CONTRACT_VERSION") {
+            Ok(value) => value,
+            Err(env::VarError::NotPresent) => "v1".to_string(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(anyhow!("COPYBOT_EXECUTOR_CONTRACT_VERSION must be valid UTF-8"));
+            }
+        };
         let contract_version = parse_contract_version(contract_version_raw.as_str())?;
 
         let signer_pubkey = non_empty_env("COPYBOT_EXECUTOR_SIGNER_PUBKEY")?;
@@ -355,10 +365,17 @@ impl ExecutorConfig {
                 min_submit_budget_ms
             ));
         }
-        let idempotency_db_path = env::var("COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH")
-            .unwrap_or_else(|_| "state/executor_idempotency.sqlite3".to_string())
-            .trim()
-            .to_string();
+        let idempotency_db_path = match env::var("COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH") {
+            Ok(value) => value,
+            Err(env::VarError::NotPresent) => "state/executor_idempotency.sqlite3".to_string(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(anyhow!(
+                    "COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH must be valid UTF-8"
+                ));
+            }
+        }
+        .trim()
+        .to_string();
         if idempotency_db_path.is_empty() {
             return Err(anyhow!(
                 "COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH must be non-empty"
@@ -1224,6 +1241,141 @@ mod tests {
                 );
                 assert!(
                     error.to_string().contains("UTF-8"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_config_from_env_rejects_non_utf8_bind_addr_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_BIND_ADDR", OsString::from_vec(vec![0xff]));
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("non-UTF8 bind addr must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.to_string().contains("COPYBOT_EXECUTOR_BIND_ADDR"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_config_from_env_rejects_non_utf8_contract_version_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_CONTRACT_VERSION",
+                    OsString::from_vec(vec![0xff]),
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("non-UTF8 contract version must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_CONTRACT_VERSION"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_config_from_env_rejects_non_utf8_idempotency_db_path_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH",
+                    OsString::from_vec(vec![0xff]),
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("non-UTF8 idempotency path must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_config_from_env_rejects_non_utf8_request_timeout_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS",
+                    OsString::from_vec(vec![0xff]),
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("non-UTF8 request timeout must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_config_from_env_rejects_non_utf8_max_notional_sol_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
+                    OsString::from_vec(vec![0xff]),
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("non-UTF8 max notional must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL"),
                     "unexpected error: {}",
                     error
                 );
