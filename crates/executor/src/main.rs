@@ -2107,6 +2107,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_classifies_incomplete_json_body_as_response_read_failed() {
+        let Some((url, handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            b"{\"status\":\"ok\"",
+            64,
+        ) else {
+            return;
+        };
+        let state = test_state(url.as_str());
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect_err("incomplete JSON body must classify as response read failure");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_unavailable");
+        assert!(
+            reject.detail.contains("response read failed"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_rejects_submit_without_deadline_before_request() {
         let state = test_state("http://127.0.0.1:1/upstream");
         let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
@@ -2547,6 +2571,51 @@ mod tests {
         .expect_err("invalid UTF-8 JSON should reject");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "send_rpc_invalid_json");
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_classifies_incomplete_json_body_as_response_read_failed(
+    ) {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([60u8; 64]);
+        let Some((send_rpc_url, send_rpc_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            b"{\"jsonrpc\":\"2.0\",\"result\":\"abc\"",
+            128,
+        ) else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("incomplete JSON body must classify as response read failure");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "send_rpc_unavailable");
+        assert!(
+            reject.detail.contains("response read failed"),
+            "detail={}",
+            reject.detail
+        );
         let _ = send_rpc_handle.join();
     }
 
@@ -8897,6 +8966,42 @@ mod tests {
         let _ = handle.join();
     }
 
+    #[tokio::test]
+    async fn verify_submit_signature_includes_non_success_http_body_in_reason() {
+        let signature = bs58::encode([58u8; 64]).into_string();
+        let body = "submit-verify-upstream-unavailable";
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(503, "text/plain", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("strict mode should reject after non-success upstream verify response");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains(body),
+            "detail should include bounded upstream body: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
     fn test_state(endpoint: &str) -> AppState {
         test_state_with_backends(endpoint, None, endpoint, None)
     }
@@ -9046,6 +9151,48 @@ mod tests {
                     reason,
                     content_type,
                     response_body.len()
+                );
+                let _ = stream.write_all(headers.as_bytes());
+                let _ = stream.write_all(response_body.as_slice());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn spawn_one_shot_upstream_incomplete_body(
+        status: u16,
+        content_type: &str,
+        partial_body: &[u8],
+        declared_content_length: usize,
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        if declared_content_length <= partial_body.len() {
+            return None;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let response_body = partial_body.to_vec();
+        let content_type = content_type.to_string();
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            _ => "Unknown",
+        }
+        .to_string();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let _ = stream.read(&mut request_buf);
+                let headers = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    status, reason, content_type, declared_content_length
                 );
                 let _ = stream.write_all(headers.as_bytes());
                 let _ = stream.write_all(response_body.as_slice());

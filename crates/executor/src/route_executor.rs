@@ -119,28 +119,22 @@ fn validate_route_executor_action_context(
                     "submit route action missing instruction plan at route-executor boundary",
                 ));
             }
-            if submit_context.expected_slippage_bps.is_none() {
-                return Err(Reject::terminal(
+            let expected_slippage_bps = submit_context.expected_slippage_bps.ok_or_else(|| {
+                Reject::terminal(
                     "invalid_request_body",
                     "submit route action missing slippage_bps expectation at route-executor boundary",
-                ));
-            }
-            if submit_context.expected_route_slippage_cap_bps.is_none() {
-                return Err(Reject::terminal(
-                    "invalid_request_body",
-                    "submit route action missing route_slippage_cap_bps expectation at route-executor boundary",
-                ));
-            }
-            validate_finite(
-                "slippage_bps",
-                submit_context.expected_slippage_bps.expect("checked above"),
-            )?;
-            validate_finite(
-                "route_slippage_cap_bps",
-                submit_context
-                    .expected_route_slippage_cap_bps
-                    .expect("checked above"),
-            )?;
+                )
+            })?;
+            let expected_route_slippage_cap_bps = submit_context
+                .expected_route_slippage_cap_bps
+                .ok_or_else(|| {
+                    Reject::terminal(
+                        "invalid_request_body",
+                        "submit route action missing route_slippage_cap_bps expectation at route-executor boundary",
+                    )
+                })?;
+            validate_finite("slippage_bps", expected_slippage_bps)?;
+            validate_finite("route_slippage_cap_bps", expected_route_slippage_cap_bps)?;
             Ok(())
         }
         UpstreamAction::Simulate => {

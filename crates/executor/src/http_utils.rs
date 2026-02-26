@@ -8,6 +8,7 @@ pub(crate) struct ReadResponseBody {
     pub(crate) text: String,
     pub(crate) bytes: Vec<u8>,
     pub(crate) was_truncated: bool,
+    pub(crate) read_error_class: Option<&'static str>,
 }
 
 pub(crate) fn validate_endpoint_url(url: &str) -> Result<()> {
@@ -105,6 +106,7 @@ pub(crate) async fn read_response_body_limited(
             text: String::new(),
             bytes: Vec::new(),
             was_truncated: false,
+            read_error_class: None,
         };
     }
 
@@ -134,6 +136,7 @@ pub(crate) async fn read_response_body_limited(
                         text: format!("response body read failed class={}", error_class),
                         bytes: Vec::new(),
                         was_truncated: false,
+                        read_error_class: Some(error_class),
                     };
                 }
                 let mut partial = String::from_utf8_lossy(body_bytes.as_slice()).to_string();
@@ -142,6 +145,7 @@ pub(crate) async fn read_response_body_limited(
                     text: partial,
                     bytes: body_bytes,
                     was_truncated: false,
+                    read_error_class: Some(error_class),
                 };
             }
         }
@@ -155,6 +159,7 @@ pub(crate) async fn read_response_body_limited(
         text,
         bytes: body_bytes,
         was_truncated,
+        read_error_class: None,
     }
 }
 

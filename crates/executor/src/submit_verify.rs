@@ -6,7 +6,8 @@ use tracing::warn;
 use crate::{
     http_utils::{
         classify_request_error, read_response_body_limited, redacted_endpoint_label,
-        truncate_detail_chars, MAX_HTTP_ERROR_BODY_DETAIL_CHARS, MAX_HTTP_JSON_BODY_READ_BYTES,
+        truncate_detail_chars, MAX_HTTP_ERROR_BODY_DETAIL_CHARS, MAX_HTTP_ERROR_BODY_READ_BYTES,
+        MAX_HTTP_JSON_BODY_READ_BYTES,
     },
     key_validation::validate_signature_like,
     submit_deadline::SubmitDeadline,
@@ -83,10 +84,14 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 }
             };
             if !response.status().is_success() {
+                let status = response.status();
+                let body =
+                    read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
+                let body_detail =
+                    truncate_detail_chars(body.text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
                 last_reason = format!(
-                    "rpc status={} endpoint={}",
-                    response.status(),
-                    endpoint_label
+                    "rpc status={} endpoint={} body={}",
+                    status, endpoint_label, body_detail
                 );
                 continue;
             }
@@ -94,6 +99,13 @@ pub(crate) async fn verify_submitted_signature_visibility(
             let body: Value = match serde_json::from_slice(body_read.bytes.as_slice()) {
                 Ok(value) => value,
                 Err(error) => {
+                    if let Some(read_error_class) = body_read.read_error_class {
+                        last_reason = format!(
+                            "rpc response_read_failed endpoint={} class={} err={}",
+                            endpoint_label, read_error_class, error
+                        );
+                        continue;
+                    }
                     if body_read.was_truncated {
                         last_reason = format!(
                             "rpc response_too_large endpoint={} max_bytes={} err={}",
