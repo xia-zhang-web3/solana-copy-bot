@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use serde_json::{json, Value};
+use crate::route_allowlist::sorted_routes;
 
 #[derive(Clone, Debug)]
 pub(crate) struct HealthzPayloadInputs<'a> {
@@ -20,12 +21,6 @@ pub(crate) fn top_level_healthz_status(idempotency_store_status: &str) -> &'stat
     } else {
         "degraded"
     }
-}
-
-fn sorted_routes(enabled_routes: &HashSet<String>) -> Vec<String> {
-    let mut routes: Vec<String> = enabled_routes.iter().cloned().collect();
-    routes.sort_unstable();
-    routes
 }
 
 pub(crate) fn build_healthz_payload(inputs: HealthzPayloadInputs<'_>) -> Value {

@@ -180,6 +180,7 @@ contract_guard_tests=(
   "response_cleanup_clamps_future_global_marker_to_now"
   "parse_route_allowlist_rejects_unknown_route"
   "route_allowlist_parse_rejects_unknown_route"
+  "sorted_routes_returns_deterministic_order"
   "key_validation_accepts_pubkey_and_signature_shapes"
   "constant_time_eq_checks_content"
   "constant_time_eq_rejects_length_mismatch"

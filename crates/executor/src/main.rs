@@ -92,6 +92,7 @@ use crate::reject_mapping::map_common_contract_validation_error_to_reject;
 use crate::reject_mapping::simulate_http_status_for_reject;
 #[cfg(test)]
 use crate::request_types::{ComputeBudgetRequest, SimulateRequest, SubmitRequest};
+use crate::route_allowlist::sorted_routes;
 use crate::route_backend::RouteBackend;
 #[cfg(test)]
 use crate::route_backend::UpstreamAction;
@@ -229,6 +230,7 @@ async fn main() -> Result<()> {
     });
 
     let router = build_router(state.clone());
+    let configured_routes = sorted_routes(&state.config.route_allowlist);
 
     info!(
         bind_addr = %state.config.bind_addr,
@@ -237,7 +239,7 @@ async fn main() -> Result<()> {
         signer_kms_key_id_configured = state.config.signer_kms_key_id.is_some(),
         signer_keypair_file_configured = state.config.signer_keypair_file.is_some(),
         contract_version = %state.config.contract_version,
-        routes = ?state.config.route_allowlist,
+        routes = ?configured_routes,
         submit_fastlane_enabled = state.config.submit_fastlane_enabled,
         hmac_nonce_cache_max_entries = state.config.hmac_nonce_cache_max_entries,
         idempotency_db_path = %state.config.idempotency_db_path,

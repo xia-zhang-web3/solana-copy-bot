@@ -6,6 +6,12 @@ use crate::{route_normalization::normalize_route, route_policy::requires_submit_
 
 const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
 
+pub(crate) fn sorted_routes(route_allowlist: &HashSet<String>) -> Vec<String> {
+    let mut routes: Vec<String> = route_allowlist.iter().cloned().collect();
+    routes.sort_unstable();
+    routes
+}
+
 pub(crate) fn parse_route_allowlist(csv: String) -> Result<HashSet<String>> {
     let mut routes = HashSet::new();
     for raw in csv.split(',') {
@@ -42,7 +48,7 @@ pub(crate) fn validate_fastlane_route_policy(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_route_allowlist, validate_fastlane_route_policy};
+    use super::{parse_route_allowlist, sorted_routes, validate_fastlane_route_policy};
 
     #[test]
     fn route_allowlist_parse_accepts_known_routes() {
@@ -86,6 +92,12 @@ mod tests {
             "error={}",
             error
         );
+    }
+
+    #[test]
+    fn sorted_routes_returns_deterministic_order() {
+        let routes = parse_route_allowlist("rpc, jito, paper".to_string()).expect("must parse");
+        assert_eq!(sorted_routes(&routes), vec!["jito", "paper", "rpc"]);
     }
 
     #[test]
