@@ -2723,6 +2723,9 @@ run_executor_rollout_evidence_case() {
   fi
   assert_contains "$invalid_bool_output" "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token"
   assert_contains "$invalid_bool_output" "got: maybe"
+  assert_field_equals "$invalid_bool_output" "rotation_readiness_verdict" "UNKNOWN"
+  assert_field_equals "$invalid_bool_output" "preflight_verdict" "UNKNOWN"
+  assert_field_equals "$invalid_bool_output" "devnet_rehearsal_reason_code" "input_error"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "mismatch-token"
   local preflight_fail_output=""
@@ -3069,6 +3072,9 @@ run_adapter_rollout_evidence_case() {
   fi
   assert_contains "$invalid_bool_output" "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED must be a boolean token"
   assert_contains "$invalid_bool_output" "got: perhaps"
+  assert_field_equals "$invalid_bool_output" "rotation_readiness_verdict" "UNKNOWN"
+  assert_field_equals "$invalid_bool_output" "route_fee_signoff_verdict" "UNKNOWN"
+  assert_field_equals "$invalid_bool_output" "devnet_rehearsal_reason_code" "input_error"
 
   local final_artifacts_dir="$TMP_DIR/adapter-rollout-final-package"
   local final_output

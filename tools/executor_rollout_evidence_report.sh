@@ -109,7 +109,7 @@ rotation_artifact_report=""
 rotation_artifact_manifest=""
 rotation_report_sha256=""
 rotation_artifacts_written="false"
-if [[ -f "$EXECUTOR_ENV_PATH" ]]; then
+if ((${#input_errors[@]} == 0)) && [[ -f "$EXECUTOR_ENV_PATH" ]]; then
   if rotation_output="$(
     EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       OUTPUT_DIR="$rotation_output_dir" \
@@ -131,7 +131,7 @@ if [[ -f "$EXECUTOR_ENV_PATH" ]]; then
   elif [[ -z "$rotation_reason" ]]; then
     rotation_reason="rotation helper reported $rotation_verdict"
   fi
-else
+elif ((${#input_errors[@]} == 0)); then
   rotation_exit_code=1
   rotation_verdict="FAIL"
   rotation_reason="executor env file not found: $EXECUTOR_ENV_PATH"
@@ -150,7 +150,7 @@ preflight_artifact_summary=""
 preflight_artifact_manifest=""
 preflight_summary_sha256=""
 preflight_artifacts_written="false"
-if [[ -f "$CONFIG_PATH" && -f "$EXECUTOR_ENV_PATH" && -f "$ADAPTER_ENV_PATH" ]]; then
+if ((${#input_errors[@]} == 0)) && [[ -f "$CONFIG_PATH" && -f "$EXECUTOR_ENV_PATH" && -f "$ADAPTER_ENV_PATH" ]]; then
   if preflight_output="$(
     CONFIG_PATH="$CONFIG_PATH" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -207,7 +207,12 @@ rehearsal_tests_sha256=""
 rehearsal_artifacts_written="false"
 tests_run=""
 tests_failed=""
-if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+if ((${#input_errors[@]} > 0)); then
+  rehearsal_exit_code=3
+  rehearsal_verdict="NO_GO"
+  rehearsal_reason="${input_errors[0]}"
+  rehearsal_reason_code="input_error"
+elif [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
   rehearsal_exit_code=3
   rehearsal_verdict="NO_GO"
   rehearsal_reason="invalid rehearsal window arguments"

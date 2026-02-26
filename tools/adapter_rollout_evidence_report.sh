@@ -113,7 +113,7 @@ rotation_artifact_report=""
 rotation_artifact_manifest=""
 rotation_report_sha256=""
 rotation_artifacts_written="false"
-if [[ -f "$ADAPTER_ENV_PATH" ]]; then
+if ((${#input_errors[@]} == 0)) && [[ -f "$ADAPTER_ENV_PATH" ]]; then
   if rotation_output="$(
     ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
       OUTPUT_DIR="$rotation_output_dir" \
@@ -149,7 +149,7 @@ if [[ -f "$ADAPTER_ENV_PATH" ]]; then
   elif [[ -z "${rotation_reason:-}" ]]; then
     rotation_reason="rotation helper PASS"
   fi
-else
+elif ((${#input_errors[@]} == 0)); then
   rotation_exit_code=1
   rotation_verdict="FAIL"
   rotation_reason="adapter env file not found: $ADAPTER_ENV_PATH"
@@ -229,7 +229,12 @@ rehearsal_route_fee_fee_decomposition_pass_count=""
 rehearsal_route_fee_window_count=""
 tests_run=""
 tests_failed=""
-if [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+if ((${#input_errors[@]} > 0)); then
+  rehearsal_exit_code=3
+  rehearsal_verdict="NO_GO"
+  rehearsal_reason="${input_errors[0]}"
+  rehearsal_reason_code="input_error"
+elif [[ ! "$WINDOW_HOURS" =~ ^[0-9]+$ || ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
   rehearsal_exit_code=3
   rehearsal_verdict="NO_GO"
   rehearsal_reason="invalid rehearsal window arguments"
@@ -373,7 +378,12 @@ route_fee_stable_fallback_route=""
 route_fee_route_profile_pass_count=""
 route_fee_fee_decomposition_pass_count=""
 route_fee_window_count=""
-if [[ ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+if ((${#input_errors[@]} > 0)); then
+  route_fee_signoff_exit_code=3
+  route_fee_signoff_verdict="UNKNOWN"
+  route_fee_signoff_reason="skipped due input validation errors"
+  route_fee_signoff_reason_code="input_error"
+elif [[ ! "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
   route_fee_signoff_exit_code=3
   route_fee_signoff_verdict="NO_GO"
   route_fee_signoff_reason="invalid risk events window for route/fee signoff"
