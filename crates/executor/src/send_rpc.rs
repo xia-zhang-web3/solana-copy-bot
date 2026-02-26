@@ -375,9 +375,33 @@ enum SendRpcErrorPayloadDisposition {
     Terminal,
 }
 
+fn extract_send_rpc_error_text(error_payload: &Value) -> String {
+    let mut fragments: Vec<&str> = Vec::new();
+
+    if let Some(message) = error_payload.get("message").and_then(Value::as_str) {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            fragments.push(trimmed);
+        }
+    }
+
+    if let Some(data) = error_payload.get("data") {
+        for field_name in ["message", "details", "err"] {
+            if let Some(value) = data.get(field_name).and_then(Value::as_str) {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    fragments.push(trimmed);
+                }
+            }
+        }
+    }
+
+    fragments.join(" ").to_ascii_lowercase()
+}
+
 fn classify_send_rpc_error_payload(error_payload: &Value) -> SendRpcErrorPayloadDisposition {
     let code = error_payload.get("code").and_then(Value::as_i64);
-    let payload_lower = error_payload.to_string().to_ascii_lowercase();
+    let payload_lower = extract_send_rpc_error_text(error_payload);
 
     if code == Some(-32002)
         && (payload_lower.contains("already processed")
@@ -457,7 +481,8 @@ fn parse_shortvec_len(bytes: &[u8]) -> Result<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_send_rpc_error_payload, validate_send_rpc_deadline_context,
+        classify_send_rpc_error_payload, extract_send_rpc_error_text,
+        validate_send_rpc_deadline_context,
         SendRpcErrorPayloadDisposition,
     };
     use crate::submit_deadline::SubmitDeadline;
@@ -500,6 +525,53 @@ mod tests {
         assert_eq!(
             classify_send_rpc_error_payload(&payload),
             SendRpcErrorPayloadDisposition::BlockhashExpired
+        );
+    }
+
+    #[test]
+    fn classify_send_rpc_error_payload_ignores_timeout_marker_in_unstructured_data() {
+        let payload = json!({
+            "code": -32002,
+            "message": "mystery failure class",
+            "data": {
+                "raw_payload": "this string says timeout but is not classifier text"
+            }
+        });
+        assert_eq!(
+            classify_send_rpc_error_payload(&payload),
+            SendRpcErrorPayloadDisposition::Terminal
+        );
+    }
+
+    #[test]
+    fn classify_send_rpc_error_payload_uses_structured_data_message_for_retryable() {
+        let payload = json!({
+            "code": -32002,
+            "message": "mystery failure class",
+            "data": {
+                "message": "node is unhealthy"
+            }
+        });
+        assert_eq!(
+            classify_send_rpc_error_payload(&payload),
+            SendRpcErrorPayloadDisposition::Retryable
+        );
+    }
+
+    #[test]
+    fn extract_send_rpc_error_text_reads_message_and_structured_data_fields() {
+        let payload = json!({
+            "message": " primary ",
+            "data": {
+                "message": " secondary ",
+                "details": " tertiary ",
+                "err": " quaternary ",
+                "raw_payload": "timeout"
+            }
+        });
+        assert_eq!(
+            extract_send_rpc_error_text(&payload),
+            "primary secondary tertiary quaternary"
         );
     }
 }

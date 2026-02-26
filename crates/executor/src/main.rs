@@ -3521,6 +3521,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_ignores_timeout_marker_in_unstructured_error_data() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([42u8; 64]);
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            r#"{"jsonrpc":"2.0","error":{"code":-32002,"message":"mystery failure class","data":{"raw_payload":"timeout marker in unrelated field"}}}"#,
+        ) else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("timeout marker in unstructured error data should not force retryable class");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_error_payload_terminal");
+        let _ = primary_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_uses_data_message_for_retryable_classification() {
+        let (signed_tx_base64, expected_signature) =
+            test_signed_tx_base64_with_signature([43u8; 64]);
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            r#"{"jsonrpc":"2.0","error":{"code":-32002,"message":"mystery failure class","data":{"message":"node is unhealthy"}}}"#,
+        ) else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, expected_signature).as_str(),
+        ) else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+            backend.send_rpc_fallback_url = Some(fallback_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let signature = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("structured data.message retryable class should allow fallback success");
+        assert_eq!(signature, expected_signature);
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_uses_send_rpc_when_upstream_returns_signed_tx_base64() {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([14u8; 64]);
         let upstream_body = format!(
