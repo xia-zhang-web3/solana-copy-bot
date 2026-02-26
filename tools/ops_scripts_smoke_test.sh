@@ -2916,6 +2916,34 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_nogo_output" "rollout_reason_code" "preflight_fail"
   assert_field_equals "$final_nogo_output" "final_executor_package_verdict" "NO_GO"
   assert_field_equals "$final_nogo_output" "final_executor_package_reason_code" "preflight_fail"
+
+  local final_invalid_bool_output=""
+  if final_invalid_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/executor-final-package-invalid-bool" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="sometimes" \
+      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor final package helper when GO_NOGO_REQUIRE_FASTLANE_DISABLED token is invalid" >&2
+    exit 1
+  else
+    local final_invalid_bool_exit_code=$?
+    if [[ "$final_invalid_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for executor final invalid bool token, got $final_invalid_bool_exit_code" >&2
+      echo "$final_invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_invalid_bool_output" "GO_NOGO_REQUIRE_FASTLANE_DISABLED must be a boolean token"
+  assert_field_equals "$final_invalid_bool_output" "rollout_verdict" "NO_GO"
+  assert_field_equals "$final_invalid_bool_output" "rollout_reason_code" "input_error"
+  assert_field_equals "$final_invalid_bool_output" "rollout_artifacts_written" "false"
+  assert_field_equals "$final_invalid_bool_output" "final_executor_package_reason_code" "input_error"
   echo "[ok] executor rollout/final evidence helpers"
 }
 
@@ -3199,6 +3227,33 @@ run_adapter_rollout_evidence_case() {
   assert_field_equals "$final_hold_output" "rollout_reason_code" "route_fee_signoff_hold"
   assert_field_equals "$final_hold_output" "final_rollout_package_verdict" "HOLD"
   assert_field_equals "$final_hold_output" "final_rollout_package_reason_code" "route_fee_signoff_hold"
+
+  local final_invalid_bool_output=""
+  if final_invalid_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/adapter-rollout-final-package-invalid-bool" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="oops" \
+      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for final rollout package helper when REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE token is invalid" >&2
+    exit 1
+  else
+    local final_invalid_bool_exit_code=$?
+    if [[ "$final_invalid_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for adapter final invalid bool token, got $final_invalid_bool_exit_code" >&2
+      echo "$final_invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_invalid_bool_output" "REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE must be a boolean token"
+  assert_field_equals "$final_invalid_bool_output" "rollout_verdict" "NO_GO"
+  assert_field_equals "$final_invalid_bool_output" "rollout_reason_code" "input_error"
+  assert_field_equals "$final_invalid_bool_output" "rollout_artifacts_written" "false"
+  assert_field_equals "$final_invalid_bool_output" "final_rollout_package_reason_code" "input_error"
 
   local windowed_nogo_output=""
   if windowed_nogo_output="$(

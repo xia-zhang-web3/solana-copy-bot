@@ -36,64 +36,134 @@ ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRI
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
+declare -a input_errors=()
+if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
+  input_errors+=("window hours must be an integer (got: $WINDOW_HOURS)")
+fi
+if ! [[ "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
+  input_errors+=("risk events minutes must be an integer (got: $RISK_EVENTS_MINUTES)")
+fi
+if [[ ! -f "$EXECUTOR_ENV_PATH" ]]; then
+  input_errors+=("executor env file not found: $EXECUTOR_ENV_PATH")
+fi
+if [[ ! -f "$ADAPTER_ENV_PATH" ]]; then
+  input_errors+=("adapter env file not found: $ADAPTER_ENV_PATH")
+fi
+if [[ ! -f "$CONFIG_PATH" ]]; then
+  input_errors+=("config file not found: $CONFIG_PATH")
+fi
+
+parse_bool_token_strict() {
+  local raw
+  raw="$(trim_string "$1")"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    0|false|no|off)
+      printf 'false'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+parse_final_bool_setting_into() {
+  local setting_name="$1"
+  local raw_value="$2"
+  local output_var="$3"
+  local parsed_value=""
+  if ! parsed_value="$(parse_bool_token_strict "$raw_value")"; then
+    input_errors+=("${setting_name} must be a boolean token (true/false/1/0/yes/no/on/off), got: ${raw_value}")
+    parsed_value="false"
+  fi
+  printf -v "$output_var" '%s' "$parsed_value"
+}
+
+parse_final_bool_setting_into "RUN_TESTS" "$RUN_TESTS" run_tests_norm
+parse_final_bool_setting_into "DEVNET_REHEARSAL_TEST_MODE" "$DEVNET_REHEARSAL_TEST_MODE" devnet_rehearsal_test_mode_norm
+parse_final_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
+parse_final_bool_setting_into "WINDOWED_SIGNOFF_REQUIRED" "$WINDOWED_SIGNOFF_REQUIRED" windowed_signoff_required_norm
+parse_final_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" windowed_signoff_require_dynamic_hint_source_pass_norm
+parse_final_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" windowed_signoff_require_dynamic_tip_policy_pass_norm
+parse_final_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy_norm
+parse_final_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled_norm
+parse_final_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
+parse_final_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
+
 mkdir -p "$OUTPUT_ROOT"
 rollout_output_dir="$OUTPUT_ROOT/rollout"
 mkdir -p "$rollout_output_dir"
 
 rollout_output=""
 rollout_exit_code=3
-if rollout_output="$(
-  EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
-    ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    SERVICE="$SERVICE" \
-    OUTPUT_DIR="$rollout_output_dir" \
-    RUN_TESTS="$RUN_TESTS" \
-    DEVNET_REHEARSAL_TEST_MODE="$DEVNET_REHEARSAL_TEST_MODE" \
-    GO_NOGO_TEST_MODE="$GO_NOGO_TEST_MODE" \
-    GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
-    GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
-    WINDOWED_SIGNOFF_REQUIRED="$WINDOWED_SIGNOFF_REQUIRED" \
-    WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
-    WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" \
-    WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" \
-    GO_NOGO_REQUIRE_JITO_RPC_POLICY="$GO_NOGO_REQUIRE_JITO_RPC_POLICY" \
-    GO_NOGO_REQUIRE_FASTLANE_DISABLED="$GO_NOGO_REQUIRE_FASTLANE_DISABLED" \
-    ROUTE_FEE_SIGNOFF_REQUIRED="$ROUTE_FEE_SIGNOFF_REQUIRED" \
-    ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
-    ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" \
-    ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
-    ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
-    ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
-    bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
-)"; then
-  rollout_exit_code=0
-else
-  rollout_exit_code=$?
+rollout_verdict="UNKNOWN"
+rollout_reason="executor rollout helper not executed"
+rollout_reason_code="not_executed"
+rollout_artifacts_written="false"
+rollout_artifact_summary="n/a"
+rollout_artifact_manifest="n/a"
+rollout_summary_sha256="n/a"
+if ((${#input_errors[@]} == 0)); then
+  if rollout_output="$(
+    EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
+      ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
+      CONFIG_PATH="$CONFIG_PATH" \
+      SERVICE="$SERVICE" \
+      OUTPUT_DIR="$rollout_output_dir" \
+      RUN_TESTS="$run_tests_norm" \
+      DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
+      GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
+      WINDOWED_SIGNOFF_REQUIRED="$windowed_signoff_required_norm" \
+      WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="$route_fee_signoff_required_norm" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
+      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode_norm" \
+      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
+      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+  )"; then
+    rollout_exit_code=0
+  else
+    rollout_exit_code=$?
+  fi
+  rollout_verdict="$(normalize_go_nogo_verdict "$(extract_field "executor_rollout_verdict" "$rollout_output")")"
+  rollout_reason="$(trim_string "$(extract_field "executor_rollout_reason" "$rollout_output")")"
+  rollout_reason_code="$(trim_string "$(extract_field "executor_rollout_reason_code" "$rollout_output")")"
+  rollout_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rollout_output")")"
+  rollout_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$rollout_output")")"
+  rollout_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rollout_output")")"
+  rollout_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rollout_output")")"
+
+  if [[ "$rollout_verdict" == "UNKNOWN" ]]; then
+    rollout_reason="unable to classify executor rollout verdict (exit=$rollout_exit_code)"
+    rollout_reason_code="unknown_verdict"
+  elif [[ -z "$rollout_reason" ]]; then
+    rollout_reason="executor rollout helper reported $rollout_verdict"
+    rollout_reason_code="missing_reason"
+  fi
+  if [[ -z "$rollout_reason_code" ]]; then
+    rollout_reason_code="n/a"
+  fi
+elif ((${#input_errors[@]} > 0)); then
+  rollout_exit_code=3
+  rollout_verdict="NO_GO"
+  rollout_reason="${input_errors[0]}"
+  rollout_reason_code="input_error"
 fi
 
 rollout_capture_path="$OUTPUT_ROOT/executor_rollout_evidence_captured_${timestamp_compact}.txt"
 printf '%s\n' "$rollout_output" >"$rollout_capture_path"
 rollout_capture_sha256="$(sha256_file_value "$rollout_capture_path")"
-
-rollout_verdict="$(normalize_go_nogo_verdict "$(extract_field "executor_rollout_verdict" "$rollout_output")")"
-rollout_reason="$(trim_string "$(extract_field "executor_rollout_reason" "$rollout_output")")"
-rollout_reason_code="$(trim_string "$(extract_field "executor_rollout_reason_code" "$rollout_output")")"
-rollout_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rollout_output")")"
-rollout_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$rollout_output")")"
-rollout_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rollout_output")")"
-rollout_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rollout_output")")"
-
-if [[ "$rollout_verdict" == "UNKNOWN" ]]; then
-  rollout_reason="unable to classify executor rollout verdict (exit=$rollout_exit_code)"
-  rollout_reason_code="unknown_verdict"
-elif [[ -z "$rollout_reason" ]]; then
-  rollout_reason="executor rollout helper reported $rollout_verdict"
-  rollout_reason_code="missing_reason"
-fi
-if [[ -z "$rollout_reason_code" ]]; then
-  rollout_reason_code="n/a"
-fi
 
 rollout_artifact_summary_sha256="n/a"
 if [[ -n "$rollout_artifact_summary" && "$rollout_artifact_summary" != "n/a" && -f "$rollout_artifact_summary" ]]; then
@@ -116,16 +186,17 @@ config: $CONFIG_PATH
 output_root: $OUTPUT_ROOT
 rollout_output_dir: $rollout_output_dir
 run_tests: $RUN_TESTS
-devnet_rehearsal_test_mode: $DEVNET_REHEARSAL_TEST_MODE
-go_nogo_test_mode: $GO_NOGO_TEST_MODE
-windowed_signoff_required: $WINDOWED_SIGNOFF_REQUIRED
+devnet_rehearsal_test_mode: $devnet_rehearsal_test_mode_norm
+go_nogo_test_mode: $go_nogo_test_mode_norm
+windowed_signoff_required: $windowed_signoff_required_norm
 windowed_signoff_windows_csv: $WINDOWED_SIGNOFF_WINDOWS_CSV
-windowed_signoff_require_dynamic_hint_source_pass: $WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS
-windowed_signoff_require_dynamic_tip_policy_pass: $WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS
-go_nogo_require_jito_rpc_policy: $GO_NOGO_REQUIRE_JITO_RPC_POLICY
-go_nogo_require_fastlane_disabled: $GO_NOGO_REQUIRE_FASTLANE_DISABLED
-route_fee_signoff_required: $ROUTE_FEE_SIGNOFF_REQUIRED
+windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass_norm
+windowed_signoff_require_dynamic_tip_policy_pass: $windowed_signoff_require_dynamic_tip_policy_pass_norm
+go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy_norm
+go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled_norm
+route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
+input_error_count: ${#input_errors[@]}
 rollout_exit_code: $rollout_exit_code
 rollout_verdict: $rollout_verdict
 rollout_reason: ${rollout_reason:-n/a}
@@ -142,6 +213,11 @@ final_executor_package_reason_code: ${rollout_reason_code:-n/a}
 artifacts_written: true"
 
 echo "$summary_output"
+if ((${#input_errors[@]} > 0)); then
+  for input_error in "${input_errors[@]}"; do
+    echo "input_error: $input_error"
+  done
+fi
 
 summary_path="$OUTPUT_ROOT/executor_final_evidence_summary_${timestamp_compact}.txt"
 manifest_path="$OUTPUT_ROOT/executor_final_evidence_manifest_${timestamp_compact}.txt"
