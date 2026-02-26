@@ -862,6 +862,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 334. simulate full-chain upstream oversized fallback/cause hardening: added full-chain `handle_simulate` guards for upstream oversized success-body classes (`declared Content-Length` and `was_truncated`) covering both fallback-success and no-fallback reject branches, with explicit `upstream_response_too_large` cause markers (`declared content-length` / `max_bytes=65536`) pinned at simulate handler boundary.
 335. healthz route ordering determinism hardening: `build_healthz_payload` now emits `enabled_routes` and backward-compat `routes` alias as sorted arrays (instead of HashSet iteration order), making health snapshots deterministic across runs/nodes for evidence diffing and ops consumers while preserving existing field schema.
 336. route-list ordering determinism unification: introduced shared `route_allowlist::sorted_routes(...)` and reused it for both healthz payload route arrays and startup configuration logging, removing duplicate sort logic and making startup `routes` log output deterministic across process restarts/evidence captures.
+337. route allowlist duplicate-entry fail-closed hardening: `parse_route_allowlist` now rejects duplicate routes after normalization (e.g., `rpc,RPC`) instead of silently deduplicating via `HashSet`, and startup config coverage now pins `ExecutorConfig::from_env` reject behavior for duplicate allowlist entries to avoid masking operator config mistakes.
 
 Остается в next-code-queue:
 

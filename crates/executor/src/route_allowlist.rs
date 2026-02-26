@@ -25,6 +25,12 @@ pub(crate) fn parse_route_allowlist(csv: String) -> Result<HashSet<String>> {
                 route
             ));
         }
+        if routes.contains(route.as_str()) {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains duplicate route={}",
+                route
+            ));
+        }
         routes.insert(route);
     }
     Ok(routes)
@@ -89,6 +95,19 @@ mod tests {
             error
                 .to_string()
                 .contains("unsupported route=unknown_route"),
+            "error={}",
+            error
+        );
+    }
+
+    #[test]
+    fn parse_route_allowlist_rejects_duplicate_route() {
+        let error = parse_route_allowlist("rpc, RPC".to_string())
+            .expect_err("duplicate route entries must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("contains duplicate route=rpc"),
             "error={}",
             error
         );
