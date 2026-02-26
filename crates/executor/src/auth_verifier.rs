@@ -81,7 +81,7 @@ impl AuthVerifier {
 
         if let Some(hmac) = self.hmac.as_ref() {
             let key_id = get_required_header(headers, "x-copybot-key-id", "hmac_missing")?;
-            if key_id != hmac.key_id {
+            if !constant_time_eq(key_id.as_bytes(), hmac.key_id.as_bytes()) {
                 return Err(Reject::terminal(
                     "hmac_invalid",
                     "x-copybot-key-id mismatch",
@@ -281,6 +281,36 @@ mod tests {
             .verify(&good_headers, body)
             .await
             .expect("nonce must be available after invalid signature");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_rejects_key_id_mismatch() {
+        let verifier = AuthVerifier::new(
+            None,
+            Some("kid-expected".to_string()),
+            Some("secret-key-id".to_string()),
+            30,
+            100_000,
+        );
+        let body = br#"{"status":"ok"}"#;
+        let timestamp = Utc::now().timestamp();
+        let payload =
+            build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-key-id", body);
+        let signature = compute_hmac_signature_hex(b"secret-key-id", payload.as_slice()).unwrap();
+        let headers = build_hmac_headers(
+            "kid-provided",
+            30,
+            "nonce-key-id",
+            timestamp,
+            signature.as_str(),
+        );
+
+        let reject = verifier
+            .verify(&headers, body)
+            .await
+            .expect_err("mismatched key-id must reject");
+        assert_eq!(reject.code, "hmac_invalid");
+        assert!(reject.detail.contains("x-copybot-key-id mismatch"));
     }
 
     #[tokio::test]

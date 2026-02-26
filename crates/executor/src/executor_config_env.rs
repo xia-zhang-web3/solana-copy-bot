@@ -794,6 +794,50 @@ mod tests {
     }
 
     #[test]
+    fn executor_config_from_env_rejects_invalid_allow_unauthenticated_token() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", "oops");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("invalid bool token must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_invalid_submit_verify_strict_token() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT", "not-bool");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("invalid bool token must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
     fn with_clean_executor_env_removes_newly_added_keys_after_scope() {
         const LEAK_KEY: &str = "COPYBOT_EXECUTOR_TEST_LEAK_KEY";
         env::remove_var(LEAK_KEY);
