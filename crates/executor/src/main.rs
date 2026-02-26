@@ -678,6 +678,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_signer_source_config_rejects_non_json_keypair_payload() {
+        let path = write_temp_secret_file_bytes(&[0xff, 0xfe, 0xfd]);
+        let error = resolve_signer_source_config(
+            Some("file"),
+            Some(path.to_str().expect("utf8 path")),
+            None,
+            "11111111111111111111111111111111",
+        )
+        .expect_err("non-json keypair payload must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must be JSON array with 64 u8 values"),
+            "error={}",
+            error
+        );
+        cleanup_temp_secret_file(path);
+    }
+
+    #[test]
     fn build_submit_signature_verify_config_rejects_fallback_without_primary() {
         let error = build_submit_signature_verify_config(
             None,
@@ -10140,7 +10160,7 @@ mod tests {
         ))
     }
 
-    fn write_temp_secret_file(contents: &str) -> PathBuf {
+    fn write_temp_secret_file_bytes(contents: &[u8]) -> PathBuf {
         let path = temp_secret_path("value");
         stdfs::write(&path, contents).expect("write temp secret");
         #[cfg(unix)]
@@ -10153,6 +10173,10 @@ mod tests {
             stdfs::set_permissions(&path, perms).expect("set temp secret perms");
         }
         path
+    }
+
+    fn write_temp_secret_file(contents: &str) -> PathBuf {
+        write_temp_secret_file_bytes(contents.as_bytes())
     }
 
     fn write_temp_signer_keypair_file(pubkey_bytes: [u8; 32]) -> PathBuf {

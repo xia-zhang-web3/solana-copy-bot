@@ -68,6 +68,7 @@ contract_guard_tests=(
   "auth_verifier_hmac_rejects_when_nonce_cache_capacity_reached"
   "auth_verifier_hmac_evicts_expired_nonce_before_capacity_check"
   "resolve_signer_source_config_rejects_keypair_pubkey_mismatch"
+  "resolve_signer_source_config_rejects_non_json_keypair_payload"
   "resolve_secret_source_rejects_inline_and_file_conflict"
   "resolve_secret_source_reads_trimmed_file"
   "handle_simulate_rejects_empty_request_id"

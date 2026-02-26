@@ -77,7 +77,7 @@ pub(crate) fn resolve_signer_source_config(
 }
 
 fn validate_signer_keypair_file(path: &str, signer_pubkey: &str) -> Result<()> {
-    let raw = Zeroizing::new(fs::read_to_string(path).with_context(|| {
+    let raw_bytes = Zeroizing::new(fs::read(path).with_context(|| {
         format!(
             "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE not found/readable path={}",
             path
@@ -94,14 +94,14 @@ fn validate_signer_keypair_file(path: &str, signer_pubkey: &str) -> Result<()> {
             path
         ));
     }
-    if raw.trim().is_empty() {
+    if !raw_bytes.iter().any(|byte| !byte.is_ascii_whitespace()) {
         return Err(anyhow!(
             "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE is empty after trim path={}",
             path
         ));
     }
     let keypair_bytes: Zeroizing<Vec<u8>> =
-        Zeroizing::new(serde_json::from_str(raw.trim()).with_context(|| {
+        Zeroizing::new(serde_json::from_slice(raw_bytes.as_slice()).with_context(|| {
             format!(
                 "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must be JSON array with 64 u8 values path={}",
                 path
