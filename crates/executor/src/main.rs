@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use axum::{
     extract::DefaultBodyLimit,
     routing::{get, post},
@@ -152,6 +152,7 @@ const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
 const DEFAULT_IDEMPOTENCY_CLAIM_TTL_SEC: u64 = 60;
 const DEFAULT_IDEMPOTENCY_RESPONSE_RETENTION_SEC: u64 = 7 * 24 * 60 * 60;
 const DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES: u64 = 100_000;
+const DEFAULT_LOG_FILTER: &str = "info,reqwest=warn,hyper=warn,h2=warn";
 
 #[derive(Clone)]
 struct AppState {
@@ -193,9 +194,7 @@ struct ExecutorConfig {
 #[tokio::main]
 async fn main() -> Result<()> {
     let log_json = parse_bool_env("COPYBOT_EXECUTOR_LOG_JSON", true)?;
-    let log_filter = env::var("COPYBOT_EXECUTOR_LOG_FILTER")
-        .unwrap_or_else(|_| "info,reqwest=warn,hyper=warn,h2=warn".to_string());
-    let env_filter = EnvFilter::try_new(log_filter).unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = parse_executor_log_env_filter()?;
     if log_json {
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
@@ -276,6 +275,18 @@ async fn main() -> Result<()> {
     server_result.context("executor server crashed")
 }
 
+fn parse_executor_log_env_filter() -> Result<EnvFilter> {
+    let raw = match env::var("COPYBOT_EXECUTOR_LOG_FILTER") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => DEFAULT_LOG_FILTER.to_string(),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(anyhow!("COPYBOT_EXECUTOR_LOG_FILTER must be valid UTF-8"));
+        }
+    };
+    EnvFilter::try_new(raw.as_str())
+        .map_err(|error| anyhow!("COPYBOT_EXECUTOR_LOG_FILTER is invalid: {}", error))
+}
+
 fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
@@ -351,11 +362,15 @@ mod tests {
         http::{HeaderValue, Request},
     };
     use std::{
+        ffi::OsString,
         fs as stdfs,
         io::{Read, Write},
         net::TcpListener,
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Mutex,
+        },
         thread,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -364,6 +379,66 @@ mod tests {
     use tower::ServiceExt;
 
     static TEMP_SECRET_COUNTER: AtomicU64 = AtomicU64::new(0);
+    static LOG_FILTER_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_log_filter_env<T>(value: Option<OsString>, run: impl FnOnce() -> T) -> T {
+        let _guard = LOG_FILTER_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved = env::var_os("COPYBOT_EXECUTOR_LOG_FILTER");
+        env::remove_var("COPYBOT_EXECUTOR_LOG_FILTER");
+        if let Some(value) = value {
+            env::set_var("COPYBOT_EXECUTOR_LOG_FILTER", value);
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        env::remove_var("COPYBOT_EXECUTOR_LOG_FILTER");
+        if let Some(saved) = saved {
+            env::set_var("COPYBOT_EXECUTOR_LOG_FILTER", saved);
+        }
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    #[test]
+    fn parse_executor_log_env_filter_uses_default_when_missing() {
+        with_log_filter_env(None, || {
+            parse_executor_log_env_filter().expect("missing env must use default log filter");
+        });
+    }
+
+    #[test]
+    fn parse_executor_log_env_filter_rejects_invalid_syntax() {
+        with_log_filter_env(Some(OsString::from("[")), || {
+            let error = parse_executor_log_env_filter().expect_err("invalid filter must reject");
+            assert!(
+                error.to_string().contains("COPYBOT_EXECUTOR_LOG_FILTER"),
+                "unexpected error: {}",
+                error
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_executor_log_env_filter_rejects_non_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_log_filter_env(Some(OsString::from_vec(vec![0xff])), || {
+            let error = parse_executor_log_env_filter().expect_err("non-UTF8 filter must reject");
+            assert!(
+                error.to_string().contains("COPYBOT_EXECUTOR_LOG_FILTER"),
+                "unexpected error: {}",
+                error
+            );
+            assert!(
+                error.to_string().contains("UTF-8"),
+                "unexpected error: {}",
+                error
+            );
+        });
+    }
 
     #[tokio::test]
     async fn shutdown_signal_ctrl_c_helper_completes_when_ctrl_c_source_resolves() {
