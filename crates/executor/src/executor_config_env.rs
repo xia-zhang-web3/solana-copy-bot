@@ -526,11 +526,27 @@ fn parse_route_scoped_env_key(key: &str) -> Option<(&str, &str)> {
 
 fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>) -> Result<()> {
     let mut violations: Vec<String> = Vec::new();
-    for (key, value) in env::vars() {
+    for (key_os, value_os) in env::vars_os() {
+        let key_lossy = key_os.to_string_lossy();
+        if !key_lossy.starts_with(ROUTE_SCOPED_ENV_PREFIX) {
+            continue;
+        }
+        let key = key_os.to_str().ok_or_else(|| {
+            anyhow!(
+                "route-scoped env key is not valid UTF-8: {}",
+                key_lossy
+            )
+        })?;
+        let value = value_os.to_str().ok_or_else(|| {
+            anyhow!(
+                "route-scoped env key {} has non-UTF8 value",
+                key
+            )
+        })?;
         if value.trim().is_empty() {
             continue;
         }
-        let Some((route_raw, _suffix)) = parse_route_scoped_env_key(key.as_str()) else {
+        let Some((route_raw, _suffix)) = parse_route_scoped_env_key(key) else {
             continue;
         };
         let route = route_raw.to_ascii_lowercase();
@@ -846,6 +862,49 @@ mod tests {
             let allowlist = HashSet::from([String::from("rpc")]);
             validate_route_scoped_env_targets_allowlist(&allowlist)
                 .expect("allowlisted route-scoped key should pass");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_scoped_env_targets_allowlist_rejects_non_utf8_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            env::set_var(
+                "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
+                OsString::from_vec(vec![0xff]),
+            );
+            let allowlist = HashSet::from([String::from("rpc")]);
+            let error = validate_route_scoped_env_targets_allowlist(&allowlist)
+                .expect_err("non-UTF8 route-scoped env value must reject");
+            assert!(
+                error.to_string().contains("has non-UTF8 value"),
+                "unexpected error: {}",
+                error
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_scoped_env_targets_allowlist_rejects_non_utf8_key() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            let mut key = b"COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL".to_vec();
+            key.push(0xff);
+            env::set_var(OsString::from_vec(key), "https://submit-rpc.example.com");
+            let allowlist = HashSet::from([String::from("rpc")]);
+            let error = validate_route_scoped_env_targets_allowlist(&allowlist)
+                .expect_err("non-UTF8 route-scoped env key must reject");
+            assert!(
+                error
+                    .to_string()
+                    .contains("route-scoped env key is not valid UTF-8"),
+                "unexpected error: {}",
+                error
+            );
         });
     }
 

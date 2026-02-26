@@ -129,6 +129,8 @@ contract_guard_tests=(
   "parse_route_scoped_env_key_ignores_non_scoped_keys"
   "route_scoped_env_targets_allowlist_rejects_outside_route"
   "route_scoped_env_targets_allowlist_accepts_allowlisted_route"
+  "route_scoped_env_targets_allowlist_rejects_non_utf8_value"
+  "route_scoped_env_targets_allowlist_rejects_non_utf8_key"
   "executor_config_from_env_rejects_route_scoped_env_outside_allowlist"
   "with_clean_executor_env_removes_newly_added_keys_after_scope"
   "response_cleanup_nonblocking_skips_when_mutex_is_busy"
