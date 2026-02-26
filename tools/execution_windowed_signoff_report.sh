@@ -18,13 +18,44 @@ WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYN
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
-go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$GO_NOGO_REQUIRE_JITO_RPC_POLICY")"
-go_nogo_require_fastlane_disabled="$(normalize_bool_token "$GO_NOGO_REQUIRE_FASTLANE_DISABLED")"
-windowed_signoff_require_dynamic_hint_source_pass="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
-windowed_signoff_require_dynamic_tip_policy_pass="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS")"
 
 declare -a input_errors=()
 declare -a windows=()
+
+parse_bool_token_strict() {
+  local raw
+  raw="$(trim_string "$1")"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    0|false|no|off)
+      printf 'false'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+parse_windowed_bool_setting_into() {
+  local setting_name="$1"
+  local raw_value="$2"
+  local output_var="$3"
+  local parsed_value=""
+  if ! parsed_value="$(parse_bool_token_strict "$raw_value")"; then
+    input_errors+=("${setting_name} must be a boolean token (true/false/1/0/yes/no/on/off), got: ${raw_value}")
+    parsed_value="false"
+  fi
+  printf -v "$output_var" '%s' "$parsed_value"
+}
+
+parse_windowed_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy
+parse_windowed_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled
+parse_windowed_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" windowed_signoff_require_dynamic_hint_source_pass
+parse_windowed_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" windowed_signoff_require_dynamic_tip_policy_pass
+parse_windowed_bool_setting_into "GO_NOGO_TEST_MODE" "${GO_NOGO_TEST_MODE:-false}" go_nogo_test_mode_norm
 
 if ! [[ "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
   input_errors+=("risk events minutes must be an integer (got: $RISK_EVENTS_MINUTES)")
@@ -146,7 +177,7 @@ if ((${#input_errors[@]} == 0)); then
       SERVICE="$SERVICE" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled" \
-      GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}" \
+      GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
       OUTPUT_DIR="$go_nogo_output_dir" \
@@ -374,6 +405,7 @@ windows_csv: $WINDOWS_CSV
 risk_events_minutes: $RISK_EVENTS_MINUTES
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
+go_nogo_test_mode: $go_nogo_test_mode_norm
 windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass
 windowed_signoff_require_dynamic_tip_policy_pass: $windowed_signoff_require_dynamic_tip_policy_pass
 window_count: $window_total

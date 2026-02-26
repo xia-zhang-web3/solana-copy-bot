@@ -46,12 +46,17 @@ parse_bool_token_strict() {
 
 go_nogo_require_jito_rpc_policy_raw="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
 if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
   echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2
   exit 1
 fi
 if ! go_nogo_require_fastlane_disabled="$(parse_bool_token_strict "$go_nogo_require_fastlane_disabled_raw")"; then
   echo "GO_NOGO_REQUIRE_FASTLANE_DISABLED must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_fastlane_disabled_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_test_mode="$(parse_bool_token_strict "$go_nogo_test_mode_raw")"; then
+  echo "GO_NOGO_TEST_MODE must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_test_mode_raw}" >&2
   exit 1
 fi
 
@@ -403,7 +408,6 @@ if [[ "$go_nogo_require_fastlane_disabled" == "true" ]]; then
 fi
 
 # Test-only overrides for smoke validation of verdict precedence branches.
-go_nogo_test_mode="$(normalize_bool_token "${GO_NOGO_TEST_MODE:-false}")"
 if [[ "$go_nogo_test_mode" == "true" ]]; then
   if [[ -n "${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" ]]; then
     fee_decomposition_verdict="$(normalize_gate_verdict "$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE")"

@@ -1280,6 +1280,28 @@ run_go_nogo_fastlane_disabled_gate_case() {
   fi
   assert_contains "$invalid_output" "GO_NOGO_REQUIRE_FASTLANE_DISABLED must be a boolean token"
   assert_contains "$invalid_output" "got: sometimes"
+
+  local invalid_test_mode_output=""
+  if invalid_test_mode_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="sometimes" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid GO_NOGO_TEST_MODE token" >&2
+    exit 1
+  else
+    local invalid_test_mode_exit_code=$?
+    if [[ "$invalid_test_mode_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_TEST_MODE token, got $invalid_test_mode_exit_code" >&2
+      echo "$invalid_test_mode_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_test_mode_output" "GO_NOGO_TEST_MODE must be a boolean token"
+  assert_contains "$invalid_test_mode_output" "got: sometimes"
   echo "[ok] go-no-go strict fastlane-disabled gate"
 }
 
@@ -1312,6 +1334,29 @@ run_windowed_signoff_report_case() {
   assert_contains "$hold_output" "windowed_signoff_require_dynamic_tip_policy_pass: false"
   assert_contains "$hold_output" "artifacts_written: false"
   assert_contains "$hold_output" "signoff_verdict: HOLD"
+  assert_contains "$hold_output" "go_nogo_test_mode: false"
+
+  local invalid_bool_output=""
+  if invalid_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$paper_cfg" \
+      SERVICE="copybot-smoke-service" \
+      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="sometimes" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for windowed signoff helper invalid WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS token" >&2
+    exit 1
+  else
+    local invalid_bool_exit_code=$?
+    if [[ "$invalid_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for windowed signoff helper invalid WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS token, got $invalid_bool_exit_code" >&2
+      echo "$invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_bool_output" "signoff_verdict: NO_GO"
+  assert_contains "$invalid_bool_output" "input_error: WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS must be a boolean token"
 
   local hard_block_nogo_output=""
   if hard_block_nogo_output="$(
