@@ -402,6 +402,41 @@ fn validate_optional_payload_non_empty_string_field(
     Ok(())
 }
 
+fn validate_optional_payload_bool_field(
+    payload: &serde_json::Map<String, Value>,
+    action_label: &str,
+    field_name: &'static str,
+    expected_value: Option<bool>,
+) -> std::result::Result<(), Reject> {
+    let Some(field_value) = payload.get(field_name) else {
+        if expected_value.is_some() {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                format!("{action_label} payload missing {field_name} at route-adapter boundary"),
+            ));
+        }
+        return Ok(());
+    };
+    let field_bool = field_value.as_bool().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload {field_name} must be boolean when present"),
+        )
+    })?;
+    if let Some(expected) = expected_value {
+        if field_bool != expected {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                format!(
+                    "{action_label} payload {field_name} mismatch at route-adapter boundary expected={expected} got={field_bool}"
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_submit_payload_for_route(
     raw_body: &[u8],
     expected_route: &str,
@@ -473,6 +508,7 @@ fn validate_simulate_payload_for_route(
         "simulate",
         expected_contract_version,
     )?;
+    validate_optional_payload_bool_field(&payload, "simulate", "dry_run", Some(true))?;
     validate_optional_payload_non_empty_string_field(
         &payload,
         "simulate",
@@ -1147,6 +1183,34 @@ mod tests {
             .expect_err("simulate missing action must reject");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing action"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_missing_dry_run() {
+        let body = br#"{"route":"rpc","action":"simulate","contract_version":"v1"}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
+            .expect_err("simulate missing dry_run must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing dry_run"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_non_bool_dry_run() {
+        let body =
+            br#"{"route":"rpc","action":"simulate","dry_run":"true","contract_version":"v1"}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
+            .expect_err("simulate non-bool dry_run must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("dry_run must be boolean"));
+    }
+
+    #[test]
+    fn validate_simulate_payload_for_route_rejects_dry_run_false() {
+        let body = br#"{"route":"rpc","action":"simulate","dry_run":false,"contract_version":"v1"}"#;
+        let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
+            .expect_err("simulate dry_run=false must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("dry_run mismatch"));
     }
 
     #[test]
