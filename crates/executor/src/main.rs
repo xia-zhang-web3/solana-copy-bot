@@ -2131,6 +2131,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_rejects_partial_valid_json_body_as_response_read_failed() {
+        let partial_valid_json = br#"{"status":"ok","accepted":true}"#;
+        let Some((url, handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            partial_valid_json,
+            partial_valid_json.len() + 64,
+        ) else {
+            return;
+        };
+        let state = test_state(url.as_str());
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect_err("transport-incomplete body must reject even if partial bytes are valid JSON");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_unavailable");
+        assert!(
+            reject.detail.contains("response read failed"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_uses_fallback_after_primary_response_read_failure() {
+        let partial_valid_json = br#"{"status":"ok","accepted":true}"#;
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            partial_valid_json,
+            partial_valid_json.len() + 64,
+        ) else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            "{\"status\":\"ok\",\"accepted\":true}",
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let body = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{}",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback should succeed after primary response-read failure");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_rejects_submit_without_deadline_before_request() {
         let state = test_state("http://127.0.0.1:1/upstream");
         let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
@@ -2617,6 +2682,106 @@ mod tests {
             reject.detail
         );
         let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_partial_valid_json_body_as_response_read_failed(
+    ) {
+        let (signed_tx_base64, expected_signature) =
+            test_signed_tx_base64_with_signature([61u8; 64]);
+        let partial_valid_json = format!(
+            r#"{{"jsonrpc":"2.0","result":"{}"}}"#,
+            expected_signature
+        );
+        let Some((send_rpc_url, send_rpc_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            partial_valid_json.as_bytes(),
+            partial_valid_json.len() + 64,
+        ) else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("transport-incomplete body must reject even if partial bytes are valid JSON");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "send_rpc_unavailable");
+        assert!(
+            reject.detail.contains("response read failed"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_uses_fallback_after_primary_response_read_failure() {
+        let (signed_tx_base64, expected_signature) =
+            test_signed_tx_base64_with_signature([62u8; 64]);
+        let fallback_token = "Send-Rpc-Fallback-Token-Read-Failure";
+        let partial_valid_json = format!(
+            r#"{{"jsonrpc":"2.0","result":"{}"}}"#,
+            expected_signature
+        );
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            partial_valid_json.as_bytes(),
+            partial_valid_json.len() + 64,
+        ) else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_send_rpc_expect_bearer(fallback_token, expected_signature.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+            backend.send_rpc_fallback_url = Some(fallback_url);
+            backend.send_rpc_fallback_auth_token = Some(fallback_token.to_string().into());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let signature = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback should succeed after primary response-read failure");
+        assert_eq!(signature, expected_signature);
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
     }
 
     #[tokio::test]
@@ -8997,6 +9162,46 @@ mod tests {
         assert!(
             reject.detail.contains(body),
             "detail should include bounded upstream body: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_treats_partial_valid_json_body_as_response_read_failed() {
+        let signature = bs58::encode([63u8; 64]).into_string();
+        let partial_valid_json = br#"{"jsonrpc":"2.0","result":{"value":[null]}}"#;
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            partial_valid_json,
+            partial_valid_json.len() + 64,
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("transport-incomplete verify body must classify as response_read_failed");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains("response_read_failed"),
+            "detail={}",
             reject.detail
         );
         let _ = handle.join();

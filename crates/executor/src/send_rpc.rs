@@ -176,16 +176,28 @@ pub(crate) async fn send_signed_transaction_via_rpc(
             return Err(reject);
         }
         let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
-        let body: Value = serde_json::from_slice(body_read.bytes.as_slice()).map_err(|error| {
-            if let Some(read_error_class) = body_read.read_error_class {
-                return Reject::retryable(
-                    "send_rpc_unavailable",
-                    format!(
-                        "send RPC response read failed endpoint={} class={} err={}",
-                        endpoint_label, read_error_class, error
-                    ),
+        if let Some(read_error_class) = body_read.read_error_class {
+            let reject = Reject::retryable(
+                "send_rpc_unavailable",
+                format!(
+                    "send RPC response read failed endpoint={} class={}",
+                    endpoint_label, read_error_class
+                ),
+            );
+            if attempt_idx + 1 < endpoints.len() {
+                warn!(
+                    route = %route,
+                    endpoint = %endpoint_label,
+                    attempt = attempt_idx + 1,
+                    total = endpoints.len(),
+                    "retryable send RPC response-read failure, trying fallback endpoint"
                 );
+                last_retryable = Some(reject);
+                continue;
             }
+            return Err(reject);
+        }
+        let body: Value = serde_json::from_slice(body_read.bytes.as_slice()).map_err(|error| {
             if body_read.was_truncated {
                 return Reject::terminal(
                     "send_rpc_response_too_large",
