@@ -17,7 +17,9 @@ pub(crate) fn parse_route_allowlist(csv: String) -> Result<HashSet<String>> {
     for raw in csv.split(',') {
         let route = normalize_route(raw);
         if route.is_empty() {
-            continue;
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains empty route entry"
+            ));
         }
         if !KNOWN_ROUTES.iter().any(|known| *known == route) {
             return Err(anyhow!(
@@ -108,6 +110,19 @@ mod tests {
             error
                 .to_string()
                 .contains("contains duplicate route=rpc"),
+            "error={}",
+            error
+        );
+    }
+
+    #[test]
+    fn parse_route_allowlist_rejects_empty_route_entry() {
+        let error = parse_route_allowlist("rpc,".to_string())
+            .expect_err("empty route entry must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("contains empty route entry"),
             "error={}",
             error
         );

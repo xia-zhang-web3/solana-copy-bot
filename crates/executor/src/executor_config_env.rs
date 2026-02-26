@@ -1869,6 +1869,28 @@ mod tests {
         });
     }
 
+    #[test]
+    fn executor_config_from_env_rejects_empty_route_allowlist_entry() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "rpc,");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("empty allowlist route entry must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains empty route entry"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn executor_config_from_env_rejects_non_utf8_bind_addr_value() {

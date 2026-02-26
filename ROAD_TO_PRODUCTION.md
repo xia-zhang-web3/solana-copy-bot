@@ -863,6 +863,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 335. healthz route ordering determinism hardening: `build_healthz_payload` now emits `enabled_routes` and backward-compat `routes` alias as sorted arrays (instead of HashSet iteration order), making health snapshots deterministic across runs/nodes for evidence diffing and ops consumers while preserving existing field schema.
 336. route-list ordering determinism unification: introduced shared `route_allowlist::sorted_routes(...)` and reused it for both healthz payload route arrays and startup configuration logging, removing duplicate sort logic and making startup `routes` log output deterministic across process restarts/evidence captures.
 337. route allowlist duplicate-entry fail-closed hardening: `parse_route_allowlist` now rejects duplicate routes after normalization (e.g., `rpc,RPC`) instead of silently deduplicating via `HashSet`, and startup config coverage now pins `ExecutorConfig::from_env` reject behavior for duplicate allowlist entries to avoid masking operator config mistakes.
+338. route allowlist empty-entry fail-closed hardening: `parse_route_allowlist` now rejects empty CSV entries (e.g., trailing comma in `COPYBOT_EXECUTOR_ROUTE_ALLOWLIST=rpc,`) instead of silently skipping them, and startup config coverage pins explicit from-env rejection for empty entry cases to avoid masking malformed route policy input.
 
 Остается в next-code-queue:
 
