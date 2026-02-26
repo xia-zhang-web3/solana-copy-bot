@@ -3715,6 +3715,283 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_uses_upstream_fallback_after_primary_declared_oversized_content_length() {
+        let (fallback_signed_tx_base64, rpc_signature) =
+            test_signed_tx_base64_with_signature([82u8; 64]);
+        let Some((upstream_primary_url, upstream_primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"x"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+        let upstream_fallback_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
+            fallback_signed_tx_base64
+        );
+        let Some((upstream_fallback_url, upstream_fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_fallback_body.as_str())
+        else {
+            return;
+        };
+        let send_rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", send_rpc_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            upstream_primary_url.as_str(),
+            Some(upstream_fallback_url.as_str()),
+            upstream_primary_url.as_str(),
+            Some(upstream_fallback_url.as_str()),
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-upstream-fallback-declared-oversized-1",
+            "client_order_id": "client-order-upstream-fallback-declared-oversized-1",
+            "request_id": "request-upstream-fallback-declared-oversized-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("submit should use upstream fallback after declared oversized primary");
+        assert_eq!(
+            response.get("tx_signature").and_then(Value::as_str),
+            Some(rpc_signature.as_str())
+        );
+        assert_eq!(
+            response.get("submit_transport").and_then(Value::as_str),
+            Some("adapter_send_rpc")
+        );
+        let _ = upstream_primary_handle.join();
+        let _ = upstream_fallback_handle.join();
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_uses_upstream_fallback_after_primary_truncated_success_body() {
+        let (primary_signed_tx_base64, _primary_signature) =
+            test_signed_tx_base64_with_signature([83u8; 64]);
+        let (fallback_signed_tx_base64, rpc_signature) =
+            test_signed_tx_base64_with_signature([84u8; 64]);
+        let upstream_primary_body = build_truncated_valid_json_prefix_body(
+            format!(
+                r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
+                primary_signed_tx_base64
+            )
+            .as_str(),
+        );
+        let Some((upstream_primary_url, upstream_primary_handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            upstream_primary_body.as_bytes(),
+        ) else {
+            return;
+        };
+        let upstream_fallback_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
+            fallback_signed_tx_base64
+        );
+        let Some((upstream_fallback_url, upstream_fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_fallback_body.as_str())
+        else {
+            return;
+        };
+        let send_rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", send_rpc_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            upstream_primary_url.as_str(),
+            Some(upstream_fallback_url.as_str()),
+            upstream_primary_url.as_str(),
+            Some(upstream_fallback_url.as_str()),
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-upstream-fallback-truncated-1",
+            "client_order_id": "client-order-upstream-fallback-truncated-1",
+            "request_id": "request-upstream-fallback-truncated-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("submit should use upstream fallback after truncated primary success body");
+        assert_eq!(
+            response.get("tx_signature").and_then(Value::as_str),
+            Some(rpc_signature.as_str())
+        );
+        assert_eq!(
+            response.get("submit_transport").and_then(Value::as_str),
+            Some("adapter_send_rpc")
+        );
+        let _ = upstream_primary_handle.join();
+        let _ = upstream_fallback_handle.join();
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_when_upstream_primary_declared_oversized_without_fallback() {
+        let Some((upstream_url, upstream_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"x"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            upstream_url.as_str(),
+            None,
+            upstream_url.as_str(),
+            None,
+        );
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-upstream-declared-oversized-no-fallback-1",
+            "client_order_id": "client-order-upstream-declared-oversized-no-fallback-1",
+            "request_id": "request-upstream-declared-oversized-no-fallback-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("declared oversized upstream response without fallback must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
+        assert!(
+            reject.detail.contains("declared content-length"),
+            "detail={}",
+            reject.detail
+        );
+        assert!(
+            reject.detail.contains("max_bytes=65536"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_when_upstream_primary_truncated_without_fallback() {
+        let upstream_body = build_truncated_valid_json_prefix_body(
+            r#"{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"1111111111111111111111111111111111111111111111111111111111111111"}"#,
+        );
+        let Some((upstream_url, upstream_handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            upstream_body.as_bytes(),
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            upstream_url.as_str(),
+            None,
+            upstream_url.as_str(),
+            None,
+        );
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-upstream-truncated-no-fallback-1",
+            "client_order_id": "client-order-upstream-truncated-no-fallback-1",
+            "request_id": "request-upstream-truncated-no-fallback-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("truncated upstream response without fallback must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
+        assert!(
+            reject.detail.contains("max_bytes=65536"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_uses_send_rpc_fallback_after_primary_declared_oversized_content_length()
     {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([70u8; 64]);
