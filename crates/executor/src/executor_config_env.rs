@@ -34,8 +34,58 @@ use crate::idempotency_cleanup_worker::{
 const MAX_RESPONSE_CLEANUP_BATCH_SIZE: u64 = 1_000_000;
 const MAX_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: u64 = 10_000;
 const MAX_RESPONSE_CLEANUP_ROWS_PER_RUN: u64 = 200_000;
+const EXECUTOR_ENV_PREFIX: &str = "COPYBOT_EXECUTOR_";
+const EXECUTOR_TEST_ENV_PREFIX: &str = "COPYBOT_EXECUTOR_TEST_";
 const ROUTE_SCOPED_ENV_PREFIX: &str = "COPYBOT_EXECUTOR_ROUTE_";
 const ROUTE_NON_SCOPED_ENV_KEYS: &[&str] = &["COPYBOT_EXECUTOR_ROUTE_ALLOWLIST"];
+const KNOWN_NON_ROUTE_EXECUTOR_ENV_KEYS: &[&str] = &[
+    "COPYBOT_EXECUTOR_ALLOW_NONZERO_TIP",
+    "COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED",
+    "COPYBOT_EXECUTOR_BEARER_TOKEN",
+    "COPYBOT_EXECUTOR_BEARER_TOKEN_FILE",
+    "COPYBOT_EXECUTOR_BIND_ADDR",
+    "COPYBOT_EXECUTOR_CONTRACT_VERSION",
+    "COPYBOT_EXECUTOR_HMAC_KEY_ID",
+    "COPYBOT_EXECUTOR_HMAC_NONCE_CACHE_MAX_ENTRIES",
+    "COPYBOT_EXECUTOR_HMAC_SECRET",
+    "COPYBOT_EXECUTOR_HMAC_SECRET_FILE",
+    "COPYBOT_EXECUTOR_HMAC_TTL_SEC",
+    "COPYBOT_EXECUTOR_IDEMPOTENCY_CLAIM_TTL_SEC",
+    "COPYBOT_EXECUTOR_IDEMPOTENCY_DB_PATH",
+    "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_BATCH_SIZE",
+    "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN",
+    "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC",
+    "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_RETENTION_SEC",
+    "COPYBOT_EXECUTOR_LOG_FILTER",
+    "COPYBOT_EXECUTOR_LOG_JSON",
+    "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL",
+    "COPYBOT_EXECUTOR_REQUEST_TIMEOUT_MS",
+    "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN",
+    "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE",
+    "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN",
+    "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE",
+    "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL",
+    "COPYBOT_EXECUTOR_SEND_RPC_URL",
+    "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE",
+    "COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID",
+    "COPYBOT_EXECUTOR_SIGNER_PUBKEY",
+    "COPYBOT_EXECUTOR_SIGNER_SOURCE",
+    "COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED",
+    "COPYBOT_EXECUTOR_SUBMIT_TOTAL_BUDGET_MS",
+    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_ATTEMPTS",
+    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_INTERVAL_MS",
+    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL",
+    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL",
+    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT",
+    "COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN",
+    "COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN_FILE",
+    "COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN",
+    "COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE",
+    "COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_FALLBACK_URL",
+    "COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL",
+    "COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_FALLBACK_URL",
+    "COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL",
+];
 const ROUTE_SCOPED_ENV_SUFFIXES: &[&str] = &[
     "SUBMIT_URL",
     "SUBMIT_FALLBACK_URL",
@@ -105,6 +155,7 @@ impl ExecutorConfig {
         }
         validate_fastlane_route_policy(&route_allowlist, submit_fastlane_enabled)?;
         validate_route_scoped_env_targets_allowlist(&route_allowlist)?;
+        validate_known_executor_env_keys()?;
 
         let default_submit = optional_non_empty_env("COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL")?;
         let default_submit_fallback =
@@ -603,6 +654,48 @@ fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>
     Ok(())
 }
 
+fn validate_known_executor_env_keys() -> Result<()> {
+    let mut unknown_keys: Vec<String> = Vec::new();
+    for (key_os, value_os) in env::vars_os() {
+        let key_lossy = key_os.to_string_lossy();
+        if !key_lossy.starts_with(EXECUTOR_ENV_PREFIX) {
+            continue;
+        }
+        if key_lossy.starts_with(ROUTE_SCOPED_ENV_PREFIX)
+            || key_lossy.starts_with(EXECUTOR_TEST_ENV_PREFIX)
+        {
+            continue;
+        }
+        let key = key_os.to_str().ok_or_else(|| {
+            anyhow!(
+                "executor env key is not valid UTF-8: {}",
+                key_lossy
+            )
+        })?;
+        if KNOWN_NON_ROUTE_EXECUTOR_ENV_KEYS.contains(&key) {
+            continue;
+        }
+        let value = value_os.to_str().ok_or_else(|| {
+            anyhow!(
+                "executor env key {} has non-UTF8 value",
+                key
+            )
+        })?;
+        if value.trim().is_empty() {
+            continue;
+        }
+        unknown_keys.push(key.to_string());
+    }
+    if !unknown_keys.is_empty() {
+        unknown_keys.sort();
+        return Err(anyhow!(
+            "unsupported COPYBOT_EXECUTOR_* env keys: {}",
+            unknown_keys.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 fn validate_response_retention_cutoff(idempotency_response_retention_sec: u64) -> Result<()> {
     let retention_i64 = i64::try_from(idempotency_response_retention_sec).map_err(|_| {
         anyhow!(
@@ -715,7 +808,7 @@ mod tests {
 
     fn clear_copybot_executor_env() {
         let current: Vec<OsString> = env::vars_os()
-            .filter(|(key, _)| key.to_string_lossy().starts_with("COPYBOT_EXECUTOR_"))
+            .filter(|(key, _)| key.to_string_lossy().starts_with(super::EXECUTOR_ENV_PREFIX))
             .map(|(key, _)| key)
             .collect();
         for key in current {
@@ -728,7 +821,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved: Vec<(OsString, OsString)> = env::vars_os()
-            .filter(|(key, _)| key.to_string_lossy().starts_with("COPYBOT_EXECUTOR_"))
+            .filter(|(key, _)| key.to_string_lossy().starts_with(super::EXECUTOR_ENV_PREFIX))
             .collect();
         clear_copybot_executor_env();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
@@ -1213,6 +1306,48 @@ mod tests {
                     error
                 );
                 assert!(error.to_string().contains("ROUTE_RPC_SUBMITURL"));
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_unknown_non_route_scoped_env_key() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLD", "true");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("unknown non-route-scoped key must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("unsupported COPYBOT_EXECUTOR_* env keys"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLD"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_ignores_empty_unknown_non_route_scoped_env_key() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLD", "   ");
+
+                crate::ExecutorConfig::from_env()
+                    .expect("empty unknown non-route-scoped key should be ignored");
             });
         });
     }

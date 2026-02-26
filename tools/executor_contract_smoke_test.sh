@@ -143,6 +143,7 @@ contract_guard_tests=(
   "route_scoped_env_targets_allowlist_rejects_non_utf8_key"
   "executor_config_from_env_rejects_route_scoped_env_outside_allowlist"
   "executor_config_from_env_rejects_unknown_route_scoped_env_key"
+  "executor_config_from_env_rejects_unknown_non_route_scoped_env_key"
   "with_clean_executor_env_removes_newly_added_keys_after_scope"
   "response_cleanup_nonblocking_skips_when_mutex_is_busy"
   "clamp_cleanup_marker_to_now_limits_future_marker"
