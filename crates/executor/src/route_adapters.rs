@@ -1005,6 +1005,26 @@ mod tests {
     }
 
     #[test]
+    fn validate_submit_slippage_payload_consistency_rejects_missing_route_slippage_cap_bps() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":10.0}"#;
+        let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
+            .expect_err("missing route_slippage_cap_bps must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing route_slippage_cap_bps"));
+    }
+
+    #[test]
+    fn validate_submit_slippage_payload_consistency_rejects_non_numeric_route_slippage_cap_bps() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":10.0,"route_slippage_cap_bps":"20.0"}"#;
+        let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
+            .expect_err("non-numeric route_slippage_cap_bps must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("route_slippage_cap_bps must be number"));
+    }
+
+    #[test]
     fn validate_submit_slippage_payload_consistency_rejects_route_slippage_cap_mismatch() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":10.0,"route_slippage_cap_bps":25.0}"#;
         let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
