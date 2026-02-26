@@ -35,6 +35,7 @@ const MAX_RESPONSE_CLEANUP_BATCH_SIZE: u64 = 1_000_000;
 const MAX_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN: u64 = 10_000;
 const MAX_RESPONSE_CLEANUP_ROWS_PER_RUN: u64 = 200_000;
 const ROUTE_SCOPED_ENV_PREFIX: &str = "COPYBOT_EXECUTOR_ROUTE_";
+const ROUTE_NON_SCOPED_ENV_KEYS: &[&str] = &["COPYBOT_EXECUTOR_ROUTE_ALLOWLIST"];
 const ROUTE_SCOPED_ENV_SUFFIXES: &[&str] = &[
     "SUBMIT_URL",
     "SUBMIT_FALLBACK_URL",
@@ -526,6 +527,7 @@ fn parse_route_scoped_env_key(key: &str) -> Option<(&str, &str)> {
 
 fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>) -> Result<()> {
     let mut violations: Vec<String> = Vec::new();
+    let mut unknown_scoped_keys: Vec<String> = Vec::new();
     for (key_os, value_os) in env::vars_os() {
         let key_lossy = key_os.to_string_lossy();
         if !key_lossy.starts_with(ROUTE_SCOPED_ENV_PREFIX) {
@@ -537,6 +539,9 @@ fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>
                 key_lossy
             )
         })?;
+        if ROUTE_NON_SCOPED_ENV_KEYS.contains(&key) {
+            continue;
+        }
         let value = value_os.to_str().ok_or_else(|| {
             anyhow!(
                 "route-scoped env key {} has non-UTF8 value",
@@ -547,6 +552,7 @@ fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>
             continue;
         }
         let Some((route_raw, _suffix)) = parse_route_scoped_env_key(key) else {
+            unknown_scoped_keys.push(key.to_string());
             continue;
         };
         let route = route_raw.to_ascii_lowercase();
@@ -555,12 +561,23 @@ fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>
         }
     }
 
+    let mut errors: Vec<String> = Vec::new();
+    if !unknown_scoped_keys.is_empty() {
+        unknown_scoped_keys.sort();
+        errors.push(format!(
+            "unsupported route-scoped env keys (expected pattern COPYBOT_EXECUTOR_ROUTE_<ROUTE>_<SUFFIX>): {}",
+            unknown_scoped_keys.join(", ")
+        ));
+    }
     if !violations.is_empty() {
         violations.sort();
-        return Err(anyhow!(
+        errors.push(format!(
             "route-scoped env keys target routes outside COPYBOT_EXECUTOR_ROUTE_ALLOWLIST: {}",
             violations.join(", ")
         ));
+    }
+    if !errors.is_empty() {
+        return Err(anyhow!(errors.join("; ")));
     }
     Ok(())
 }
@@ -865,6 +882,35 @@ mod tests {
         });
     }
 
+    #[test]
+    fn route_scoped_env_targets_allowlist_rejects_unknown_scoped_key() {
+        with_clean_executor_env(|| {
+            env::set_var(
+                "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMITURL",
+                "https://submit-rpc.example.com",
+            );
+            let allowlist = HashSet::from([String::from("rpc")]);
+            let error = validate_route_scoped_env_targets_allowlist(&allowlist)
+                .expect_err("unknown route-scoped key must reject");
+            assert!(
+                error.to_string().contains("unsupported route-scoped env keys"),
+                "unexpected error: {}",
+                error
+            );
+            assert!(error.to_string().contains("ROUTE_RPC_SUBMITURL"));
+        });
+    }
+
+    #[test]
+    fn route_scoped_env_targets_allowlist_ignores_allowlist_key() {
+        with_clean_executor_env(|| {
+            env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "rpc,jito");
+            let allowlist = HashSet::from([String::from("rpc")]);
+            validate_route_scoped_env_targets_allowlist(&allowlist)
+                .expect("non-scoped allowlist key must not trigger route-scoped validator");
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn route_scoped_env_targets_allowlist_rejects_non_utf8_value() {
@@ -1122,6 +1168,30 @@ mod tests {
                     "unexpected error: {}",
                     error
                 );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_unknown_route_scoped_env_key() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMITURL",
+                    "https://submit-rpc.example.com",
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("unknown route-scoped key must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.to_string().contains("unsupported route-scoped env keys"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(error.to_string().contains("ROUTE_RPC_SUBMITURL"));
             });
         });
     }
