@@ -125,6 +125,7 @@ contract_guard_tests=(
   "executor_config_from_env_rejects_invalid_allow_nonzero_tip_token"
   "executor_config_from_env_rejects_invalid_allow_unauthenticated_token"
   "executor_config_from_env_rejects_invalid_submit_verify_strict_token"
+  "executor_config_from_env_rejects_non_utf8_route_allowlist_value"
   "parse_route_scoped_env_key_extracts_route_and_suffix"
   "parse_route_scoped_env_key_ignores_non_scoped_keys"
   "route_scoped_env_targets_allowlist_rejects_outside_route"

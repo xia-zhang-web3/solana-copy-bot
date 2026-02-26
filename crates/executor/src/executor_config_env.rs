@@ -80,10 +80,14 @@ impl ExecutorConfig {
         let submit_fastlane_enabled =
             parse_bool_env("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED", false)?;
 
-        let route_allowlist = parse_route_allowlist(
-            env::var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST")
-                .unwrap_or_else(|_| "paper,rpc,jito".to_string()),
-        )?;
+        let route_allowlist_raw = match env::var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST") {
+            Ok(value) => value,
+            Err(env::VarError::NotPresent) => "paper,rpc,jito".to_string(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(anyhow!("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST must be valid UTF-8"));
+            }
+        };
+        let route_allowlist = parse_route_allowlist(route_allowlist_raw)?;
         if route_allowlist.is_empty() {
             return Err(anyhow!(
                 "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST must contain at least one route"
@@ -1192,6 +1196,37 @@ mod tests {
                     error
                 );
                 assert!(error.to_string().contains("ROUTE_RPC_SUBMITURL"));
+            });
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_config_from_env_rejects_non_utf8_route_allowlist_value() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST",
+                    OsString::from_vec(vec![0xff]),
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("non-UTF8 allowlist must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.to_string().contains("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error.to_string().contains("UTF-8"),
+                    "unexpected error: {}",
+                    error
+                );
             });
         });
     }
