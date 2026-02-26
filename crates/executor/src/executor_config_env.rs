@@ -641,6 +641,13 @@ fn parse_route_scoped_env_key(key: &str) -> Option<(&str, &str)> {
     best_match
 }
 
+fn starts_with_prefix_case_insensitive(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .map(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .unwrap_or(false)
+}
+
 fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>) -> Result<()> {
     let mut violations: Vec<String> = Vec::new();
     let mut unknown_scoped_keys: Vec<String> = Vec::new();
@@ -700,14 +707,10 @@ fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>
 
 fn validate_known_executor_env_keys() -> Result<()> {
     let mut unknown_keys: Vec<String> = Vec::new();
+    let mut casing_violations: Vec<String> = Vec::new();
     for (key_os, value_os) in env::vars_os() {
         let key_lossy = key_os.to_string_lossy();
-        if !key_lossy.starts_with(EXECUTOR_ENV_PREFIX) {
-            continue;
-        }
-        if key_lossy.starts_with(ROUTE_SCOPED_ENV_PREFIX)
-            || key_lossy.starts_with(EXECUTOR_TEST_ENV_PREFIX)
-        {
+        if !starts_with_prefix_case_insensitive(key_lossy.as_ref(), EXECUTOR_ENV_PREFIX) {
             continue;
         }
         let key = key_os.to_str().ok_or_else(|| {
@@ -728,14 +731,35 @@ fn validate_known_executor_env_keys() -> Result<()> {
         if value.trim().is_empty() {
             continue;
         }
+        if !key.starts_with(EXECUTOR_ENV_PREFIX) {
+            casing_violations.push(key.to_string());
+            continue;
+        }
+        if key.starts_with(ROUTE_SCOPED_ENV_PREFIX)
+            || key.starts_with(EXECUTOR_TEST_ENV_PREFIX)
+        {
+            continue;
+        }
         unknown_keys.push(key.to_string());
+    }
+    let mut errors: Vec<String> = Vec::new();
+    if !casing_violations.is_empty() {
+        casing_violations.sort();
+        errors.push(format!(
+            "COPYBOT_EXECUTOR_* env keys must use canonical uppercase prefix {}: {}",
+            EXECUTOR_ENV_PREFIX,
+            casing_violations.join(", ")
+        ));
     }
     if !unknown_keys.is_empty() {
         unknown_keys.sort();
-        return Err(anyhow!(
+        errors.push(format!(
             "unsupported COPYBOT_EXECUTOR_* env keys: {}",
             unknown_keys.join(", ")
         ));
+    }
+    if !errors.is_empty() {
+        return Err(anyhow!(errors.join("; ")));
     }
     Ok(())
 }
@@ -853,7 +877,12 @@ mod tests {
 
     fn clear_copybot_executor_env() {
         let current: Vec<OsString> = env::vars_os()
-            .filter(|(key, _)| key.to_string_lossy().starts_with(super::EXECUTOR_ENV_PREFIX))
+            .filter(|(key, _)| {
+                super::starts_with_prefix_case_insensitive(
+                    key.to_string_lossy().as_ref(),
+                    super::EXECUTOR_ENV_PREFIX,
+                )
+            })
             .map(|(key, _)| key)
             .collect();
         for key in current {
@@ -866,7 +895,12 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved: Vec<(OsString, OsString)> = env::vars_os()
-            .filter(|(key, _)| key.to_string_lossy().starts_with(super::EXECUTOR_ENV_PREFIX))
+            .filter(|(key, _)| {
+                super::starts_with_prefix_case_insensitive(
+                    key.to_string_lossy().as_ref(),
+                    super::EXECUTOR_ENV_PREFIX,
+                )
+            })
             .collect();
         clear_copybot_executor_env();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
@@ -1448,6 +1482,56 @@ mod tests {
 
                 crate::ExecutorConfig::from_env()
                     .expect("empty unknown non-route-scoped key should be ignored");
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_mixed_case_executor_prefix_keys() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("copybot_executor_submit_fastlane_enabled", "true");
+                env::set_var("copybot_executor_route_rpc_submit_url", "https://submit.example.com");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("mixed-case COPYBOT_EXECUTOR keys must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("must use canonical uppercase prefix COPYBOT_EXECUTOR_"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("copybot_executor_submit_fastlane_enabled"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("copybot_executor_route_rpc_submit_url"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_ignores_empty_mixed_case_executor_prefix_key() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("copybot_executor_submit_fastlane_enabled", "   ");
+
+                crate::ExecutorConfig::from_env()
+                    .expect("empty mixed-case COPYBOT_EXECUTOR key should be ignored");
             });
         });
     }
