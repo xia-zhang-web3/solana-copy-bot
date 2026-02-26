@@ -2177,7 +2177,7 @@ mod tests {
         let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
             .await
             .expect_err("oversized upstream JSON should fail closed");
-        assert!(!reject.retryable);
+        assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_response_too_large");
         assert!(
             reject.detail.contains("max_bytes=65536"),
@@ -2206,7 +2206,7 @@ mod tests {
         let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
             .await
             .expect_err("declared oversized content-length should fail before JSON read");
-        assert!(!reject.retryable);
+        assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_response_too_large");
         assert!(
             reject.detail.contains("declared content-length"),
@@ -2219,6 +2219,45 @@ mod tests {
             reject.detail
         );
         let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_uses_fallback_after_primary_declared_oversized_content_length() {
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"status":"ok"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            "{\"status\":\"ok\",\"accepted\":true}",
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let body = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{}",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback should succeed after primary declared-oversized response");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
     }
 
     #[tokio::test]
@@ -2735,7 +2774,7 @@ mod tests {
         )
         .await
         .expect_err("oversized JSON response should fail closed");
-        assert!(!reject.retryable);
+        assert!(reject.retryable);
         assert_eq!(reject.code, "send_rpc_response_too_large");
         assert!(
             reject.detail.contains("max_bytes=65536"),
@@ -2785,7 +2824,7 @@ mod tests {
         )
         .await
         .expect_err("declared oversized content-length should fail before JSON read");
-        assert!(!reject.retryable);
+        assert!(reject.retryable);
         assert_eq!(reject.code, "send_rpc_response_too_large");
         assert!(
             reject.detail.contains("declared content-length"),
@@ -2798,6 +2837,53 @@ mod tests {
             reject.detail
         );
         let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_uses_fallback_after_primary_declared_oversized_content_length(
+    ) {
+        let (signed_tx_base64, expected_signature) =
+            test_signed_tx_base64_with_signature([64u8; 64]);
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"jsonrpc":"2.0","result":"x"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+        let fallback_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, expected_signature);
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", fallback_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+            backend.send_rpc_fallback_url = Some(fallback_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let signature = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback should succeed after primary declared-oversized response");
+        assert_eq!(signature, expected_signature);
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
     }
 
     #[tokio::test]

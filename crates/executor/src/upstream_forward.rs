@@ -152,7 +152,7 @@ pub(crate) async fn forward_to_upstream(
 
         if let Some(content_length) = response.content_length() {
             if content_length > MAX_HTTP_JSON_BODY_READ_BYTES as u64 {
-                return Err(Reject::terminal(
+                let reject = Reject::retryable(
                     "upstream_response_too_large",
                     format!(
                         "upstream {} response declared content-length={} exceeds max_bytes={} endpoint={}",
@@ -161,7 +161,20 @@ pub(crate) async fn forward_to_upstream(
                         MAX_HTTP_JSON_BODY_READ_BYTES,
                         endpoint_label
                     ),
-                ));
+                );
+                if attempt_idx + 1 < endpoints.len() {
+                    warn!(
+                        route = %route,
+                        action = %action.as_str(),
+                        endpoint = %endpoint_label,
+                        attempt = attempt_idx + 1,
+                        total = endpoints.len(),
+                        "retryable upstream declared-oversized response, trying fallback endpoint"
+                    );
+                    last_retryable = Some(reject);
+                    continue;
+                }
+                return Err(reject);
             }
         }
         let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
