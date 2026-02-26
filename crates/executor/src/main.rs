@@ -3236,6 +3236,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_submit_route_hint_mismatch_before_allowlist_check() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.route_backends.insert(
+            "jito".to_string(),
+            RouteBackend {
+                submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-submit-route-hint-priority-allowlist-1",
+            "signal_id": "signal-submit-route-hint-priority-allowlist-1",
+            "client_order_id": "client-order-submit-route-hint-priority-allowlist-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "jito",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = execute_route_action(
+            &state,
+            "jito",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-submit-route-hint-priority-allowlist-1"),
+                signal_id: Some("signal-submit-route-hint-priority-allowlist-1"),
+                client_order_id: Some("client-order-submit-route-hint-priority-allowlist-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .await
+        .expect_err("submit route hint mismatch must reject before allowlist checks");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("route payload mismatch"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_submit_route_hint_missing_before_backend_check() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state
+            .config
+            .route_backends
+            .remove("rpc")
+            .expect("rpc backend should exist in test setup");
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-submit-route-hint-priority-backend-1",
+            "signal_id": "signal-submit-route-hint-priority-backend-1",
+            "client_order_id": "client-order-submit-route-hint-priority-backend-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: None,
+                request_id: Some("request-submit-route-hint-priority-backend-1"),
+                signal_id: Some("signal-submit-route-hint-priority-backend-1"),
+                client_order_id: Some("client-order-submit-route-hint-priority-backend-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .await
+        .expect_err("submit route hint missing must reject before backend checks");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("route payload hint missing at route-executor boundary"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_route_hint_before_payload_shape_on_submit() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",

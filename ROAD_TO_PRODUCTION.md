@@ -796,6 +796,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 268. executor phase-2B payload-shape priority matrix completed: added submit/simulate integration guards proving `payload_shape` rejects (empty expectation fields) always win over both `deadline_context` and `action_context`, closing the remaining pre-policy ordering matrix and pinning deterministic `invalid_request_body` detail classification across overlapping malformed inputs.
 269. executor phase-2B route-hint priority matrix completed: added submit/simulate integration guards proving `payload_route` (`route_hint`) rejects always fire before `payload_shape`, `deadline_context`, and `action_context` when multiple malformed conditions overlap, finalizing deterministic ordering for the top-of-chain route-executor guards.
 270. executor phase-2B route-hint priority symmetry + feature-gate coverage completed: closed remaining route-hint ordering gaps (`route_hint > action_context` on submit, `route_hint > deadline_context` on simulate) and added explicit route-hint-vs-fastlane-feature-gate priority guards for submit/simulate, ensuring top-of-chain `payload_route` determinism across policy-gate overlaps.
+271. executor phase-2B route-hint allowlist/backend symmetry completed: added submit integration priority guards proving `route_hint` rejects fire before `allowlist` and `backend` policy gates (parity with existing simulate coverage), closing the remaining low-gap in route-hint ordering matrix.
 
 Остается в next-code-queue:
 
