@@ -1643,6 +1643,27 @@ run_execution_route_fee_signoff_case() {
   assert_contains "$invalid_output" "signoff_verdict: NO_GO"
   assert_contains "$invalid_output" "input_error: window token must be an integer (got: invalid)"
 
+  local invalid_bool_output
+  if invalid_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="maybe" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper invalid GO_NOGO_REQUIRE_JITO_RPC_POLICY token" >&2
+    exit 1
+  else
+    invalid_bool_status=$?
+  fi
+  if [[ "$invalid_bool_status" -ne 3 ]]; then
+    echo "expected NO_GO exit code 3 for route/fee signoff helper invalid GO_NOGO_REQUIRE_JITO_RPC_POLICY token, got $invalid_bool_status" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_bool_output" "signoff_verdict: NO_GO"
+  assert_contains "$invalid_bool_output" "input_error: GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token"
+
   local override_without_test_mode_output
   if override_without_test_mode_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -1717,6 +1738,32 @@ run_execution_route_fee_signoff_case() {
   assert_sha256_field "$final_hold_output" "summary_sha256"
   assert_sha256_field "$final_hold_output" "signoff_capture_sha256"
   assert_sha256_field "$final_hold_output" "manifest_sha256"
+
+  local final_invalid_bool_output=""
+  if final_invalid_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-invalid-bool" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="sometimes" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for final route/fee package helper invalid GO_NOGO_REQUIRE_FASTLANE_DISABLED token" >&2
+    exit 1
+  else
+    local final_invalid_bool_status=$?
+    if [[ "$final_invalid_bool_status" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 from final route/fee package helper invalid GO_NOGO_REQUIRE_FASTLANE_DISABLED token, got $final_invalid_bool_status" >&2
+      echo "$final_invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_invalid_bool_output" "input_error_count: 1"
+  assert_contains "$final_invalid_bool_output" "input_error: GO_NOGO_REQUIRE_FASTLANE_DISABLED must be a boolean token"
+  assert_field_equals "$final_invalid_bool_output" "signoff_reason_code" "input_error"
+  assert_field_equals "$final_invalid_bool_output" "final_route_fee_package_reason_code" "input_error"
+  assert_field_equals "$final_invalid_bool_output" "signoff_artifacts_written" "false"
 
   local final_go_output
   final_go_output="$(
