@@ -3350,6 +3350,207 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_rejects_payload_shape_before_deadline_context_on_submit() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-shape-before-deadline-submit-1",
+            "signal_id": "signal-shape-before-deadline-submit-1",
+            "client_order_id": "client-order-shape-before-deadline-submit-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-shape-before-deadline-submit-1"),
+                signal_id: Some("signal-shape-before-deadline-submit-1"),
+                client_order_id: Some("client-order-shape-before-deadline-submit-1"),
+                side: Some("buy"),
+                token: Some(" "),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .await
+        .expect_err("payload shape must reject before deadline context on submit");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("empty token expectation"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_payload_shape_before_action_context_on_submit() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-shape-before-action-context-submit-1",
+            "signal_id": "signal-shape-before-action-context-submit-1",
+            "client_order_id": "client-order-shape-before-action-context-submit-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-shape-before-action-context-submit-1"),
+                signal_id: Some("signal-shape-before-action-context-submit-1"),
+                client_order_id: Some("client-order-shape-before-action-context-submit-1"),
+                side: Some("buy"),
+                token: Some(" "),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect_err("payload shape must reject before action context on submit");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("empty token expectation"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_payload_shape_before_deadline_context_on_simulate() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-shape-before-deadline-simulate-1",
+            "signal_id": "signal-shape-before-deadline-simulate-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-shape-before-deadline-simulate-1"),
+                signal_id: Some("signal-shape-before-deadline-simulate-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some(" "),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect_err("payload shape must reject before deadline context on simulate");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("empty token expectation"));
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_rejects_payload_shape_before_action_context_on_simulate() {
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-shape-before-action-context-simulate-1",
+            "signal_id": "signal-shape-before-action-context-simulate-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-shape-before-action-context-simulate-1"),
+                signal_id: Some("signal-shape-before-action-context-simulate-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some(" "),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                ..RouteSubmitExecutionContext::default()
+            },
+        )
+        .await
+        .expect_err("payload shape must reject before action context on simulate");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("empty token expectation"));
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_deadline_context_before_allowlist_check() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
