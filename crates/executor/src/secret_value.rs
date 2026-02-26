@@ -1,12 +1,12 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 use zeroize::Zeroizing;
 
 #[derive(Clone)]
-pub(crate) struct SecretValue(Zeroizing<String>);
+pub(crate) struct SecretValue(Arc<Zeroizing<String>>);
 
 impl SecretValue {
     pub(crate) fn new(value: String) -> Self {
-        Self(Zeroizing::new(value))
+        Self(Arc::new(Zeroizing::new(value)))
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -38,6 +38,8 @@ impl From<&str> for SecretValue {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::SecretValue;
 
     #[test]
@@ -51,6 +53,16 @@ mod tests {
         assert!(
             debug.contains("REDACTED"),
             "debug output should indicate redaction"
+        );
+    }
+
+    #[test]
+    fn secret_value_clone_shares_backing_allocation() {
+        let secret = SecretValue::from("shared-secret-token");
+        let cloned = secret.clone();
+        assert!(
+            Arc::ptr_eq(&secret.0, &cloned.0),
+            "cloned secret values must share backing allocation"
         );
     }
 }

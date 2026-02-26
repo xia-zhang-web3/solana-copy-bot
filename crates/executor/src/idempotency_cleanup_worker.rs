@@ -1,4 +1,5 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -9,7 +10,7 @@ use crate::AppState;
 pub(crate) const MIN_RESPONSE_CLEANUP_WORKER_TICK_SEC: u64 = 15;
 pub(crate) const MAX_RESPONSE_CLEANUP_WORKER_TICK_SEC: u64 = 300;
 
-pub(crate) fn spawn_response_cleanup_worker(state: AppState) -> JoinHandle<()> {
+pub(crate) fn spawn_response_cleanup_worker(state: Arc<AppState>) -> JoinHandle<()> {
     let response_retention_sec = state.config.idempotency_response_retention_sec;
     let response_cleanup_batch_size = state.config.idempotency_response_cleanup_batch_size;
     let response_cleanup_max_batches_per_run =

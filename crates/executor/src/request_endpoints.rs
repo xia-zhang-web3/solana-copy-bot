@@ -4,6 +4,7 @@ use axum::{
     http::HeaderMap,
     response::IntoResponse,
 };
+use std::sync::Arc;
 
 use crate::request_ingress::{parse_json_or_reject, verify_auth_or_reject};
 use crate::request_types::{SimulateRequest, SubmitRequest};
@@ -13,7 +14,7 @@ use crate::submit_handler::handle_submit;
 use crate::AppState;
 
 pub(crate) async fn simulate(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse {
@@ -42,7 +43,7 @@ pub(crate) async fn simulate(
 }
 
 pub(crate) async fn submit(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse {

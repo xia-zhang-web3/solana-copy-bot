@@ -3,12 +3,13 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use std::sync::Arc;
 use tracing::warn;
 
 use crate::healthz_payload::{build_healthz_payload, HealthzPayloadInputs};
 use crate::AppState;
 
-pub(crate) async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let idempotency_store_status = match state.idempotency.probe() {
         Ok(()) => "ok",
         Err(error) => {

@@ -220,12 +220,12 @@ async fn main() -> Result<()> {
             .context("failed to open idempotency store")?,
     );
 
-    let state = AppState {
+    let state = Arc::new(AppState {
         config,
         http,
         auth,
         idempotency,
-    };
+    });
 
     let router = Router::new()
         .route("/healthz", get(healthz))
