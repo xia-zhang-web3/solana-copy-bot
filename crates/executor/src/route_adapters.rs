@@ -157,6 +157,19 @@ impl RouteAdapter {
                 "submit payload missing instruction plan at route-adapter boundary",
             ));
         };
+        let Some(expected_slippage_bps) = submit_context.expected_slippage_bps else {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                "submit payload missing slippage_bps expectation at route-adapter boundary",
+            ));
+        };
+        let Some(expected_route_slippage_cap_bps) = submit_context.expected_route_slippage_cap_bps
+        else {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                "submit payload missing route_slippage_cap_bps expectation at route-adapter boundary",
+            ));
+        };
         let payload = if self.requires_rpc_submit_tip_guard() {
             validate_rpc_submit_tip_payload(
                 raw_body,
@@ -181,6 +194,11 @@ impl RouteAdapter {
             )?
         };
         validate_submit_instruction_plan_payload_consistency(&payload, plan)?;
+        validate_submit_slippage_payload_consistency(
+            &payload,
+            expected_slippage_bps,
+            expected_route_slippage_cap_bps,
+        )?;
         debug!(
             route = %route,
             route_adapter = %self.as_str(),
@@ -603,6 +621,33 @@ fn validate_required_payload_u64_field(
     })
 }
 
+fn validate_required_payload_f64_field(
+    payload: &serde_json::Map<String, Value>,
+    action_label: &str,
+    field_lookup: &'static str,
+    field_label: &'static str,
+) -> std::result::Result<f64, Reject> {
+    let field_value = payload.get(field_lookup).ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload missing {field_label} at route-adapter boundary"),
+        )
+    })?;
+    let parsed = field_value.as_f64().ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload {field_label} must be number"),
+        )
+    })?;
+    if !parsed.is_finite() {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!("{action_label} payload {field_label} must be finite"),
+        ));
+    }
+    Ok(parsed)
+}
+
 fn validate_submit_instruction_plan_payload_consistency(
     payload: &serde_json::Map<String, Value>,
     instruction_plan: SubmitInstructionPlan,
@@ -674,9 +719,53 @@ fn validate_submit_instruction_plan_payload_consistency(
     Ok(())
 }
 
+fn validate_submit_slippage_payload_consistency(
+    payload: &serde_json::Map<String, Value>,
+    expected_slippage_bps: f64,
+    expected_route_slippage_cap_bps: f64,
+) -> std::result::Result<(), Reject> {
+    const FLOAT_MATCH_EPSILON: f64 = 1e-9;
+    let actual_slippage_bps = validate_required_payload_f64_field(
+        payload,
+        "submit",
+        "slippage_bps",
+        "slippage_bps",
+    )?;
+    if (actual_slippage_bps - expected_slippage_bps).abs() > FLOAT_MATCH_EPSILON {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "submit payload slippage_bps mismatch at route-adapter boundary expected={} got={}",
+                expected_slippage_bps, actual_slippage_bps
+            ),
+        ));
+    }
+
+    let actual_route_slippage_cap_bps = validate_required_payload_f64_field(
+        payload,
+        "submit",
+        "route_slippage_cap_bps",
+        "route_slippage_cap_bps",
+    )?;
+    if (actual_route_slippage_cap_bps - expected_route_slippage_cap_bps).abs()
+        > FLOAT_MATCH_EPSILON
+    {
+        return Err(Reject::terminal(
+            "invalid_request_body",
+            format!(
+                "submit payload route_slippage_cap_bps mismatch at route-adapter boundary expected={} got={}",
+                expected_route_slippage_cap_bps, actual_route_slippage_cap_bps
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
+        validate_submit_slippage_payload_consistency as validate_submit_slippage_payload_consistency_with_payload,
         validate_submit_instruction_plan_payload_consistency as validate_submit_instruction_plan_payload_consistency_with_payload,
         validate_rpc_submit_tip_payload as validate_rpc_submit_tip_payload_with_expectations,
         validate_simulate_payload_for_route as validate_simulate_payload_for_route_with_expectations,
@@ -753,6 +842,19 @@ mod tests {
     ) -> std::result::Result<(), Reject> {
         let payload = validate_submit_payload_for_route(raw_body, "rpc", "v1", None, None, None)?;
         validate_submit_instruction_plan_payload_consistency_with_payload(&payload, instruction_plan)
+    }
+
+    fn validate_submit_slippage_payload_consistency(
+        raw_body: &[u8],
+        expected_slippage_bps: f64,
+        expected_route_slippage_cap_bps: f64,
+    ) -> std::result::Result<(), Reject> {
+        let payload = validate_submit_payload_for_route(raw_body, "rpc", "v1", None, None, None)?;
+        validate_submit_slippage_payload_consistency_with_payload(
+            &payload,
+            expected_slippage_bps,
+            expected_route_slippage_cap_bps,
+        )
     }
 
     #[test]
@@ -867,6 +969,50 @@ mod tests {
         assert!(reject
             .detail
             .contains("compute_budget.cu_price_micro_lamports mismatch"));
+    }
+
+    #[test]
+    fn validate_submit_slippage_payload_consistency_accepts_matching_values() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":10.0,"route_slippage_cap_bps":20.0}"#;
+        assert!(validate_submit_slippage_payload_consistency(body, 10.0, 20.0).is_ok());
+    }
+
+    #[test]
+    fn validate_submit_slippage_payload_consistency_rejects_missing_slippage_bps() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","route_slippage_cap_bps":20.0}"#;
+        let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
+            .expect_err("missing slippage_bps must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("missing slippage_bps"));
+    }
+
+    #[test]
+    fn validate_submit_slippage_payload_consistency_rejects_non_numeric_slippage_bps() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":"10.0","route_slippage_cap_bps":20.0}"#;
+        let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
+            .expect_err("non-numeric slippage_bps must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("slippage_bps must be number"));
+    }
+
+    #[test]
+    fn validate_submit_slippage_payload_consistency_rejects_slippage_mismatch() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":12.0,"route_slippage_cap_bps":20.0}"#;
+        let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
+            .expect_err("slippage mismatch must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject.detail.contains("slippage_bps mismatch"));
+    }
+
+    #[test]
+    fn validate_submit_slippage_payload_consistency_rejects_route_slippage_cap_mismatch() {
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":10.0,"route_slippage_cap_bps":25.0}"#;
+        let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
+            .expect_err("route_slippage_cap mismatch must reject");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(reject
+            .detail
+            .contains("route_slippage_cap_bps mismatch"));
     }
 
     #[test]

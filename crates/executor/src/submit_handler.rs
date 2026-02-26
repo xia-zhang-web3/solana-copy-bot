@@ -166,6 +166,8 @@ pub(crate) async fn handle_submit(
         },
         RouteSubmitExecutionContext {
             instruction_plan: Some(instruction_plan),
+            expected_slippage_bps: Some(request.slippage_bps),
+            expected_route_slippage_cap_bps: Some(request.route_slippage_cap_bps),
         },
     )
     .await?;

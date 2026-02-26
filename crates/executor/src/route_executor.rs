@@ -31,6 +31,8 @@ pub(crate) struct RouteActionPayloadExpectations<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RouteSubmitExecutionContext {
     pub(crate) instruction_plan: Option<SubmitInstructionPlan>,
+    pub(crate) expected_slippage_bps: Option<f64>,
+    pub(crate) expected_route_slippage_cap_bps: Option<f64>,
 }
 
 impl RouteExecutorKind {
@@ -415,6 +417,7 @@ mod tests {
                     compute_budget_cu_price_micro_lamports: 1_000,
                     tip_instruction_lamports: None,
                 }),
+                ..RouteSubmitExecutionContext::default()
             },
         )
         .expect_err("simulate with submit plan must be rejected");
@@ -432,6 +435,7 @@ mod tests {
                     compute_budget_cu_price_micro_lamports: 1_000,
                     tip_instruction_lamports: None,
                 }),
+                ..RouteSubmitExecutionContext::default()
             },
             None,
         )
@@ -464,6 +468,7 @@ mod tests {
                     compute_budget_cu_price_micro_lamports: 1_000,
                     tip_instruction_lamports: None,
                 }),
+                ..RouteSubmitExecutionContext::default()
             },
             Some(&deadline),
         )
