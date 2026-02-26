@@ -112,20 +112,20 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 );
                 continue;
             }
+            if body_read.was_truncated {
+                last_reason = format!(
+                    "rpc response_too_large endpoint={} max_bytes={}",
+                    endpoint_label, MAX_HTTP_JSON_BODY_READ_BYTES
+                );
+                continue;
+            }
             let body: Value = match serde_json::from_slice(body_read.bytes.as_slice()) {
                 Ok(value) => value,
                 Err(error) => {
-                    if body_read.was_truncated {
-                        last_reason = format!(
-                            "rpc response_too_large endpoint={} max_bytes={} err={}",
-                            endpoint_label, MAX_HTTP_JSON_BODY_READ_BYTES, error
-                        );
-                    } else {
-                        last_reason = format!(
-                            "rpc invalid_json endpoint={} err={}",
-                            endpoint_label, error
-                        );
-                    }
+                    last_reason = format!(
+                        "rpc invalid_json endpoint={} err={}",
+                        endpoint_label, error
+                    );
                     continue;
                 }
             };

@@ -2262,10 +2262,8 @@ mod tests {
 
     #[tokio::test]
     async fn forward_to_upstream_uses_fallback_after_primary_truncated_success_body() {
-        let large_padding = "u".repeat(crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1024);
-        let primary_body = format!(
-            r#"{{"status":"ok","accepted":true,"padding":"{}"}}"#,
-            large_padding
+        let primary_body = build_truncated_valid_json_prefix_body(
+            r#"{"status":"ok","accepted":true,"source":"primary"}"#,
         );
         let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_chunked_raw(
             200,
@@ -2277,7 +2275,7 @@ mod tests {
         let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
             200,
             "application/json",
-            "{\"status\":\"ok\",\"accepted\":true}",
+            "{\"status\":\"ok\",\"accepted\":true,\"source\":\"fallback\"}",
         ) else {
             return;
         };
@@ -2299,6 +2297,7 @@ mod tests {
         .await
         .expect("fallback should succeed after primary truncated oversized success body");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(body.get("source").and_then(Value::as_str), Some("fallback"));
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
     }
@@ -2933,10 +2932,10 @@ mod tests {
     async fn send_signed_transaction_via_rpc_uses_fallback_after_primary_truncated_success_body() {
         let (signed_tx_base64, expected_signature) =
             test_signed_tx_base64_with_signature([65u8; 64]);
-        let large_padding = "r".repeat(crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1024);
-        let primary_body = format!(
-            r#"{{"jsonrpc":"2.0","result":"{}","padding":"{}"}}"#,
-            expected_signature, large_padding
+        let primary_signature = bs58::encode([66u8; 64]).into_string();
+        assert_ne!(primary_signature, expected_signature);
+        let primary_body = build_truncated_valid_json_prefix_body(
+            format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, primary_signature).as_str(),
         );
         let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_chunked_raw(
             200,
@@ -9744,6 +9743,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_submit_signature_classifies_truncated_valid_json_prefix_as_response_too_large() {
+        let signature = bs58::encode([67u8; 64]).into_string();
+        let primary_body = build_truncated_valid_json_prefix_body(
+            r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
+        );
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            primary_body.as_bytes(),
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("truncated valid JSON prefix must classify as response_too_large");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains("response_too_large"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_keeps_invalid_json_classification_with_marker_suffix() {
         let signature = bs58::encode([56u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[null]}}...[truncated]"#;
@@ -10013,6 +10053,17 @@ mod tests {
         body: &str,
     ) -> Option<(String, thread::JoinHandle<()>)> {
         spawn_one_shot_upstream_raw_bytes(status, content_type, body.as_bytes())
+    }
+
+    fn build_truncated_valid_json_prefix_body(prefix_json: &str) -> String {
+        let max_bytes = crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES;
+        assert!(prefix_json.len() < max_bytes, "prefix_json must fit into max body bytes");
+        let whitespace_len = max_bytes.saturating_sub(prefix_json.len()) + 512;
+        format!(
+            "{}{}TRUNCATED_SUFFIX_MUST_NOT_BE_READ",
+            prefix_json,
+            " ".repeat(whitespace_len)
+        )
     }
 
     fn spawn_one_shot_upstream_raw_bytes(
