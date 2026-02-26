@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 
 pub(crate) const MAX_HTTP_ERROR_BODY_DETAIL_CHARS: usize = 1024;
 pub(crate) const MAX_HTTP_ERROR_BODY_READ_BYTES: usize = 4096;
+pub(crate) const MAX_HTTP_JSON_BODY_READ_BYTES: usize = 64 * 1024;
 
 pub(crate) fn validate_endpoint_url(url: &str) -> Result<()> {
     let parsed = reqwest::Url::parse(url).context("invalid URL parse")?;

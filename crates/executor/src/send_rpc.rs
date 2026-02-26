@@ -7,6 +7,7 @@ use crate::{
     http_utils::{
         classify_request_error, read_response_body_limited, redacted_endpoint_label,
         truncate_detail_chars, MAX_HTTP_ERROR_BODY_DETAIL_CHARS, MAX_HTTP_ERROR_BODY_READ_BYTES,
+        MAX_HTTP_JSON_BODY_READ_BYTES,
     },
     key_validation::validate_signature_like,
     route_backend::SendRpcEndpointChainError,
@@ -174,7 +175,8 @@ pub(crate) async fn send_signed_transaction_via_rpc(
             }
             return Err(reject);
         }
-        let body: Value = response.json().await.map_err(|error| {
+        let body_text = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
+        let body: Value = serde_json::from_str(body_text.as_str()).map_err(|error| {
             Reject::terminal(
                 "send_rpc_invalid_json",
                 format!(

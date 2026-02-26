@@ -2344,6 +2344,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_oversized_json_response_body() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([56u8; 64]);
+        let tail_marker = "SEND_RPC_JSON_TAIL_MARKER_MUST_NOT_LEAK";
+        let large_padding = "j".repeat(crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1024);
+        let rpc_body = format!(
+            r#"{{"jsonrpc":"2.0","result":"{}","padding":"{}{}"}}"#,
+            bs58::encode([57u8; 64]).into_string(),
+            large_padding,
+            tail_marker
+        );
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", rpc_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("oversized JSON response should fail closed");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_invalid_json");
+        assert!(
+            reject.detail.contains("invalid JSON"),
+            "detail should report invalid json: {}",
+            reject.detail
+        );
+        assert!(
+            !reject.detail.contains(tail_marker),
+            "detail leaked send-rpc json tail marker: {}",
+            reject.detail
+        );
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
     async fn send_signed_transaction_via_rpc_returns_signature_result() {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([13u8; 64]);
         let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
