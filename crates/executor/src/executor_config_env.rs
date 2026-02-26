@@ -333,7 +333,13 @@ impl ExecutorConfig {
                 optional_non_empty_env(fallback_auth_file_key.as_str())?.as_deref(),
             )?
             .or_else(|| default_fallback_auth_token.clone())
-            .or_else(|| primary_auth_token.clone());
+            .or_else(|| {
+                if submit_fallback_url.is_some() || simulate_fallback_url.is_some() {
+                    primary_auth_token.clone()
+                } else {
+                    None
+                }
+            });
             let send_rpc_primary_auth_token = resolve_secret_source(
                 send_rpc_auth_key.as_str(),
                 optional_non_empty_env(send_rpc_auth_key.as_str())?.as_deref(),
@@ -348,7 +354,13 @@ impl ExecutorConfig {
                 optional_non_empty_env(send_rpc_fallback_auth_file_key.as_str())?.as_deref(),
             )?
             .or_else(|| default_send_rpc_fallback_auth_token.clone())
-            .or_else(|| send_rpc_primary_auth_token.clone());
+            .or_else(|| {
+                if send_rpc_fallback_url.is_some() {
+                    send_rpc_primary_auth_token.clone()
+                } else {
+                    None
+                }
+            });
 
             route_backends.insert(
                 route.clone(),
@@ -803,6 +815,7 @@ mod tests {
     };
     use crate::idempotency_cleanup_worker::response_cleanup_worker_tick_sec;
     use crate::route_backend::RouteBackend;
+    use crate::secret_value::SecretValue;
 
     static EXECUTOR_ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -1348,6 +1361,114 @@ mod tests {
 
                 crate::ExecutorConfig::from_env()
                     .expect("empty unknown non-route-scoped key should be ignored");
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_does_not_inherit_upstream_fallback_auth_without_fallback_endpoint() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN", "primary-upstream-token");
+
+                let config =
+                    crate::ExecutorConfig::from_env().expect("config should load with primary auth");
+                let backend = config
+                    .route_backends
+                    .get("rpc")
+                    .expect("rpc backend must be present");
+                assert_eq!(
+                    backend.primary_auth_token.as_ref().map(SecretValue::as_str),
+                    Some("primary-upstream-token")
+                );
+                assert!(
+                    backend.fallback_auth_token.is_none(),
+                    "fallback auth token must stay empty without fallback endpoint"
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_inherits_upstream_fallback_auth_when_fallback_endpoint_present() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN", "primary-upstream-token");
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_FALLBACK_URL",
+                    "https://submit-fallback.example.com",
+                );
+
+                let config = crate::ExecutorConfig::from_env()
+                    .expect("config should load with fallback endpoint");
+                let backend = config
+                    .route_backends
+                    .get("rpc")
+                    .expect("rpc backend must be present");
+                assert_eq!(
+                    backend.fallback_auth_token.as_ref().map(SecretValue::as_str),
+                    Some("primary-upstream-token")
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_does_not_inherit_send_rpc_fallback_auth_without_fallback_endpoint() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_SEND_RPC_URL", "https://send-rpc.example.com");
+                env::set_var("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN", "primary-send-rpc-token");
+
+                let config = crate::ExecutorConfig::from_env()
+                    .expect("config should load with send-rpc primary auth");
+                let backend = config
+                    .route_backends
+                    .get("rpc")
+                    .expect("rpc backend must be present");
+                assert_eq!(
+                    backend
+                        .send_rpc_primary_auth_token
+                        .as_ref()
+                        .map(SecretValue::as_str),
+                    Some("primary-send-rpc-token")
+                );
+                assert!(
+                    backend.send_rpc_fallback_auth_token.is_none(),
+                    "send-rpc fallback auth token must stay empty without fallback endpoint"
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_inherits_send_rpc_fallback_auth_when_fallback_endpoint_present() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_SEND_RPC_URL", "https://send-rpc.example.com");
+                env::set_var(
+                    "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL",
+                    "https://send-rpc-fallback.example.com",
+                );
+                env::set_var("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN", "primary-send-rpc-token");
+
+                let config = crate::ExecutorConfig::from_env()
+                    .expect("config should load with send-rpc fallback endpoint");
+                let backend = config
+                    .route_backends
+                    .get("rpc")
+                    .expect("rpc backend must be present");
+                assert_eq!(
+                    backend
+                        .send_rpc_fallback_auth_token
+                        .as_ref()
+                        .map(SecretValue::as_str),
+                    Some("primary-send-rpc-token")
+                );
             });
         });
     }
