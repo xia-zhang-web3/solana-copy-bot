@@ -1193,6 +1193,28 @@ run_go_nogo_jito_rpc_policy_gate_case() {
   assert_field_in "$output" "jito_rpc_policy_reason_code" "target_mismatch" "route_profile_not_pass"
   assert_contains "$output" "overall_go_nogo_verdict: NO_GO"
   assert_field_equals "$output" "overall_go_nogo_reason_code" "jito_policy_not_pass"
+
+  local invalid_output=""
+  if invalid_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="maybe" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid GO_NOGO_REQUIRE_JITO_RPC_POLICY token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_REQUIRE_JITO_RPC_POLICY token, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token"
+  assert_contains "$invalid_output" "got: maybe"
   echo "[ok] go-no-go strict jito/rpc policy gate"
 }
 
@@ -1236,6 +1258,28 @@ run_go_nogo_fastlane_disabled_gate_case() {
   assert_contains "$pass_output" "fastlane_feature_flag_verdict: PASS"
   assert_field_equals "$pass_output" "fastlane_feature_flag_reason_code" "fastlane_disabled"
   assert_contains "$pass_output" "overall_go_nogo_verdict: GO"
+
+  local invalid_output=""
+  if invalid_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="sometimes" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid GO_NOGO_REQUIRE_FASTLANE_DISABLED token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_REQUIRE_FASTLANE_DISABLED token, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "GO_NOGO_REQUIRE_FASTLANE_DISABLED must be a boolean token"
+  assert_contains "$invalid_output" "got: sometimes"
   echo "[ok] go-no-go strict fastlane-disabled gate"
 }
 

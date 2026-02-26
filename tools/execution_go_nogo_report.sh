@@ -27,6 +27,34 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
+parse_bool_token_strict() {
+  local raw
+  raw="$(trim_string "$1")"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    0|false|no|off)
+      printf 'false'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+go_nogo_require_jito_rpc_policy_raw="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
+go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
+  echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_require_fastlane_disabled="$(parse_bool_token_strict "$go_nogo_require_fastlane_disabled_raw")"; then
+  echo "GO_NOGO_REQUIRE_FASTLANE_DISABLED must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_fastlane_disabled_raw}" >&2
+  exit 1
+fi
+
 cfg_value() {
   local section="$1"
   local key="$2"
@@ -215,8 +243,6 @@ submit_dynamic_tip_static_floor_by_route="$(extract_field "submit_dynamic_tip_st
 dynamic_cu_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_cu_price_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED false)"
 dynamic_tip_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_tip_lamports_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED false)"
 dynamic_cu_hint_api_primary_url="$(cfg_or_env_string execution submit_dynamic_cu_price_api_primary_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL "")"
-go_nogo_require_jito_rpc_policy="$(normalize_bool_token "${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}")"
-go_nogo_require_fastlane_disabled="$(normalize_bool_token "${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}")"
 execution_mode_for_go_nogo="$(trim_string "$(cfg_or_env_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE "paper")")"
 if [[ -z "$execution_mode_for_go_nogo" ]]; then
   execution_mode_for_go_nogo="paper"
