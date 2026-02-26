@@ -1268,6 +1268,34 @@ mod tests {
     }
 
     #[test]
+    fn executor_config_from_env_rejects_fastlane_allowlist_when_feature_disabled() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "rpc,fastlane");
+                env::set_var("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED", "false");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("fastlane in allowlist with disabled feature must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error.to_string().contains("allowlist=fastlane,rpc"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
     fn executor_config_from_env_rejects_invalid_allow_nonzero_tip_token() {
         with_clean_executor_env(|| {
             with_temp_signer_keypair_file(|keypair_path| {

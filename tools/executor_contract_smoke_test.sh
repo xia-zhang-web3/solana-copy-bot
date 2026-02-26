@@ -128,6 +128,7 @@ contract_guard_tests=(
   "forward_to_upstream_uses_fallback_after_primary_retryable_status"
   "forward_to_upstream_does_not_fallback_after_primary_terminal_status"
   "validate_fastlane_route_policy_enforces_feature_gate"
+  "executor_config_from_env_rejects_fastlane_allowlist_when_feature_disabled"
   "validate_common_contract_rejects_fastlane_when_feature_disabled"
   "common_contract_validation_rejects_invalid_side"
   "contract_version_token_validation"

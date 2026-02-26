@@ -42,14 +42,15 @@ pub(crate) fn validate_fastlane_route_policy(
     route_allowlist: &HashSet<String>,
     submit_fastlane_enabled: bool,
 ) -> Result<()> {
-    if !submit_fastlane_enabled {
-        for route in route_allowlist {
-            if requires_submit_fastlane_enabled(route.as_str()) {
-                return Err(anyhow!(
-                    "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false"
-                ));
-            }
-        }
+    if !submit_fastlane_enabled
+        && route_allowlist
+            .iter()
+            .any(|route| requires_submit_fastlane_enabled(route.as_str()))
+    {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false (allowlist={})",
+            sorted_routes(route_allowlist).join(",")
+        ));
     }
     Ok(())
 }
@@ -143,6 +144,11 @@ mod tests {
             error
                 .to_string()
                 .contains("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false"),
+            "unexpected error: {}",
+            error
+        );
+        assert!(
+            error.to_string().contains("allowlist=fastlane,rpc"),
             "unexpected error: {}",
             error
         );
