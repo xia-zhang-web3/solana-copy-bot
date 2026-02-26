@@ -5,8 +5,7 @@ use tracing::warn;
 
 use crate::{
     http_utils::{
-        body_text_was_truncated, classify_request_error, read_response_body_limited,
-        redacted_endpoint_label,
+        classify_request_error, read_response_body_limited, redacted_endpoint_label,
         truncate_detail_chars, MAX_HTTP_ERROR_BODY_DETAIL_CHARS, MAX_HTTP_ERROR_BODY_READ_BYTES,
         MAX_HTTP_JSON_BODY_READ_BYTES,
     },
@@ -141,10 +140,10 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         };
         let status = response.status();
         if !status.is_success() {
-            let body_text =
+            let body =
                 read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
             let body_detail =
-                truncate_detail_chars(body_text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
+                truncate_detail_chars(body.text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
             let reject = if status.as_u16() == 429 || status.is_server_error() {
                 Reject::retryable(
                     "send_rpc_http_unavailable",
@@ -176,9 +175,9 @@ pub(crate) async fn send_signed_transaction_via_rpc(
             }
             return Err(reject);
         }
-        let body_text = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
-        let body: Value = serde_json::from_str(body_text.as_str()).map_err(|error| {
-            if body_text_was_truncated(body_text.as_str()) {
+        let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
+        let body: Value = serde_json::from_str(body_read.text.as_str()).map_err(|error| {
+            if body_read.was_truncated {
                 return Reject::terminal(
                     "send_rpc_response_too_large",
                     format!(

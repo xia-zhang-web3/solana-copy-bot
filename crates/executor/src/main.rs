@@ -2398,6 +2398,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_keeps_invalid_json_classification_with_marker_suffix() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([58u8; 64]);
+        let rpc_body = r#"{"jsonrpc":"2.0","result":"abc"}...[truncated]"#;
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", rpc_body)
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("invalid JSON should reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_invalid_json");
+        assert!(
+            !reject.detail.contains("exceeded max bytes"),
+            "detail should not classify as oversized: {}",
+            reject.detail
+        );
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
     async fn send_signed_transaction_via_rpc_returns_signature_result() {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([13u8; 64]);
         let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);

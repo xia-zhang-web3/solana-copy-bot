@@ -111,10 +111,10 @@ pub(crate) async fn forward_to_upstream(
         let status = response.status();
 
         if !status.is_success() {
-            let body_text =
+            let body =
                 read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
             let body_detail =
-                truncate_detail_chars(body_text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
+                truncate_detail_chars(body.text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
             let retryable = status.as_u16() == 429 || status.is_server_error();
             let reject = if retryable {
                 Reject::retryable(

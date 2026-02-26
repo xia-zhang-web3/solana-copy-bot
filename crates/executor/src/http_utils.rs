@@ -4,6 +4,11 @@ pub(crate) const MAX_HTTP_ERROR_BODY_DETAIL_CHARS: usize = 1024;
 pub(crate) const MAX_HTTP_ERROR_BODY_READ_BYTES: usize = 4096;
 pub(crate) const MAX_HTTP_JSON_BODY_READ_BYTES: usize = 64 * 1024;
 
+pub(crate) struct ReadResponseBody {
+    pub(crate) text: String,
+    pub(crate) was_truncated: bool,
+}
+
 pub(crate) fn validate_endpoint_url(url: &str) -> Result<()> {
     let parsed = reqwest::Url::parse(url).context("invalid URL parse")?;
     let scheme = parsed.scheme().to_ascii_lowercase();
@@ -93,9 +98,12 @@ pub(crate) fn truncate_detail_chars(value: &str, max_chars: usize) -> String {
 pub(crate) async fn read_response_body_limited(
     mut response: reqwest::Response,
     max_bytes: usize,
-) -> String {
+) -> ReadResponseBody {
     if max_bytes == 0 {
-        return String::new();
+        return ReadResponseBody {
+            text: String::new(),
+            was_truncated: false,
+        };
     }
 
     let mut body_bytes: Vec<u8> = Vec::with_capacity(max_bytes.min(1024));
@@ -120,11 +128,17 @@ pub(crate) async fn read_response_body_limited(
             Err(error) => {
                 let error_class = classify_request_error(&error);
                 if body_bytes.is_empty() {
-                    return format!("response body read failed class={}", error_class);
+                    return ReadResponseBody {
+                        text: format!("response body read failed class={}", error_class),
+                        was_truncated: false,
+                    };
                 }
                 let mut partial = String::from_utf8_lossy(body_bytes.as_slice()).to_string();
                 partial.push_str(format!("...[body_read_failed:{}]", error_class).as_str());
-                return partial;
+                return ReadResponseBody {
+                    text: partial,
+                    was_truncated: false,
+                };
             }
         }
     }
@@ -133,16 +147,15 @@ pub(crate) async fn read_response_body_limited(
     if was_truncated {
         text.push_str("...[truncated]");
     }
-    text
-}
-
-pub(crate) fn body_text_was_truncated(body_text: &str) -> bool {
-    body_text.ends_with("...[truncated]")
+    ReadResponseBody {
+        text,
+        was_truncated,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{body_text_was_truncated, read_response_body_limited, truncate_detail_chars};
+    use super::{read_response_body_limited, truncate_detail_chars};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -200,14 +213,9 @@ mod tests {
         assert_eq!(response.status(), 503);
 
         let body = read_response_body_limited(response, 128).await;
-        assert!(body.contains("...[truncated]"), "body={}", body);
-        assert!(body.len() >= 128, "body length={}", body.len());
+        assert!(body.was_truncated, "truncated flag should be true");
+        assert!(body.text.contains("...[truncated]"), "body={}", body.text);
+        assert!(body.text.len() >= 128, "body length={}", body.text.len());
         let _ = handle.join();
-    }
-
-    #[test]
-    fn body_text_was_truncated_detects_truncation_marker() {
-        assert!(body_text_was_truncated("hello...[truncated]"));
-        assert!(!body_text_was_truncated("hello"));
     }
 }
