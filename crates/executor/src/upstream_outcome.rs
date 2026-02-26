@@ -297,6 +297,46 @@ mod tests {
     }
 
     #[test]
+    fn upstream_outcome_rejects_unknown_status_before_invalid_reject_code_type() {
+        let payload = json!({
+            "status": "pending",
+            "ok": false,
+            "accepted": false,
+            "retryable": false,
+            "code": 123,
+            "detail": "busy"
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_status");
+                assert!(reject.detail.contains("unknown upstream status=pending"));
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_unknown_status_before_invalid_reject_detail_type() {
+        let payload = json!({
+            "status": "pending",
+            "ok": false,
+            "accepted": false,
+            "retryable": false,
+            "code": "busy",
+            "detail": null
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_status");
+                assert!(reject.detail.contains("unknown upstream status=pending"));
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
     fn upstream_outcome_rejects_explicit_reject() {
         let payload = json!({
             "status": "reject",
