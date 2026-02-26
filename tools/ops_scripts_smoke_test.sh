@@ -2509,6 +2509,46 @@ run_devnet_rehearsal_case() {
   assert_field_equals "$route_fee_required_go_output" "route_fee_signoff_reason_code" "test_override"
   assert_contains "$route_fee_required_go_output" "devnet_rehearsal_verdict: GO"
   assert_field_equals "$route_fee_required_go_output" "devnet_rehearsal_reason_code" "test_mode_override"
+
+  local invalid_windowed_required_output=""
+  if invalid_windowed_required_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      WINDOWED_SIGNOFF_REQUIRED="maybe" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_devnet_rehearsal.sh to fail for invalid WINDOWED_SIGNOFF_REQUIRED token" >&2
+    exit 1
+  else
+    local invalid_windowed_required_exit_code=$?
+    if [[ "$invalid_windowed_required_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid WINDOWED_SIGNOFF_REQUIRED token, got $invalid_windowed_required_exit_code" >&2
+      echo "$invalid_windowed_required_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_windowed_required_output" "WINDOWED_SIGNOFF_REQUIRED must be a boolean token"
+  assert_contains "$invalid_windowed_required_output" "got: maybe"
+
+  local invalid_route_fee_mode_output=""
+  if invalid_route_fee_mode_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="sometimes" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_devnet_rehearsal.sh to fail for invalid ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE token" >&2
+    exit 1
+  else
+    local invalid_route_fee_mode_exit_code=$?
+    if [[ "$invalid_route_fee_mode_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE token, got $invalid_route_fee_mode_exit_code" >&2
+      echo "$invalid_route_fee_mode_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_route_fee_mode_output" "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE must be a boolean token"
+  assert_contains "$invalid_route_fee_mode_output" "got: sometimes"
   echo "[ok] execution devnet rehearsal helper"
 }
 

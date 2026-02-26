@@ -42,6 +42,34 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
+parse_bool_token_strict() {
+  local raw
+  raw="$(trim_string "$1")"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    0|false|no|off)
+      printf 'false'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+parse_rehearsal_bool_setting() {
+  local setting_name="$1"
+  local raw_value="$2"
+  local parsed_value=""
+  if ! parsed_value="$(parse_bool_token_strict "$raw_value")"; then
+    echo "${setting_name} must be a boolean token (true/false/1/0/yes/no/on/off), got: ${raw_value}" >&2
+    exit 1
+  fi
+  printf '%s' "$parsed_value"
+}
+
 cfg_value() {
   local section="$1"
   local key="$2"
@@ -145,15 +173,15 @@ PY
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
-run_tests_norm="$(normalize_bool_token "$RUN_TESTS")"
-test_mode_norm="$(normalize_bool_token "$DEVNET_REHEARSAL_TEST_MODE")"
-windowed_signoff_required_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRED")"
-windowed_signoff_require_dynamic_hint_source_pass_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
-windowed_signoff_require_dynamic_tip_policy_pass_norm="$(normalize_bool_token "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS")"
-go_nogo_require_jito_rpc_policy_norm="$(normalize_bool_token "$GO_NOGO_REQUIRE_JITO_RPC_POLICY")"
-go_nogo_require_fastlane_disabled_norm="$(normalize_bool_token "$GO_NOGO_REQUIRE_FASTLANE_DISABLED")"
-route_fee_signoff_required_norm="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_REQUIRED")"
-route_fee_signoff_go_nogo_test_mode_norm="$(normalize_bool_token "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE")"
+run_tests_norm="$(parse_rehearsal_bool_setting "RUN_TESTS" "$RUN_TESTS")"
+test_mode_norm="$(parse_rehearsal_bool_setting "DEVNET_REHEARSAL_TEST_MODE" "$DEVNET_REHEARSAL_TEST_MODE")"
+windowed_signoff_required_norm="$(parse_rehearsal_bool_setting "WINDOWED_SIGNOFF_REQUIRED" "$WINDOWED_SIGNOFF_REQUIRED")"
+windowed_signoff_require_dynamic_hint_source_pass_norm="$(parse_rehearsal_bool_setting "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
+windowed_signoff_require_dynamic_tip_policy_pass_norm="$(parse_rehearsal_bool_setting "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS")"
+go_nogo_require_jito_rpc_policy_norm="$(parse_rehearsal_bool_setting "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY")"
+go_nogo_require_fastlane_disabled_norm="$(parse_rehearsal_bool_setting "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED")"
+route_fee_signoff_required_norm="$(parse_rehearsal_bool_setting "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED")"
+route_fee_signoff_go_nogo_test_mode_norm="$(parse_rehearsal_bool_setting "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE")"
 route_fee_signoff_go_nogo_test_fee_override="$(trim_string "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE")"
 route_fee_signoff_go_nogo_test_route_override="$(trim_string "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE")"
 route_fee_signoff_test_verdict_override_raw="$(trim_string "$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE")"
