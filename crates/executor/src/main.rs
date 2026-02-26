@@ -2090,6 +2090,250 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_simulate_uses_upstream_fallback_after_primary_declared_oversized_content_length()
+    {
+        let Some((upstream_primary_url, upstream_primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"status":"ok","ok":true,"accepted":true,"detail":"x"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+        let upstream_fallback_detail = "fallback simulation detail";
+        let upstream_fallback_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"route":"rpc","contract_version":"v1","detail":"{}"}}"#,
+            upstream_fallback_detail
+        );
+        let Some((upstream_fallback_url, upstream_fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_fallback_body.as_str())
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            upstream_primary_url.as_str(),
+            Some(upstream_fallback_url.as_str()),
+            upstream_primary_url.as_str(),
+            Some(upstream_fallback_url.as_str()),
+        );
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-upstream-fallback-declared-oversized-1".to_string(),
+            signal_id: "signal-sim-upstream-fallback-declared-oversized-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = json!({
+            "action": "simulate",
+            "contract_version": "v1",
+            "request_id": request.request_id.as_str(),
+            "signal_id": request.signal_id.as_str(),
+            "side": request.side.as_str(),
+            "token": request.token.as_str(),
+            "notional_sol": request.notional_sol,
+            "signal_ts": request.signal_ts.as_str(),
+            "route": request.route.as_str(),
+            "dry_run": true
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let response = handle_simulate(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("simulate should use upstream fallback after declared oversized primary");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(
+            response.get("detail").and_then(Value::as_str),
+            Some(upstream_fallback_detail)
+        );
+        let _ = upstream_primary_handle.join();
+        let _ = upstream_fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_uses_upstream_fallback_after_primary_truncated_success_body() {
+        let upstream_primary_body = build_truncated_valid_json_prefix_body(
+            r#"{"status":"ok","ok":true,"accepted":true,"detail":"primary"}"#,
+        );
+        let Some((upstream_primary_url, upstream_primary_handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            upstream_primary_body.as_bytes(),
+        ) else {
+            return;
+        };
+        let upstream_fallback_detail = "fallback simulation detail truncated";
+        let upstream_fallback_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"route":"rpc","contract_version":"v1","detail":"{}"}}"#,
+            upstream_fallback_detail
+        );
+        let Some((upstream_fallback_url, upstream_fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_fallback_body.as_str())
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            upstream_primary_url.as_str(),
+            Some(upstream_fallback_url.as_str()),
+            upstream_primary_url.as_str(),
+            Some(upstream_fallback_url.as_str()),
+        );
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-upstream-fallback-truncated-1".to_string(),
+            signal_id: "signal-sim-upstream-fallback-truncated-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = json!({
+            "action": "simulate",
+            "contract_version": "v1",
+            "request_id": request.request_id.as_str(),
+            "signal_id": request.signal_id.as_str(),
+            "side": request.side.as_str(),
+            "token": request.token.as_str(),
+            "notional_sol": request.notional_sol,
+            "signal_ts": request.signal_ts.as_str(),
+            "route": request.route.as_str(),
+            "dry_run": true
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let response = handle_simulate(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("simulate should use upstream fallback after truncated primary success body");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(
+            response.get("detail").and_then(Value::as_str),
+            Some(upstream_fallback_detail)
+        );
+        let _ = upstream_primary_handle.join();
+        let _ = upstream_fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_rejects_when_upstream_primary_declared_oversized_without_fallback() {
+        let Some((upstream_url, upstream_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"status":"ok","ok":true,"accepted":true,"detail":"x"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-upstream-declared-oversized-no-fallback-1".to_string(),
+            signal_id: "signal-sim-upstream-declared-oversized-no-fallback-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = json!({
+            "action": "simulate",
+            "contract_version": "v1",
+            "request_id": request.request_id.as_str(),
+            "signal_id": request.signal_id.as_str(),
+            "side": request.side.as_str(),
+            "token": request.token.as_str(),
+            "notional_sol": request.notional_sol,
+            "signal_ts": request.signal_ts.as_str(),
+            "route": request.route.as_str(),
+            "dry_run": true
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = handle_simulate(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("declared oversized upstream response without fallback must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
+        assert!(
+            reject.detail.contains("declared content-length"),
+            "detail={}",
+            reject.detail
+        );
+        assert!(
+            reject.detail.contains("max_bytes=65536"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_rejects_when_upstream_primary_truncated_without_fallback() {
+        let upstream_body = build_truncated_valid_json_prefix_body(
+            r#"{"status":"ok","ok":true,"accepted":true,"detail":"x"}"#,
+        );
+        let Some((upstream_url, upstream_handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            upstream_body.as_bytes(),
+        ) else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-upstream-truncated-no-fallback-1".to_string(),
+            signal_id: "signal-sim-upstream-truncated-no-fallback-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = json!({
+            "action": "simulate",
+            "contract_version": "v1",
+            "request_id": request.request_id.as_str(),
+            "signal_id": request.signal_id.as_str(),
+            "side": request.side.as_str(),
+            "token": request.token.as_str(),
+            "notional_sol": request.notional_sol,
+            "signal_ts": request.signal_ts.as_str(),
+            "route": request.route.as_str(),
+            "dry_run": true
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let reject = handle_simulate(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("truncated upstream response without fallback must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
+        assert!(
+            reject.detail.contains("max_bytes=65536"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_empty_signal_id() {
         let state = test_state("http://127.0.0.1:1/upstream");
         let request = SubmitRequest {
