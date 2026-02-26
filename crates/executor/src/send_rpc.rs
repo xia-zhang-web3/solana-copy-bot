@@ -222,24 +222,39 @@ pub(crate) async fn send_signed_transaction_via_rpc(
             }
             return Err(reject);
         }
-        let body: Value = serde_json::from_slice(body_read.bytes.as_slice()).map_err(|error| {
-            if body_read.was_truncated {
-                return Reject::terminal(
-                    "send_rpc_response_too_large",
+        let body: Value = match serde_json::from_slice(body_read.bytes.as_slice()) {
+            Ok(body) => body,
+            Err(error) => {
+                if body_read.was_truncated {
+                    let reject = Reject::retryable(
+                        "send_rpc_response_too_large",
+                        format!(
+                            "send RPC response exceeded max bytes endpoint={} max_bytes={} err={}",
+                            endpoint_label, MAX_HTTP_JSON_BODY_READ_BYTES, error
+                        ),
+                    );
+                    if attempt_idx + 1 < endpoints.len() {
+                        warn!(
+                            route = %route,
+                            endpoint = %endpoint_label,
+                            attempt = attempt_idx + 1,
+                            total = endpoints.len(),
+                            "retryable send RPC truncated response body, trying fallback endpoint"
+                        );
+                        last_retryable = Some(reject);
+                        continue;
+                    }
+                    return Err(reject);
+                }
+                return Err(Reject::terminal(
+                    "send_rpc_invalid_json",
                     format!(
-                        "send RPC response exceeded max bytes endpoint={} max_bytes={} err={}",
-                        endpoint_label, MAX_HTTP_JSON_BODY_READ_BYTES, error
+                        "send RPC response invalid JSON endpoint={} err={}",
+                        endpoint_label, error
                     ),
-                );
+                ));
             }
-            Reject::terminal(
-                "send_rpc_invalid_json",
-                format!(
-                    "send RPC response invalid JSON endpoint={} err={}",
-                    endpoint_label, error
-                ),
-            )
-        })?;
+        };
         if let Some(error_payload) = body.get("error") {
             if !error_payload.is_null() {
                 let payload_detail = truncate_detail_chars(

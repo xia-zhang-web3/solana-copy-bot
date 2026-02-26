@@ -2261,6 +2261,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_uses_fallback_after_primary_truncated_success_body() {
+        let large_padding = "u".repeat(crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1024);
+        let primary_body = format!(
+            r#"{{"status":"ok","accepted":true,"padding":"{}"}}"#,
+            large_padding
+        );
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            primary_body.as_bytes(),
+        ) else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            "{\"status\":\"ok\",\"accepted\":true}",
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let body = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{}",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback should succeed after primary truncated oversized success body");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_keeps_invalid_json_classification_with_marker_suffix() {
         let Some((url, handle)) = spawn_one_shot_upstream_raw(
             200,
@@ -2881,6 +2924,56 @@ mod tests {
         )
         .await
         .expect("fallback should succeed after primary declared-oversized response");
+        assert_eq!(signature, expected_signature);
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_uses_fallback_after_primary_truncated_success_body() {
+        let (signed_tx_base64, expected_signature) =
+            test_signed_tx_base64_with_signature([65u8; 64]);
+        let large_padding = "r".repeat(crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1024);
+        let primary_body = format!(
+            r#"{{"jsonrpc":"2.0","result":"{}","padding":"{}"}}"#,
+            expected_signature, large_padding
+        );
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_chunked_raw(
+            200,
+            "application/json",
+            primary_body.as_bytes(),
+        ) else {
+            return;
+        };
+        let fallback_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, expected_signature);
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", fallback_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+            backend.send_rpc_fallback_url = Some(fallback_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let signature = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback should succeed after primary truncated oversized success body");
         assert_eq!(signature, expected_signature);
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
@@ -9957,6 +10050,50 @@ mod tests {
                 );
                 let _ = stream.write_all(headers.as_bytes());
                 let _ = stream.write_all(response_body.as_slice());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn spawn_one_shot_upstream_chunked_raw(
+        status: u16,
+        content_type: &str,
+        body: &[u8],
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let response_body = body.to_vec();
+        let content_type = content_type.to_string();
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            _ => "Unknown",
+        }
+        .to_string();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let _ = stream.read(&mut request_buf);
+                let headers = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                    status, reason, content_type
+                );
+                let _ = stream.write_all(headers.as_bytes());
+                for chunk in response_body.chunks(4096) {
+                    let chunk_header = format!("{:X}\r\n", chunk.len());
+                    let _ = stream.write_all(chunk_header.as_bytes());
+                    let _ = stream.write_all(chunk);
+                    let _ = stream.write_all(b"\r\n");
+                }
+                let _ = stream.write_all(b"0\r\n\r\n");
                 let _ = stream.flush();
             }
         });

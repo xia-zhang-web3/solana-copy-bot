@@ -202,29 +202,45 @@ pub(crate) async fn forward_to_upstream(
             }
             return Err(reject);
         }
-        let body: Value = serde_json::from_slice(body_read.bytes.as_slice()).map_err(|error| {
-            if body_read.was_truncated {
-                return Reject::terminal(
-                    "upstream_response_too_large",
+        let body: Value = match serde_json::from_slice(body_read.bytes.as_slice()) {
+            Ok(body) => body,
+            Err(error) => {
+                if body_read.was_truncated {
+                    let reject = Reject::retryable(
+                        "upstream_response_too_large",
+                        format!(
+                            "upstream {} response exceeded max bytes endpoint={} max_bytes={} err={}",
+                            action.as_str(),
+                            endpoint_label,
+                            MAX_HTTP_JSON_BODY_READ_BYTES,
+                            error
+                        ),
+                    );
+                    if attempt_idx + 1 < endpoints.len() {
+                        warn!(
+                            route = %route,
+                            action = %action.as_str(),
+                            endpoint = %endpoint_label,
+                            attempt = attempt_idx + 1,
+                            total = endpoints.len(),
+                            "retryable upstream truncated response body, trying fallback endpoint"
+                        );
+                        last_retryable = Some(reject);
+                        continue;
+                    }
+                    return Err(reject);
+                }
+                return Err(Reject::terminal(
+                    "upstream_invalid_json",
                     format!(
-                        "upstream {} response exceeded max bytes endpoint={} max_bytes={} err={}",
+                        "upstream {} response invalid JSON endpoint={} err={}",
                         action.as_str(),
                         endpoint_label,
-                        MAX_HTTP_JSON_BODY_READ_BYTES,
                         error
                     ),
-                );
+                ));
             }
-            Reject::terminal(
-                "upstream_invalid_json",
-                format!(
-                    "upstream {} response invalid JSON endpoint={} err={}",
-                    action.as_str(),
-                    endpoint_label,
-                    error
-                ),
-            )
-        })?;
+        };
 
         return Ok(body);
     }
