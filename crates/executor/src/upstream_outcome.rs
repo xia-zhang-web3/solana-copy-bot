@@ -76,6 +76,17 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
             detail: "upstream status=reject conflicts with success flags".to_string(),
         });
     }
+    if status.is_empty()
+        && ok_flag.is_some()
+        && accepted_flag.is_some()
+        && ok_flag != accepted_flag
+    {
+        return UpstreamOutcome::Reject(ParsedUpstreamReject {
+            retryable: false,
+            code: "upstream_invalid_response".to_string(),
+            detail: "upstream ok/accepted flags conflict when status is missing".to_string(),
+        });
+    }
     if is_reject {
         let retryable = match parse_optional_bool_field(
             body,
@@ -440,6 +451,24 @@ mod tests {
                 assert!(reject
                     .detail
                     .contains("upstream status=reject conflicts with success flags"));
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_conflicting_ok_accepted_flags_without_status() {
+        let payload = json!({
+            "ok": true,
+            "accepted": false
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(reject
+                    .detail
+                    .contains("upstream ok/accepted flags conflict when status is missing"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
