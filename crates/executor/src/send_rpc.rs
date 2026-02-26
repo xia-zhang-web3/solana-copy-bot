@@ -350,7 +350,6 @@ fn classify_send_rpc_error_payload(error_payload: &Value) -> SendRpcErrorPayload
     if payload_lower.contains("blockhash not found")
         || payload_lower.contains("block height exceeded")
         || payload_lower.contains("transaction is too old")
-        || payload_lower.contains("recent blockhash")
     {
         return SendRpcErrorPayloadDisposition::BlockhashExpired;
     }
@@ -417,8 +416,12 @@ fn parse_shortvec_len(bytes: &[u8]) -> Result<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_send_rpc_deadline_context;
+    use super::{
+        classify_send_rpc_error_payload, validate_send_rpc_deadline_context,
+        SendRpcErrorPayloadDisposition,
+    };
     use crate::submit_deadline::SubmitDeadline;
+    use serde_json::json;
 
     #[test]
     fn send_rpc_deadline_context_rejects_missing_deadline() {
@@ -434,5 +437,29 @@ mod tests {
         let submit_deadline = SubmitDeadline::new(1_000);
         validate_send_rpc_deadline_context(Some(&submit_deadline))
             .expect("send RPC with deadline should pass");
+    }
+
+    #[test]
+    fn classify_send_rpc_error_payload_treats_generic_recent_blockhash_text_as_terminal() {
+        let payload = json!({
+            "code": -32002,
+            "message": "recent blockhash cache warming up"
+        });
+        assert_eq!(
+            classify_send_rpc_error_payload(&payload),
+            SendRpcErrorPayloadDisposition::Terminal
+        );
+    }
+
+    #[test]
+    fn classify_send_rpc_error_payload_keeps_blockhash_not_found_as_expired() {
+        let payload = json!({
+            "code": -32002,
+            "message": "Blockhash not found"
+        });
+        assert_eq!(
+            classify_send_rpc_error_payload(&payload),
+            SendRpcErrorPayloadDisposition::BlockhashExpired
+        );
     }
 }

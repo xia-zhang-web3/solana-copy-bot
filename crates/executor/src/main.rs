@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -143,6 +144,7 @@ const CU_PRICE_MAX: u64 = 10_000_000;
 const POLICY_FLOAT_EPSILON: f64 = 1e-6;
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8090";
 const DEFAULT_TIMEOUT_MS: u64 = 8_000;
+const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
 const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
@@ -227,11 +229,7 @@ async fn main() -> Result<()> {
         idempotency,
     });
 
-    let router = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/simulate", post(simulate))
-        .route("/submit", post(submit))
-        .with_state(state.clone());
+    let router = build_router(state.clone());
 
     info!(
         bind_addr = %state.config.bind_addr,
@@ -276,6 +274,15 @@ async fn main() -> Result<()> {
         }
     }
     server_result.context("executor server crashed")
+}
+
+fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/simulate", post(simulate))
+        .route("/submit", post(submit))
+        .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
+        .with_state(state)
 }
 
 async fn shutdown_signal() {
@@ -339,7 +346,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
+    use axum::{
+        body::Body,
+        http::{HeaderValue, Request},
+    };
     use std::{
         fs as stdfs,
         io::{Read, Write},
@@ -351,6 +361,7 @@ mod tests {
     };
     use tokio::sync::oneshot;
     use tokio::time::timeout;
+    use tower::ServiceExt;
 
     static TEMP_SECRET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -385,6 +396,26 @@ mod tests {
             .await
             .expect("unix helper should complete quickly")
             .expect("task join must succeed");
+    }
+
+    #[tokio::test]
+    async fn router_rejects_oversized_request_body_before_handler() {
+        let app = build_router(Arc::new(test_state("http://127.0.0.1:1/upstream")));
+        let oversized_payload = format!(
+            r#"{{"padding":"{}"}}"#,
+            "x".repeat(DEFAULT_MAX_REQUEST_BODY_BYTES + 1024)
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/simulate")
+            .header("content-type", "application/json")
+            .body(Body::from(oversized_payload))
+            .expect("request");
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("router should produce response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[test]
@@ -3022,6 +3053,44 @@ mod tests {
             .expect_err("blockhash-expired send RPC payload should be terminal");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "executor_blockhash_expired");
+        let _ = primary_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_treats_generic_recent_blockhash_text_as_terminal() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([40u8; 64]);
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            r#"{"jsonrpc":"2.0","error":{"code":-32002,"message":"recent blockhash cache warming up"}}"#,
+        ) else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(primary_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("generic recent-blockhash text should remain terminal send-rpc error");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_error_payload_terminal");
         let _ = primary_handle.join();
     }
 
