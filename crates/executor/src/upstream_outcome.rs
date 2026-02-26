@@ -25,15 +25,45 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
             });
         }
     };
-    let ok_flag = body.get("ok").and_then(Value::as_bool);
-    let accepted_flag = body.get("accepted").and_then(Value::as_bool);
+    let ok_flag = match parse_optional_bool_field(
+        body,
+        "ok",
+        "upstream ok must be boolean when present",
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                retryable: false,
+                code: "upstream_invalid_response".to_string(),
+                detail,
+            });
+        }
+    };
+    let accepted_flag = match parse_optional_bool_field(
+        body,
+        "accepted",
+        "upstream accepted must be boolean when present",
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                retryable: false,
+                code: "upstream_invalid_response".to_string(),
+                detail,
+            });
+        }
+    };
     let is_reject = matches!(
         status.as_str(),
         "reject" | "rejected" | "error" | "failed" | "failure"
     ) || ok_flag == Some(false)
         || accepted_flag == Some(false);
     if is_reject {
-        let retryable = match parse_optional_bool_field(body, "retryable") {
+        let retryable = match parse_optional_bool_field(
+            body,
+            "retryable",
+            "upstream reject retryable must be boolean when present",
+        ) {
             Ok(Some(value)) => value,
             Ok(None) => false,
             Err(detail) => {
@@ -123,15 +153,16 @@ fn parse_optional_non_empty_string_field(
     Ok(Some(normalized.to_string()))
 }
 
-fn parse_optional_bool_field(payload: &Value, field_name: &str) -> Result<Option<bool>, String> {
+fn parse_optional_bool_field(
+    payload: &Value,
+    field_name: &str,
+    invalid_detail: &str,
+) -> Result<Option<bool>, String> {
     let Some(field_value) = payload.get(field_name) else {
         return Ok(None);
     };
     let Some(normalized) = field_value.as_bool() else {
-        return Err(format!(
-            "upstream reject {} must be boolean when present",
-            field_name
-        ));
+        return Err(invalid_detail.to_string());
     };
     Ok(Some(normalized))
 }
@@ -310,6 +341,48 @@ mod tests {
                     reject
                         .detail
                         .contains("upstream status must be non-empty string when present")
+                );
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_non_bool_ok_when_present() {
+        let payload = json!({
+            "status": "ok",
+            "ok": "true",
+            "accepted": true
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(
+                    reject
+                        .detail
+                        .contains("upstream ok must be boolean when present")
+                );
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_null_accepted_when_present() {
+        let payload = json!({
+            "status": "ok",
+            "ok": true,
+            "accepted": null
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(
+                    reject
+                        .detail
+                        .contains("upstream accepted must be boolean when present")
                 );
             }
             UpstreamOutcome::Success => panic!("expected reject"),

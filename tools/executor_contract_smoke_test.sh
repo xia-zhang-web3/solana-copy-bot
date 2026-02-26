@@ -331,6 +331,7 @@ contract_guard_tests=(
   "handle_simulate_rejects_upstream_retryable_type_invalid"
   "handle_simulate_rejects_upstream_retryable_null"
   "handle_simulate_rejects_upstream_status_type_invalid"
+  "handle_simulate_rejects_upstream_ok_type_invalid"
   "submit_deadline_remaining_timeout_rejects_when_budget_exhausted"
   "upstream_outcome_rejects_unknown_status"
   "upstream_outcome_rejects_non_string_reject_code_when_present"
@@ -339,6 +340,8 @@ contract_guard_tests=(
   "upstream_outcome_rejects_null_retryable_when_present"
   "upstream_outcome_rejects_non_string_status_when_present"
   "upstream_outcome_rejects_empty_status_when_present"
+  "upstream_outcome_rejects_non_bool_ok_when_present"
+  "upstream_outcome_rejects_null_accepted_when_present"
 )
 
 if [[ "${EXECUTOR_CONTRACT_SMOKE_RUN_EACH_GUARD:-false}" == "true" ]]; then
