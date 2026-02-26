@@ -5,8 +5,8 @@ use tracing::warn;
 
 use crate::{
     http_utils::{
-        classify_request_error, redacted_endpoint_label, truncate_detail_chars,
-        MAX_HTTP_ERROR_BODY_DETAIL_CHARS,
+        classify_request_error, read_response_body_limited, redacted_endpoint_label,
+        truncate_detail_chars, MAX_HTTP_ERROR_BODY_DETAIL_CHARS, MAX_HTTP_JSON_BODY_READ_BYTES,
     },
     key_validation::validate_signature_like,
     submit_deadline::SubmitDeadline,
@@ -90,10 +90,21 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 );
                 continue;
             }
-            let body: Value = match response.json().await {
+            let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
+            let body: Value = match serde_json::from_str(body_read.text.as_str()) {
                 Ok(value) => value,
-                Err(_) => {
-                    last_reason = format!("rpc invalid_json endpoint={}", endpoint_label);
+                Err(error) => {
+                    if body_read.was_truncated {
+                        last_reason = format!(
+                            "rpc response_too_large endpoint={} max_bytes={} err={}",
+                            endpoint_label, MAX_HTTP_JSON_BODY_READ_BYTES, error
+                        );
+                    } else {
+                        last_reason = format!(
+                            "rpc invalid_json endpoint={} err={}",
+                            endpoint_label, error
+                        );
+                    }
                     continue;
                 }
             };
