@@ -128,9 +128,6 @@ fn parse_optional_non_negative_u64_field(
     let Some(value) = body.get(field) else {
         return Ok(None);
     };
-    if value.is_null() {
-        return Ok(None);
-    }
     if let Some(parsed) = value.as_u64() {
         return Ok(Some(parsed));
     }
@@ -188,6 +185,36 @@ mod tests {
             error,
             FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent {
                 field: "network_fee_lamports",
+            }
+        );
+    }
+
+    #[test]
+    fn parse_response_fee_hint_fields_rejects_null_network_fee() {
+        let body = json!({
+            "network_fee_lamports": null
+        });
+        let error =
+            parse_response_fee_hint_fields(&body).expect_err("null value must be rejected");
+        assert_eq!(
+            error,
+            FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent {
+                field: "network_fee_lamports",
+            }
+        );
+    }
+
+    #[test]
+    fn parse_response_fee_hint_fields_rejects_null_ata_create_rent() {
+        let body = json!({
+            "ata_create_rent_lamports": null
+        });
+        let error =
+            parse_response_fee_hint_fields(&body).expect_err("null value must be rejected");
+        assert_eq!(
+            error,
+            FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent {
+                field: "ata_create_rent_lamports",
             }
         );
     }
