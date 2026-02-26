@@ -3800,8 +3800,61 @@ run_adapter_rollout_evidence_case() {
   echo "[ok] adapter rollout evidence helper"
 }
 
+run_common_bool_normalization_case() {
+  local true_output=""
+  true_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      normalize_bool_token " yes "
+    '
+  )"
+  if [[ "$true_output" != "true" ]]; then
+    echo "expected normalize_bool_token to normalize \"yes\" into true, got: $true_output" >&2
+    exit 1
+  fi
+
+  local false_output=""
+  false_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      normalize_bool_token ""
+    '
+  )"
+  if [[ "$false_output" != "false" ]]; then
+    echo "expected normalize_bool_token to normalize empty token into false, got: $false_output" >&2
+    exit 1
+  fi
+
+  local invalid_output=""
+  if invalid_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      normalize_bool_token "maybe"
+    ' 2>&1
+  )"; then
+    echo "expected normalize_bool_token to fail for invalid token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected normalize_bool_token invalid token exit code 1, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "invalid boolean token (expected true/false/1/0/yes/no/on/off), got: maybe"
+  echo "[ok] common bool normalization"
+}
+
 main() {
   write_fake_journalctl
+  run_common_bool_normalization_case
 
   local legacy_db="$TMP_DIR/legacy.db"
   local legacy_cfg="$TMP_DIR/legacy.toml"

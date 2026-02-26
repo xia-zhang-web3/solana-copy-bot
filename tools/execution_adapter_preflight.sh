@@ -243,8 +243,11 @@ normalize_bool_token() {
     1|true|yes|on)
       printf 'true'
       ;;
-    *)
+    ""|0|false|no|off)
       printf 'false'
+      ;;
+    *)
+      return 1
       ;;
   esac
 }

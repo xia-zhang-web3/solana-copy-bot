@@ -15,8 +15,12 @@ normalize_bool_token() {
     1|true|yes|on)
       printf 'true'
       ;;
-    *)
+    ""|0|false|no|off)
       printf 'false'
+      ;;
+    *)
+      echo "invalid boolean token (expected true/false/1/0/yes/no/on/off), got: $1" >&2
+      return 1
       ;;
   esac
 }

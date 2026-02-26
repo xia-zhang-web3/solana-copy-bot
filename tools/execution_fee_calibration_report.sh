@@ -101,8 +101,12 @@ normalize_bool_token() {
     1|true|yes|on)
       printf 'true'
       ;;
-    *)
+    ""|0|false|no|off)
       printf 'false'
+      ;;
+    *)
+      echo "execution.submit_adapter_require_policy_echo must be a boolean token (true/false/1/0/yes/no/on/off), got: $1" >&2
+      return 1
       ;;
   esac
 }
@@ -328,7 +332,9 @@ EXECUTION_MODE="$(normalize_route_token "$(cfg_value execution mode)")"
 if [[ -z "$EXECUTION_MODE" ]]; then
   EXECUTION_MODE="paper"
 fi
-SUBMIT_REQUIRE_POLICY_ECHO="$(normalize_bool_token "$(cfg_value execution submit_adapter_require_policy_echo)")"
+if ! SUBMIT_REQUIRE_POLICY_ECHO="$(normalize_bool_token "$(cfg_value execution submit_adapter_require_policy_echo)")"; then
+  exit 1
+fi
 FEE_CONSISTENCY_TOLERANCE_SOL="0.000000001"
 
 echo "=== execution fee calibration (${WINDOW_HOURS}h) ==="
