@@ -4,7 +4,10 @@ use tokio::time::sleep;
 use tracing::warn;
 
 use crate::{
-    http_utils::{classify_request_error, redacted_endpoint_label},
+    http_utils::{
+        classify_request_error, redacted_endpoint_label, truncate_detail_chars,
+        MAX_HTTP_ERROR_BODY_DETAIL_CHARS,
+    },
     key_validation::validate_signature_like,
     submit_deadline::SubmitDeadline,
     AppState, Reject,
@@ -118,11 +121,15 @@ pub(crate) async fn verify_submitted_signature_visibility(
             }
             if let Some(err_payload) = status_row.get("err") {
                 if !err_payload.is_null() {
+                    let err_detail = truncate_detail_chars(
+                        err_payload.to_string().as_str(),
+                        MAX_HTTP_ERROR_BODY_DETAIL_CHARS,
+                    );
                     return Err(Reject::terminal(
                         "upstream_submit_failed_onchain",
                         format!(
                             "tx_signature={} has on-chain err={} endpoint={}",
-                            tx_signature, err_payload, endpoint_label
+                            tx_signature, err_detail, endpoint_label
                         ),
                     ));
                 }

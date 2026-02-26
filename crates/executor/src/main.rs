@@ -8512,6 +8512,57 @@ mod tests {
         let _ = handle.join();
     }
 
+    #[tokio::test]
+    async fn verify_submit_signature_truncates_large_onchain_error_detail() {
+        let signature = bs58::encode([54u8; 64]).into_string();
+        let tail_marker = "SUBMIT_VERIFY_TAIL_MARKER_MUST_NOT_LEAK";
+        let long_message = format!(
+            "{}{}",
+            "e".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_DETAIL_CHARS + 128),
+            tail_marker
+        );
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","result":{{"value":[{{"err":{{"InstructionError":[0,"{}"]}}}}]}}}}"#,
+            long_message
+        );
+        let Some((verify_url, handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", body.as_str())
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            false,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("on-chain err must be terminal reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_failed_onchain");
+        assert!(
+            reject.detail.contains("...[truncated]"),
+            "detail should mark truncation: {}",
+            reject.detail
+        );
+        assert!(
+            !reject.detail.contains(tail_marker),
+            "detail leaked submit-verify tail marker: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
     fn test_state(endpoint: &str) -> AppState {
         test_state_with_backends(endpoint, None, endpoint, None)
     }

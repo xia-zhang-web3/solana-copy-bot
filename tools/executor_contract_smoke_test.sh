@@ -338,6 +338,7 @@ contract_guard_tests=(
   "verify_submit_signature_rejects_missing_deadline_before_request"
   "verify_submit_signature_rejects_invalid_signature_before_config_check"
   "verify_submit_signature_rejects_invalid_signature_before_request"
+  "verify_submit_signature_truncates_large_onchain_error_detail"
   "send_signed_transaction_via_rpc_treats_blockhash_expired_payload_as_terminal"
   "send_signed_transaction_via_rpc_rejects_fallback_without_primary_url"
   "ata_fee_hint_zero_is_treated_as_absent"

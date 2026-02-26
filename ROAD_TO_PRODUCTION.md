@@ -801,6 +801,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 273. executor phase-2B ordering matrix v1 closure completed: added missing integration priority guards for `payload_shape > allowlist` (submit) and `payload_shape > feature_gate` (simulate), updated smoke registry, and closed governance residual count from `N=2` to `N=0` in `ops/executor_ordering_coverage_policy.md`.
 274. executor runtime hardening: upstream/send-rpc HTTP error details now truncate oversized response bodies via shared helper (`MAX_HTTP_ERROR_BODY_DETAIL_CHARS`) to prevent reject-detail/log bloat from large upstream payloads while preserving fail-closed classification; added helper unit coverage and integration guard `forward_to_upstream_truncates_large_http_error_body_detail`.
 275. executor runtime hardening coverage completed for send-rpc truncation path: added integration guards proving oversized send-rpc HTTP body and oversized JSON-RPC `error` payload details are truncated with marker (`...[truncated]`) and do not leak tail markers, then registered both guards in executor contract smoke.
+276. executor runtime hardening extended into signature-verify path: `upstream_submit_failed_onchain` detail now truncates oversized on-chain `err` payloads via shared `truncate_detail_chars` limit, with integration guard `verify_submit_signature_truncates_large_onchain_error_detail` ensuring truncation marker is present and tail marker does not leak.
 
 Остается в next-code-queue:
 
