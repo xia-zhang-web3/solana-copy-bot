@@ -99,6 +99,18 @@ fn validate_route_executor_action_context(
     action: UpstreamAction,
     submit_context: RouteSubmitExecutionContext,
 ) -> std::result::Result<(), Reject> {
+    let validate_finite = |field_name: &str, value: f64| -> std::result::Result<(), Reject> {
+        if !value.is_finite() {
+            return Err(Reject::terminal(
+                "invalid_request_body",
+                format!(
+                    "submit route action {} expectation must be finite at route-executor boundary",
+                    field_name
+                ),
+            ));
+        }
+        Ok(())
+    };
     match action {
         UpstreamAction::Submit => {
             if submit_context.instruction_plan.is_none() {
@@ -119,6 +131,16 @@ fn validate_route_executor_action_context(
                     "submit route action missing route_slippage_cap_bps expectation at route-executor boundary",
                 ));
             }
+            validate_finite(
+                "slippage_bps",
+                submit_context.expected_slippage_bps.expect("checked above"),
+            )?;
+            validate_finite(
+                "route_slippage_cap_bps",
+                submit_context
+                    .expected_route_slippage_cap_bps
+                    .expect("checked above"),
+            )?;
             Ok(())
         }
         UpstreamAction::Simulate => {
@@ -545,6 +567,50 @@ mod tests {
             },
         )
         .expect("submit with complete expectations should pass");
+    }
+
+    #[test]
+    fn route_executor_action_context_rejects_submit_with_non_finite_slippage_expectation() {
+        let reject = validate_route_executor_action_context(
+            UpstreamAction::Submit,
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(f64::NAN),
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .expect_err("submit must reject non-finite slippage expectation");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
+        assert!(reject
+            .detail
+            .contains("slippage_bps expectation must be finite"));
+    }
+
+    #[test]
+    fn route_executor_action_context_rejects_submit_with_non_finite_route_slippage_cap_expectation() {
+        let reject = validate_route_executor_action_context(
+            UpstreamAction::Submit,
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: Some(f64::INFINITY),
+            },
+        )
+        .expect_err("submit must reject non-finite route slippage cap expectation");
+        assert_eq!(reject.code, "invalid_request_body");
+        assert!(!reject.retryable);
+        assert!(reject
+            .detail
+            .contains("route_slippage_cap_bps expectation must be finite"));
     }
 
     #[test]
