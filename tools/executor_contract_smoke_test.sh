@@ -208,6 +208,7 @@ contract_guard_tests=(
   "healthz_payload_top_level_status_is_ok_when_store_ok"
   "healthz_payload_build_includes_expected_fields"
   "healthz_payload_routes_alias_matches_enabled_routes"
+  "healthz_payload_routes_are_sorted_deterministically"
   "normalize_route_trims_and_lowercases"
   "classify_normalized_route_maps_known_and_unknown_values"
   "route_adapter_from_kind_maps_expected_label"
