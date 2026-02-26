@@ -346,6 +346,8 @@ contract_guard_tests=(
   "handle_simulate_rejects_unknown_upstream_status_even_with_reject_flags"
   "handle_simulate_rejects_unknown_upstream_status_even_with_invalid_ok_type"
   "handle_simulate_rejects_unknown_upstream_status_even_with_invalid_accepted_type"
+  "handle_submit_rejects_unknown_upstream_status_even_with_invalid_ok_type"
+  "handle_submit_rejects_unknown_upstream_status_even_with_invalid_accepted_type"
   "submit_deadline_remaining_timeout_rejects_when_budget_exhausted"
   "upstream_outcome_rejects_unknown_status"
   "upstream_outcome_rejects_unknown_status_even_with_reject_flags"
