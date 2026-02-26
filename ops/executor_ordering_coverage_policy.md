@@ -43,8 +43,8 @@ Status key:
 | `payload_route > feature_gate` | `execute_route_action_rejects_route_hint_before_fastlane_feature_gate_on_submit` | `execute_route_action_rejects_route_hint_before_fastlane_feature_gate_on_simulate` | done |
 | `payload_shape > deadline_context` | `execute_route_action_rejects_payload_shape_before_deadline_context_on_submit` | `execute_route_action_rejects_payload_shape_before_deadline_context_on_simulate` | done |
 | `payload_shape > action_context` | `execute_route_action_rejects_payload_shape_before_action_context_on_submit` | `execute_route_action_rejects_payload_shape_before_action_context_on_simulate` | done |
-| `payload_shape > allowlist` | _missing_ | `execute_route_action_rejects_payload_shape_before_allowlist_check` | partial |
-| `payload_shape > feature_gate` | `execute_route_action_rejects_payload_shape_before_fastlane_feature_gate` | _missing_ | partial |
+| `payload_shape > allowlist` | `execute_route_action_rejects_submit_payload_shape_before_allowlist_check` | `execute_route_action_rejects_payload_shape_before_allowlist_check` | done |
+| `payload_shape > feature_gate` | `execute_route_action_rejects_payload_shape_before_fastlane_feature_gate` | `execute_route_action_rejects_simulate_payload_shape_before_fastlane_feature_gate` | done |
 | `deadline_context > action_context` | `execute_route_action_rejects_deadline_context_before_action_context_on_submit` | `execute_route_action_rejects_deadline_context_before_action_context_on_simulate` | done |
 | `action_context > allowlist` | `execute_route_action_rejects_action_context_before_allowlist_check` | `execute_route_action_rejects_simulate_action_context_before_allowlist_check` | done |
 | `action_context > backend` | `execute_route_action_rejects_action_context_before_backend_check` | `execute_route_action_rejects_simulate_action_context_before_backend_check` | done |
@@ -52,7 +52,7 @@ Status key:
 
 ### Current residual count
 
-`N = 2` (two `partial` cells above).
+`N = 0` (matrix v1 fully covered).
 
 ## 4) Exit Criteria for Ordering Hardening
 
