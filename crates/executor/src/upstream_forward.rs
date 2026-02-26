@@ -5,6 +5,7 @@ use crate::{
     http_utils::{
         classify_request_error, read_response_body_limited, redacted_endpoint_label,
         truncate_detail_chars, MAX_HTTP_ERROR_BODY_DETAIL_CHARS, MAX_HTTP_ERROR_BODY_READ_BYTES,
+        MAX_HTTP_JSON_BODY_READ_BYTES,
     },
     submit_deadline::SubmitDeadline,
     AppState, Reject,
@@ -149,7 +150,20 @@ pub(crate) async fn forward_to_upstream(
             return Err(reject);
         }
 
-        let body: Value = response.json().await.map_err(|error| {
+        let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
+        let body: Value = serde_json::from_str(body_read.text.as_str()).map_err(|error| {
+            if body_read.was_truncated {
+                return Reject::terminal(
+                    "upstream_response_too_large",
+                    format!(
+                        "upstream {} response exceeded max bytes endpoint={} max_bytes={} err={}",
+                        action.as_str(),
+                        endpoint_label,
+                        MAX_HTTP_JSON_BODY_READ_BYTES,
+                        error
+                    ),
+                );
+            }
             Reject::terminal(
                 "upstream_invalid_json",
                 format!(

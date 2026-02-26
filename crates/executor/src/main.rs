@@ -2033,6 +2033,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_rejects_oversized_json_response_body() {
+        let tail_marker = "UPSTREAM_JSON_TAIL_MARKER_MUST_NOT_LEAK";
+        let large_padding = "u".repeat(crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1024);
+        let upstream_body = format!(
+            r#"{{"status":"ok","accepted":true,"padding":"{}{}"}}"#,
+            large_padding, tail_marker
+        );
+        let Some((url, handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+        let state = test_state(url.as_str());
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect_err("oversized upstream JSON should fail closed");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
+        assert!(
+            reject.detail.contains("exceeded max bytes"),
+            "detail should report response-too-large: {}",
+            reject.detail
+        );
+        assert!(
+            !reject.detail.contains(tail_marker),
+            "detail leaked upstream json tail marker: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_keeps_invalid_json_classification_with_marker_suffix() {
+        let Some((url, handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            r#"{"status":"ok"}...[truncated]"#,
+        ) else {
+            return;
+        };
+        let state = test_state(url.as_str());
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect_err("invalid JSON should reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_invalid_json");
+        assert!(
+            !reject.detail.contains("exceeded max bytes"),
+            "detail should not classify as oversized: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_rejects_submit_without_deadline_before_request() {
         let state = test_state("http://127.0.0.1:1/upstream");
         let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
