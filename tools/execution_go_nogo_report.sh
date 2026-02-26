@@ -267,11 +267,15 @@ submit_dynamic_cu_static_fallback_total="$(sum_route_map_values "${submit_dynami
 submit_dynamic_tip_policy_enabled_total="$(sum_route_map_values "${submit_dynamic_tip_policy_enabled_by_route:-}")"
 submit_dynamic_tip_applied_total="$(sum_route_map_values "${submit_dynamic_tip_applied_by_route:-}")"
 submit_dynamic_tip_static_floor_total="$(sum_route_map_values "${submit_dynamic_tip_static_floor_by_route:-}")"
+if ! execution_batch_sample_available_normalized="$(normalize_bool_token "${execution_batch_sample_available:-false}")"; then
+  echo "execution_batch_sample_available from runtime snapshot must be a boolean token (true/false/1/0/yes/no/on/off), got: ${execution_batch_sample_available:-}" >&2
+  exit 1
+fi
 
 dynamic_cu_policy_verdict="SKIP"
 dynamic_cu_policy_reason="dynamic CU-price policy disabled in execution config"
 if [[ "$dynamic_cu_policy_config_enabled" == "true" ]]; then
-  if [[ "$(normalize_bool_token "${execution_batch_sample_available:-false}")" != "true" ]]; then
+  if [[ "$execution_batch_sample_available_normalized" != "true" ]]; then
     dynamic_cu_policy_verdict="NO_DATA"
     dynamic_cu_policy_reason="no execution batch sample available in runtime snapshot window"
   elif (( submit_dynamic_cu_policy_enabled_total == 0 )); then
@@ -293,7 +297,7 @@ dynamic_cu_hint_source_verdict="SKIP"
 dynamic_cu_hint_source_reason="dynamic CU-price policy disabled in execution config"
 dynamic_cu_hint_source_reason_code="policy_disabled"
 if [[ "$dynamic_cu_policy_config_enabled" == "true" ]]; then
-  if [[ "$(normalize_bool_token "${execution_batch_sample_available:-false}")" != "true" ]]; then
+  if [[ "$execution_batch_sample_available_normalized" != "true" ]]; then
     dynamic_cu_hint_source_verdict="NO_DATA"
     dynamic_cu_hint_source_reason="no execution batch sample available in runtime snapshot window"
     dynamic_cu_hint_source_reason_code="no_execution_batch_sample"
@@ -335,7 +339,7 @@ fi
 dynamic_tip_policy_verdict="SKIP"
 dynamic_tip_policy_reason="dynamic tip policy disabled in execution config"
 if [[ "$dynamic_tip_policy_config_enabled" == "true" ]]; then
-  if [[ "$(normalize_bool_token "${execution_batch_sample_available:-false}")" != "true" ]]; then
+  if [[ "$execution_batch_sample_available_normalized" != "true" ]]; then
     dynamic_tip_policy_verdict="NO_DATA"
     dynamic_tip_policy_reason="no execution batch sample available in runtime snapshot window"
   elif (( submit_dynamic_tip_policy_enabled_total == 0 )); then
@@ -522,7 +526,7 @@ parse_rejected_total: ${parse_rejected_total:-n/a}
 parse_rejected_by_reason: ${parse_rejected_by_reason:-{}}
 parse_fallback_by_reason: ${parse_fallback_by_reason:-{}}
 replaced_ratio_last_interval: ${replaced_ratio_last_interval:-n/a}
-execution_batch_sample_available: ${execution_batch_sample_available:-false}
+execution_batch_sample_available: ${execution_batch_sample_available_normalized:-false}
 submit_attempted_by_route: ${submit_attempted_by_route:-{}}
 submit_retry_scheduled_by_route: ${submit_retry_scheduled_by_route:-{}}
 submit_failed_by_route: ${submit_failed_by_route:-{}}

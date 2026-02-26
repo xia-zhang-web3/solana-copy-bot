@@ -234,24 +234,6 @@ cfg_map_entries_csv() {
   ' "$CONFIG_PATH"
 }
 
-normalize_bool_token() {
-  local raw="$1"
-  raw="${raw#"${raw%%[![:space:]]*}"}"
-  raw="${raw%"${raw##*[![:space:]]}"}"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    ""|0|false|no|off)
-      printf 'false'
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 parse_env_bool_token() {
   local raw="$1"
   raw="$(trim_string "$raw")"
