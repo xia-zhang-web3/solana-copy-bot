@@ -49,9 +49,6 @@ fn parse_optional_non_empty_submit_transport_field(
     let Some(field_value) = backend_response.get(field_name) else {
         return Ok(None);
     };
-    if field_value.is_null() {
-        return Ok(None);
-    }
     let Some(raw_value) = field_value.as_str() else {
         return Err(SubmitTransportArtifactError::InvalidSubmitArtifactType {
             field_name: field_name.to_string(),
@@ -59,7 +56,9 @@ fn parse_optional_non_empty_submit_transport_field(
     };
     let normalized = raw_value.trim();
     if normalized.is_empty() {
-        return Ok(None);
+        return Err(SubmitTransportArtifactError::InvalidSubmitArtifactType {
+            field_name: field_name.to_string(),
+        });
     }
     Ok(Some(normalized.to_string()))
 }
@@ -133,6 +132,32 @@ mod tests {
     fn submit_transport_extract_rejects_non_string_signed_tx_base64_type() {
         let body = json!({
             "signed_tx_base64": 123,
+        });
+        let error = extract_submit_transport_artifact(&body).expect_err("must reject");
+        assert!(matches!(
+            error,
+            SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name }
+            if field_name == "signed_tx_base64"
+        ));
+    }
+
+    #[test]
+    fn submit_transport_extract_rejects_null_tx_signature() {
+        let body = json!({
+            "tx_signature": null,
+        });
+        let error = extract_submit_transport_artifact(&body).expect_err("must reject");
+        assert!(matches!(
+            error,
+            SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name }
+            if field_name == "tx_signature"
+        ));
+    }
+
+    #[test]
+    fn submit_transport_extract_rejects_empty_signed_tx_base64() {
+        let body = json!({
+            "signed_tx_base64": "   ",
         });
         let error = extract_submit_transport_artifact(&body).expect_err("must reject");
         assert!(matches!(

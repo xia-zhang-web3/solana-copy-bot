@@ -4767,7 +4767,9 @@ mod tests {
         assert!(reject.retryable);
         assert_eq!(reject.code, "submit_adapter_invalid_response");
         assert!(
-            reject.detail.contains("tx_signature must be string"),
+            reject
+                .detail
+                .contains("tx_signature must be non-empty string when present"),
             "unexpected detail: {}",
             reject.detail
         );
@@ -4813,7 +4815,105 @@ mod tests {
         assert!(reject.retryable);
         assert_eq!(reject.code, "submit_adapter_invalid_response");
         assert!(
-            reject.detail.contains("signed_tx_base64 must be string"),
+            reject
+                .detail
+                .contains("signed_tx_base64 must be non-empty string when present"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_when_upstream_tx_signature_is_null() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"tx_signature":null}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-null-tx-signature-1",
+            "client_order_id": "client-order-null-tx-signature-1",
+            "request_id": "request-null-tx-signature-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("null upstream tx_signature should reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("tx_signature must be non-empty string when present"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_when_upstream_signed_tx_base64_is_empty() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":" "}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-empty-signed-tx-1",
+            "client_order_id": "client-order-empty-signed-tx-1",
+            "request_id": "request-empty-signed-tx-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("empty upstream signed_tx_base64 should reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("signed_tx_base64 must be non-empty string when present"),
             "unexpected detail: {}",
             reject.detail
         );
