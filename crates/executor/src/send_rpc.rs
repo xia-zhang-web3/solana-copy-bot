@@ -386,6 +386,13 @@ fn extract_send_rpc_error_text(error_payload: &Value) -> String {
     }
 
     if let Some(data) = error_payload.get("data") {
+        if let Some(data_text) = data.as_str() {
+            let trimmed = data_text.trim();
+            if !trimmed.is_empty() {
+                fragments.push(trimmed);
+            }
+        }
+
         for field_name in ["message", "details", "err"] {
             if let Some(value) = data.get(field_name).and_then(Value::as_str) {
                 let trimmed = value.trim();
@@ -559,6 +566,19 @@ mod tests {
     }
 
     #[test]
+    fn classify_send_rpc_error_payload_uses_string_data_for_retryable() {
+        let payload = json!({
+            "code": -32002,
+            "message": "mystery failure class",
+            "data": "temporarily unavailable"
+        });
+        assert_eq!(
+            classify_send_rpc_error_payload(&payload),
+            SendRpcErrorPayloadDisposition::Retryable
+        );
+    }
+
+    #[test]
     fn extract_send_rpc_error_text_reads_message_and_structured_data_fields() {
         let payload = json!({
             "message": " primary ",
@@ -572,6 +592,18 @@ mod tests {
         assert_eq!(
             extract_send_rpc_error_text(&payload),
             "primary secondary tertiary quaternary"
+        );
+    }
+
+    #[test]
+    fn extract_send_rpc_error_text_reads_string_data_field() {
+        let payload = json!({
+            "message": "primary",
+            "data": " secondary "
+        });
+        assert_eq!(
+            extract_send_rpc_error_text(&payload),
+            "primary secondary"
         );
     }
 }
