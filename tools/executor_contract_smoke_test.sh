@@ -90,6 +90,8 @@ contract_guard_tests=(
   "upstream_forward_deadline_context_rejects_submit_without_deadline"
   "upstream_forward_deadline_context_rejects_simulate_with_deadline"
   "forward_to_upstream_truncates_large_http_error_body_detail"
+  "send_signed_transaction_via_rpc_truncates_large_http_error_body_detail"
+  "send_signed_transaction_via_rpc_truncates_large_error_payload_detail"
   "forward_to_upstream_rejects_submit_without_deadline_before_request"
   "forward_to_upstream_rejects_simulate_with_deadline_before_request"
   "forward_to_upstream_uses_fallback_after_primary_retryable_status"

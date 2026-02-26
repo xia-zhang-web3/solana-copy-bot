@@ -2236,6 +2236,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_truncates_large_http_error_body_detail() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([52u8; 64]);
+        let tail_marker = "SEND_RPC_HTTP_TAIL_MARKER_MUST_NOT_LEAK";
+        let long_body = format!(
+            "{}{}",
+            "h".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_DETAIL_CHARS + 128),
+            tail_marker
+        );
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(503, "text/plain", long_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("large send-rpc HTTP body should reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "send_rpc_http_unavailable");
+        assert!(
+            reject.detail.contains("...[truncated]"),
+            "detail should mark truncation: {}",
+            reject.detail
+        );
+        assert!(
+            !reject.detail.contains(tail_marker),
+            "detail leaked send-rpc HTTP tail marker: {}",
+            reject.detail
+        );
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_truncates_large_error_payload_detail() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([53u8; 64]);
+        let tail_marker = "SEND_RPC_PAYLOAD_TAIL_MARKER_MUST_NOT_LEAK";
+        let long_message = format!(
+            "{}{}",
+            "p".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_DETAIL_CHARS + 128),
+            tail_marker
+        );
+        let rpc_body = format!(
+            r#"{{"jsonrpc":"2.0","error":{{"code":-32002,"message":"{}"}}}}"#,
+            long_message
+        );
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", rpc_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("large send-rpc error payload should reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_error_payload_terminal");
+        assert!(
+            reject.detail.contains("...[truncated]"),
+            "detail should mark truncation: {}",
+            reject.detail
+        );
+        assert!(
+            !reject.detail.contains(tail_marker),
+            "detail leaked send-rpc payload tail marker: {}",
+            reject.detail
+        );
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
     async fn send_signed_transaction_via_rpc_returns_signature_result() {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([13u8; 64]);
         let rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
