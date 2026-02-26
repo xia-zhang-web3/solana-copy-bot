@@ -88,7 +88,7 @@ fn validate_route_executor_backend_configured(
 ) -> std::result::Result<(), Reject> {
     if !route_backends.contains_key(normalized_route) {
         return Err(Reject::terminal(
-            "route_not_allowed",
+            "route_backend_not_configured",
             format!("route={} not configured", normalized_route),
         ));
     }
@@ -418,7 +418,7 @@ mod tests {
         )]);
         let reject = validate_route_executor_backend_configured("jito", &backends)
             .expect_err("missing route backend must be rejected");
-        assert_eq!(reject.code, "route_not_allowed");
+        assert_eq!(reject.code, "route_backend_not_configured");
         assert!(!reject.retryable);
     }
 

@@ -39,7 +39,7 @@ pub(crate) async fn forward_to_upstream(
     validate_upstream_forward_deadline_context(action, submit_deadline)?;
     let backend = state.config.route_backends.get(route).ok_or_else(|| {
         Reject::terminal(
-            "route_not_allowed",
+            "route_backend_not_configured",
             format!("route={} not configured", route),
         )
     })?;

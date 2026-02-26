@@ -2162,6 +2162,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_rejects_missing_route_backend_with_specific_code() {
+        let state = test_state("http://127.0.0.1:1/upstream");
+        let reject = forward_to_upstream(&state, "jito", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect_err("missing route backend should fail closed");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "route_backend_not_configured");
+        assert!(reject.detail.contains("not configured"));
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_rejects_partial_valid_json_body_as_response_read_failed() {
         let partial_valid_json = br#"{"status":"ok","accepted":true}"#;
         let Some((url, handle)) = spawn_one_shot_upstream_incomplete_body(
@@ -2401,6 +2412,30 @@ mod tests {
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing deadline"));
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_missing_route_backend_with_specific_code() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([44u8; 64]);
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "jito",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("missing route backend should fail closed");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "route_backend_not_configured");
+        assert!(reject.detail.contains("not configured"));
     }
 
     #[tokio::test]
@@ -5832,7 +5867,7 @@ mod tests {
         .await
         .expect_err("allowlisted route without backend must reject before forward");
         assert!(!reject.retryable);
-        assert_eq!(reject.code, "route_not_allowed");
+        assert_eq!(reject.code, "route_backend_not_configured");
         assert!(reject.detail.contains("not configured"));
     }
 
@@ -5894,7 +5929,7 @@ mod tests {
         .await
         .expect_err("submit missing backend must reject before forward");
         assert!(!reject.retryable);
-        assert_eq!(reject.code, "route_not_allowed");
+        assert_eq!(reject.code, "route_backend_not_configured");
         assert!(reject.detail.contains("not configured"));
     }
 

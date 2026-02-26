@@ -36,7 +36,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
     validate_send_rpc_deadline_context(submit_deadline)?;
     let backend = state.config.route_backends.get(route).ok_or_else(|| {
         Reject::terminal(
-            "route_not_allowed",
+            "route_backend_not_configured",
             format!("route={} not configured", route),
         )
     })?;

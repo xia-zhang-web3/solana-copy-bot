@@ -114,12 +114,19 @@ fn validate_signer_keypair_file(path: &str, signer_pubkey: &str) -> Result<()> {
             path
         ));
     }
-    let derived_pubkey = bs58::encode(&keypair_bytes[32..64]).into_string();
-    if derived_pubkey != signer_pubkey.trim() {
+    let expected_pubkey_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(
+        bs58::decode(signer_pubkey.trim())
+            .into_vec()
+            .context("COPYBOT_EXECUTOR_SIGNER_PUBKEY must be valid base58")?,
+    );
+    if expected_pubkey_bytes.len() != 32 {
         return Err(anyhow!(
-            "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE pubkey mismatch: file_pubkey={} expected_pubkey={}",
-            derived_pubkey,
-            signer_pubkey.trim()
+            "COPYBOT_EXECUTOR_SIGNER_PUBKEY must decode to 32 bytes"
+        ));
+    }
+    if expected_pubkey_bytes.as_slice() != &keypair_bytes[32..64] {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE pubkey mismatch with COPYBOT_EXECUTOR_SIGNER_PUBKEY"
         ));
     }
     Ok(())

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use std::{collections::HashMap, env};
+use std::{collections::{HashMap, HashSet}, env};
 
 use crate::auth_mode::{require_authenticated_mode, validate_hmac_auth_config};
 use crate::contract_version::parse_contract_version;
@@ -282,6 +282,7 @@ impl ExecutorConfig {
                 },
             );
         }
+        validate_route_backend_allowlist_consistency(&route_allowlist, &route_backends)?;
 
         let bearer_token = resolve_secret_source(
             "COPYBOT_EXECUTOR_BEARER_TOKEN",
@@ -445,6 +446,38 @@ impl ExecutorConfig {
     }
 }
 
+fn validate_route_backend_allowlist_consistency(
+    route_allowlist: &HashSet<String>,
+    route_backends: &HashMap<String, RouteBackend>,
+) -> Result<()> {
+    let mut missing_routes: Vec<&str> = route_allowlist
+        .iter()
+        .filter(|route| !route_backends.contains_key(*route))
+        .map(String::as_str)
+        .collect();
+    if !missing_routes.is_empty() {
+        missing_routes.sort_unstable();
+        return Err(anyhow!(
+            "route backend map is missing allowlisted routes: {}",
+            missing_routes.join(",")
+        ));
+    }
+
+    let mut extra_routes: Vec<&str> = route_backends
+        .keys()
+        .filter(|route| !route_allowlist.contains(*route))
+        .map(String::as_str)
+        .collect();
+    if !extra_routes.is_empty() {
+        extra_routes.sort_unstable();
+        return Err(anyhow!(
+            "route backend map has routes outside allowlist: {}",
+            extra_routes.join(",")
+        ));
+    }
+    Ok(())
+}
+
 fn validate_response_retention_cutoff(idempotency_response_retention_sec: u64) -> Result<()> {
     let retention_i64 = i64::try_from(idempotency_response_retention_sec).map_err(|_| {
         anyhow!(
@@ -535,6 +568,7 @@ fn validate_response_cleanup_worker_cadence(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
     use std::env;
     use std::ffi::OsString;
     use std::fs;
@@ -543,11 +577,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
+        validate_route_backend_allowlist_consistency,
         validate_response_cleanup_tuning, validate_response_cleanup_worker_cadence,
         validate_response_cleanup_worker_tick_sec,
         validate_response_retention_cutoff,
     };
     use crate::idempotency_cleanup_worker::response_cleanup_worker_tick_sec;
+    use crate::route_backend::RouteBackend;
 
     static EXECUTOR_ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -631,6 +667,21 @@ mod tests {
         env::set_var("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", "true");
     }
 
+    fn route_backend_fixture() -> RouteBackend {
+        RouteBackend {
+            submit_url: "https://submit.example.com".to_string(),
+            submit_fallback_url: None,
+            simulate_url: "https://simulate.example.com".to_string(),
+            simulate_fallback_url: None,
+            primary_auth_token: None,
+            fallback_auth_token: None,
+            send_rpc_url: None,
+            send_rpc_fallback_url: None,
+            send_rpc_primary_auth_token: None,
+            send_rpc_fallback_auth_token: None,
+        }
+    }
+
     #[test]
     fn validate_response_retention_cutoff_accepts_default_range() {
         validate_response_retention_cutoff(604_800).expect("default retention should be valid");
@@ -646,6 +697,40 @@ mod tests {
             "unexpected error: {}",
             error
         );
+    }
+
+    #[test]
+    fn route_backend_allowlist_consistency_rejects_missing_allowlisted_route() {
+        let allowlist = HashSet::from([String::from("rpc"), String::from("jito")]);
+        let route_backends = HashMap::from([(String::from("rpc"), route_backend_fixture())]);
+        let error = validate_route_backend_allowlist_consistency(&allowlist, &route_backends)
+            .expect_err("missing allowlisted backend must reject");
+        assert!(error.to_string().contains("missing allowlisted routes"));
+        assert!(error.to_string().contains("jito"));
+    }
+
+    #[test]
+    fn route_backend_allowlist_consistency_rejects_route_outside_allowlist() {
+        let allowlist = HashSet::from([String::from("rpc")]);
+        let route_backends = HashMap::from([
+            (String::from("rpc"), route_backend_fixture()),
+            (String::from("jito"), route_backend_fixture()),
+        ]);
+        let error = validate_route_backend_allowlist_consistency(&allowlist, &route_backends)
+            .expect_err("backend outside allowlist must reject");
+        assert!(error.to_string().contains("outside allowlist"));
+        assert!(error.to_string().contains("jito"));
+    }
+
+    #[test]
+    fn route_backend_allowlist_consistency_accepts_exact_match() {
+        let allowlist = HashSet::from([String::from("rpc"), String::from("jito")]);
+        let route_backends = HashMap::from([
+            (String::from("rpc"), route_backend_fixture()),
+            (String::from("jito"), route_backend_fixture()),
+        ]);
+        validate_route_backend_allowlist_consistency(&allowlist, &route_backends)
+            .expect("exact route backend coverage should pass");
     }
 
     #[test]
