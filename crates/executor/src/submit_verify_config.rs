@@ -26,7 +26,7 @@ pub(crate) fn parse_submit_signature_verify_config() -> Result<Option<SubmitSign
         "COPYBOT_EXECUTOR_SUBMIT_VERIFY_INTERVAL_MS",
         DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
     )?;
-    let strict = parse_bool_env("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT", false);
+    let strict = parse_bool_env("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT", false)?;
     build_submit_signature_verify_config(primary, fallback, attempts, interval_ms, strict)
 }
 

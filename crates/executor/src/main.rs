@@ -188,7 +188,7 @@ struct ExecutorConfig {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let log_json = parse_bool_env("COPYBOT_EXECUTOR_LOG_JSON", true);
+    let log_json = parse_bool_env("COPYBOT_EXECUTOR_LOG_JSON", true)?;
     let log_filter = env::var("COPYBOT_EXECUTOR_LOG_FILTER")
         .unwrap_or_else(|_| "info,reqwest=warn,hyper=warn,h2=warn".to_string());
     let env_filter = EnvFilter::try_new(log_filter).unwrap_or_else(|_| EnvFilter::new("info"));
@@ -2088,6 +2088,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_rejects_invalid_utf8_json_response_body() {
+        let upstream_body = b"{\"status\":\"ok\",\"accepted\":true,\"detail\":\"\xFF\"}";
+        let Some((url, handle)) =
+            spawn_one_shot_upstream_raw_bytes(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+        let state = test_state(url.as_str());
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect_err("invalid UTF-8 JSON should reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_invalid_json");
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_rejects_submit_without_deadline_before_request() {
         let state = test_state("http://127.0.0.1:1/upstream");
         let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}", None)
@@ -2491,6 +2508,43 @@ mod tests {
             "detail should not classify as oversized: {}",
             reject.detail
         );
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_invalid_utf8_json_response_body() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([59u8; 64]);
+        let rpc_body = b"{\"jsonrpc\":\"2.0\",\"result\":\"\xFF\"}";
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw_bytes(200, "application/json", rpc_body)
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("invalid UTF-8 JSON should reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_invalid_json");
         let _ = send_rpc_handle.join();
     }
 
@@ -8803,6 +8857,43 @@ mod tests {
         let _ = handle.join();
     }
 
+    #[tokio::test]
+    async fn verify_submit_signature_keeps_invalid_utf8_json_classification() {
+        let signature = bs58::encode([57u8; 64]).into_string();
+        let body = b"{\"jsonrpc\":\"2.0\",\"result\":{\"value\":[{\"err\":\"\xFF\"}]}}";
+        let Some((verify_url, handle)) =
+            spawn_one_shot_upstream_raw_bytes(200, "application/json", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("invalid UTF-8 JSON should reject as invalid_json classification");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains("invalid_json"),
+            "detail should keep invalid_json classification: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
     fn test_state(endpoint: &str) -> AppState {
         test_state_with_backends(endpoint, None, endpoint, None)
     }
@@ -8917,9 +9008,17 @@ mod tests {
         content_type: &str,
         body: &str,
     ) -> Option<(String, thread::JoinHandle<()>)> {
+        spawn_one_shot_upstream_raw_bytes(status, content_type, body.as_bytes())
+    }
+
+    fn spawn_one_shot_upstream_raw_bytes(
+        status: u16,
+        content_type: &str,
+        body: &[u8],
+    ) -> Option<(String, thread::JoinHandle<()>)> {
         let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().ok()?;
-        let response_body = body.to_string();
+        let response_body = body.to_vec();
         let content_type = content_type.to_string();
         let reason = match status {
             200 => "OK",
@@ -8938,15 +9037,15 @@ mod tests {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut request_buf = [0u8; 8192];
                 let _ = stream.read(&mut request_buf);
-                let response = format!(
-                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                let headers = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     status,
                     reason,
                     content_type,
-                    response_body.len(),
-                    response_body
+                    response_body.len()
                 );
-                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(headers.as_bytes());
+                let _ = stream.write_all(response_body.as_slice());
                 let _ = stream.flush();
             }
         });

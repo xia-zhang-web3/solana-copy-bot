@@ -59,7 +59,7 @@ impl ExecutorConfig {
             signer_pubkey.as_str(),
         )?;
         let submit_fastlane_enabled =
-            parse_bool_env("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED", false);
+            parse_bool_env("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED", false)?;
 
         let route_allowlist = parse_route_allowlist(
             env::var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST")
@@ -305,7 +305,8 @@ impl ExecutorConfig {
                 "COPYBOT_EXECUTOR_HMAC_NONCE_CACHE_MAX_ENTRIES must be > 0"
             ));
         }
-        let allow_unauthenticated = parse_bool_env("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", false);
+        let allow_unauthenticated =
+            parse_bool_env("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", false)?;
         validate_hmac_auth_config(
             hmac_key_id.as_deref(),
             hmac_secret.as_deref(),
@@ -394,7 +395,7 @@ impl ExecutorConfig {
                 "COPYBOT_EXECUTOR_MAX_NOTIONAL_SOL must be finite and > 0"
             ));
         }
-        let allow_nonzero_tip = parse_bool_env("COPYBOT_EXECUTOR_ALLOW_NONZERO_TIP", true);
+        let allow_nonzero_tip = parse_bool_env("COPYBOT_EXECUTOR_ALLOW_NONZERO_TIP", true)?;
         let submit_signature_verify = parse_submit_signature_verify_config()?;
         let min_claim_ttl_sec = min_claim_ttl_sec_for_submit_path(
             request_timeout_ms,
@@ -604,6 +605,28 @@ mod tests {
         }
     }
 
+    fn set_minimal_executor_env_for_from_env(keypair_path: &Path) {
+        env::set_var(
+            "COPYBOT_EXECUTOR_SIGNER_PUBKEY",
+            "11111111111111111111111111111111",
+        );
+        env::set_var("COPYBOT_EXECUTOR_SIGNER_SOURCE", "file");
+        env::set_var(
+            "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE",
+            keypair_path.to_str().expect("utf8 path"),
+        );
+        env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "rpc");
+        env::set_var(
+            "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
+            "https://submit.example.com",
+        );
+        env::set_var(
+            "COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL",
+            "https://simulate.example.com",
+        );
+        env::set_var("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", "true");
+    }
+
     #[test]
     fn validate_response_retention_cutoff_accepts_default_range() {
         validate_response_retention_cutoff(604_800).expect("default retention should be valid");
@@ -708,25 +731,7 @@ mod tests {
     fn executor_config_from_env_wires_response_cleanup_worker_tick_override() {
         with_clean_executor_env(|| {
             with_temp_signer_keypair_file(|keypair_path| {
-                env::set_var(
-                    "COPYBOT_EXECUTOR_SIGNER_PUBKEY",
-                    "11111111111111111111111111111111",
-                );
-                env::set_var("COPYBOT_EXECUTOR_SIGNER_SOURCE", "file");
-                env::set_var(
-                    "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE",
-                    keypair_path.to_str().expect("utf8 path"),
-                );
-                env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "rpc");
-                env::set_var(
-                    "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
-                    "https://submit.example.com",
-                );
-                env::set_var(
-                    "COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL",
-                    "https://simulate.example.com",
-                );
-                env::set_var("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", "true");
+                set_minimal_executor_env_for_from_env(keypair_path);
                 env::set_var(
                     "COPYBOT_EXECUTOR_IDEMPOTENCY_RESPONSE_CLEANUP_WORKER_TICK_SEC",
                     "42",
@@ -739,6 +744,50 @@ mod tests {
                     config.idempotency_response_cleanup_worker_tick_sec,
                     response_cleanup_worker_tick_sec(config.idempotency_response_retention_sec),
                     "explicit tick override must take precedence over retention-derived default"
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_invalid_submit_fastlane_enabled_token() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED", "sometimes");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("invalid bool token must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_invalid_allow_nonzero_tip_token() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_ALLOW_NONZERO_TIP", "maybe");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("invalid bool token must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_ALLOW_NONZERO_TIP"),
+                    "unexpected error: {}",
+                    error
                 );
             });
         });

@@ -42,17 +42,27 @@ pub(crate) fn parse_f64_env(name: &str, default: f64) -> Result<f64> {
     }
 }
 
-pub(crate) fn parse_bool_token(raw: &str) -> bool {
-    matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+pub(crate) fn parse_bool_token(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
-pub(crate) fn parse_bool_env(name: &str, default: bool) -> bool {
+pub(crate) fn parse_bool_env(name: &str, default: bool) -> Result<bool> {
     match env::var(name) {
-        Ok(raw) => parse_bool_token(raw.as_str()),
-        Err(_) => default,
+        Ok(raw) => parse_bool_token(raw.as_str()).ok_or_else(|| {
+            anyhow!(
+                "{} must be boolean token (true/false/1/0/yes/no/on/off), got: {}",
+                name,
+                raw.trim()
+            )
+        }),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(anyhow!("{} must be valid unicode boolean token", name))
+        }
     }
 }
 
@@ -69,20 +79,20 @@ mod tests {
 
     #[test]
     fn parse_bool_token_accepts_true_forms() {
-        assert!(parse_bool_token("1"));
-        assert!(parse_bool_token("true"));
-        assert!(parse_bool_token("TRUE"));
-        assert!(parse_bool_token("yes"));
-        assert!(parse_bool_token("on"));
+        assert_eq!(parse_bool_token("1"), Some(true));
+        assert_eq!(parse_bool_token("true"), Some(true));
+        assert_eq!(parse_bool_token("TRUE"), Some(true));
+        assert_eq!(parse_bool_token("yes"), Some(true));
+        assert_eq!(parse_bool_token("on"), Some(true));
     }
 
     #[test]
     fn parse_bool_token_rejects_false_forms() {
-        assert!(!parse_bool_token("0"));
-        assert!(!parse_bool_token("false"));
-        assert!(!parse_bool_token("off"));
-        assert!(!parse_bool_token("no"));
-        assert!(!parse_bool_token("random"));
+        assert_eq!(parse_bool_token("0"), Some(false));
+        assert_eq!(parse_bool_token("false"), Some(false));
+        assert_eq!(parse_bool_token("off"), Some(false));
+        assert_eq!(parse_bool_token("no"), Some(false));
+        assert_eq!(parse_bool_token("random"), None);
     }
 
     #[test]

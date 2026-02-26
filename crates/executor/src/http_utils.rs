@@ -6,6 +6,7 @@ pub(crate) const MAX_HTTP_JSON_BODY_READ_BYTES: usize = 64 * 1024;
 
 pub(crate) struct ReadResponseBody {
     pub(crate) text: String,
+    pub(crate) bytes: Vec<u8>,
     pub(crate) was_truncated: bool,
 }
 
@@ -102,6 +103,7 @@ pub(crate) async fn read_response_body_limited(
     if max_bytes == 0 {
         return ReadResponseBody {
             text: String::new(),
+            bytes: Vec::new(),
             was_truncated: false,
         };
     }
@@ -130,6 +132,7 @@ pub(crate) async fn read_response_body_limited(
                 if body_bytes.is_empty() {
                     return ReadResponseBody {
                         text: format!("response body read failed class={}", error_class),
+                        bytes: Vec::new(),
                         was_truncated: false,
                     };
                 }
@@ -137,6 +140,7 @@ pub(crate) async fn read_response_body_limited(
                 partial.push_str(format!("...[body_read_failed:{}]", error_class).as_str());
                 return ReadResponseBody {
                     text: partial,
+                    bytes: body_bytes,
                     was_truncated: false,
                 };
             }
@@ -149,6 +153,7 @@ pub(crate) async fn read_response_body_limited(
     }
     ReadResponseBody {
         text,
+        bytes: body_bytes,
         was_truncated,
     }
 }

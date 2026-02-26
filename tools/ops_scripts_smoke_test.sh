@@ -2684,6 +2684,46 @@ run_devnet_rehearsal_case() {
   assert_contains "$invalid_windowed_required_output" "WINDOWED_SIGNOFF_REQUIRED must be a boolean token"
   assert_contains "$invalid_windowed_required_output" "got: maybe"
 
+  local invalid_go_nogo_test_mode_output=""
+  if invalid_go_nogo_test_mode_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="sometimes" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_devnet_rehearsal.sh to fail for invalid GO_NOGO_TEST_MODE token" >&2
+    exit 1
+  else
+    local invalid_go_nogo_test_mode_exit_code=$?
+    if [[ "$invalid_go_nogo_test_mode_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_TEST_MODE token, got $invalid_go_nogo_test_mode_exit_code" >&2
+      echo "$invalid_go_nogo_test_mode_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_go_nogo_test_mode_output" "GO_NOGO_TEST_MODE must be a boolean token"
+  assert_contains "$invalid_go_nogo_test_mode_output" "got: sometimes"
+
+  local invalid_execution_enabled_output=""
+  if invalid_execution_enabled_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      SOLANA_COPY_BOT_EXECUTION_ENABLED="sometimes" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_devnet_rehearsal.sh to fail for invalid SOLANA_COPY_BOT_EXECUTION_ENABLED token" >&2
+    exit 1
+  else
+    local invalid_execution_enabled_exit_code=$?
+    if [[ "$invalid_execution_enabled_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid SOLANA_COPY_BOT_EXECUTION_ENABLED token, got $invalid_execution_enabled_exit_code" >&2
+      echo "$invalid_execution_enabled_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_execution_enabled_output" "SOLANA_COPY_BOT_EXECUTION_ENABLED must be a boolean token"
+  assert_contains "$invalid_execution_enabled_output" "got: sometimes"
+
   local invalid_route_fee_mode_output=""
   if invalid_route_fee_mode_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \

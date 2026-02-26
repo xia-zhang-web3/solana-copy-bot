@@ -91,7 +91,7 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 continue;
             }
             let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
-            let body: Value = match serde_json::from_str(body_read.text.as_str()) {
+            let body: Value = match serde_json::from_slice(body_read.bytes.as_slice()) {
                 Ok(value) => value,
                 Err(error) => {
                     if body_read.was_truncated {

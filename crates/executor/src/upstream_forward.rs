@@ -151,7 +151,7 @@ pub(crate) async fn forward_to_upstream(
         }
 
         let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
-        let body: Value = serde_json::from_str(body_read.text.as_str()).map_err(|error| {
+        let body: Value = serde_json::from_slice(body_read.bytes.as_slice()).map_err(|error| {
             if body_read.was_truncated {
                 return Reject::terminal(
                     "upstream_response_too_large",
