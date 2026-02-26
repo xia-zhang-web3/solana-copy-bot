@@ -797,8 +797,15 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 269. executor phase-2B route-hint priority matrix completed: added submit/simulate integration guards proving `payload_route` (`route_hint`) rejects always fire before `payload_shape`, `deadline_context`, and `action_context` when multiple malformed conditions overlap, finalizing deterministic ordering for the top-of-chain route-executor guards.
 270. executor phase-2B route-hint priority symmetry + feature-gate coverage completed: closed remaining route-hint ordering gaps (`route_hint > action_context` on submit, `route_hint > deadline_context` on simulate) and added explicit route-hint-vs-fastlane-feature-gate priority guards for submit/simulate, ensuring top-of-chain `payload_route` determinism across policy-gate overlaps.
 271. executor phase-2B route-hint allowlist/backend symmetry completed: added submit integration priority guards proving `route_hint` rejects fire before `allowlist` and `backend` policy gates (parity with existing simulate coverage), closing the remaining low-gap in route-hint ordering matrix.
+272. executor phase-2B ordering governance policy codified: persistent policy document `ops/executor_ordering_coverage_policy.md` added with finite matrix scope, explicit residual count (`N=2`), closure criteria, post-closure freeze rules, and KPI limiting consecutive coverage-only slices; this is now the mandatory coordination source for cross-session executor continuation.
 
 Остается в next-code-queue:
+
+Execution governance gate for all next executor slices:
+1. Read `ops/executor_ordering_coverage_policy.md` first.
+2. Report current ordering residual count `N`.
+3. Keep no more than one coverage-only slice in a row.
+4. Prefer runtime/e2e progress mapped to queue items below.
 
 1. execute production adapter rollout evidence run on server (`tools/adapter_rollout_evidence_report.sh`) after systemd secret mounts + rotation drill, and archive emitted artifacts as final runtime evidence package.
 2. run route-profile calibration windows in adapter mode and attach evidence package (`route_profile_verdict=PASS`, stable primary/fallback KPI) before tightening Jito-primary/RPC-fallback policy for go/no-go (`tools/execution_go_nogo_report.sh` summary + raw artifacts).
