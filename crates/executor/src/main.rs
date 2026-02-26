@@ -2160,13 +2160,42 @@ mod tests {
         assert!(!reject.retryable);
         assert_eq!(reject.code, "upstream_response_too_large");
         assert!(
-            reject.detail.contains("exceeded max bytes"),
+            reject.detail.contains("max_bytes=65536"),
             "detail should report response-too-large: {}",
             reject.detail
         );
         assert!(
             !reject.detail.contains(tail_marker),
             "detail leaked upstream json tail marker: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_rejects_oversized_declared_content_length_before_json_read() {
+        let Some((url, handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"status":"ok"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+        let state = test_state(url.as_str());
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect_err("declared oversized content-length should fail before JSON read");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
+        assert!(
+            reject.detail.contains("declared content-length"),
+            "detail={}",
+            reject.detail
+        );
+        assert!(
+            reject.detail.contains("max_bytes=65536"),
+            "detail={}",
             reject.detail
         );
         let _ = handle.join();
@@ -2689,13 +2718,63 @@ mod tests {
         assert!(!reject.retryable);
         assert_eq!(reject.code, "send_rpc_response_too_large");
         assert!(
-            reject.detail.contains("exceeded max bytes"),
+            reject.detail.contains("max_bytes=65536"),
             "detail should report response-too-large: {}",
             reject.detail
         );
         assert!(
             !reject.detail.contains(tail_marker),
             "detail leaked send-rpc json tail marker: {}",
+            reject.detail
+        );
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_oversized_declared_content_length_before_json_read(
+    ) {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([57u8; 64]);
+        let Some((send_rpc_url, send_rpc_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"jsonrpc":"2.0","result":"x"}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("declared oversized content-length should fail before JSON read");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_response_too_large");
+        assert!(
+            reject.detail.contains("declared content-length"),
+            "detail={}",
+            reject.detail
+        );
+        assert!(
+            reject.detail.contains("max_bytes=65536"),
+            "detail={}",
             reject.detail
         );
         let _ = send_rpc_handle.join();
@@ -9416,6 +9495,50 @@ mod tests {
         assert!(
             !reject.detail.contains(tail_marker),
             "detail leaked submit-verify json tail marker: {}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_rejects_oversized_declared_content_length_before_json_read() {
+        let signature = bs58::encode([58u8; 64]).into_string();
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("declared oversized content-length should classify as strict unseen");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains("response_too_large"),
+            "detail={}",
+            reject.detail
+        );
+        assert!(
+            reject.detail.contains("declared_content_length"),
+            "detail={}",
             reject.detail
         );
         let _ = handle.join();

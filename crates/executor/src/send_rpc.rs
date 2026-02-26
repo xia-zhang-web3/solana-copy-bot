@@ -175,6 +175,19 @@ pub(crate) async fn send_signed_transaction_via_rpc(
             }
             return Err(reject);
         }
+        if let Some(content_length) = response.content_length() {
+            if content_length > MAX_HTTP_JSON_BODY_READ_BYTES as u64 {
+                return Err(Reject::terminal(
+                    "send_rpc_response_too_large",
+                    format!(
+                        "send RPC response declared content-length={} exceeds max_bytes={} endpoint={}",
+                        content_length,
+                        MAX_HTTP_JSON_BODY_READ_BYTES,
+                        endpoint_label
+                    ),
+                ));
+            }
+        }
         let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
         if let Some(read_error_class) = body_read.read_error_class {
             let reject = Reject::retryable(

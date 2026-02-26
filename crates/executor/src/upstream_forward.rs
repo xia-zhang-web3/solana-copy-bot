@@ -150,6 +150,20 @@ pub(crate) async fn forward_to_upstream(
             return Err(reject);
         }
 
+        if let Some(content_length) = response.content_length() {
+            if content_length > MAX_HTTP_JSON_BODY_READ_BYTES as u64 {
+                return Err(Reject::terminal(
+                    "upstream_response_too_large",
+                    format!(
+                        "upstream {} response declared content-length={} exceeds max_bytes={} endpoint={}",
+                        action.as_str(),
+                        content_length,
+                        MAX_HTTP_JSON_BODY_READ_BYTES,
+                        endpoint_label
+                    ),
+                ));
+            }
+        }
         let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
         if let Some(read_error_class) = body_read.read_error_class {
             let reject = Reject::retryable(
