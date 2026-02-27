@@ -184,6 +184,7 @@ contract_guard_tests=(
   "response_cleanup_clamps_future_global_marker_to_now"
   "parse_route_allowlist_rejects_unknown_route"
   "parse_route_allowlist_rejects_unknown_route_with_suggestion"
+  "executor_config_from_env_rejects_unknown_route_allowlist_entry_with_suggestion"
   "parse_route_allowlist_rejects_duplicate_route"
   "parse_route_allowlist_rejects_empty_route_entry"
   "route_allowlist_parse_rejects_unknown_route"
