@@ -15,6 +15,7 @@ use crate::route_backend::RouteBackend;
 use crate::secret_source::resolve_secret_source;
 use crate::secret_value::SecretValue;
 use crate::signer_source::resolve_signer_source_config;
+use crate::text_distance::closest_match;
 use crate::submit_budget::{default_submit_total_budget_ms, min_claim_ttl_sec_for_submit_path};
 use crate::submit_verify_config::parse_submit_signature_verify_config;
 use crate::{
@@ -648,46 +649,13 @@ fn starts_with_prefix_case_insensitive(value: &str, prefix: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn levenshtein_distance(left: &str, right: &str) -> usize {
-    if left == right {
-        return 0;
-    }
-    let right_len = right.chars().count();
-    if right_len == 0 {
-        return left.chars().count();
-    }
-    let left_len = left.chars().count();
-    if left_len == 0 {
-        return right_len;
-    }
-    let mut prev: Vec<usize> = (0..=right_len).collect();
-    let mut curr = vec![0usize; right_len + 1];
-    for (i, left_char) in left.chars().enumerate() {
-        curr[0] = i + 1;
-        for (j, right_char) in right.chars().enumerate() {
-            let cost = usize::from(left_char != right_char);
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[right_len]
-}
-
 fn suggestion_threshold(candidate: &str, suggestion: &str) -> usize {
     let max_len = candidate.len().max(suggestion.len());
     (max_len / 8).clamp(2, 8)
 }
 
 fn best_match_key<'a>(candidate: &str, options: &'a [&str]) -> Option<&'a str> {
-    let mut best: Option<(&str, usize)> = None;
-    for option in options {
-        let distance = levenshtein_distance(candidate, option);
-        match best {
-            Some((_, best_distance)) if best_distance <= distance => {}
-            _ => best = Some((option, distance)),
-        }
-    }
-    best.and_then(|(option, distance)| {
+    closest_match(candidate, options).and_then(|(option, distance)| {
         if distance <= suggestion_threshold(candidate, option) {
             Some(option)
         } else {

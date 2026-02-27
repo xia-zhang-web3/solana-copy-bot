@@ -64,6 +64,7 @@ mod submit_transport;
 mod submit_verify;
 mod submit_verify_config;
 mod submit_verify_payload;
+mod text_distance;
 mod tx_build;
 mod upstream_forward;
 mod upstream_outcome;

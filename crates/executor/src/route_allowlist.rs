@@ -3,44 +3,12 @@ use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 
 use crate::{route_normalization::normalize_route, route_policy::requires_submit_fastlane_enabled};
+use crate::text_distance::closest_match;
 
 const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
 
-fn levenshtein_distance(left: &str, right: &str) -> usize {
-    if left == right {
-        return 0;
-    }
-    let right_len = right.chars().count();
-    if right_len == 0 {
-        return left.chars().count();
-    }
-    let left_len = left.chars().count();
-    if left_len == 0 {
-        return right_len;
-    }
-    let mut prev: Vec<usize> = (0..=right_len).collect();
-    let mut curr = vec![0usize; right_len + 1];
-    for (i, left_char) in left.chars().enumerate() {
-        curr[0] = i + 1;
-        for (j, right_char) in right.chars().enumerate() {
-            let cost = usize::from(left_char != right_char);
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[right_len]
-}
-
 fn known_route_suggestion(route: &str) -> Option<&'static str> {
-    let mut best: Option<(&str, usize)> = None;
-    for known in KNOWN_ROUTES {
-        let distance = levenshtein_distance(route, known);
-        match best {
-            Some((_, best_distance)) if best_distance <= distance => {}
-            _ => best = Some((known, distance)),
-        }
-    }
-    best.and_then(|(known, distance)| {
+    closest_match(route, KNOWN_ROUTES).and_then(|(known, distance)| {
         let threshold = (route.len().max(known.len()) / 4).clamp(1, 3);
         if distance <= threshold {
             Some(known)

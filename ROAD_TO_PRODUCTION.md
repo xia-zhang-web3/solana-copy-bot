@@ -869,6 +869,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 341. startup env typo-diagnostics hardening: unknown executor env keys now include deterministic `did you mean ...` suggestions for close matches (both non-route `COPYBOT_EXECUTOR_*` and route-scoped `COPYBOT_EXECUTOR_ROUTE_<ROUTE>_<SUFFIX>` keys), and mixed-case prefix rejects now suggest canonical uppercase key names when derivable; this preserves fail-closed behavior while reducing operator triage time on env typos.
 342. route allowlist typo-diagnostics hardening: `parse_route_allowlist` now emits deterministic `did you mean route=<known>?` hints for close unknown route tokens (for example `faslane` -> `fastlane`) while remaining fail-closed; parser and startup config guards now pin both branches (suggestion present for close typo, suggestion absent for distant unknown token).
 343. contract smoke registry sync for allowlist-typo startup guard: `executor_contract_smoke_test.sh` now includes `executor_config_from_env_rejects_unknown_route_allowlist_entry_with_suggestion`, closing coverage drift where parser guard was registered but from-env integration guard was not.
+344. typo-distance engine de-dup hardening: shared module `text_distance` now owns Levenshtein + closest-match logic used by both startup env typo diagnostics (`executor_config_env`) and route-allowlist typo suggestions (`route_allowlist`), removing duplicated implementations and reducing drift risk while preserving all existing fail-closed semantics and guard behavior.
 
 Остается в next-code-queue:
 
