@@ -183,6 +183,7 @@ contract_guard_tests=(
   "claim_cleanup_clamps_future_global_marker_to_now"
   "response_cleanup_clamps_future_global_marker_to_now"
   "parse_route_allowlist_rejects_unknown_route"
+  "parse_route_allowlist_rejects_unknown_route_with_suggestion"
   "parse_route_allowlist_rejects_duplicate_route"
   "parse_route_allowlist_rejects_empty_route_entry"
   "route_allowlist_parse_rejects_unknown_route"

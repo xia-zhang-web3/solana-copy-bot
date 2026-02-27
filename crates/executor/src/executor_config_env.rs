@@ -2141,6 +2141,35 @@ mod tests {
         });
     }
 
+    #[test]
+    fn executor_config_from_env_rejects_unknown_route_allowlist_entry_with_suggestion() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "rpc,faslane");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("unknown allowlist route entry must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains unsupported route=faslane"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("did you mean route=fastlane?"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn executor_config_from_env_rejects_non_utf8_bind_addr_value() {

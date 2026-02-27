@@ -6,6 +6,50 @@ use crate::{route_normalization::normalize_route, route_policy::requires_submit_
 
 const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
 
+fn levenshtein_distance(left: &str, right: &str) -> usize {
+    if left == right {
+        return 0;
+    }
+    let right_len = right.chars().count();
+    if right_len == 0 {
+        return left.chars().count();
+    }
+    let left_len = left.chars().count();
+    if left_len == 0 {
+        return right_len;
+    }
+    let mut prev: Vec<usize> = (0..=right_len).collect();
+    let mut curr = vec![0usize; right_len + 1];
+    for (i, left_char) in left.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, right_char) in right.chars().enumerate() {
+            let cost = usize::from(left_char != right_char);
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[right_len]
+}
+
+fn known_route_suggestion(route: &str) -> Option<&'static str> {
+    let mut best: Option<(&str, usize)> = None;
+    for known in KNOWN_ROUTES {
+        let distance = levenshtein_distance(route, known);
+        match best {
+            Some((_, best_distance)) if best_distance <= distance => {}
+            _ => best = Some((known, distance)),
+        }
+    }
+    best.and_then(|(known, distance)| {
+        let threshold = (route.len().max(known.len()) / 4).clamp(1, 3);
+        if distance <= threshold {
+            Some(known)
+        } else {
+            None
+        }
+    })
+}
+
 pub(crate) fn sorted_routes(route_allowlist: &HashSet<String>) -> Vec<String> {
     let mut routes: Vec<String> = route_allowlist.iter().cloned().collect();
     routes.sort_unstable();
@@ -22,9 +66,13 @@ pub(crate) fn parse_route_allowlist(csv: String) -> Result<HashSet<String>> {
             ));
         }
         if !KNOWN_ROUTES.iter().any(|known| *known == route) {
+            let suggestion = known_route_suggestion(route.as_str());
             return Err(anyhow!(
-                "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains unsupported route={} (supported: paper,rpc,jito,fastlane)",
-                route
+                "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains unsupported route={}{} (supported: paper,rpc,jito,fastlane)",
+                route,
+                suggestion
+                    .map(|value| format!(" (did you mean route={}?)", value))
+                    .unwrap_or_default()
             ));
         }
         if routes.contains(route.as_str()) {
@@ -98,6 +146,31 @@ mod tests {
             error
                 .to_string()
                 .contains("unsupported route=unknown_route"),
+            "error={}",
+            error
+        );
+        assert!(
+            !error.to_string().contains("did you mean route="),
+            "error={}",
+            error
+        );
+    }
+
+    #[test]
+    fn parse_route_allowlist_rejects_unknown_route_with_suggestion() {
+        let error = parse_route_allowlist("rpc,faslane".to_string())
+            .expect_err("typo route must fail closed with suggestion");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported route=faslane"),
+            "error={}",
+            error
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("did you mean route=fastlane?"),
             "error={}",
             error
         );
