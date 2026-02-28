@@ -1302,6 +1302,28 @@ run_go_nogo_fastlane_disabled_gate_case() {
   fi
   assert_contains "$invalid_test_mode_output" "GO_NOGO_TEST_MODE must be a boolean token"
   assert_contains "$invalid_test_mode_output" "got: sometimes"
+
+  local invalid_execution_fastlane_output=""
+  if invalid_execution_fastlane_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED="maybe" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED token" >&2
+    exit 1
+  else
+    local invalid_execution_fastlane_exit_code=$?
+    if [[ "$invalid_execution_fastlane_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED token, got $invalid_execution_fastlane_exit_code" >&2
+      echo "$invalid_execution_fastlane_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_execution_fastlane_output" "invalid boolean setting for env SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED"
+  assert_contains "$invalid_execution_fastlane_output" "got: maybe"
   echo "[ok] go-no-go strict fastlane-disabled gate"
 }
 

@@ -91,16 +91,25 @@ cfg_or_env_bool() {
   local env_name="$3"
   local fallback="${4:-false}"
   local raw=""
+  local source_desc=""
   if [[ -n "${!env_name+x}" ]]; then
     raw="${!env_name}"
+    source_desc="env ${env_name}"
   else
     raw="$(cfg_value "$section" "$key")"
+    source_desc="config [${section}].${key}"
   fi
   raw="$(trim_string "$raw")"
   if [[ -z "$raw" ]]; then
     raw="$fallback"
+    source_desc="${source_desc} (fallback)"
   fi
-  normalize_bool_token "$raw"
+  local normalized=""
+  if ! normalized="$(normalize_bool_token "$raw" 2>/dev/null)"; then
+    echo "invalid boolean setting for ${source_desc}: expected true/false/1/0/yes/no/on/off, got: ${raw}" >&2
+    return 1
+  fi
+  printf '%s' "$normalized"
 }
 
 cfg_or_env_string() {
@@ -167,6 +176,15 @@ normalize_route_token() {
       ;;
   esac
 }
+
+dynamic_cu_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_cu_price_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED false)"
+dynamic_tip_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_tip_lamports_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED false)"
+dynamic_cu_hint_api_primary_url="$(cfg_or_env_string execution submit_dynamic_cu_price_api_primary_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL "")"
+execution_mode_for_go_nogo="$(trim_string "$(cfg_or_env_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE "paper")")"
+if [[ -z "$execution_mode_for_go_nogo" ]]; then
+  execution_mode_for_go_nogo="paper"
+fi
+submit_fastlane_enabled="$(cfg_or_env_bool execution submit_fastlane_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED false)"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -245,14 +263,6 @@ submit_dynamic_cu_static_fallback_by_route="$(extract_field "submit_dynamic_cu_s
 submit_dynamic_tip_policy_enabled_by_route="$(extract_field "submit_dynamic_tip_policy_enabled_by_route" "$snapshot_output")"
 submit_dynamic_tip_applied_by_route="$(extract_field "submit_dynamic_tip_applied_by_route" "$snapshot_output")"
 submit_dynamic_tip_static_floor_by_route="$(extract_field "submit_dynamic_tip_static_floor_by_route" "$snapshot_output")"
-dynamic_cu_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_cu_price_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED false)"
-dynamic_tip_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_tip_lamports_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED false)"
-dynamic_cu_hint_api_primary_url="$(cfg_or_env_string execution submit_dynamic_cu_price_api_primary_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL "")"
-execution_mode_for_go_nogo="$(trim_string "$(cfg_or_env_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE "paper")")"
-if [[ -z "$execution_mode_for_go_nogo" ]]; then
-  execution_mode_for_go_nogo="paper"
-fi
-submit_fastlane_enabled="$(cfg_or_env_bool execution submit_fastlane_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED false)"
 dynamic_cu_hint_api_configured="false"
 if [[ -n "$dynamic_cu_hint_api_primary_url" ]]; then
   dynamic_cu_hint_api_configured="true"
