@@ -3957,6 +3957,47 @@ run_evidence_bundle_pack_case() {
   tar_list="$(tar -tzf "$bundle_path")"
   assert_contains "$tar_list" "summary.txt"
   assert_contains "$tar_list" "nested/captured.log"
+
+  local self_output_dir="$TMP_DIR/evidence-pack-self"
+  mkdir -p "$self_output_dir"
+  printf 'self-run-line\n' >"$self_output_dir/self.txt"
+
+  local first_self_output=""
+  first_self_output="$(
+    BUNDLE_LABEL="executor_self_bundle" \
+      BUNDLE_TIMESTAMP_UTC="20260226T000000Z" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$self_output_dir"
+  )"
+  assert_field_equals "$first_self_output" "file_count" "1"
+
+  local second_self_output=""
+  second_self_output="$(
+    BUNDLE_LABEL="executor_self_bundle" \
+      BUNDLE_TIMESTAMP_UTC="20260226T000000Z" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$self_output_dir"
+  )"
+  assert_field_equals "$second_self_output" "file_count" "1"
+
+  local first_self_bundle_path=""
+  local second_self_bundle_path=""
+  first_self_bundle_path="$(extract_field_value "$first_self_output" "bundle_path")"
+  second_self_bundle_path="$(extract_field_value "$second_self_output" "bundle_path")"
+  if [[ "$first_self_bundle_path" == "$second_self_bundle_path" ]]; then
+    echo "expected second self-output bundle path to avoid name collision" >&2
+    exit 1
+  fi
+
+  local self_tar_list=""
+  self_tar_list="$(tar -tzf "$second_self_bundle_path")"
+  assert_contains "$self_tar_list" "self.txt"
+  if grep -Fq ".tar.gz" <<<"$self_tar_list"; then
+    echo "expected self-output bundle not to include previous bundle artifacts" >&2
+    exit 1
+  fi
+  if grep -Fq ".sha256" <<<"$self_tar_list"; then
+    echo "expected self-output bundle not to include previous checksum artifacts" >&2
+    exit 1
+  fi
   echo "[ok] evidence bundle pack"
 }
 
