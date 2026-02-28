@@ -51,15 +51,17 @@ contents_manifest_path="$OUTPUT_DIR/${bundle_base}.contents.sha256"
 tmp_list="$(mktemp)"
 trap 'rm -f "$tmp_list"' EXIT
 
+is_bundle_helper_artifact() {
+  local relative_path="$1"
+  local base_name="${relative_path##*/}"
+  [[ "$base_name" =~ ^[A-Za-z0-9._-]+_[0-9]{8}T[0-9]{6}Z(_[0-9]+)?(\.tar\.gz|\.contents\.sha256|\.sha256)$ ]]
+}
+
 relative_files=()
 while IFS= read -r relative_file; do
-  case "$relative_file" in
-    "${BUNDLE_LABEL}"_*.tar.gz|*/"${BUNDLE_LABEL}"_*.tar.gz|\
-    "${BUNDLE_LABEL}"_*.sha256|*/"${BUNDLE_LABEL}"_*.sha256|\
-    "${BUNDLE_LABEL}"_*.contents.sha256|*/"${BUNDLE_LABEL}"_*.contents.sha256)
-      continue
-      ;;
-  esac
+  if is_bundle_helper_artifact "$relative_file"; then
+    continue
+  fi
   relative_files+=("$relative_file")
 done < <(
   cd "$EVIDENCE_DIR"

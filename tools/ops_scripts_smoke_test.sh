@@ -3998,6 +3998,36 @@ run_evidence_bundle_pack_case() {
     echo "expected self-output bundle not to include previous checksum artifacts" >&2
     exit 1
   fi
+
+  local first_cross_label_output=""
+  first_cross_label_output="$(
+    BUNDLE_LABEL="executor_label_a_bundle" \
+      BUNDLE_TIMESTAMP_UTC="20260226T000010Z" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$self_output_dir"
+  )"
+  assert_field_equals "$first_cross_label_output" "file_count" "1"
+
+  local second_cross_label_output=""
+  second_cross_label_output="$(
+    BUNDLE_LABEL="executor_label_b_bundle" \
+      BUNDLE_TIMESTAMP_UTC="20260226T000011Z" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$self_output_dir"
+  )"
+  assert_field_equals "$second_cross_label_output" "file_count" "1"
+
+  local second_cross_label_bundle_path=""
+  second_cross_label_bundle_path="$(extract_field_value "$second_cross_label_output" "bundle_path")"
+  local cross_label_tar_list=""
+  cross_label_tar_list="$(tar -tzf "$second_cross_label_bundle_path")"
+  assert_contains "$cross_label_tar_list" "self.txt"
+  if grep -Fq ".tar.gz" <<<"$cross_label_tar_list"; then
+    echo "expected cross-label bundle not to include prior bundle archives" >&2
+    exit 1
+  fi
+  if grep -Fq ".sha256" <<<"$cross_label_tar_list"; then
+    echo "expected cross-label bundle not to include prior checksum artifacts" >&2
+    exit 1
+  fi
   echo "[ok] evidence bundle pack"
 }
 
