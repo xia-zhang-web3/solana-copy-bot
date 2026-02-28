@@ -889,6 +889,30 @@ assert_field_non_empty() {
   fi
 }
 
+assert_sha256_field_matches_file() {
+  local text="$1"
+  local sha_key="$2"
+  local path_key="$3"
+  local expected_sha
+  local file_path
+  expected_sha="$(extract_field_value "$text" "$sha_key")"
+  file_path="$(extract_field_value "$text" "$path_key")"
+  if [[ -z "$expected_sha" || -z "$file_path" ]]; then
+    echo "expected non-empty $sha_key and $path_key for sha/file consistency check" >&2
+    exit 1
+  fi
+  if [[ ! -f "$file_path" ]]; then
+    echo "expected file for $path_key at $file_path" >&2
+    exit 1
+  fi
+  local actual_sha
+  actual_sha="$(sha256_file_value "$file_path")"
+  if [[ "$actual_sha" != "$expected_sha" ]]; then
+    echo "expected $sha_key to match sha256($path_key), got $expected_sha vs $actual_sha" >&2
+    exit 1
+  fi
+}
+
 assert_field_in() {
   local text="$1"
   local key="$2"
@@ -3068,6 +3092,8 @@ run_executor_rollout_evidence_case() {
   assert_sha256_field "$final_output" "summary_sha256"
   assert_sha256_field "$final_output" "rollout_capture_sha256"
   assert_sha256_field "$final_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$final_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$final_output" "manifest_sha256" "artifact_manifest"
   if ! ls "$final_artifacts_dir"/executor_final_evidence_summary_*.txt >/dev/null 2>&1; then
     echo "expected executor final package summary artifact in $final_artifacts_dir" >&2
     exit 1
@@ -3114,6 +3140,8 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$final_bundle_output" "package_bundle_exit_code" "0"
   assert_sha256_field "$final_bundle_output" "package_bundle_sha256"
+  assert_sha256_field_matches_file "$final_bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$final_bundle_output" "manifest_sha256" "artifact_manifest"
   assert_field_non_empty "$final_bundle_output" "package_bundle_path"
   assert_field_non_empty "$final_bundle_output" "package_bundle_sha256_path"
   assert_field_non_empty "$final_bundle_output" "package_bundle_contents_manifest"
@@ -3417,6 +3445,8 @@ run_adapter_rollout_evidence_case() {
   assert_sha256_field "$final_output" "summary_sha256"
   assert_sha256_field "$final_output" "rollout_capture_sha256"
   assert_sha256_field "$final_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$final_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$final_output" "manifest_sha256" "artifact_manifest"
   if ! ls "$final_artifacts_dir"/adapter_rollout_final_evidence_summary_*.txt >/dev/null 2>&1; then
     echo "expected final rollout package summary artifact in $final_artifacts_dir" >&2
     exit 1
@@ -3463,6 +3493,8 @@ run_adapter_rollout_evidence_case() {
   assert_field_equals "$final_bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$final_bundle_output" "package_bundle_exit_code" "0"
   assert_sha256_field "$final_bundle_output" "package_bundle_sha256"
+  assert_sha256_field_matches_file "$final_bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$final_bundle_output" "manifest_sha256" "artifact_manifest"
   assert_field_non_empty "$final_bundle_output" "package_bundle_path"
   assert_field_non_empty "$final_bundle_output" "package_bundle_sha256_path"
   assert_field_non_empty "$final_bundle_output" "package_bundle_contents_manifest"

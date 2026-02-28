@@ -226,21 +226,12 @@ fi
 summary_path="$OUTPUT_ROOT/adapter_rollout_final_evidence_summary_${timestamp_compact}.txt"
 manifest_path="$OUTPUT_ROOT/adapter_rollout_final_evidence_manifest_${timestamp_compact}.txt"
 printf '%s\n' "$summary_output" >"$summary_path"
-summary_sha256="$(sha256_file_value "$summary_path")"
-cat >"$manifest_path" <<EOF
-summary_sha256: $summary_sha256
-rollout_capture_sha256: $rollout_capture_sha256
-rollout_summary_sha256: ${rollout_summary_sha256:-n/a}
-rollout_artifact_summary_sha256: $rollout_artifact_summary_sha256
-rollout_artifact_manifest_sha256: $rollout_artifact_manifest_sha256
-EOF
 
 echo
 echo "artifacts_written: true"
 echo "artifact_summary: $summary_path"
 echo "artifact_rollout_capture: $rollout_capture_path"
 echo "artifact_manifest: $manifest_path"
-echo "summary_sha256: $summary_sha256"
 echo "rollout_capture_sha256: $rollout_capture_sha256"
 
 package_bundle_artifacts_written="false"
@@ -299,13 +290,20 @@ else
   package_bundle_sha256_path_sha256="n/a"
   package_bundle_contents_manifest_sha256="n/a"
 fi
-cat >>"$manifest_path" <<EOF
+summary_sha256="$(sha256_file_value "$summary_path")"
+cat >"$manifest_path" <<EOF
+summary_sha256: $summary_sha256
+rollout_capture_sha256: $rollout_capture_sha256
+rollout_summary_sha256: ${rollout_summary_sha256:-n/a}
+rollout_artifact_summary_sha256: $rollout_artifact_summary_sha256
+rollout_artifact_manifest_sha256: $rollout_artifact_manifest_sha256
 package_bundle_path_sha256: $package_bundle_path_sha256
 package_bundle_sha256_path_sha256: $package_bundle_sha256_path_sha256
 package_bundle_contents_manifest_sha256: $package_bundle_contents_manifest_sha256
 EOF
 
 manifest_sha256="$(sha256_file_value "$manifest_path")"
+echo "summary_sha256: $summary_sha256"
 echo "manifest_sha256: $manifest_sha256"
 
 if [[ "$package_bundle_enabled_norm" == "true" && "$package_bundle_artifacts_written" != "true" ]]; then
