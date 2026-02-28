@@ -232,23 +232,6 @@ raise SystemExit(0)
 PY
 }
 
-parse_bool_token_strict() {
-  local raw="$1"
-  raw="$(trim_string "$raw")"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    0|false|no|off)
-      printf 'false'
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 declare -a report_lines=()
 declare -a secret_keys=()
 declare -a errors=()

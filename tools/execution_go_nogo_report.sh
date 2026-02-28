@@ -27,23 +27,6 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
-parse_bool_token_strict() {
-  local raw
-  raw="$(trim_string "$1")"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    0|false|no|off)
-      printf 'false'
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 go_nogo_require_jito_rpc_policy_raw="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"

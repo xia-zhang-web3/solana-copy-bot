@@ -24,23 +24,6 @@ timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
 declare -a input_errors=()
 
-parse_bool_token_strict() {
-  local raw
-  raw="$(trim_string "$1")"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    0|false|no|off)
-      printf 'false'
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 parse_final_bool_setting_into() {
   local setting_name="$1"
   local raw_value="$2"
