@@ -1044,6 +1044,31 @@ run_calibration_default_route_runtime_fallback_case() {
   echo "[ok] calibration runtime default-route fallback"
 }
 
+run_calibration_invalid_env_bool_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local invalid_output=""
+  if invalid_output="$(
+    DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO="maybe" \
+      bash "$ROOT_DIR/tools/execution_fee_calibration_report.sh" 24 2>&1
+  )"; then
+    echo "expected execution_fee_calibration_report.sh to fail for invalid SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO token, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "invalid boolean setting for env SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO"
+  assert_contains "$invalid_output" "got: maybe"
+  echo "[ok] calibration strict env bool gate"
+}
+
 run_calibration_adapter_mode_route_profile_case() {
   local db_path="$1"
   local config_path="$2"
@@ -3925,6 +3950,7 @@ main() {
   local runtime_default_fallback_cfg="$TMP_DIR/default-fallback.toml"
   write_config_missing_default_route_with_rpc_allowlist "$runtime_default_fallback_cfg" "$rpc_only_db"
   run_calibration_default_route_runtime_fallback_case "$rpc_only_db" "$runtime_default_fallback_cfg"
+  run_calibration_invalid_env_bool_case "$rpc_only_db" "$runtime_default_fallback_cfg"
 
   local adapter_mode_cfg="$TMP_DIR/adapter-mode.toml"
   write_config_adapter_mode "$adapter_mode_cfg" "$modern_db"

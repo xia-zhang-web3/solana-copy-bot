@@ -92,7 +92,7 @@ normalize_route_token() {
   printf '%s' "$route" | tr '[:upper:]' '[:lower:]'
 }
 
-normalize_bool_token() {
+parse_bool_token_strict() {
   local raw="$1"
   raw="${raw#"${raw%%[![:space:]]*}"}"
   raw="${raw%"${raw##*[![:space:]]}"}"
@@ -105,10 +105,37 @@ normalize_bool_token() {
       printf 'false'
       ;;
     *)
-      echo "execution.submit_adapter_require_policy_echo must be a boolean token (true/false/1/0/yes/no/on/off), got: $1" >&2
       return 1
       ;;
   esac
+}
+
+cfg_or_env_bool_setting() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local fallback="$4"
+  local source_desc=""
+  local raw=""
+  if [[ -n "${!env_name+x}" ]]; then
+    raw="${!env_name}"
+    source_desc="env ${env_name}"
+  else
+    raw="$(cfg_value "$section" "$key")"
+    source_desc="config [${section}].${key}"
+  fi
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  if [[ -z "$raw" ]]; then
+    raw="$fallback"
+    source_desc="${source_desc} (fallback)"
+  fi
+  local normalized=""
+  if ! normalized="$(parse_bool_token_strict "$raw")"; then
+    echo "invalid boolean setting for ${source_desc}: expected true/false/1/0/yes/no/on/off, got: ${raw}" >&2
+    return 1
+  fi
+  printf '%s' "$normalized"
 }
 
 csv_contains_route() {
@@ -278,6 +305,10 @@ build_allowed_routes_values() {
   printf "%s" "$values"
 }
 
+if ! SUBMIT_REQUIRE_POLICY_ECHO="$(cfg_or_env_bool_setting execution submit_adapter_require_policy_echo SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO false)"; then
+  exit 1
+fi
+
 DB_PATH="${DB_PATH:-$(cfg_value sqlite path)}"
 if [[ -z "$DB_PATH" ]]; then
   echo "failed to read sqlite.path from $CONFIG_PATH" >&2
@@ -331,9 +362,6 @@ fi
 EXECUTION_MODE="$(normalize_route_token "$(cfg_value execution mode)")"
 if [[ -z "$EXECUTION_MODE" ]]; then
   EXECUTION_MODE="paper"
-fi
-if ! SUBMIT_REQUIRE_POLICY_ECHO="$(normalize_bool_token "$(cfg_value execution submit_adapter_require_policy_echo)")"; then
-  exit 1
 fi
 FEE_CONSISTENCY_TOLERANCE_SOL="0.000000001"
 
