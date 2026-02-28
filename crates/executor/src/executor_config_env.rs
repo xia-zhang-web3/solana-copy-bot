@@ -695,6 +695,27 @@ fn suggest_non_route_executor_key(key: &str) -> Option<String> {
     best_match_key(key, KNOWN_NON_ROUTE_EXECUTOR_ENV_KEYS).map(str::to_string)
 }
 
+fn suggest_route_from_allowlist(route: &str, route_allowlist: &HashSet<String>) -> Option<String> {
+    let mut options: Vec<&str> = route_allowlist.iter().map(String::as_str).collect();
+    options.sort_unstable();
+    if options.is_empty() {
+        return None;
+    }
+    closest_match(route, options.as_slice()).and_then(|(option, distance)| {
+        let base_threshold = (route.len().max(option.len()) / 4).clamp(1, 3);
+        let threshold = if route.len() <= 4 && option.len() <= 4 {
+            2
+        } else {
+            base_threshold
+        };
+        if distance <= threshold {
+            Some(option.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 fn canonical_uppercase_executor_key_suggestion(key: &str) -> Option<String> {
     let uppercase = key.to_ascii_uppercase();
     if !uppercase.starts_with(EXECUTOR_ENV_PREFIX) {
@@ -745,7 +766,20 @@ fn validate_route_scoped_env_targets_allowlist(route_allowlist: &HashSet<String>
         };
         let route = route_raw.to_ascii_lowercase();
         if !route_allowlist.contains(route.as_str()) {
-            violations.push(format!("{} (route={})", key, route));
+            let suggestion = suggest_route_from_allowlist(route.as_str(), route_allowlist);
+            violations.push(format!(
+                "{} (route={}{}{})",
+                key,
+                route,
+                suggestion
+                    .as_deref()
+                    .map(|_| ", did you mean route=")
+                    .unwrap_or(""),
+                suggestion
+                    .as_deref()
+                    .map(|value| format!("{}?", value))
+                    .unwrap_or_default()
+            ));
         }
     }
 
@@ -1161,6 +1195,22 @@ mod tests {
     }
 
     #[test]
+    fn route_scoped_env_targets_allowlist_rejects_outside_route_with_allowlist_suggestion() {
+        with_clean_executor_env(|| {
+            env::set_var(
+                "COPYBOT_EXECUTOR_ROUTE_RCP_SUBMIT_URL",
+                "https://submit-rcp.example.com",
+            );
+            let allowlist = HashSet::from([String::from("rpc")]);
+            let error = validate_route_scoped_env_targets_allowlist(&allowlist)
+                .expect_err("route-scoped typo route outside allowlist must reject");
+            assert!(error.to_string().contains("outside COPYBOT_EXECUTOR_ROUTE_ALLOWLIST"));
+            assert!(error.to_string().contains("ROUTE_RCP_SUBMIT_URL"));
+            assert!(error.to_string().contains("did you mean route=rpc?"));
+        });
+    }
+
+    #[test]
     fn route_scoped_env_targets_allowlist_accepts_allowlisted_route() {
         with_clean_executor_env(|| {
             env::set_var(
@@ -1491,6 +1541,36 @@ mod tests {
                     error
                         .to_string()
                         .contains("outside COPYBOT_EXECUTOR_ROUTE_ALLOWLIST"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_route_scoped_env_outside_allowlist_with_suggestion() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RCP_SUBMIT_URL",
+                    "https://submit-rcp.example.com",
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("route-scoped typo route outside allowlist must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("outside COPYBOT_EXECUTOR_ROUTE_ALLOWLIST"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error.to_string().contains("did you mean route=rpc?"),
                     "unexpected error: {}",
                     error
                 );

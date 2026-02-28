@@ -174,6 +174,7 @@ contract_guard_tests=(
   "route_scoped_env_targets_allowlist_rejects_non_utf8_value"
   "route_scoped_env_targets_allowlist_rejects_non_utf8_key"
   "executor_config_from_env_rejects_route_scoped_env_outside_allowlist"
+  "executor_config_from_env_rejects_route_scoped_env_outside_allowlist_with_suggestion"
   "executor_config_from_env_rejects_unknown_route_scoped_env_key"
   "executor_config_from_env_rejects_unknown_non_route_scoped_env_key"
   "executor_config_from_env_rejects_mixed_case_executor_prefix_keys"
