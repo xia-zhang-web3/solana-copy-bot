@@ -116,7 +116,7 @@ output_dir_relative="$(relative_to_evidence_dir "$OUTPUT_DIR_ABS")"
 if [[ -n "$bundle_index_relative" ]]; then
   printf '%s\n' "$bundle_index_relative" >>"$tmp_exclude"
 fi
-if [[ -f "$bundle_index_path" ]]; then
+if [[ -n "$bundle_index_relative" && -f "$bundle_index_path" ]]; then
   while IFS= read -r index_entry; do
     if is_valid_bundle_index_entry_candidate "$index_entry" "$output_dir_relative"; then
       printf '%s\n' "$index_entry" >>"$tmp_index_candidates"

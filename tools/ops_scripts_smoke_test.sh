@@ -4048,6 +4048,36 @@ run_evidence_bundle_pack_case() {
   local poison_tar_list=""
   poison_tar_list="$(tar -tzf "$poison_bundle_path")"
   assert_contains "$poison_tar_list" "keep.txt"
+
+  local outside_input_dir="$TMP_DIR/evidence-pack-outside-input"
+  local outside_output_dir="$TMP_DIR/evidence-pack-outside-output"
+  mkdir -p "$outside_input_dir" "$outside_output_dir"
+  printf 'outside-keep\n' >"$outside_input_dir/outside_keep.txt"
+  printf 'outside-triplet-tar\n' >"$outside_input_dir/outside_triplet_20260226T000030Z.tar.gz"
+  printf 'outside-triplet-sha\n' >"$outside_input_dir/outside_triplet_20260226T000030Z.sha256"
+  printf 'outside-triplet-contents\n' >"$outside_input_dir/outside_triplet_20260226T000030Z.contents.sha256"
+  cat >"$outside_output_dir/.copybot_evidence_bundle_outputs.txt" <<'EOF_POISON_INDEX'
+outside_triplet_20260226T000030Z.tar.gz
+outside_triplet_20260226T000030Z.sha256
+outside_triplet_20260226T000030Z.contents.sha256
+EOF_POISON_INDEX
+
+  local outside_output=""
+  outside_output="$(
+    OUTPUT_DIR="$outside_output_dir" \
+      BUNDLE_LABEL="outside_bundle" \
+      BUNDLE_TIMESTAMP_UTC="20260226T000021Z" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$outside_input_dir"
+  )"
+  assert_field_equals "$outside_output" "file_count" "4"
+  local outside_bundle_path=""
+  outside_bundle_path="$(extract_field_value "$outside_output" "bundle_path")"
+  local outside_tar_list=""
+  outside_tar_list="$(tar -tzf "$outside_bundle_path")"
+  assert_contains "$outside_tar_list" "outside_keep.txt"
+  assert_contains "$outside_tar_list" "outside_triplet_20260226T000030Z.tar.gz"
+  assert_contains "$outside_tar_list" "outside_triplet_20260226T000030Z.sha256"
+  assert_contains "$outside_tar_list" "outside_triplet_20260226T000030Z.contents.sha256"
   echo "[ok] evidence bundle pack"
 }
 
