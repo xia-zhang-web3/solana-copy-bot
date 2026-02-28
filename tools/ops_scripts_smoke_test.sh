@@ -3899,9 +3899,71 @@ run_common_bool_normalization_case() {
   echo "[ok] common bool normalization"
 }
 
+run_evidence_bundle_pack_case() {
+  local evidence_dir="$TMP_DIR/evidence-pack-input"
+  local output_dir="$TMP_DIR/evidence-pack-out"
+  mkdir -p "$evidence_dir/nested" "$output_dir"
+  printf 'summary-line\n' >"$evidence_dir/summary.txt"
+  printf 'capture-line\n' >"$evidence_dir/nested/captured.log"
+
+  local bundle_output=""
+  bundle_output="$(
+    OUTPUT_DIR="$output_dir" \
+      BUNDLE_LABEL="executor_rollout_bundle" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$evidence_dir"
+  )"
+
+  assert_field_equals "$bundle_output" "artifacts_written" "true"
+  assert_field_equals "$bundle_output" "file_count" "2"
+  assert_field_equals "$bundle_output" "evidence_dir" "$evidence_dir"
+  assert_field_equals "$bundle_output" "output_dir" "$output_dir"
+  assert_sha256_field "$bundle_output" "bundle_sha256"
+
+  local bundle_path=""
+  local bundle_sha256_path=""
+  local contents_manifest=""
+  local bundle_sha256=""
+  bundle_path="$(extract_field_value "$bundle_output" "bundle_path")"
+  bundle_sha256_path="$(extract_field_value "$bundle_output" "bundle_sha256_path")"
+  contents_manifest="$(extract_field_value "$bundle_output" "contents_manifest")"
+  bundle_sha256="$(extract_field_value "$bundle_output" "bundle_sha256")"
+
+  if [[ ! -f "$bundle_path" ]]; then
+    echo "expected evidence bundle file to exist: $bundle_path" >&2
+    exit 1
+  fi
+  if [[ ! -f "$bundle_sha256_path" ]]; then
+    echo "expected evidence bundle sha file to exist: $bundle_sha256_path" >&2
+    exit 1
+  fi
+  if [[ ! -f "$contents_manifest" ]]; then
+    echo "expected evidence bundle contents manifest to exist: $contents_manifest" >&2
+    exit 1
+  fi
+
+  local bundle_sha_from_file=""
+  bundle_sha_from_file="$(awk '{print $1}' "$bundle_sha256_path")"
+  if [[ "$bundle_sha_from_file" != "$bundle_sha256" ]]; then
+    echo "expected bundle sha256 from output and sha file to match" >&2
+    exit 1
+  fi
+
+  local contents_text=""
+  contents_text="$(cat "$contents_manifest")"
+  assert_contains "$contents_text" "summary.txt"
+  assert_contains "$contents_text" "nested/captured.log"
+
+  local tar_list=""
+  tar_list="$(tar -tzf "$bundle_path")"
+  assert_contains "$tar_list" "summary.txt"
+  assert_contains "$tar_list" "nested/captured.log"
+  echo "[ok] evidence bundle pack"
+}
+
 main() {
   write_fake_journalctl
   run_common_bool_normalization_case
+  run_evidence_bundle_pack_case
 
   local legacy_db="$TMP_DIR/legacy.db"
   local legacy_cfg="$TMP_DIR/legacy.toml"
