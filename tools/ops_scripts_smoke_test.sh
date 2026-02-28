@@ -4030,6 +4030,24 @@ run_evidence_bundle_pack_case() {
     echo "expected cross-label bundle not to include prior checksum artifacts" >&2
     exit 1
   fi
+
+  local poison_dir="$TMP_DIR/evidence-pack-poison"
+  mkdir -p "$poison_dir"
+  printf 'keep-me\n' >"$poison_dir/keep.txt"
+  printf 'keep.txt\n' >"$poison_dir/.copybot_evidence_bundle_outputs.txt"
+
+  local poison_output=""
+  poison_output="$(
+    BUNDLE_LABEL="poison_check_bundle" \
+      BUNDLE_TIMESTAMP_UTC="20260226T000020Z" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$poison_dir"
+  )"
+  assert_field_equals "$poison_output" "file_count" "1"
+  local poison_bundle_path=""
+  poison_bundle_path="$(extract_field_value "$poison_output" "bundle_path")"
+  local poison_tar_list=""
+  poison_tar_list="$(tar -tzf "$poison_bundle_path")"
+  assert_contains "$poison_tar_list" "keep.txt"
   echo "[ok] evidence bundle pack"
 }
 

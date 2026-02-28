@@ -52,7 +52,9 @@ contents_manifest_path="$OUTPUT_DIR_ABS/${bundle_base}.contents.sha256"
 
 tmp_list="$(mktemp)"
 tmp_exclude="$(mktemp)"
-trap 'rm -f "$tmp_list" "$tmp_exclude"' EXIT
+tmp_index_candidates="$(mktemp)"
+tmp_index_valid="$(mktemp)"
+trap 'rm -f "$tmp_list" "$tmp_exclude" "$tmp_index_candidates" "$tmp_index_valid"' EXIT
 
 relative_to_evidence_dir() {
   local absolute_path="$1"
@@ -63,13 +65,88 @@ relative_to_evidence_dir() {
   printf ''
 }
 
+bundle_path_stem() {
+  local relative_path="$1"
+  if [[ "$relative_path" == *.tar.gz ]]; then
+    printf '%s' "${relative_path%.tar.gz}"
+    return
+  fi
+  if [[ "$relative_path" == *.contents.sha256 ]]; then
+    printf '%s' "${relative_path%.contents.sha256}"
+    return
+  fi
+  if [[ "$relative_path" == *.sha256 ]]; then
+    printf '%s' "${relative_path%.sha256}"
+    return
+  fi
+  printf ''
+}
+
+is_valid_bundle_index_entry_candidate() {
+  local relative_path="$1"
+  local output_prefix="$2"
+
+  if [[ -z "$relative_path" ]]; then
+    return 1
+  fi
+  if [[ "$relative_path" == /* ]]; then
+    return 1
+  fi
+  case "$relative_path" in
+    ../*|*/../*|*/..|./*|*/./*|*/.)
+      return 1
+      ;;
+  esac
+  if [[ -n "$output_prefix" && "$relative_path" != "$output_prefix/"* ]]; then
+    return 1
+  fi
+  case "$relative_path" in
+    *.tar.gz|*.sha256|*.contents.sha256)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 bundle_index_path="$OUTPUT_DIR_ABS/.copybot_evidence_bundle_outputs.txt"
 bundle_index_relative="$(relative_to_evidence_dir "$bundle_index_path")"
+output_dir_relative="$(relative_to_evidence_dir "$OUTPUT_DIR_ABS")"
 if [[ -n "$bundle_index_relative" ]]; then
   printf '%s\n' "$bundle_index_relative" >>"$tmp_exclude"
 fi
 if [[ -f "$bundle_index_path" ]]; then
-  cat "$bundle_index_path" >>"$tmp_exclude"
+  while IFS= read -r index_entry; do
+    if is_valid_bundle_index_entry_candidate "$index_entry" "$output_dir_relative"; then
+      printf '%s\n' "$index_entry" >>"$tmp_index_candidates"
+    fi
+  done <"$bundle_index_path"
+
+  if [[ -s "$tmp_index_candidates" ]]; then
+    while IFS= read -r index_entry; do
+      bundle_stem="$(bundle_path_stem "$index_entry")"
+      if [[ -z "$bundle_stem" ]]; then
+        continue
+      fi
+      bundle_tar="${bundle_stem}.tar.gz"
+      bundle_sha="${bundle_stem}.sha256"
+      bundle_contents="${bundle_stem}.contents.sha256"
+      if grep -Fqx -- "$bundle_tar" "$tmp_index_candidates" \
+        && grep -Fqx -- "$bundle_sha" "$tmp_index_candidates" \
+        && grep -Fqx -- "$bundle_contents" "$tmp_index_candidates" \
+        && [[ -f "$EVIDENCE_DIR_ABS/$bundle_tar" ]] \
+        && [[ -f "$EVIDENCE_DIR_ABS/$bundle_sha" ]] \
+        && [[ -f "$EVIDENCE_DIR_ABS/$bundle_contents" ]]; then
+        printf '%s\n' "$bundle_tar" >>"$tmp_index_valid"
+        printf '%s\n' "$bundle_sha" >>"$tmp_index_valid"
+        printf '%s\n' "$bundle_contents" >>"$tmp_index_valid"
+      fi
+    done <"$tmp_index_candidates"
+    if [[ -s "$tmp_index_valid" ]]; then
+      awk 'NF && !seen[$0]++' "$tmp_index_valid" >>"$tmp_exclude"
+    fi
+  fi
 fi
 
 relative_files=()
@@ -105,8 +182,8 @@ bundle_sha_path_relative="$(relative_to_evidence_dir "$bundle_sha_path")"
 contents_manifest_path_relative="$(relative_to_evidence_dir "$contents_manifest_path")"
 if [[ -n "$bundle_index_relative" ]]; then
   {
-    if [[ -f "$bundle_index_path" ]]; then
-      cat "$bundle_index_path"
+    if [[ -s "$tmp_index_valid" ]]; then
+      awk 'NF && !seen[$0]++' "$tmp_index_valid"
     fi
     if [[ -n "$bundle_path_relative" ]]; then
       printf '%s\n' "$bundle_path_relative"
