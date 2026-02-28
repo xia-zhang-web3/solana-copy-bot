@@ -12,6 +12,9 @@ ADAPTER_ENV_PATH="${ADAPTER_ENV_PATH:-/etc/solana-copy-bot/adapter.env}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/live.toml}}"
 SERVICE="${SERVICE:-solana-copy-bot}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-state/adapter-rollout-final-$(date -u +"%Y%m%dT%H%M%SZ")}"
+PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
+PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-adapter_rollout_final_evidence}"
+PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_ROOT}"
 
 RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
@@ -82,6 +85,7 @@ parse_final_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_R
 parse_final_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_final_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
 parse_final_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" rehearsal_route_fee_signoff_go_nogo_test_mode_norm
+parse_final_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
 
 mkdir -p "$OUTPUT_ROOT"
 rollout_output_dir="$OUTPUT_ROOT/rollout"
@@ -193,6 +197,9 @@ route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 rehearsal_route_fee_signoff_required: $rehearsal_route_fee_signoff_required_norm
 rehearsal_route_fee_signoff_windows_csv: $REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV
+package_bundle_enabled: $package_bundle_enabled_norm
+package_bundle_label: $PACKAGE_BUNDLE_LABEL
+package_bundle_output_dir: $PACKAGE_BUNDLE_OUTPUT_DIR
 input_error_count: ${#input_errors[@]}
 rollout_exit_code: $rollout_exit_code
 rollout_verdict: $rollout_verdict
@@ -227,7 +234,6 @@ rollout_summary_sha256: ${rollout_summary_sha256:-n/a}
 rollout_artifact_summary_sha256: $rollout_artifact_summary_sha256
 rollout_artifact_manifest_sha256: $rollout_artifact_manifest_sha256
 EOF
-manifest_sha256="$(sha256_file_value "$manifest_path")"
 
 echo
 echo "artifacts_written: true"
@@ -236,7 +242,75 @@ echo "artifact_rollout_capture: $rollout_capture_path"
 echo "artifact_manifest: $manifest_path"
 echo "summary_sha256: $summary_sha256"
 echo "rollout_capture_sha256: $rollout_capture_sha256"
+
+package_bundle_artifacts_written="false"
+package_bundle_exit_code="n/a"
+package_bundle_error="n/a"
+package_bundle_path="n/a"
+package_bundle_sha256="n/a"
+package_bundle_sha256_path="n/a"
+package_bundle_contents_manifest="n/a"
+package_bundle_file_count="n/a"
+if [[ "$package_bundle_enabled_norm" == "true" ]]; then
+  package_bundle_output=""
+  if package_bundle_output="$(
+    OUTPUT_DIR="$PACKAGE_BUNDLE_OUTPUT_DIR" \
+      BUNDLE_LABEL="$PACKAGE_BUNDLE_LABEL" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$OUTPUT_ROOT" 2>&1
+  )"; then
+    package_bundle_exit_code=0
+    package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
+    package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+    package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+    package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+    package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+    package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+  else
+    package_bundle_exit_code=$?
+    package_bundle_error="$(trim_string "$(printf '%s\n' "$package_bundle_output" | tail -n 1)")"
+  fi
+fi
+
+echo "package_bundle_artifacts_written: $package_bundle_artifacts_written"
+echo "package_bundle_exit_code: $package_bundle_exit_code"
+echo "package_bundle_error: $package_bundle_error"
+echo "package_bundle_path: $package_bundle_path"
+echo "package_bundle_sha256: $package_bundle_sha256"
+echo "package_bundle_sha256_path: $package_bundle_sha256_path"
+echo "package_bundle_contents_manifest: $package_bundle_contents_manifest"
+echo "package_bundle_file_count: $package_bundle_file_count"
+
+cat >>"$summary_path" <<EOF
+package_bundle_artifacts_written: $package_bundle_artifacts_written
+package_bundle_exit_code: $package_bundle_exit_code
+package_bundle_error: $package_bundle_error
+package_bundle_path: $package_bundle_path
+package_bundle_sha256: $package_bundle_sha256
+package_bundle_sha256_path: $package_bundle_sha256_path
+package_bundle_contents_manifest: $package_bundle_contents_manifest
+package_bundle_file_count: $package_bundle_file_count
+EOF
+if [[ "$package_bundle_artifacts_written" == "true" ]]; then
+  package_bundle_path_sha256="$(sha256_file_value "$package_bundle_path")"
+  package_bundle_sha256_path_sha256="$(sha256_file_value "$package_bundle_sha256_path")"
+  package_bundle_contents_manifest_sha256="$(sha256_file_value "$package_bundle_contents_manifest")"
+else
+  package_bundle_path_sha256="n/a"
+  package_bundle_sha256_path_sha256="n/a"
+  package_bundle_contents_manifest_sha256="n/a"
+fi
+cat >>"$manifest_path" <<EOF
+package_bundle_path_sha256: $package_bundle_path_sha256
+package_bundle_sha256_path_sha256: $package_bundle_sha256_path_sha256
+package_bundle_contents_manifest_sha256: $package_bundle_contents_manifest_sha256
+EOF
+
+manifest_sha256="$(sha256_file_value "$manifest_path")"
 echo "manifest_sha256: $manifest_sha256"
+
+if [[ "$package_bundle_enabled_norm" == "true" && "$package_bundle_artifacts_written" != "true" ]]; then
+  exit 3
+fi
 
 case "$rollout_verdict" in
 GO)
