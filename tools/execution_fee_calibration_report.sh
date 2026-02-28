@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
 WINDOW_HOURS="${1:-24}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
 
@@ -87,27 +91,8 @@ cfg_list_csv() {
 
 normalize_route_token() {
   local route="$1"
-  route="${route#"${route%%[![:space:]]*}"}"
-  route="${route%"${route##*[![:space:]]}"}"
+  route="$(trim_string "$route")"
   printf '%s' "$route" | tr '[:upper:]' '[:lower:]'
-}
-
-parse_bool_token_strict() {
-  local raw="$1"
-  raw="${raw#"${raw%%[![:space:]]*}"}"
-  raw="${raw%"${raw##*[![:space:]]}"}"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    ""|0|false|no|off)
-      printf 'false'
-      ;;
-    *)
-      return 1
-      ;;
-  esac
 }
 
 cfg_or_env_bool_setting() {
@@ -124,8 +109,7 @@ cfg_or_env_bool_setting() {
     raw="$(cfg_value "$section" "$key")"
     source_desc="config [${section}].${key}"
   fi
-  raw="${raw#"${raw%%[![:space:]]*}"}"
-  raw="${raw%"${raw##*[![:space:]]}"}"
+  raw="$(trim_string "$raw")"
   if [[ -z "$raw" ]]; then
     raw="$fallback"
     source_desc="${source_desc} (fallback)"
