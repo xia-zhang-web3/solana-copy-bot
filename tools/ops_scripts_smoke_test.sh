@@ -3905,6 +3905,7 @@ run_evidence_bundle_pack_case() {
   mkdir -p "$evidence_dir/nested" "$output_dir"
   printf 'summary-line\n' >"$evidence_dir/summary.txt"
   printf 'capture-line\n' >"$evidence_dir/nested/captured.log"
+  printf 'incident-archive-placeholder\n' >"$evidence_dir/incident_20260226T000030Z.tar.gz"
 
   local bundle_output=""
   bundle_output="$(
@@ -3914,7 +3915,7 @@ run_evidence_bundle_pack_case() {
   )"
 
   assert_field_equals "$bundle_output" "artifacts_written" "true"
-  assert_field_equals "$bundle_output" "file_count" "2"
+  assert_field_equals "$bundle_output" "file_count" "3"
   assert_field_equals "$bundle_output" "evidence_dir" "$evidence_dir"
   assert_field_equals "$bundle_output" "output_dir" "$output_dir"
   assert_sha256_field "$bundle_output" "bundle_sha256"
@@ -3957,6 +3958,7 @@ run_evidence_bundle_pack_case() {
   tar_list="$(tar -tzf "$bundle_path")"
   assert_contains "$tar_list" "summary.txt"
   assert_contains "$tar_list" "nested/captured.log"
+  assert_contains "$tar_list" "incident_20260226T000030Z.tar.gz"
 
   local self_output_dir="$TMP_DIR/evidence-pack-self"
   mkdir -p "$self_output_dir"

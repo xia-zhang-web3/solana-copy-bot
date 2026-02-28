@@ -14,6 +14,7 @@ if [[ ! -d "$EVIDENCE_DIR" ]]; then
   echo "evidence directory not found: $EVIDENCE_DIR" >&2
   exit 1
 fi
+EVIDENCE_DIR_ABS="$(cd "$EVIDENCE_DIR" && pwd -P)"
 
 OUTPUT_DIR="${OUTPUT_DIR:-$EVIDENCE_DIR}"
 BUNDLE_LABEL="${BUNDLE_LABEL:-evidence_bundle}"
@@ -25,6 +26,7 @@ if [[ ! "$BUNDLE_LABEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
 fi
 
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR_ABS="$(cd "$OUTPUT_DIR" && pwd -P)"
 
 if [[ -n "$BUNDLE_TIMESTAMP_UTC" ]]; then
   timestamp_compact="$BUNDLE_TIMESTAMP_UTC"
@@ -44,22 +46,35 @@ while [[ -e "$OUTPUT_DIR/${bundle_candidate}.tar.gz" || -e "$OUTPUT_DIR/${bundle
   bundle_candidate="${bundle_base}_${bundle_collision_index}"
 done
 bundle_base="$bundle_candidate"
-bundle_path="$OUTPUT_DIR/${bundle_base}.tar.gz"
-bundle_sha_path="$OUTPUT_DIR/${bundle_base}.sha256"
-contents_manifest_path="$OUTPUT_DIR/${bundle_base}.contents.sha256"
+bundle_path="$OUTPUT_DIR_ABS/${bundle_base}.tar.gz"
+bundle_sha_path="$OUTPUT_DIR_ABS/${bundle_base}.sha256"
+contents_manifest_path="$OUTPUT_DIR_ABS/${bundle_base}.contents.sha256"
 
 tmp_list="$(mktemp)"
-trap 'rm -f "$tmp_list"' EXIT
+tmp_exclude="$(mktemp)"
+trap 'rm -f "$tmp_list" "$tmp_exclude"' EXIT
 
-is_bundle_helper_artifact() {
-  local relative_path="$1"
-  local base_name="${relative_path##*/}"
-  [[ "$base_name" =~ ^[A-Za-z0-9._-]+_[0-9]{8}T[0-9]{6}Z(_[0-9]+)?(\.tar\.gz|\.contents\.sha256|\.sha256)$ ]]
+relative_to_evidence_dir() {
+  local absolute_path="$1"
+  if [[ "$absolute_path" == "$EVIDENCE_DIR_ABS/"* ]]; then
+    printf '%s' "${absolute_path#"$EVIDENCE_DIR_ABS"/}"
+    return
+  fi
+  printf ''
 }
+
+bundle_index_path="$OUTPUT_DIR_ABS/.copybot_evidence_bundle_outputs.txt"
+bundle_index_relative="$(relative_to_evidence_dir "$bundle_index_path")"
+if [[ -n "$bundle_index_relative" ]]; then
+  printf '%s\n' "$bundle_index_relative" >>"$tmp_exclude"
+fi
+if [[ -f "$bundle_index_path" ]]; then
+  cat "$bundle_index_path" >>"$tmp_exclude"
+fi
 
 relative_files=()
 while IFS= read -r relative_file; do
-  if is_bundle_helper_artifact "$relative_file"; then
+  if grep -Fqx -- "$relative_file" "$tmp_exclude"; then
     continue
   fi
   relative_files+=("$relative_file")
@@ -85,9 +100,30 @@ COPYFILE_DISABLE=1 tar -C "$EVIDENCE_DIR" -czf "$bundle_path" -T "$tmp_list"
 bundle_sha="$(sha256_file_value "$bundle_path")"
 printf '%s  %s\n' "$bundle_sha" "$(basename "$bundle_path")" >"$bundle_sha_path"
 
+bundle_path_relative="$(relative_to_evidence_dir "$bundle_path")"
+bundle_sha_path_relative="$(relative_to_evidence_dir "$bundle_sha_path")"
+contents_manifest_path_relative="$(relative_to_evidence_dir "$contents_manifest_path")"
+if [[ -n "$bundle_index_relative" ]]; then
+  {
+    if [[ -f "$bundle_index_path" ]]; then
+      cat "$bundle_index_path"
+    fi
+    if [[ -n "$bundle_path_relative" ]]; then
+      printf '%s\n' "$bundle_path_relative"
+    fi
+    if [[ -n "$bundle_sha_path_relative" ]]; then
+      printf '%s\n' "$bundle_sha_path_relative"
+    fi
+    if [[ -n "$contents_manifest_path_relative" ]]; then
+      printf '%s\n' "$contents_manifest_path_relative"
+    fi
+  } | awk 'NF && !seen[$0]++' >"${bundle_index_path}.tmp"
+  mv "${bundle_index_path}.tmp" "$bundle_index_path"
+fi
+
 echo "artifacts_written: true"
-echo "evidence_dir: $EVIDENCE_DIR"
-echo "output_dir: $OUTPUT_DIR"
+echo "evidence_dir: $EVIDENCE_DIR_ABS"
+echo "output_dir: $OUTPUT_DIR_ABS"
 echo "bundle_path: $bundle_path"
 echo "bundle_sha256: $bundle_sha"
 echo "bundle_sha256_path: $bundle_sha_path"
