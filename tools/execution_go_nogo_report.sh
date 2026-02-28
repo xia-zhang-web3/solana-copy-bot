@@ -11,6 +11,9 @@ RISK_EVENTS_MINUTES="${2:-60}"
 SERVICE="${SERVICE:-solana-copy-bot}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
+PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
+PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_go_nogo}"
+PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_DIR}"
 
 if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
   echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
@@ -40,6 +43,14 @@ if ! go_nogo_require_fastlane_disabled="$(parse_bool_token_strict "$go_nogo_requ
 fi
 if ! go_nogo_test_mode="$(parse_bool_token_strict "$go_nogo_test_mode_raw")"; then
   echo "GO_NOGO_TEST_MODE must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_test_mode_raw}" >&2
+  exit 1
+fi
+if ! package_bundle_enabled="$(parse_bool_token_strict "$PACKAGE_BUNDLE_ENABLED")"; then
+  echo "PACKAGE_BUNDLE_ENABLED must be a boolean token (true/false/1/0/yes/no/on/off), got: ${PACKAGE_BUNDLE_ENABLED}" >&2
+  exit 1
+fi
+if [[ "$package_bundle_enabled" == "true" && -z "$OUTPUT_DIR" ]]; then
+  echo "PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set" >&2
   exit 1
 fi
 
@@ -479,6 +490,14 @@ artifacts_written="false"
 if [[ -n "$OUTPUT_DIR" ]]; then
   artifacts_written="true"
 fi
+package_bundle_artifacts_written="false"
+package_bundle_exit_code="n/a"
+package_bundle_error="n/a"
+package_bundle_path="n/a"
+package_bundle_sha256="n/a"
+package_bundle_sha256_path="n/a"
+package_bundle_contents_manifest="n/a"
+package_bundle_file_count="n/a"
 
 summary_output="$(cat <<EOF
 === Execution Go/No-Go Summary ===
@@ -560,6 +579,9 @@ submit_fastlane_enabled: $submit_fastlane_enabled
 fastlane_feature_flag_verdict: $fastlane_feature_flag_verdict
 fastlane_feature_flag_reason: $fastlane_feature_flag_reason
 fastlane_feature_flag_reason_code: $fastlane_feature_flag_reason_code
+package_bundle_enabled: $package_bundle_enabled
+package_bundle_label: $PACKAGE_BUNDLE_LABEL
+package_bundle_output_dir: ${PACKAGE_BUNDLE_OUTPUT_DIR:-n/a}
 
 overall_go_nogo_verdict: $overall_go_nogo_verdict
 overall_go_nogo_reason: $overall_go_nogo_reason
@@ -582,16 +604,60 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   printf '%s\n' "$preflight_output" > "$preflight_path"
   printf '%s\n' "$summary_output" > "$summary_path"
 
+  if [[ "$package_bundle_enabled" == "true" ]]; then
+    package_bundle_output=""
+    if package_bundle_output="$(
+      OUTPUT_DIR="$PACKAGE_BUNDLE_OUTPUT_DIR" \
+        BUNDLE_LABEL="$PACKAGE_BUNDLE_LABEL" \
+        bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$OUTPUT_DIR" 2>&1
+    )"; then
+      package_bundle_exit_code=0
+      package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
+      package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+      package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+      package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+      package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+      package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+    else
+      package_bundle_exit_code=$?
+      package_bundle_error="$(trim_string "$(printf '%s\n' "$package_bundle_output" | tail -n 1)")"
+    fi
+  fi
+
+  cat >>"$summary_path" <<EOF
+package_bundle_artifacts_written: $package_bundle_artifacts_written
+package_bundle_exit_code: $package_bundle_exit_code
+package_bundle_error: $package_bundle_error
+package_bundle_path: $package_bundle_path
+package_bundle_sha256: $package_bundle_sha256
+package_bundle_sha256_path: $package_bundle_sha256_path
+package_bundle_contents_manifest: $package_bundle_contents_manifest
+package_bundle_file_count: $package_bundle_file_count
+EOF
+
   calibration_sha256="$(sha256_file_value "$calibration_path")"
   snapshot_sha256="$(sha256_file_value "$snapshot_path")"
   preflight_sha256="$(sha256_file_value "$preflight_path")"
   summary_sha256="$(sha256_file_value "$summary_path")"
+  if [[ "$package_bundle_artifacts_written" == "true" ]]; then
+    package_bundle_path_sha256="$(sha256_file_value "$package_bundle_path")"
+    package_bundle_sha256_path_sha256="$(sha256_file_value "$package_bundle_sha256_path")"
+    package_bundle_contents_manifest_sha256="$(sha256_file_value "$package_bundle_contents_manifest")"
+  else
+    package_bundle_path_sha256="n/a"
+    package_bundle_sha256_path_sha256="n/a"
+    package_bundle_contents_manifest_sha256="n/a"
+  fi
   cat >"$manifest_path" <<EOF
 calibration_sha256: $calibration_sha256
 snapshot_sha256: $snapshot_sha256
 preflight_sha256: $preflight_sha256
 summary_sha256: $summary_sha256
+package_bundle_path_sha256: $package_bundle_path_sha256
+package_bundle_sha256_path_sha256: $package_bundle_sha256_path_sha256
+package_bundle_contents_manifest_sha256: $package_bundle_contents_manifest_sha256
 EOF
+  manifest_sha256="$(sha256_file_value "$manifest_path")"
 
   echo
   echo "artifacts_written: true"
@@ -604,4 +670,17 @@ EOF
   echo "snapshot_sha256: $snapshot_sha256"
   echo "preflight_sha256: $preflight_sha256"
   echo "summary_sha256: $summary_sha256"
+  echo "manifest_sha256: $manifest_sha256"
+  echo "package_bundle_artifacts_written: $package_bundle_artifacts_written"
+  echo "package_bundle_exit_code: $package_bundle_exit_code"
+  echo "package_bundle_error: $package_bundle_error"
+  echo "package_bundle_path: $package_bundle_path"
+  echo "package_bundle_sha256: $package_bundle_sha256"
+  echo "package_bundle_sha256_path: $package_bundle_sha256_path"
+  echo "package_bundle_contents_manifest: $package_bundle_contents_manifest"
+  echo "package_bundle_file_count: $package_bundle_file_count"
+
+  if [[ "$package_bundle_enabled" == "true" && "$package_bundle_artifacts_written" != "true" ]]; then
+    exit 1
+  fi
 fi

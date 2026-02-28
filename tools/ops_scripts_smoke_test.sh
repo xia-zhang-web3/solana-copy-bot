@@ -1160,6 +1160,9 @@ run_go_nogo_artifact_export_case() {
   assert_sha256_field "$output" "snapshot_sha256"
   assert_sha256_field "$output" "preflight_sha256"
   assert_sha256_field "$output" "summary_sha256"
+  assert_sha256_field "$output" "manifest_sha256"
+  assert_sha256_field_matches_file "$output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$output" "manifest_sha256" "artifact_manifest"
   if ! ls "$artifacts_dir"/execution_go_nogo_summary_*.txt >/dev/null 2>&1; then
     echo "expected go/no-go summary artifact in $artifacts_dir" >&2
     exit 1
@@ -1180,6 +1183,57 @@ run_go_nogo_artifact_export_case() {
     echo "expected go/no-go manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
+
+  local bundle_artifacts_dir="$TMP_DIR/go-nogo-artifacts-with-bundle"
+  local bundle_output_dir="$TMP_DIR/go-nogo-bundles"
+  local bundle_output
+  bundle_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$bundle_artifacts_dir" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="execution_go_nogo_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$bundle_output_dir" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$bundle_output" "package_bundle_sha256"
+  assert_sha256_field_matches_file "$bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$bundle_output" "manifest_sha256" "artifact_manifest"
+  assert_field_non_empty "$bundle_output" "package_bundle_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_contents_manifest"
+  local go_nogo_bundle_path
+  go_nogo_bundle_path="$(extract_field_value "$bundle_output" "package_bundle_path")"
+  if [[ ! -f "$go_nogo_bundle_path" ]]; then
+    echo "expected package bundle archive at $go_nogo_bundle_path" >&2
+    exit 1
+  fi
+
+  local missing_output_dir_output=""
+  if missing_output_dir_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail when PACKAGE_BUNDLE_ENABLED=true and OUTPUT_DIR is missing" >&2
+    exit 1
+  else
+    local missing_output_dir_exit_code=$?
+    if [[ "$missing_output_dir_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for missing OUTPUT_DIR with PACKAGE_BUNDLE_ENABLED=true, got $missing_output_dir_exit_code" >&2
+      echo "$missing_output_dir_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$missing_output_dir_output" "PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set"
   echo "[ok] go-no-go artifact export"
 }
 
@@ -2550,6 +2604,9 @@ run_devnet_rehearsal_case() {
   assert_sha256_field "$output" "go_nogo_nested_capture_sha256"
   assert_sha256_field "$output" "windowed_signoff_nested_capture_sha256"
   assert_sha256_field "$output" "route_fee_signoff_nested_capture_sha256"
+  assert_sha256_field "$output" "manifest_sha256"
+  assert_sha256_field_matches_file "$output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$output" "manifest_sha256" "artifact_manifest"
   assert_sha256_field "$output" "go_nogo_summary_sha256"
   assert_sha256_field "$output" "windowed_signoff_summary_sha256"
   assert_sha256_field "$output" "route_fee_signoff_summary_sha256"
@@ -2607,6 +2664,67 @@ run_devnet_rehearsal_case() {
     echo "expected nested route/fee signoff capture artifact in $artifacts_dir/route_fee_signoff" >&2
     exit 1
   fi
+
+  local bundle_artifacts_dir="$TMP_DIR/devnet-rehearsal-artifacts-with-bundle"
+  local bundle_output_dir="$TMP_DIR/devnet-rehearsal-bundles"
+  local bundle_output
+  bundle_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$bundle_artifacts_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="execution_devnet_rehearsal_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$bundle_output_dir" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
+  )"
+  assert_field_equals "$bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$bundle_output" "package_bundle_sha256"
+  assert_sha256_field_matches_file "$bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$bundle_output" "manifest_sha256" "artifact_manifest"
+  assert_field_non_empty "$bundle_output" "package_bundle_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_contents_manifest"
+  local rehearsal_bundle_path
+  rehearsal_bundle_path="$(extract_field_value "$bundle_output" "package_bundle_path")"
+  if [[ ! -f "$rehearsal_bundle_path" ]]; then
+    echo "expected package bundle archive at $rehearsal_bundle_path" >&2
+    exit 1
+  fi
+
+  local missing_output_dir_output=""
+  if missing_output_dir_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_devnet_rehearsal.sh to fail when PACKAGE_BUNDLE_ENABLED=true and OUTPUT_DIR is missing" >&2
+    exit 1
+  else
+    local missing_output_dir_exit_code=$?
+    if [[ "$missing_output_dir_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for missing OUTPUT_DIR with PACKAGE_BUNDLE_ENABLED=true, got $missing_output_dir_exit_code" >&2
+      echo "$missing_output_dir_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$missing_output_dir_output" "PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set"
 
   local required_nogo_output=""
   if required_nogo_output="$(

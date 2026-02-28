@@ -27,6 +27,9 @@ ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-${GO
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}}"
 ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
+PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
+PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_devnet_rehearsal}"
+PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_DIR}"
 
 if ! [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]]; then
   echo "window hours must be an integer (got: $WINDOW_HOURS)" >&2
@@ -167,9 +170,14 @@ go_nogo_require_fastlane_disabled_norm="$(parse_rehearsal_bool_setting "GO_NOGO_
 go_nogo_test_mode_norm="$(parse_rehearsal_bool_setting "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE")"
 route_fee_signoff_required_norm="$(parse_rehearsal_bool_setting "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED")"
 route_fee_signoff_go_nogo_test_mode_norm="$(parse_rehearsal_bool_setting "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE")"
+package_bundle_enabled_norm="$(parse_rehearsal_bool_setting "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED")"
 route_fee_signoff_go_nogo_test_fee_override="$(trim_string "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE")"
 route_fee_signoff_go_nogo_test_route_override="$(trim_string "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE")"
 route_fee_signoff_test_verdict_override_raw="$(trim_string "$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE")"
+if [[ "$package_bundle_enabled_norm" == "true" && -z "$OUTPUT_DIR" ]]; then
+  echo "PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set" >&2
+  exit 1
+fi
 
 execution_enabled_raw="$(cfg_or_env_string execution enabled SOLANA_COPY_BOT_EXECUTION_ENABLED)"
 execution_enabled="$(parse_rehearsal_bool_setting "SOLANA_COPY_BOT_EXECUTION_ENABLED" "${execution_enabled_raw:-false}")"
@@ -514,6 +522,14 @@ artifacts_written="false"
 if [[ -n "$OUTPUT_DIR" ]]; then
   artifacts_written="true"
 fi
+package_bundle_artifacts_written="false"
+package_bundle_exit_code="n/a"
+package_bundle_error="n/a"
+package_bundle_path="n/a"
+package_bundle_sha256="n/a"
+package_bundle_sha256_path="n/a"
+package_bundle_contents_manifest="n/a"
+package_bundle_file_count="n/a"
 
 summary_output="$(cat <<EOF
 === Execution Devnet Rehearsal ===
@@ -599,6 +615,9 @@ route_fee_window_count: ${route_fee_window_count:-n/a}
 tests_run: $tests_run
 tests_total: $tests_total
 tests_failed: $tests_failed
+package_bundle_enabled: $package_bundle_enabled_norm
+package_bundle_label: $PACKAGE_BUNDLE_LABEL
+package_bundle_output_dir: ${PACKAGE_BUNDLE_OUTPUT_DIR:-n/a}
 devnet_rehearsal_verdict: $devnet_rehearsal_verdict
 devnet_rehearsal_reason: $devnet_rehearsal_reason
 devnet_rehearsal_reason_code: $devnet_rehearsal_reason_code
@@ -629,12 +648,52 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   printf '%s\n' "$route_fee_signoff_output" > "$route_fee_signoff_path"
   printf '%s\n' "$test_log" > "$tests_path"
 
+  if [[ "$package_bundle_enabled_norm" == "true" ]]; then
+    package_bundle_output=""
+    if package_bundle_output="$(
+      OUTPUT_DIR="$PACKAGE_BUNDLE_OUTPUT_DIR" \
+        BUNDLE_LABEL="$PACKAGE_BUNDLE_LABEL" \
+        bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$OUTPUT_DIR" 2>&1
+    )"; then
+      package_bundle_exit_code=0
+      package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
+      package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+      package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+      package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+      package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+      package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+    else
+      package_bundle_exit_code=$?
+      package_bundle_error="$(trim_string "$(printf '%s\n' "$package_bundle_output" | tail -n 1)")"
+    fi
+  fi
+
+  cat >>"$summary_path" <<EOF
+package_bundle_artifacts_written: $package_bundle_artifacts_written
+package_bundle_exit_code: $package_bundle_exit_code
+package_bundle_error: $package_bundle_error
+package_bundle_path: $package_bundle_path
+package_bundle_sha256: $package_bundle_sha256
+package_bundle_sha256_path: $package_bundle_sha256_path
+package_bundle_contents_manifest: $package_bundle_contents_manifest
+package_bundle_file_count: $package_bundle_file_count
+EOF
+
   summary_sha256="$(sha256_file_value "$summary_path")"
   preflight_sha256="$(sha256_file_value "$preflight_path")"
   go_nogo_sha256="$(sha256_file_value "$go_nogo_path")"
   windowed_signoff_sha256="$(sha256_file_value "$windowed_signoff_path")"
   route_fee_signoff_sha256="$(sha256_file_value "$route_fee_signoff_path")"
   tests_sha256="$(sha256_file_value "$tests_path")"
+  if [[ "$package_bundle_artifacts_written" == "true" ]]; then
+    package_bundle_path_sha256="$(sha256_file_value "$package_bundle_path")"
+    package_bundle_sha256_path_sha256="$(sha256_file_value "$package_bundle_sha256_path")"
+    package_bundle_contents_manifest_sha256="$(sha256_file_value "$package_bundle_contents_manifest")"
+  else
+    package_bundle_path_sha256="n/a"
+    package_bundle_sha256_path_sha256="n/a"
+    package_bundle_contents_manifest_sha256="n/a"
+  fi
   if [[ -n "$go_nogo_nested_capture_path" ]]; then
     go_nogo_nested_capture_sha256="$(sha256_file_value "$go_nogo_nested_capture_path")"
   else
@@ -660,7 +719,11 @@ tests_sha256: $tests_sha256
 go_nogo_nested_capture_sha256: $go_nogo_nested_capture_sha256
 windowed_signoff_nested_capture_sha256: $windowed_signoff_nested_capture_sha256
 route_fee_signoff_nested_capture_sha256: $route_fee_signoff_nested_capture_sha256
+package_bundle_path_sha256: $package_bundle_path_sha256
+package_bundle_sha256_path_sha256: $package_bundle_sha256_path_sha256
+package_bundle_contents_manifest_sha256: $package_bundle_contents_manifest_sha256
 EOF
+  manifest_sha256="$(sha256_file_value "$manifest_path")"
 
   echo
   echo "artifacts_written: true"
@@ -677,6 +740,15 @@ EOF
   echo "windowed_signoff_sha256: $windowed_signoff_sha256"
   echo "route_fee_signoff_sha256: $route_fee_signoff_sha256"
   echo "tests_sha256: $tests_sha256"
+  echo "manifest_sha256: $manifest_sha256"
+  echo "package_bundle_artifacts_written: $package_bundle_artifacts_written"
+  echo "package_bundle_exit_code: $package_bundle_exit_code"
+  echo "package_bundle_error: $package_bundle_error"
+  echo "package_bundle_path: $package_bundle_path"
+  echo "package_bundle_sha256: $package_bundle_sha256"
+  echo "package_bundle_sha256_path: $package_bundle_sha256_path"
+  echo "package_bundle_contents_manifest: $package_bundle_contents_manifest"
+  echo "package_bundle_file_count: $package_bundle_file_count"
   if [[ -n "$go_nogo_nested_capture_path" ]]; then
     echo "artifact_go_nogo_nested_capture: $go_nogo_nested_capture_path"
     echo "go_nogo_nested_capture_sha256: $go_nogo_nested_capture_sha256"
@@ -688,6 +760,10 @@ EOF
   if [[ -n "$route_fee_signoff_nested_capture_path" ]]; then
     echo "artifact_route_fee_signoff_nested_capture: $route_fee_signoff_nested_capture_path"
     echo "route_fee_signoff_nested_capture_sha256: $route_fee_signoff_nested_capture_sha256"
+  fi
+
+  if [[ "$package_bundle_enabled_norm" == "true" && "$package_bundle_artifacts_written" != "true" ]]; then
+    exit 3
   fi
 fi
 
