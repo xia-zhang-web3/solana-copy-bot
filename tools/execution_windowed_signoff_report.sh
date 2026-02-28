@@ -15,6 +15,9 @@ GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
+PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
+PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_windowed_signoff}"
+PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_DIR}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -39,6 +42,11 @@ parse_windowed_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_R
 parse_windowed_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" windowed_signoff_require_dynamic_hint_source_pass
 parse_windowed_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" windowed_signoff_require_dynamic_tip_policy_pass
 parse_windowed_bool_setting_into "GO_NOGO_TEST_MODE" "${GO_NOGO_TEST_MODE:-false}" go_nogo_test_mode_norm
+parse_windowed_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
+
+if [[ "$package_bundle_enabled_norm" == "true" && -z "$OUTPUT_DIR" ]]; then
+  input_errors+=("PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set")
+fi
 
 if ! [[ "$RISK_EVENTS_MINUTES" =~ ^[0-9]+$ ]]; then
   input_errors+=("risk events minutes must be an integer (got: $RISK_EVENTS_MINUTES)")
@@ -391,6 +399,9 @@ go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
 go_nogo_test_mode: $go_nogo_test_mode_norm
 windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass
 windowed_signoff_require_dynamic_tip_policy_pass: $windowed_signoff_require_dynamic_tip_policy_pass
+package_bundle_enabled: $package_bundle_enabled_norm
+package_bundle_label: $PACKAGE_BUNDLE_LABEL
+package_bundle_output_dir: ${PACKAGE_BUNDLE_OUTPUT_DIR:-n/a}
 window_count: $window_total
 window_pass_count: $window_pass_count
 window_unknown_count: $window_unknown_count
@@ -450,12 +461,63 @@ if ((${#input_errors[@]} > 0)); then
   done
 fi
 
+package_bundle_artifacts_written="false"
+package_bundle_exit_code="n/a"
+package_bundle_error="n/a"
+package_bundle_path="n/a"
+package_bundle_sha256="n/a"
+package_bundle_sha256_path="n/a"
+package_bundle_contents_manifest="n/a"
+package_bundle_file_count="n/a"
+summary_sha256="n/a"
+manifest_sha256="n/a"
+
 if [[ -n "$OUTPUT_DIR" ]]; then
   mkdir -p "$OUTPUT_DIR"
   summary_path="$OUTPUT_DIR/execution_windowed_signoff_summary_${timestamp_compact}.txt"
   manifest_path="$OUTPUT_DIR/execution_windowed_signoff_manifest_${timestamp_compact}.txt"
   printf '%s\n' "$summary_output" > "$summary_path"
+
+  if [[ "$package_bundle_enabled_norm" == "true" ]]; then
+    package_bundle_output=""
+    if package_bundle_output="$(
+      OUTPUT_DIR="$PACKAGE_BUNDLE_OUTPUT_DIR" \
+        BUNDLE_LABEL="$PACKAGE_BUNDLE_LABEL" \
+        bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$OUTPUT_DIR" 2>&1
+    )"; then
+      package_bundle_exit_code=0
+      package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
+      package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+      package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+      package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+      package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+      package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+    else
+      package_bundle_exit_code=$?
+      package_bundle_error="$(trim_string "$(printf '%s\n' "$package_bundle_output" | tail -n 1)")"
+    fi
+  fi
+
+  cat >>"$summary_path" <<EOF
+package_bundle_artifacts_written: $package_bundle_artifacts_written
+package_bundle_exit_code: $package_bundle_exit_code
+package_bundle_error: $package_bundle_error
+package_bundle_path: $package_bundle_path
+package_bundle_sha256: $package_bundle_sha256
+package_bundle_sha256_path: $package_bundle_sha256_path
+package_bundle_contents_manifest: $package_bundle_contents_manifest
+package_bundle_file_count: $package_bundle_file_count
+EOF
   summary_sha256="$(sha256_file_value "$summary_path")"
+  if [[ "$package_bundle_artifacts_written" == "true" ]]; then
+    package_bundle_path_sha256="$(sha256_file_value "$package_bundle_path")"
+    package_bundle_sha256_path_sha256="$(sha256_file_value "$package_bundle_sha256_path")"
+    package_bundle_contents_manifest_sha256="$(sha256_file_value "$package_bundle_contents_manifest")"
+  else
+    package_bundle_path_sha256="n/a"
+    package_bundle_sha256_path_sha256="n/a"
+    package_bundle_contents_manifest_sha256="n/a"
+  fi
 
   {
     echo "summary_sha256: $summary_sha256"
@@ -464,18 +526,35 @@ if [[ -n "$OUTPUT_DIR" ]]; then
       echo "window_${window_id}h_capture_path: ${window_capture_paths[$idx]}"
       echo "window_${window_id}h_capture_sha256: ${window_capture_sha256[$idx]}"
     done
+    echo "package_bundle_path_sha256: $package_bundle_path_sha256"
+    echo "package_bundle_sha256_path_sha256: $package_bundle_sha256_path_sha256"
+    echo "package_bundle_contents_manifest_sha256: $package_bundle_contents_manifest_sha256"
   } > "$manifest_path"
+  manifest_sha256="$(sha256_file_value "$manifest_path")"
 
   echo
   echo "artifacts_written: true"
   echo "artifact_summary: $summary_path"
   echo "artifact_manifest: $manifest_path"
   echo "summary_sha256: $summary_sha256"
+  echo "manifest_sha256: $manifest_sha256"
   for idx in "${!window_ids[@]}"; do
     window_id="${window_ids[$idx]}"
     echo "window_${window_id}h_capture_path: ${window_capture_paths[$idx]}"
     echo "window_${window_id}h_capture_sha256: ${window_capture_sha256[$idx]}"
   done
+  echo "package_bundle_artifacts_written: $package_bundle_artifacts_written"
+  echo "package_bundle_exit_code: $package_bundle_exit_code"
+  echo "package_bundle_error: $package_bundle_error"
+  echo "package_bundle_path: $package_bundle_path"
+  echo "package_bundle_sha256: $package_bundle_sha256"
+  echo "package_bundle_sha256_path: $package_bundle_sha256_path"
+  echo "package_bundle_contents_manifest: $package_bundle_contents_manifest"
+  echo "package_bundle_file_count: $package_bundle_file_count"
+
+  if [[ "$package_bundle_enabled_norm" == "true" && "$package_bundle_artifacts_written" != "true" ]]; then
+    exit 3
+  fi
 fi
 
 case "$signoff_verdict" in

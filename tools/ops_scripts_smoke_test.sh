@@ -1595,6 +1595,64 @@ run_windowed_signoff_report_case() {
     exit 1
   fi
 
+  local bundle_artifacts_dir="$TMP_DIR/windowed-signoff-artifacts-with-bundle"
+  local bundle_output_dir="$TMP_DIR/windowed-signoff-bundles"
+  local bundle_output
+  bundle_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$adapter_cfg" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$bundle_artifacts_dir" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="execution_windowed_signoff_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$bundle_output_dir" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60
+  )"
+  assert_field_equals "$bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$bundle_output" "package_bundle_sha256"
+  assert_sha256_field "$bundle_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$bundle_output" "manifest_sha256" "artifact_manifest"
+  assert_field_non_empty "$bundle_output" "package_bundle_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_contents_manifest"
+  local windowed_bundle_path
+  windowed_bundle_path="$(extract_field_value "$bundle_output" "package_bundle_path")"
+  if [[ ! -f "$windowed_bundle_path" ]]; then
+    echo "expected package bundle archive at $windowed_bundle_path" >&2
+    exit 1
+  fi
+
+  local missing_output_dir_output=""
+  if missing_output_dir_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$adapter_cfg" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_windowed_signoff_report.sh to fail when PACKAGE_BUNDLE_ENABLED=true and OUTPUT_DIR is missing" >&2
+    exit 1
+  else
+    local missing_output_dir_exit_code=$?
+    if [[ "$missing_output_dir_exit_code" -ne 3 ]]; then
+      echo "expected exit code 3 for missing OUTPUT_DIR with PACKAGE_BUNDLE_ENABLED=true, got $missing_output_dir_exit_code" >&2
+      echo "$missing_output_dir_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$missing_output_dir_output" "input_error: PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set"
+
   local dynamic_fake_bin_dir="$TMP_DIR/fake-bin-dynamic-hint-warn"
   mkdir -p "$dynamic_fake_bin_dir"
   cp "$FAKE_BIN_DIR/journalctl" "$dynamic_fake_bin_dir/journalctl"
@@ -1793,6 +1851,70 @@ run_execution_route_fee_signoff_case() {
     exit 1
   fi
 
+  local bundle_artifacts_dir="$TMP_DIR/route-fee-signoff-artifacts-with-bundle"
+  local bundle_output_dir="$TMP_DIR/route-fee-signoff-bundles"
+  local bundle_output
+  bundle_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$bundle_artifacts_dir" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="execution_route_fee_signoff_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$bundle_output_dir" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60"
+  )"
+  assert_field_equals "$bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$bundle_output" "package_bundle_sha256"
+  assert_sha256_field "$bundle_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$bundle_output" "manifest_sha256" "artifact_manifest"
+  assert_field_non_empty "$bundle_output" "package_bundle_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_contents_manifest"
+  local route_fee_bundle_path
+  route_fee_bundle_path="$(extract_field_value "$bundle_output" "package_bundle_path")"
+  if [[ ! -f "$route_fee_bundle_path" ]]; then
+    echo "expected package bundle archive at $route_fee_bundle_path" >&2
+    exit 1
+  fi
+
+  local missing_output_dir_output=""
+  if missing_output_dir_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected execution_route_fee_signoff_report.sh to fail when PACKAGE_BUNDLE_ENABLED=true and OUTPUT_DIR is missing" >&2
+    exit 1
+  else
+    local missing_output_dir_exit_code=$?
+    if [[ "$missing_output_dir_exit_code" -ne 3 ]]; then
+      echo "expected exit code 3 for missing OUTPUT_DIR with PACKAGE_BUNDLE_ENABLED=true, got $missing_output_dir_exit_code" >&2
+      echo "$missing_output_dir_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$missing_output_dir_output" "input_error: PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set"
+
   local invalid_output
   if invalid_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -1954,6 +2076,42 @@ run_execution_route_fee_signoff_case() {
   assert_field_equals "$final_go_output" "signoff_reason_code" "test_override"
   assert_contains "$final_go_output" "final_route_fee_package_verdict: GO"
   assert_field_equals "$final_go_output" "final_route_fee_package_reason_code" "test_override"
+
+  local final_bundle_output
+  final_bundle_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-go-bundle" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="execution_route_fee_final_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$TMP_DIR/route-fee-final-bundles" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24" "60"
+  )"
+  assert_field_equals "$final_bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$final_bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$final_bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$final_bundle_output" "package_bundle_sha256"
+  assert_sha256_field "$final_bundle_output" "summary_sha256"
+  assert_sha256_field "$final_bundle_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$final_bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$final_bundle_output" "manifest_sha256" "artifact_manifest"
+  assert_field_non_empty "$final_bundle_output" "package_bundle_path"
+  assert_field_non_empty "$final_bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$final_bundle_output" "package_bundle_contents_manifest"
+  local final_route_fee_bundle_path
+  final_route_fee_bundle_path="$(extract_field_value "$final_bundle_output" "package_bundle_path")"
+  if [[ ! -f "$final_route_fee_bundle_path" ]]; then
+    echo "expected package bundle archive at $final_route_fee_bundle_path" >&2
+    exit 1
+  fi
 
   local final_nogo_output=""
   if final_nogo_output="$(
