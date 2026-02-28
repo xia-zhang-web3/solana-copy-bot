@@ -2945,6 +2945,9 @@ run_executor_rollout_evidence_case() {
   assert_sha256_field "$pass_output" "rotation_capture_sha256"
   assert_sha256_field "$pass_output" "preflight_capture_sha256"
   assert_sha256_field "$pass_output" "rehearsal_capture_sha256"
+  assert_sha256_field "$pass_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$pass_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$pass_output" "manifest_sha256" "artifact_manifest"
   if ! ls "$artifacts_dir"/executor_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
     echo "expected executor rollout summary artifact in $artifacts_dir" >&2
     exit 1
@@ -2963,6 +2966,47 @@ run_executor_rollout_evidence_case() {
   fi
   if ! ls "$artifacts_dir"/executor_rollout_evidence_manifest_*.txt >/dev/null 2>&1; then
     echo "expected executor rollout manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+
+  local rollout_bundle_output_dir="$TMP_DIR/executor-rollout-with-bundle"
+  local rollout_bundle_archive_dir="$TMP_DIR/executor-rollout-bundles"
+  local rollout_bundle_output
+  rollout_bundle_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$rollout_bundle_output_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="executor_rollout_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$rollout_bundle_archive_dir" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60
+  )"
+  assert_field_equals "$rollout_bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$rollout_bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$rollout_bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$rollout_bundle_output" "package_bundle_sha256"
+  assert_sha256_field_matches_file "$rollout_bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$rollout_bundle_output" "manifest_sha256" "artifact_manifest"
+  assert_field_non_empty "$rollout_bundle_output" "package_bundle_path"
+  assert_field_non_empty "$rollout_bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$rollout_bundle_output" "package_bundle_contents_manifest"
+  local executor_rollout_bundle_path
+  executor_rollout_bundle_path="$(extract_field_value "$rollout_bundle_output" "package_bundle_path")"
+  if [[ ! -f "$executor_rollout_bundle_path" ]]; then
+    echo "expected package bundle archive at $executor_rollout_bundle_path" >&2
     exit 1
   fi
 
@@ -3360,6 +3404,9 @@ run_adapter_rollout_evidence_case() {
   assert_sha256_field "$pass_output" "go_nogo_snapshot_sha256"
   assert_sha256_field "$pass_output" "go_nogo_preflight_sha256"
   assert_sha256_field "$pass_output" "go_nogo_summary_sha256"
+  assert_sha256_field "$pass_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$pass_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$pass_output" "manifest_sha256" "artifact_manifest"
   assert_contains "$pass_output" "go_nogo_artifact_manifest:"
   assert_contains "$pass_output" "go_nogo_summary_sha256:"
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_summary_*.txt >/dev/null 2>&1; then
@@ -3384,6 +3431,42 @@ run_adapter_rollout_evidence_case() {
   fi
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_manifest_*.txt >/dev/null 2>&1; then
     echo "expected adapter rollout manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+
+  local rollout_bundle_output_dir="$TMP_DIR/adapter-rollout-with-bundle"
+  local rollout_bundle_archive_dir="$TMP_DIR/adapter-rollout-bundles"
+  local rollout_bundle_output
+  rollout_bundle_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$rollout_bundle_output_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="adapter_rollout_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$rollout_bundle_archive_dir" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60
+  )"
+  assert_field_equals "$rollout_bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$rollout_bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$rollout_bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$rollout_bundle_output" "package_bundle_sha256"
+  assert_sha256_field_matches_file "$rollout_bundle_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$rollout_bundle_output" "manifest_sha256" "artifact_manifest"
+  assert_field_non_empty "$rollout_bundle_output" "package_bundle_path"
+  assert_field_non_empty "$rollout_bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$rollout_bundle_output" "package_bundle_contents_manifest"
+  local adapter_rollout_bundle_path
+  adapter_rollout_bundle_path="$(extract_field_value "$rollout_bundle_output" "package_bundle_path")"
+  if [[ ! -f "$adapter_rollout_bundle_path" ]]; then
+    echo "expected package bundle archive at $adapter_rollout_bundle_path" >&2
     exit 1
   fi
 

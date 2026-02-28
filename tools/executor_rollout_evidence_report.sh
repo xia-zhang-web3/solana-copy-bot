@@ -30,6 +30,9 @@ ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-$GO_
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE}"
 ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
+PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
+PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-executor_rollout_evidence}"
+PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_DIR}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -73,6 +76,10 @@ parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQU
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
+parse_rollout_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
+if [[ "$package_bundle_enabled_norm" == "true" && -z "$OUTPUT_DIR" ]]; then
+  input_errors+=("PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set")
+fi
 
 rotation_output_dir=""
 preflight_output_dir=""
@@ -320,6 +327,14 @@ artifacts_written="false"
 if [[ -n "$OUTPUT_DIR" ]]; then
   artifacts_written="true"
 fi
+package_bundle_artifacts_written="false"
+package_bundle_exit_code="n/a"
+package_bundle_error="n/a"
+package_bundle_path="n/a"
+package_bundle_sha256="n/a"
+package_bundle_sha256_path="n/a"
+package_bundle_contents_manifest="n/a"
+package_bundle_file_count="n/a"
 
 summary_output="$(cat <<EOF_SUMMARY
 === Executor Rollout Evidence Summary ===
@@ -372,6 +387,9 @@ rehearsal_preflight_sha256: ${rehearsal_preflight_sha256:-n/a}
 rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
 rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
 rehearsal_artifacts_written: $rehearsal_artifacts_written
+package_bundle_enabled: $package_bundle_enabled_norm
+package_bundle_label: $PACKAGE_BUNDLE_LABEL
+package_bundle_output_dir: ${PACKAGE_BUNDLE_OUTPUT_DIR:-n/a}
 
 input_error_count: ${#input_errors[@]}
 
@@ -402,17 +420,61 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   printf '%s\n' "$preflight_output" >"$preflight_capture_path"
   printf '%s\n' "$rehearsal_output" >"$rehearsal_capture_path"
 
+  if [[ "$package_bundle_enabled_norm" == "true" ]]; then
+    package_bundle_output=""
+    if package_bundle_output="$(
+      OUTPUT_DIR="$PACKAGE_BUNDLE_OUTPUT_DIR" \
+        BUNDLE_LABEL="$PACKAGE_BUNDLE_LABEL" \
+        bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$OUTPUT_DIR" 2>&1
+    )"; then
+      package_bundle_exit_code=0
+      package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
+      package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+      package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+      package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+      package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+      package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+    else
+      package_bundle_exit_code=$?
+      package_bundle_error="$(trim_string "$(printf '%s\n' "$package_bundle_output" | tail -n 1)")"
+    fi
+  fi
+
+  cat >>"$summary_path" <<EOF
+package_bundle_artifacts_written: $package_bundle_artifacts_written
+package_bundle_exit_code: $package_bundle_exit_code
+package_bundle_error: $package_bundle_error
+package_bundle_path: $package_bundle_path
+package_bundle_sha256: $package_bundle_sha256
+package_bundle_sha256_path: $package_bundle_sha256_path
+package_bundle_contents_manifest: $package_bundle_contents_manifest
+package_bundle_file_count: $package_bundle_file_count
+EOF
+
   summary_sha256="$(sha256_file_value "$summary_path")"
   rotation_capture_sha256="$(sha256_file_value "$rotation_capture_path")"
   preflight_capture_sha256="$(sha256_file_value "$preflight_capture_path")"
   rehearsal_capture_sha256="$(sha256_file_value "$rehearsal_capture_path")"
+  if [[ "$package_bundle_artifacts_written" == "true" ]]; then
+    package_bundle_path_sha256="$(sha256_file_value "$package_bundle_path")"
+    package_bundle_sha256_path_sha256="$(sha256_file_value "$package_bundle_sha256_path")"
+    package_bundle_contents_manifest_sha256="$(sha256_file_value "$package_bundle_contents_manifest")"
+  else
+    package_bundle_path_sha256="n/a"
+    package_bundle_sha256_path_sha256="n/a"
+    package_bundle_contents_manifest_sha256="n/a"
+  fi
 
   cat >"$manifest_path" <<EOF_MANIFEST
 summary_sha256: $summary_sha256
 rotation_capture_sha256: $rotation_capture_sha256
 preflight_capture_sha256: $preflight_capture_sha256
 rehearsal_capture_sha256: $rehearsal_capture_sha256
+package_bundle_path_sha256: $package_bundle_path_sha256
+package_bundle_sha256_path_sha256: $package_bundle_sha256_path_sha256
+package_bundle_contents_manifest_sha256: $package_bundle_contents_manifest_sha256
 EOF_MANIFEST
+  manifest_sha256="$(sha256_file_value "$manifest_path")"
 
   echo
   echo "artifacts_written: true"
@@ -425,6 +487,19 @@ EOF_MANIFEST
   echo "rotation_capture_sha256: $rotation_capture_sha256"
   echo "preflight_capture_sha256: $preflight_capture_sha256"
   echo "rehearsal_capture_sha256: $rehearsal_capture_sha256"
+  echo "manifest_sha256: $manifest_sha256"
+  echo "package_bundle_artifacts_written: $package_bundle_artifacts_written"
+  echo "package_bundle_exit_code: $package_bundle_exit_code"
+  echo "package_bundle_error: $package_bundle_error"
+  echo "package_bundle_path: $package_bundle_path"
+  echo "package_bundle_sha256: $package_bundle_sha256"
+  echo "package_bundle_sha256_path: $package_bundle_sha256_path"
+  echo "package_bundle_contents_manifest: $package_bundle_contents_manifest"
+  echo "package_bundle_file_count: $package_bundle_file_count"
+
+  if [[ "$package_bundle_enabled_norm" == "true" && "$package_bundle_artifacts_written" != "true" ]]; then
+    exit 3
+  fi
 fi
 
 case "$executor_rollout_verdict" in
