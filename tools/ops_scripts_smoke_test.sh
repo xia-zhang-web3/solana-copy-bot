@@ -3085,6 +3085,45 @@ run_executor_rollout_evidence_case() {
     exit 1
   fi
 
+  local final_bundle_output_dir="$TMP_DIR/executor-final-package-with-bundle"
+  local final_bundle_archive_dir="$TMP_DIR/executor-final-package-bundles"
+  local final_bundle_output
+  final_bundle_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$final_bundle_output_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="executor_rollout_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$final_bundle_archive_dir" \
+      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60
+  )"
+  assert_field_equals "$final_bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$final_bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$final_bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$final_bundle_output" "package_bundle_sha256"
+  assert_field_non_empty "$final_bundle_output" "package_bundle_path"
+  assert_field_non_empty "$final_bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$final_bundle_output" "package_bundle_contents_manifest"
+  local executor_package_bundle_path
+  executor_package_bundle_path="$(extract_field_value "$final_bundle_output" "package_bundle_path")"
+  if [[ ! -f "$executor_package_bundle_path" ]]; then
+    echo "expected package bundle archive at $executor_package_bundle_path" >&2
+    exit 1
+  fi
+
   local final_hold_output=""
   if final_hold_output="$(
     PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
