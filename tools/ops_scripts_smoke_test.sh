@@ -3780,6 +3780,36 @@ run_execution_server_rollout_report_case() {
     echo "expected package bundle archive at $server_rollout_bundle_path" >&2
     exit 1
   fi
+  local bundle_tar_list=""
+  bundle_tar_list="$(tar -tzf "$server_rollout_bundle_path")"
+  local summary_artifact_path=""
+  local manifest_artifact_path=""
+  summary_artifact_path="$(extract_field_value "$bundle_output" "artifact_summary")"
+  manifest_artifact_path="$(extract_field_value "$bundle_output" "artifact_manifest")"
+  local summary_artifact_basename=""
+  local manifest_artifact_basename=""
+  summary_artifact_basename="$(basename "$summary_artifact_path")"
+  manifest_artifact_basename="$(basename "$manifest_artifact_path")"
+  local summary_entry_in_tar=""
+  local manifest_entry_in_tar=""
+  summary_entry_in_tar="$(printf '%s\n' "$bundle_tar_list" | awk -F/ -v target="$summary_artifact_basename" '$NF==target{print; exit}')"
+  manifest_entry_in_tar="$(printf '%s\n' "$bundle_tar_list" | awk -F/ -v target="$manifest_artifact_basename" '$NF==target{print; exit}')"
+  if [[ -z "$summary_entry_in_tar" ]]; then
+    echo "expected bundled summary artifact entry for $summary_artifact_basename" >&2
+    exit 1
+  fi
+  if [[ -z "$manifest_entry_in_tar" ]]; then
+    echo "expected bundled manifest artifact entry for $manifest_artifact_basename" >&2
+    exit 1
+  fi
+  local bundled_summary_text=""
+  local bundled_manifest_text=""
+  bundled_summary_text="$(tar -xOf "$server_rollout_bundle_path" "$summary_entry_in_tar")"
+  bundled_manifest_text="$(tar -xOf "$server_rollout_bundle_path" "$manifest_entry_in_tar")"
+  assert_contains "$bundled_summary_text" "package_bundle_artifacts_written:"
+  assert_contains "$bundled_summary_text" "package_bundle_exit_code:"
+  assert_contains "$bundled_manifest_text" "summary_sha256:"
+  assert_contains "$bundled_manifest_text" "preflight_capture_sha256:"
 
   local invalid_bool_output=""
   if invalid_bool_output="$(
