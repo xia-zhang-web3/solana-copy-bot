@@ -18,6 +18,16 @@ if ! skip_contract_smoke="$(parse_bool_token_strict "$SKIP_CONTRACT_SMOKE_RAW")"
   echo "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_CONTRACT_SMOKE_RAW" >&2
   exit 1
 fi
+SKIP_EXECUTOR_TESTS_RAW="${AUDIT_SKIP_EXECUTOR_TESTS:-false}"
+if ! skip_executor_tests="$(parse_bool_token_strict "$SKIP_EXECUTOR_TESTS_RAW")"; then
+  echo "AUDIT_SKIP_EXECUTOR_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_EXECUTOR_TESTS_RAW" >&2
+  exit 1
+fi
+SKIP_PACKAGE_TESTS_RAW="${AUDIT_SKIP_PACKAGE_TESTS:-false}"
+if ! skip_package_tests="$(parse_bool_token_strict "$SKIP_PACKAGE_TESTS_RAW")"; then
+  echo "AUDIT_SKIP_PACKAGE_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_PACKAGE_TESTS_RAW" >&2
+  exit 1
+fi
 OPS_SMOKE_TIMEOUT_RAW="${AUDIT_OPS_SMOKE_TIMEOUT_SEC:-300}"
 if ! ops_smoke_timeout_sec="$(parse_u64_token_strict "$OPS_SMOKE_TIMEOUT_RAW")"; then
   echo "AUDIT_OPS_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $OPS_SMOKE_TIMEOUT_RAW" >&2
@@ -43,6 +53,15 @@ if ! package_test_timeout_sec="$(parse_u64_token_strict "$PACKAGE_TEST_TIMEOUT_R
 fi
 if [[ "$package_test_timeout_sec" -eq 0 ]]; then
   echo "AUDIT_PACKAGE_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $PACKAGE_TEST_TIMEOUT_RAW" >&2
+  exit 1
+fi
+EXECUTOR_TEST_TIMEOUT_RAW="${AUDIT_EXECUTOR_TEST_TIMEOUT_SEC:-$package_test_timeout_sec}"
+if ! executor_test_timeout_sec="$(parse_u64_token_strict "$EXECUTOR_TEST_TIMEOUT_RAW")"; then
+  echo "AUDIT_EXECUTOR_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $EXECUTOR_TEST_TIMEOUT_RAW" >&2
+  exit 1
+fi
+if [[ "$executor_test_timeout_sec" -eq 0 ]]; then
+  echo "AUDIT_EXECUTOR_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $EXECUTOR_TEST_TIMEOUT_RAW" >&2
   exit 1
 fi
 
@@ -119,6 +138,8 @@ fi
 echo "[audit:standard] running quick baseline"
 AUDIT_SKIP_CONTRACT_SMOKE="$skip_contract_smoke" \
 AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC="$contract_smoke_timeout_sec" \
+AUDIT_SKIP_EXECUTOR_TESTS="$skip_executor_tests" \
+AUDIT_EXECUTOR_TEST_TIMEOUT_SEC="$executor_test_timeout_sec" \
   bash tools/audit_quick.sh
 
 
@@ -151,7 +172,9 @@ while IFS= read -r path; do
   esac
 done <<<"$changed_files"
 
-if [[ "${#CHANGED_PACKAGES[@]}" -eq 0 ]]; then
+if [[ "$skip_package_tests" == "true" ]]; then
+  echo "[audit:standard] AUDIT_SKIP_PACKAGE_TESTS=true -> skipped changed package tests"
+elif [[ "${#CHANGED_PACKAGES[@]}" -eq 0 ]]; then
   echo "[audit:standard] no changed crates detected for targeted package tests"
 else
   for package in "${CHANGED_PACKAGES[@]}"; do
