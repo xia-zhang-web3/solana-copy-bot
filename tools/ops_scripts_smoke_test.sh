@@ -4467,6 +4467,58 @@ run_common_strict_bool_parser_case() {
   echo "[ok] common strict bool parser"
 }
 
+run_common_bool_compat_wrapper_case() {
+  local true_output=""
+  true_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      normalize_bool_token " yes "
+    '
+  )"
+  if [[ "$true_output" != "true" ]]; then
+    echo "expected normalize_bool_token to normalize \"yes\" into true, got: $true_output" >&2
+    exit 1
+  fi
+
+  local empty_output=""
+  empty_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      normalize_bool_token ""
+    '
+  )"
+  if [[ "$empty_output" != "false" ]]; then
+    echo "expected normalize_bool_token to normalize empty token into false, got: $empty_output" >&2
+    exit 1
+  fi
+
+  local invalid_output=""
+  if invalid_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      normalize_bool_token "maybe"
+    ' 2>&1
+  )"; then
+    echo "expected normalize_bool_token to fail for invalid token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected normalize_bool_token invalid token exit code 1, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "invalid boolean token (expected true/false/1/0/yes/no/on/off), got: maybe"
+  echo "[ok] common bool compat wrapper"
+}
+
 run_audit_standard_strict_bool_guard_case() {
   local invalid_output=""
   if invalid_output="$(
@@ -4677,6 +4729,7 @@ EOF_POISON_INDEX
 main() {
   write_fake_journalctl
   run_common_strict_bool_parser_case
+  run_common_bool_compat_wrapper_case
   run_audit_standard_strict_bool_guard_case
   run_evidence_bundle_pack_case
 
