@@ -4630,6 +4630,141 @@ run_adapter_rollout_evidence_case() {
   echo "[ok] adapter rollout evidence helper"
 }
 
+run_execution_runtime_readiness_report_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local env_path="$TMP_DIR/runtime-readiness-adapter.env"
+  local secrets_dir="$TMP_DIR/secrets"
+  local artifacts_dir="$TMP_DIR/runtime-readiness-artifacts"
+  write_fake_journalctl
+  mkdir -p "$secrets_dir"
+  write_adapter_env_rotation_report "$env_path"
+
+  printf 'bearer-pass\n' >"$secrets_dir/adapter_bearer.token"
+  printf 'hmac-pass\n' >"$secrets_dir/adapter_hmac.secret"
+  printf 'upstream-pass\n' >"$secrets_dir/upstream_auth.token"
+  printf 'upstream-fallback-pass\n' >"$secrets_dir/upstream_fallback_auth.token"
+  printf 'send-rpc-pass\n' >"$secrets_dir/send_rpc_auth.token"
+  printf 'send-rpc-fallback-pass\n' >"$secrets_dir/send_rpc_fallback_auth.token"
+  printf 'route-pass\n' >"$secrets_dir/route_rpc_auth.token"
+  printf 'route-send-rpc-pass\n' >"$secrets_dir/route_rpc_send_rpc_auth.token"
+  chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
+
+  local pass_output=""
+  pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$artifacts_dir" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"
+  assert_contains "$pass_output" "=== Execution Runtime Readiness Report ==="
+  assert_field_equals "$pass_output" "adapter_final_verdict" "GO"
+  assert_field_equals "$pass_output" "route_fee_final_verdict" "GO"
+  assert_field_equals "$pass_output" "runtime_readiness_verdict" "GO"
+  assert_field_equals "$pass_output" "final_runtime_package_verdict" "GO"
+  assert_field_equals "$pass_output" "final_runtime_package_reason_code" "gates_pass"
+  assert_field_equals "$pass_output" "adapter_final_artifacts_written" "true"
+  assert_field_equals "$pass_output" "route_fee_final_artifacts_written" "true"
+  assert_contains "$pass_output" "artifacts_written: true"
+  assert_contains "$pass_output" "artifact_summary:"
+  assert_contains "$pass_output" "artifact_adapter_capture:"
+  assert_contains "$pass_output" "artifact_route_fee_capture:"
+  assert_contains "$pass_output" "artifact_manifest:"
+  assert_sha256_field "$pass_output" "summary_sha256"
+  assert_sha256_field "$pass_output" "adapter_capture_sha256"
+  assert_sha256_field "$pass_output" "route_fee_capture_sha256"
+  assert_sha256_field "$pass_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$pass_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$pass_output" "manifest_sha256" "artifact_manifest"
+  if ! ls "$artifacts_dir"/execution_runtime_readiness_summary_*.txt >/dev/null 2>&1; then
+    echo "expected runtime readiness summary artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_runtime_readiness_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected runtime readiness manifest artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/adapter_rollout_final_captured_*.txt >/dev/null 2>&1; then
+    echo "expected adapter final capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/execution_route_fee_final_captured_*.txt >/dev/null 2>&1; then
+    echo "expected route/fee final capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+
+  local bundle_output=""
+  bundle_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-bundle" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="execution_runtime_readiness_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$TMP_DIR/runtime-readiness-bundles" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"
+  assert_field_equals "$bundle_output" "package_bundle_enabled" "true"
+  assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$bundle_output" "package_bundle_sha256"
+  assert_field_non_empty "$bundle_output" "package_bundle_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_contents_manifest"
+  assert_bundled_summary_manifest_package_status_parity "$bundle_output"
+
+  local invalid_bool_output=""
+  if invalid_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$TMP_DIR/missing-adapter.env" \
+      CONFIG_PATH="$TMP_DIR/missing-config.toml" \
+      PACKAGE_BUNDLE_ENABLED="maybe" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24" 2>&1
+  )"; then
+    echo "expected NO_GO exit for runtime readiness helper invalid PACKAGE_BUNDLE_ENABLED token" >&2
+    exit 1
+  else
+    local invalid_bool_exit_code=$?
+    if [[ "$invalid_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for invalid runtime readiness bool token, got $invalid_bool_exit_code" >&2
+      echo "$invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_bool_output" "input_error: PACKAGE_BUNDLE_ENABLED must be a boolean token"
+  assert_field_equals "$invalid_bool_output" "runtime_readiness_reason_code" "input_error"
+  assert_field_equals "$invalid_bool_output" "final_runtime_package_reason_code" "input_error"
+  echo "[ok] execution runtime readiness report"
+}
+
 run_common_strict_bool_parser_case() {
   local true_output=""
   true_output="$(
@@ -5518,6 +5653,7 @@ main() {
   run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg"
+  run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"

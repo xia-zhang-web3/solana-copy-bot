@@ -201,3 +201,7 @@ Simulation path uses the same adapter endpoint set and calls it with `action=sim
    2. helper composes executor signer rotation + executor preflight + Stage C.5 rehearsal into a single `executor_rollout_verdict` gate (`GO`/`HOLD`/`NO_GO`),
    3. final package command: `EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=/etc/solana-copy-bot/live.server.toml OUTPUT_ROOT=state/executor-final ./tools/executor_final_evidence_report.sh 24 60`,
    4. attach package summary + manifest + nested rollout artifacts (`OUTPUT_ROOT/rollout/`) for executor handoff evidence.
+15. Unified runtime readiness package helper (recommended for next-code-queue items 1-3):
+   1. run `ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env CONFIG_PATH=configs/live.toml OUTPUT_ROOT=state/runtime-readiness RUN_TESTS=false DEVNET_REHEARSAL_TEST_MODE=false ./tools/execution_runtime_readiness_report.sh 1,6,24 60 24`
+   2. helper composes `adapter_rollout_final_evidence_report.sh` + `execution_route_fee_final_evidence_report.sh` into one aggregate verdict (`runtime_readiness_verdict` / `final_runtime_package_verdict`) with consolidated summary/manifest checksums and captured nested outputs,
+   3. optional bundle: add `PACKAGE_BUNDLE_ENABLED=true PACKAGE_BUNDLE_OUTPUT_DIR=state/runtime-readiness-bundles` for a single handoff archive.
