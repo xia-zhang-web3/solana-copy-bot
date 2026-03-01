@@ -4559,6 +4559,26 @@ run_audit_full_strict_bool_guard_case() {
   echo "[ok] audit full strict bool guard"
 }
 
+run_audit_quick_strict_bool_guard_case() {
+  local invalid_output=""
+  if invalid_output="$(
+    AUDIT_SKIP_CONTRACT_SMOKE="maybe" \
+      bash "$ROOT_DIR/tools/audit_quick.sh" 2>&1
+  )"; then
+    echo "expected audit_quick.sh to fail for invalid AUDIT_SKIP_CONTRACT_SMOKE token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected audit_quick.sh invalid AUDIT_SKIP_CONTRACT_SMOKE exit code 1, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token"
+  echo "[ok] audit quick strict bool guard"
+}
+
 run_evidence_bundle_pack_case() {
   local evidence_dir="$TMP_DIR/evidence-pack-input"
   local output_dir="$TMP_DIR/evidence-pack-out"
@@ -4750,6 +4770,7 @@ main() {
   write_fake_journalctl
   run_common_strict_bool_parser_case
   run_common_bool_compat_wrapper_case
+  run_audit_quick_strict_bool_guard_case
   run_audit_standard_strict_bool_guard_case
   run_audit_full_strict_bool_guard_case
   run_evidence_bundle_pack_case
