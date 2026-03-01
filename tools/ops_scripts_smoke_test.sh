@@ -2660,6 +2660,20 @@ run_adapter_secret_rotation_report_case() {
   assert_contains "$invalid_allow_unauth_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$invalid_allow_unauth_output" "COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED must be a boolean token"
 
+  local no_file_keys_env_path="$TMP_DIR/adapter-rotation-no-file-keys.env"
+  cat >"$no_file_keys_env_path" <<'EOF'
+COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=true
+EOF
+  local no_file_keys_output
+  no_file_keys_output="$(
+    ADAPTER_ENV_PATH="$no_file_keys_env_path" \
+      bash "$ROOT_DIR/tools/adapter_secret_rotation_report.sh"
+  )"
+  assert_contains "$no_file_keys_output" "rotation_readiness_verdict: PASS"
+  assert_contains "$no_file_keys_output" "secret_file_entries_total: 0"
+  assert_contains "$no_file_keys_output" "secret_file_checks_warnings: 0"
+  assert_contains "$no_file_keys_output" "secret_file_checks_errors: 0"
+
   chmod 644 "$secrets_dir/adapter_bearer.token"
   local warn_output=""
   if warn_output="$(
@@ -2697,7 +2711,7 @@ run_adapter_secret_rotation_report_case() {
   fi
   assert_contains "$fail_output" "rotation_readiness_verdict: FAIL"
   assert_contains "$fail_output" "COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE missing file"
-  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence + quoted-hash + underscore route conflict + fallback auth conflict"
+  echo "[ok] adapter secret rotation report pass/warn/fail + conflict + duplicate-key precedence + quoted-hash + underscore route conflict + fallback auth conflict + no-file-keys set-u guard"
 }
 
 run_devnet_rehearsal_case() {

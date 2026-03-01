@@ -242,7 +242,7 @@ while IFS= read -r key; do
   secret_keys+=("$key")
 done < <(list_secret_file_keys)
 
-for key in "${secret_keys[@]}"; do
+for key in "${secret_keys[@]-}"; do
   value="$(trim_string "$(env_value "$key")")"
   [[ -z "$value" ]] && continue
   resolved_path="$(resolve_path "$value")"
