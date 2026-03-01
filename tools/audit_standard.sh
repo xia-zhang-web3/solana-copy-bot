@@ -1,24 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=tools/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 cd "$ROOT_DIR"
 
 DIFF_RANGE="${1:-${AUDIT_DIFF_RANGE:-}}"
 SKIP_OPS_SMOKE_RAW="${AUDIT_SKIP_OPS_SMOKE:-false}"
-
-normalize_bool() {
-  local raw="${1:-}"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    *)
-      printf 'false'
-      ;;
-  esac
-}
+if ! skip_ops_smoke="$(parse_bool_token_strict "$SKIP_OPS_SMOKE_RAW")"; then
+  echo "AUDIT_SKIP_OPS_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_OPS_SMOKE_RAW" >&2
+  exit 1
+fi
 
 run_ops_smoke() {
   if command -v timeout >/dev/null 2>&1; then
@@ -85,7 +79,6 @@ fi
 
 CHANGED_PACKAGES=()
 ops_scope_touched="false"
-skip_ops_smoke="$(normalize_bool "$SKIP_OPS_SMOKE_RAW")"
 
 while IFS= read -r path; do
   [[ -z "$path" ]] && continue

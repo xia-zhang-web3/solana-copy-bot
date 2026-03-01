@@ -4447,6 +4447,26 @@ run_common_bool_normalization_case() {
   echo "[ok] common bool normalization"
 }
 
+run_audit_standard_strict_bool_guard_case() {
+  local invalid_output=""
+  if invalid_output="$(
+    AUDIT_SKIP_OPS_SMOKE="maybe" \
+      bash "$ROOT_DIR/tools/audit_standard.sh" 2>&1
+  )"; then
+    echo "expected audit_standard.sh to fail for invalid AUDIT_SKIP_OPS_SMOKE token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected audit_standard.sh invalid AUDIT_SKIP_OPS_SMOKE exit code 1, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "AUDIT_SKIP_OPS_SMOKE must be boolean token"
+  echo "[ok] audit standard strict bool guard"
+}
+
 run_evidence_bundle_pack_case() {
   local evidence_dir="$TMP_DIR/evidence-pack-input"
   local output_dir="$TMP_DIR/evidence-pack-out"
@@ -4637,6 +4657,7 @@ EOF_POISON_INDEX
 main() {
   write_fake_journalctl
   run_common_bool_normalization_case
+  run_audit_standard_strict_bool_guard_case
   run_evidence_bundle_pack_case
 
   local legacy_db="$TMP_DIR/legacy.db"
