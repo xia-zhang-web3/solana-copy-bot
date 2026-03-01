@@ -259,9 +259,11 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   cat >"$manifest_path" <<EOF
 report_sha256: $report_sha256
 EOF
+  manifest_sha256="$(sha256_file_value "$manifest_path")"
   echo "artifact_report: $artifact_path"
   echo "artifact_manifest: $manifest_path"
   echo "report_sha256: $report_sha256"
+  echo "manifest_sha256: $manifest_sha256"
 fi
 
 exit "$exit_code"

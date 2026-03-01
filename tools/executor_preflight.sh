@@ -800,9 +800,11 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   cat >"$manifest_path" <<EOF
 summary_sha256: $summary_sha256
 EOF
+  manifest_sha256="$(sha256_file_value "$manifest_path")"
   echo "artifact_summary: $summary_path"
   echo "artifact_manifest: $manifest_path"
   echo "summary_sha256: $summary_sha256"
+  echo "manifest_sha256: $manifest_sha256"
 fi
 
 exit "$exit_code"

@@ -2384,6 +2384,9 @@ run_executor_preflight_case() {
   assert_field_equals "$pass_output" "auth_probe_with_auth_http_status" "200"
   assert_contains "$pass_output" "artifacts_written: true"
   assert_sha256_field "$pass_output" "summary_sha256"
+  assert_sha256_field "$pass_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$pass_output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$pass_output" "manifest_sha256" "artifact_manifest"
   if ! ls "$artifacts_dir"/executor_preflight_summary_*.txt >/dev/null 2>&1; then
     echo "expected executor preflight summary artifact file to be written" >&2
     exit 1
@@ -2510,6 +2513,9 @@ run_adapter_secret_rotation_report_case() {
   assert_contains "$pass_output" "artifact_manifest:"
   assert_contains "$pass_output" "report_sha256:"
   assert_sha256_field "$pass_output" "report_sha256"
+  assert_sha256_field "$pass_output" "manifest_sha256"
+  assert_sha256_field_matches_file "$pass_output" "report_sha256" "artifact_report"
+  assert_sha256_field_matches_file "$pass_output" "manifest_sha256" "artifact_manifest"
   if ! ls "$artifacts_dir"/adapter_secret_rotation_report_*.txt >/dev/null 2>&1; then
     echo "expected adapter secret rotation artifact in $artifacts_dir" >&2
     exit 1
@@ -3122,6 +3128,9 @@ EOF
   assert_contains "$output" "artifact_manifest:"
   assert_contains "$output" "report_sha256:"
   assert_sha256_field "$output" "report_sha256"
+  assert_sha256_field "$output" "manifest_sha256"
+  assert_sha256_field_matches_file "$output" "report_sha256" "artifact_report"
+  assert_sha256_field_matches_file "$output" "manifest_sha256" "artifact_manifest"
   if ! ls "$artifacts_dir"/executor_signer_rotation_report_*.txt >/dev/null 2>&1; then
     echo "expected executor signer rotation report artifact in $artifacts_dir" >&2
     exit 1
