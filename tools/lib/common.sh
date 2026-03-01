@@ -24,24 +24,6 @@ parse_bool_token_strict() {
   esac
 }
 
-normalize_bool_token() {
-  local raw
-  raw="$(trim_string "$1")"
-  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  case "$raw" in
-    1|true|yes|on)
-      printf 'true'
-      ;;
-    ""|0|false|no|off)
-      printf 'false'
-      ;;
-    *)
-      echo "invalid boolean token (expected true/false/1/0/yes/no/on/off), got: $1" >&2
-      return 1
-      ;;
-  esac
-}
-
 extract_field() {
   local key="$1"
   local text="$2"

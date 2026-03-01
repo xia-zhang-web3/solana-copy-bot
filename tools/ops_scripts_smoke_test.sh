@@ -4395,18 +4395,18 @@ run_adapter_rollout_evidence_case() {
   echo "[ok] adapter rollout evidence helper"
 }
 
-run_common_bool_normalization_case() {
+run_common_strict_bool_parser_case() {
   local true_output=""
   true_output="$(
     ROOT_DIR="$ROOT_DIR" bash -c '
       set -euo pipefail
       # shellcheck source=tools/lib/common.sh
       source "$ROOT_DIR/tools/lib/common.sh"
-      normalize_bool_token " yes "
+      parse_bool_token_strict " yes "
     '
   )"
   if [[ "$true_output" != "true" ]]; then
-    echo "expected normalize_bool_token to normalize \"yes\" into true, got: $true_output" >&2
+    echo "expected parse_bool_token_strict to normalize \"yes\" into true, got: $true_output" >&2
     exit 1
   fi
 
@@ -4416,12 +4416,32 @@ run_common_bool_normalization_case() {
       set -euo pipefail
       # shellcheck source=tools/lib/common.sh
       source "$ROOT_DIR/tools/lib/common.sh"
-      normalize_bool_token ""
+      parse_bool_token_strict "off"
     '
   )"
   if [[ "$false_output" != "false" ]]; then
-    echo "expected normalize_bool_token to normalize empty token into false, got: $false_output" >&2
+    echo "expected parse_bool_token_strict to normalize \"off\" into false, got: $false_output" >&2
     exit 1
+  fi
+
+  local empty_output=""
+  if empty_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      parse_bool_token_strict ""
+    ' 2>&1
+  )"; then
+    echo "expected parse_bool_token_strict to fail for empty token" >&2
+    exit 1
+  else
+    local empty_exit_code=$?
+    if [[ "$empty_exit_code" -ne 1 ]]; then
+      echo "expected parse_bool_token_strict empty token exit code 1, got $empty_exit_code" >&2
+      echo "$empty_output" >&2
+      exit 1
+    fi
   fi
 
   local invalid_output=""
@@ -4430,21 +4450,21 @@ run_common_bool_normalization_case() {
       set -euo pipefail
       # shellcheck source=tools/lib/common.sh
       source "$ROOT_DIR/tools/lib/common.sh"
-      normalize_bool_token "maybe"
+      parse_bool_token_strict "maybe"
     ' 2>&1
   )"; then
-    echo "expected normalize_bool_token to fail for invalid token" >&2
+    echo "expected parse_bool_token_strict to fail for invalid token" >&2
     exit 1
   else
     local invalid_exit_code=$?
     if [[ "$invalid_exit_code" -ne 1 ]]; then
-      echo "expected normalize_bool_token invalid token exit code 1, got $invalid_exit_code" >&2
+      echo "expected parse_bool_token_strict invalid token exit code 1, got $invalid_exit_code" >&2
       echo "$invalid_output" >&2
       exit 1
     fi
   fi
-  assert_contains "$invalid_output" "invalid boolean token (expected true/false/1/0/yes/no/on/off), got: maybe"
-  echo "[ok] common bool normalization"
+
+  echo "[ok] common strict bool parser"
 }
 
 run_audit_standard_strict_bool_guard_case() {
@@ -4656,7 +4676,7 @@ EOF_POISON_INDEX
 
 main() {
   write_fake_journalctl
-  run_common_bool_normalization_case
+  run_common_strict_bool_parser_case
   run_audit_standard_strict_bool_guard_case
   run_evidence_bundle_pack_case
 
