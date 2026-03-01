@@ -27,6 +27,15 @@ if [[ "$ops_smoke_timeout_sec" -eq 0 ]]; then
   echo "AUDIT_OPS_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $OPS_SMOKE_TIMEOUT_RAW" >&2
   exit 1
 fi
+CONTRACT_SMOKE_TIMEOUT_RAW="${AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC:-$ops_smoke_timeout_sec}"
+if ! contract_smoke_timeout_sec="$(parse_u64_token_strict "$CONTRACT_SMOKE_TIMEOUT_RAW")"; then
+  echo "AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $CONTRACT_SMOKE_TIMEOUT_RAW" >&2
+  exit 1
+fi
+if [[ "$contract_smoke_timeout_sec" -eq 0 ]]; then
+  echo "AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $CONTRACT_SMOKE_TIMEOUT_RAW" >&2
+  exit 1
+fi
 
 run_ops_smoke() {
   if command -v timeout >/dev/null 2>&1; then
@@ -37,7 +46,9 @@ run_ops_smoke() {
 }
 
 echo "[audit:full] running quick baseline (AUDIT_SKIP_CONTRACT_SMOKE=$skip_contract_smoke)"
-AUDIT_SKIP_CONTRACT_SMOKE="$skip_contract_smoke" bash tools/audit_quick.sh
+AUDIT_SKIP_CONTRACT_SMOKE="$skip_contract_smoke" \
+AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC="$contract_smoke_timeout_sec" \
+  bash tools/audit_quick.sh
 
 echo "[audit:full] cargo test --workspace -q"
 cargo test --workspace -q
