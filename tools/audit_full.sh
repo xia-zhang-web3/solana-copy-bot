@@ -13,6 +13,12 @@ if ! skip_ops_smoke="$(parse_bool_token_strict "$SKIP_OPS_SMOKE_RAW")"; then
   exit 1
 fi
 
+SKIP_CONTRACT_SMOKE_RAW="${AUDIT_SKIP_CONTRACT_SMOKE:-$skip_ops_smoke}"
+if ! skip_contract_smoke="$(parse_bool_token_strict "$SKIP_CONTRACT_SMOKE_RAW")"; then
+  echo "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_CONTRACT_SMOKE_RAW" >&2
+  exit 1
+fi
+
 run_ops_smoke() {
   if command -v timeout >/dev/null 2>&1; then
     timeout 300 bash tools/ops_scripts_smoke_test.sh
@@ -21,8 +27,8 @@ run_ops_smoke() {
   bash tools/ops_scripts_smoke_test.sh
 }
 
-echo "[audit:full] running quick baseline"
-bash tools/audit_quick.sh
+echo "[audit:full] running quick baseline (AUDIT_SKIP_CONTRACT_SMOKE=$skip_contract_smoke)"
+AUDIT_SKIP_CONTRACT_SMOKE="$skip_contract_smoke" bash tools/audit_quick.sh
 
 echo "[audit:full] cargo test --workspace -q"
 cargo test --workspace -q

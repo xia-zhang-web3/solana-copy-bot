@@ -4559,6 +4559,27 @@ run_audit_full_strict_bool_guard_case() {
   echo "[ok] audit full strict bool guard"
 }
 
+run_audit_full_contract_smoke_strict_bool_guard_case() {
+  local invalid_output=""
+  if invalid_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="maybe" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for invalid AUDIT_SKIP_CONTRACT_SMOKE token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh invalid AUDIT_SKIP_CONTRACT_SMOKE exit code 1, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token"
+  echo "[ok] audit full contract-smoke strict bool guard"
+}
+
 run_audit_quick_strict_bool_guard_case() {
   local invalid_output=""
   if invalid_output="$(
@@ -4773,6 +4794,7 @@ main() {
   run_audit_quick_strict_bool_guard_case
   run_audit_standard_strict_bool_guard_case
   run_audit_full_strict_bool_guard_case
+  run_audit_full_contract_smoke_strict_bool_guard_case
   run_evidence_bundle_pack_case
 
   local legacy_db="$TMP_DIR/legacy.db"
