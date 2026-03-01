@@ -7,6 +7,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 cd "$ROOT_DIR"
 
+MAX_AUDIT_TIMEOUT_SEC=86400
+
 SKIP_CONTRACT_SMOKE_RAW="${AUDIT_SKIP_CONTRACT_SMOKE:-false}"
 if ! skip_contract_smoke="$(parse_bool_token_strict "$SKIP_CONTRACT_SMOKE_RAW")"; then
   echo "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_CONTRACT_SMOKE_RAW" >&2
@@ -18,38 +20,24 @@ if ! skip_executor_tests="$(parse_bool_token_strict "$SKIP_EXECUTOR_TESTS_RAW")"
   exit 1
 fi
 CONTRACT_SMOKE_TIMEOUT_RAW="${AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC:-300}"
-if ! contract_smoke_timeout_sec="$(parse_u64_token_strict "$CONTRACT_SMOKE_TIMEOUT_RAW")"; then
-  echo "AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $CONTRACT_SMOKE_TIMEOUT_RAW" >&2
-  exit 1
-fi
-if [[ "$contract_smoke_timeout_sec" -eq 0 ]]; then
-  echo "AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $CONTRACT_SMOKE_TIMEOUT_RAW" >&2
+if ! contract_smoke_timeout_sec="$(parse_timeout_sec_strict "$CONTRACT_SMOKE_TIMEOUT_RAW" 1 "$MAX_AUDIT_TIMEOUT_SEC")"; then
+  echo "AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC must be integer seconds >= 1 and <= $MAX_AUDIT_TIMEOUT_SEC, got: $CONTRACT_SMOKE_TIMEOUT_RAW" >&2
   exit 1
 fi
 EXECUTOR_TEST_TIMEOUT_RAW="${AUDIT_EXECUTOR_TEST_TIMEOUT_SEC:-600}"
-if ! executor_test_timeout_sec="$(parse_u64_token_strict "$EXECUTOR_TEST_TIMEOUT_RAW")"; then
-  echo "AUDIT_EXECUTOR_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $EXECUTOR_TEST_TIMEOUT_RAW" >&2
-  exit 1
-fi
-if [[ "$executor_test_timeout_sec" -eq 0 ]]; then
-  echo "AUDIT_EXECUTOR_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $EXECUTOR_TEST_TIMEOUT_RAW" >&2
+if ! executor_test_timeout_sec="$(parse_timeout_sec_strict "$EXECUTOR_TEST_TIMEOUT_RAW" 1 "$MAX_AUDIT_TIMEOUT_SEC")"; then
+  echo "AUDIT_EXECUTOR_TEST_TIMEOUT_SEC must be integer seconds >= 1 and <= $MAX_AUDIT_TIMEOUT_SEC, got: $EXECUTOR_TEST_TIMEOUT_RAW" >&2
   exit 1
 fi
 
 run_contract_smoke() {
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$contract_smoke_timeout_sec" bash tools/executor_contract_smoke_test.sh
-    return
-  fi
-  bash tools/executor_contract_smoke_test.sh
+  run_with_timeout_if_available "$contract_smoke_timeout_sec" \
+    bash tools/executor_contract_smoke_test.sh
 }
 
 run_executor_tests() {
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$executor_test_timeout_sec" cargo test -p copybot-executor -q
-    return
-  fi
-  cargo test -p copybot-executor -q
+  run_with_timeout_if_available "$executor_test_timeout_sec" \
+    cargo test -p copybot-executor -q
 }
 
 if [[ "$skip_executor_tests" == "false" ]]; then

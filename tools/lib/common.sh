@@ -33,6 +33,43 @@ parse_u64_token_strict() {
   printf '%s' "$raw"
 }
 
+parse_timeout_sec_strict() {
+  local raw min_sec max_sec parsed
+  raw="$1"
+  min_sec="${2:-1}"
+  max_sec="${3:-86400}"
+  if ! parsed="$(parse_u64_token_strict "$raw")"; then
+    return 1
+  fi
+  if [[ "$parsed" -lt "$min_sec" || "$parsed" -gt "$max_sec" ]]; then
+    return 1
+  fi
+  printf '%s' "$parsed"
+}
+
+resolve_timeout_command() {
+  if command -v timeout >/dev/null 2>&1; then
+    command -v timeout
+    return 0
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    command -v gtimeout
+    return 0
+  fi
+  return 1
+}
+
+run_with_timeout_if_available() {
+  local timeout_sec="$1"
+  shift
+  local timeout_command=""
+  if timeout_command="$(resolve_timeout_command)"; then
+    "$timeout_command" "$timeout_sec" "$@"
+    return
+  fi
+  "$@"
+}
+
 normalize_bool_token() {
   local raw
   raw="$(trim_string "$1")"

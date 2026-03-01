@@ -4519,6 +4519,64 @@ run_common_bool_compat_wrapper_case() {
   echo "[ok] common bool compat wrapper"
 }
 
+run_common_timeout_parser_case() {
+  local valid_output=""
+  valid_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      parse_timeout_sec_strict "600" 1 86400
+    '
+  )"
+  if [[ "$valid_output" != "600" ]]; then
+    echo "expected parse_timeout_sec_strict to accept 600, got: $valid_output" >&2
+    exit 1
+  fi
+
+  local zero_output=""
+  if zero_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      parse_timeout_sec_strict "0" 1 86400
+    ' 2>&1
+  )"; then
+    echo "expected parse_timeout_sec_strict to reject 0" >&2
+    exit 1
+  else
+    local zero_exit_code=$?
+    if [[ "$zero_exit_code" -ne 1 ]]; then
+      echo "expected parse_timeout_sec_strict zero timeout exit code 1, got $zero_exit_code" >&2
+      echo "$zero_output" >&2
+      exit 1
+    fi
+  fi
+
+  local over_limit_output=""
+  if over_limit_output="$(
+    ROOT_DIR="$ROOT_DIR" bash -c '
+      set -euo pipefail
+      # shellcheck source=tools/lib/common.sh
+      source "$ROOT_DIR/tools/lib/common.sh"
+      parse_timeout_sec_strict "86401" 1 86400
+    ' 2>&1
+  )"; then
+    echo "expected parse_timeout_sec_strict to reject values above upper bound" >&2
+    exit 1
+  else
+    local over_limit_exit_code=$?
+    if [[ "$over_limit_exit_code" -ne 1 ]]; then
+      echo "expected parse_timeout_sec_strict over-limit exit code 1, got $over_limit_exit_code" >&2
+      echo "$over_limit_output" >&2
+      exit 1
+    fi
+  fi
+
+  echo "[ok] common timeout parser"
+}
+
 run_audit_standard_strict_bool_guard_case() {
   local invalid_output=""
   if invalid_output="$(
@@ -4802,6 +4860,74 @@ run_audit_full_executor_test_timeout_guard_case() {
     exit 1
   fi
   echo "[ok] audit full executor-test timeout strict guard"
+}
+
+run_audit_timeout_upper_bound_guard_batch_case() {
+  local quick_over_limit_output=""
+  if quick_over_limit_output="$(
+    AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_EXECUTOR_TEST_TIMEOUT_SEC="86401" \
+      bash "$ROOT_DIR/tools/audit_quick.sh" 2>&1
+  )"; then
+    echo "expected audit_quick.sh to fail for over-limit AUDIT_EXECUTOR_TEST_TIMEOUT_SEC" >&2
+    exit 1
+  else
+    local quick_over_limit_exit_code=$?
+    if [[ "$quick_over_limit_exit_code" -ne 1 ]]; then
+      echo "expected audit_quick.sh over-limit AUDIT_EXECUTOR_TEST_TIMEOUT_SEC exit code 1, got $quick_over_limit_exit_code" >&2
+      echo "$quick_over_limit_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$quick_over_limit_output" "AUDIT_EXECUTOR_TEST_TIMEOUT_SEC must be integer seconds >= 1 and <= 86400"
+
+  local standard_over_limit_output=""
+  if standard_over_limit_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_PACKAGE_TEST_TIMEOUT_SEC="86401" \
+      bash "$ROOT_DIR/tools/audit_standard.sh" 2>&1
+  )"; then
+    echo "expected audit_standard.sh to fail for over-limit AUDIT_PACKAGE_TEST_TIMEOUT_SEC" >&2
+    exit 1
+  else
+    local standard_over_limit_exit_code=$?
+    if [[ "$standard_over_limit_exit_code" -ne 1 ]]; then
+      echo "expected audit_standard.sh over-limit AUDIT_PACKAGE_TEST_TIMEOUT_SEC exit code 1, got $standard_over_limit_exit_code" >&2
+      echo "$standard_over_limit_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$standard_over_limit_output" "AUDIT_PACKAGE_TEST_TIMEOUT_SEC must be integer seconds >= 1 and <= 86400"
+  if grep -Fq "[audit:standard] running quick baseline" <<<"$standard_over_limit_output"; then
+    echo "expected audit_standard.sh to fail before baseline for over-limit package timeout" >&2
+    exit 1
+  fi
+
+  local full_over_limit_output=""
+  if full_over_limit_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_WORKSPACE_TEST_TIMEOUT_SEC="86401" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for over-limit AUDIT_WORKSPACE_TEST_TIMEOUT_SEC" >&2
+    exit 1
+  else
+    local full_over_limit_exit_code=$?
+    if [[ "$full_over_limit_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh over-limit AUDIT_WORKSPACE_TEST_TIMEOUT_SEC exit code 1, got $full_over_limit_exit_code" >&2
+      echo "$full_over_limit_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$full_over_limit_output" "AUDIT_WORKSPACE_TEST_TIMEOUT_SEC must be integer seconds >= 1 and <= 86400"
+  if grep -Fq "[audit:full] running quick baseline" <<<"$full_over_limit_output"; then
+    echo "expected audit_full.sh to fail before baseline for over-limit workspace timeout" >&2
+    exit 1
+  fi
+
+  echo "[ok] audit timeout upper-bound guard batch"
 }
 
 run_audit_skip_gate_strict_bool_batch_case() {
@@ -5115,6 +5241,7 @@ main() {
   write_fake_journalctl
   run_common_strict_bool_parser_case
   run_common_bool_compat_wrapper_case
+  run_common_timeout_parser_case
   run_audit_quick_strict_bool_guard_case
   run_audit_standard_strict_bool_guard_case
   run_audit_standard_invalid_diff_range_guard_case
@@ -5126,6 +5253,7 @@ main() {
   run_audit_executor_test_timeout_guard_case
   run_audit_standard_executor_test_timeout_guard_case
   run_audit_full_executor_test_timeout_guard_case
+  run_audit_timeout_upper_bound_guard_batch_case
   run_audit_workspace_test_timeout_guard_case
   run_audit_full_strict_bool_guard_case
   run_audit_full_contract_smoke_strict_bool_guard_case
