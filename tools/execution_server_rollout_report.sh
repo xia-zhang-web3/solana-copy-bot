@@ -483,16 +483,42 @@ package_bundle_sha256="n/a"
 package_bundle_sha256_path="n/a"
 package_bundle_contents_manifest="n/a"
 package_bundle_file_count="n/a"
+run_package_bundle_once() {
+  local package_bundle_output=""
+  if package_bundle_output="$(
+    OUTPUT_DIR="$PACKAGE_BUNDLE_OUTPUT_DIR" \
+      BUNDLE_LABEL="$PACKAGE_BUNDLE_LABEL" \
+      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$OUTPUT_ROOT" 2>&1
+  )"; then
+    package_bundle_exit_code=0
+    package_bundle_error="n/a"
+    package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
+    package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+    package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+    package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+    package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+    package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+  else
+    package_bundle_exit_code=$?
+    package_bundle_artifacts_written="false"
+    package_bundle_error="$(trim_string "$(printf '%s\n' "$package_bundle_output" | tail -n 1)")"
+    package_bundle_path="n/a"
+    package_bundle_sha256="n/a"
+    package_bundle_sha256_path="n/a"
+    package_bundle_contents_manifest="n/a"
+    package_bundle_file_count="n/a"
+  fi
+}
+
+if [[ "$package_bundle_enabled_norm" == "true" ]]; then
+  # First pass resolves actual package status used by artifact summary.
+  run_package_bundle_once
+fi
 
 cat >>"$summary_path" <<EOF_SUMMARY
 package_bundle_artifacts_written: $package_bundle_artifacts_written
 package_bundle_exit_code: $package_bundle_exit_code
 package_bundle_error: $package_bundle_error
-package_bundle_path: $package_bundle_path
-package_bundle_sha256: $package_bundle_sha256
-package_bundle_sha256_path: $package_bundle_sha256_path
-package_bundle_contents_manifest: $package_bundle_contents_manifest
-package_bundle_file_count: $package_bundle_file_count
 EOF_SUMMARY
 
 summary_sha256="$(sha256_file_value "$summary_path")"
@@ -513,22 +539,9 @@ EOF_MANIFEST
 manifest_sha256="$(sha256_file_value "$manifest_path")"
 
 if [[ "$package_bundle_enabled_norm" == "true" ]]; then
-  package_bundle_output=""
-  if package_bundle_output="$(
-    OUTPUT_DIR="$PACKAGE_BUNDLE_OUTPUT_DIR" \
-      BUNDLE_LABEL="$PACKAGE_BUNDLE_LABEL" \
-      bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$OUTPUT_ROOT" 2>&1
-  )"; then
-    package_bundle_exit_code=0
-    package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
-    package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
-    package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
-    package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
-    package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
-    package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
-  else
-    package_bundle_exit_code=$?
-    package_bundle_error="$(trim_string "$(printf '%s\n' "$package_bundle_output" | tail -n 1)")"
+  if [[ "$package_bundle_artifacts_written" == "true" ]]; then
+    # Second pass packages finalized summary/manifest into bundle payload.
+    run_package_bundle_once
   fi
 fi
 

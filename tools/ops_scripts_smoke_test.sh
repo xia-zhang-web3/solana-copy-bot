@@ -3810,6 +3810,22 @@ run_execution_server_rollout_report_case() {
   assert_contains "$bundled_summary_text" "package_bundle_exit_code:"
   assert_contains "$bundled_manifest_text" "summary_sha256:"
   assert_contains "$bundled_manifest_text" "preflight_capture_sha256:"
+  local stdout_bundle_written=""
+  local stdout_bundle_exit=""
+  local bundled_bundle_written=""
+  local bundled_bundle_exit=""
+  stdout_bundle_written="$(extract_field_value "$bundle_output" "package_bundle_artifacts_written")"
+  stdout_bundle_exit="$(extract_field_value "$bundle_output" "package_bundle_exit_code")"
+  bundled_bundle_written="$(extract_field_value "$bundled_summary_text" "package_bundle_artifacts_written")"
+  bundled_bundle_exit="$(extract_field_value "$bundled_summary_text" "package_bundle_exit_code")"
+  if [[ "$bundled_bundle_written" != "$stdout_bundle_written" ]]; then
+    echo "expected bundled summary package_bundle_artifacts_written=$stdout_bundle_written, got $bundled_bundle_written" >&2
+    exit 1
+  fi
+  if [[ "$bundled_bundle_exit" != "$stdout_bundle_exit" ]]; then
+    echo "expected bundled summary package_bundle_exit_code=$stdout_bundle_exit, got $bundled_bundle_exit" >&2
+    exit 1
+  fi
 
   local invalid_bool_output=""
   if invalid_bool_output="$(
