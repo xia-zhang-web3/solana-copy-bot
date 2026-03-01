@@ -68,7 +68,7 @@ contains_window() {
 }
 
 IFS=',' read -ra raw_windows <<< "$WINDOWS_CSV"
-for raw_token in "${raw_windows[@]}"; do
+for raw_token in "${raw_windows[@]-}"; do
   token="$(trim_string "$raw_token")"
   if [[ -z "$token" ]]; then
     continue

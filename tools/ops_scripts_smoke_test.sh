@@ -1483,6 +1483,27 @@ run_windowed_signoff_report_case() {
   assert_contains "$invalid_bool_output" "signoff_verdict: NO_GO"
   assert_contains "$invalid_bool_output" "input_error: WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS must be a boolean token"
 
+  local empty_windows_output=""
+  if empty_windows_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$paper_cfg" \
+      SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" "," "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for windowed signoff helper empty windows csv" >&2
+    exit 1
+  else
+    local empty_windows_exit_code=$?
+    if [[ "$empty_windows_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for windowed signoff helper empty windows csv, got $empty_windows_exit_code" >&2
+      echo "$empty_windows_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$empty_windows_output" "signoff_verdict: NO_GO"
+  assert_contains "$empty_windows_output" "input_error: no valid windows parsed from WINDOWS_CSV=,"
+
   local hard_block_nogo_output=""
   if hard_block_nogo_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -1934,6 +1955,26 @@ run_execution_route_fee_signoff_case() {
   fi
   assert_contains "$invalid_output" "signoff_verdict: NO_GO"
   assert_contains "$invalid_output" "input_error: window token must be an integer (got: invalid)"
+
+  local empty_windows_output
+  if empty_windows_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "," "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper empty windows" >&2
+    exit 1
+  else
+    local empty_windows_status=$?
+  fi
+  if [[ "$empty_windows_status" -ne 3 ]]; then
+    echo "expected NO_GO exit code 3 from route/fee signoff helper empty windows, got $empty_windows_status" >&2
+    exit 1
+  fi
+  assert_contains "$empty_windows_output" "signoff_verdict: NO_GO"
+  assert_contains "$empty_windows_output" "input_error: no valid windows parsed from WINDOWS_CSV=,"
 
   local invalid_bool_output
   if invalid_bool_output="$(
