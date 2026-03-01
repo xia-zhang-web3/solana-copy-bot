@@ -925,6 +925,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 397. final-wrapper package status consistency hardening: `tools/execution_route_fee_final_evidence_report.sh`, `tools/executor_final_evidence_report.sh`, and `tools/adapter_rollout_final_evidence_report.sh` now use two-pass package-bundle flow (status pass -> summary/manifest finalize -> payload pass) and persist only non-recursive package status fields (`artifacts_written`, `exit_code`, `error`) in summary artifacts.
 398. final-wrapper manifest recursion guard: removed self-referential bundle-artifact hash fields from final-wrapper manifests (`package_bundle_*_sha256` over bundle artifacts) to avoid recursive/unstable manifest values when manifest itself is packaged into the bundle payload.
 399. final-wrapper bundle smoke parity expansion: `tools/ops_scripts_smoke_test.sh` now validates bundle payload parity for route-fee/executor-final/adapter-final wrappers by asserting bundled summary `package_bundle_artifacts_written` and `package_bundle_exit_code` match stdout, and that bundled manifest exists alongside summary in archive.
+400. adapter rollout smoke determinism guard: `run_adapter_rollout_evidence_case` now bootstraps fake `journalctl` internally and pins `dynamic_cu_hint_api_total`/`dynamic_cu_hint_rpc_total` to canonical fixture values (`1/1`), removing caller-order dependence that previously caused targeted-run flaps.
 
 Остается в next-code-queue:
 

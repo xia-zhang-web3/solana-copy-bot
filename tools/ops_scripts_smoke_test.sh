@@ -3883,6 +3883,7 @@ run_adapter_rollout_evidence_case() {
   local env_path="$TMP_DIR/adapter-rollout.env"
   local secrets_dir="$TMP_DIR/secrets"
   local artifacts_dir="$TMP_DIR/adapter-rollout-artifacts"
+  write_fake_journalctl
   mkdir -p "$secrets_dir"
   write_adapter_env_rotation_report "$env_path"
 
@@ -3919,8 +3920,8 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "devnet_rehearsal_verdict: GO"
   assert_contains "$pass_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$pass_output" "dynamic_tip_policy_verdict: SKIP"
-  assert_contains "$pass_output" "dynamic_cu_hint_api_total: 0"
-  assert_contains "$pass_output" "dynamic_cu_hint_rpc_total: 0"
+  assert_contains "$pass_output" "dynamic_cu_hint_api_total: 1"
+  assert_contains "$pass_output" "dynamic_cu_hint_rpc_total: 1"
   assert_contains "$pass_output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$pass_output" "dynamic_cu_hint_source_verdict: SKIP"
   assert_field_equals "$pass_output" "dynamic_cu_hint_source_reason_code" "policy_disabled"
