@@ -4421,10 +4421,15 @@ run_evidence_bundle_pack_case() {
       bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$evidence_dir"
   )"
 
+  local evidence_dir_canonical="$evidence_dir"
+  local output_dir_canonical="$output_dir"
+  evidence_dir_canonical="$(cd "$evidence_dir" && pwd -P)"
+  output_dir_canonical="$(cd "$output_dir" && pwd -P)"
+
   assert_field_equals "$bundle_output" "artifacts_written" "true"
   assert_field_equals "$bundle_output" "file_count" "3"
-  assert_field_equals "$bundle_output" "evidence_dir" "$evidence_dir"
-  assert_field_equals "$bundle_output" "output_dir" "$output_dir"
+  assert_field_equals "$bundle_output" "evidence_dir" "$evidence_dir_canonical"
+  assert_field_equals "$bundle_output" "output_dir" "$output_dir_canonical"
   assert_sha256_field "$bundle_output" "bundle_sha256"
 
   local bundle_path=""
