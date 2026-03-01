@@ -955,7 +955,11 @@ assert_bundled_summary_manifest_package_status_parity() {
   bundled_manifest_text="$(tar -xOf "$bundle_path" "$manifest_entry_in_tar")"
   assert_contains "$bundled_summary_text" "package_bundle_artifacts_written:"
   assert_contains "$bundled_summary_text" "package_bundle_exit_code:"
-  assert_contains "$bundled_manifest_text" "summary_sha256:"
+  local stdout_summary_sha=""
+  stdout_summary_sha="$(extract_field_value "$text" "summary_sha256")"
+  if [[ -n "$stdout_summary_sha" && "$stdout_summary_sha" != "n/a" ]]; then
+    assert_contains "$bundled_manifest_text" "$stdout_summary_sha"
+  fi
 
   local stdout_bundle_written=""
   local stdout_bundle_exit=""
@@ -1275,6 +1279,7 @@ run_go_nogo_artifact_export_case() {
     echo "expected package bundle archive at $go_nogo_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$bundle_output"
 
   local missing_output_dir_output=""
   if missing_output_dir_output="$(
@@ -1711,6 +1716,7 @@ run_windowed_signoff_report_case() {
     echo "expected package bundle archive at $windowed_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$bundle_output"
 
   local missing_output_dir_output=""
   if missing_output_dir_output="$(
@@ -1970,6 +1976,7 @@ run_execution_route_fee_signoff_case() {
     echo "expected package bundle archive at $route_fee_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$bundle_output"
 
   local missing_output_dir_output=""
   if missing_output_dir_output="$(
@@ -2996,6 +3003,7 @@ run_devnet_rehearsal_case() {
     echo "expected package bundle archive at $rehearsal_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$bundle_output"
 
   local missing_output_dir_output=""
   if missing_output_dir_output="$(
@@ -3427,6 +3435,7 @@ run_executor_rollout_evidence_case() {
     echo "expected package bundle archive at $executor_rollout_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$rollout_bundle_output"
 
   local invalid_bool_output=""
   if invalid_bool_output="$(
@@ -4048,6 +4057,7 @@ run_adapter_rollout_evidence_case() {
     echo "expected package bundle archive at $adapter_rollout_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$rollout_bundle_output"
 
   local invalid_bool_output=""
   if invalid_bool_output="$(

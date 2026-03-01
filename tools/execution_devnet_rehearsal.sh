@@ -648,14 +648,15 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   printf '%s\n' "$route_fee_signoff_output" > "$route_fee_signoff_path"
   printf '%s\n' "$test_log" > "$tests_path"
 
-  if [[ "$package_bundle_enabled_norm" == "true" ]]; then
-    package_bundle_output=""
+  run_package_bundle_once() {
+    local package_bundle_output=""
     if package_bundle_output="$(
       OUTPUT_DIR="$PACKAGE_BUNDLE_OUTPUT_DIR" \
         BUNDLE_LABEL="$PACKAGE_BUNDLE_LABEL" \
         bash "$ROOT_DIR/tools/evidence_bundle_pack.sh" "$OUTPUT_DIR" 2>&1
     )"; then
       package_bundle_exit_code=0
+      package_bundle_error="n/a"
       package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
       package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
       package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
@@ -664,19 +665,24 @@ if [[ -n "$OUTPUT_DIR" ]]; then
       package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
     else
       package_bundle_exit_code=$?
+      package_bundle_artifacts_written="false"
       package_bundle_error="$(trim_string "$(printf '%s\n' "$package_bundle_output" | tail -n 1)")"
+      package_bundle_path="n/a"
+      package_bundle_sha256="n/a"
+      package_bundle_sha256_path="n/a"
+      package_bundle_contents_manifest="n/a"
+      package_bundle_file_count="n/a"
     fi
+  }
+
+  if [[ "$package_bundle_enabled_norm" == "true" ]]; then
+    run_package_bundle_once
   fi
 
   cat >>"$summary_path" <<EOF
 package_bundle_artifacts_written: $package_bundle_artifacts_written
 package_bundle_exit_code: $package_bundle_exit_code
 package_bundle_error: $package_bundle_error
-package_bundle_path: $package_bundle_path
-package_bundle_sha256: $package_bundle_sha256
-package_bundle_sha256_path: $package_bundle_sha256_path
-package_bundle_contents_manifest: $package_bundle_contents_manifest
-package_bundle_file_count: $package_bundle_file_count
 EOF
 
   summary_sha256="$(sha256_file_value "$summary_path")"
@@ -685,15 +691,6 @@ EOF
   windowed_signoff_sha256="$(sha256_file_value "$windowed_signoff_path")"
   route_fee_signoff_sha256="$(sha256_file_value "$route_fee_signoff_path")"
   tests_sha256="$(sha256_file_value "$tests_path")"
-  if [[ "$package_bundle_artifacts_written" == "true" ]]; then
-    package_bundle_path_sha256="$(sha256_file_value "$package_bundle_path")"
-    package_bundle_sha256_path_sha256="$(sha256_file_value "$package_bundle_sha256_path")"
-    package_bundle_contents_manifest_sha256="$(sha256_file_value "$package_bundle_contents_manifest")"
-  else
-    package_bundle_path_sha256="n/a"
-    package_bundle_sha256_path_sha256="n/a"
-    package_bundle_contents_manifest_sha256="n/a"
-  fi
   if [[ -n "$go_nogo_nested_capture_path" ]]; then
     go_nogo_nested_capture_sha256="$(sha256_file_value "$go_nogo_nested_capture_path")"
   else
@@ -719,11 +716,12 @@ tests_sha256: $tests_sha256
 go_nogo_nested_capture_sha256: $go_nogo_nested_capture_sha256
 windowed_signoff_nested_capture_sha256: $windowed_signoff_nested_capture_sha256
 route_fee_signoff_nested_capture_sha256: $route_fee_signoff_nested_capture_sha256
-package_bundle_path_sha256: $package_bundle_path_sha256
-package_bundle_sha256_path_sha256: $package_bundle_sha256_path_sha256
-package_bundle_contents_manifest_sha256: $package_bundle_contents_manifest_sha256
 EOF
   manifest_sha256="$(sha256_file_value "$manifest_path")"
+
+  if [[ "$package_bundle_enabled_norm" == "true" && "$package_bundle_artifacts_written" == "true" ]]; then
+    run_package_bundle_once
+  fi
 
   echo
   echo "artifacts_written: true"
