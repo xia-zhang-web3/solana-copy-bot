@@ -18,10 +18,19 @@ if ! skip_contract_smoke="$(parse_bool_token_strict "$SKIP_CONTRACT_SMOKE_RAW")"
   echo "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_CONTRACT_SMOKE_RAW" >&2
   exit 1
 fi
+OPS_SMOKE_TIMEOUT_RAW="${AUDIT_OPS_SMOKE_TIMEOUT_SEC:-300}"
+if ! ops_smoke_timeout_sec="$(parse_u64_token_strict "$OPS_SMOKE_TIMEOUT_RAW")"; then
+  echo "AUDIT_OPS_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $OPS_SMOKE_TIMEOUT_RAW" >&2
+  exit 1
+fi
+if [[ "$ops_smoke_timeout_sec" -eq 0 ]]; then
+  echo "AUDIT_OPS_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $OPS_SMOKE_TIMEOUT_RAW" >&2
+  exit 1
+fi
 
 run_ops_smoke() {
   if command -v timeout >/dev/null 2>&1; then
-    timeout 300 bash tools/ops_scripts_smoke_test.sh
+    timeout "$ops_smoke_timeout_sec" bash tools/ops_scripts_smoke_test.sh
     return
   fi
   bash tools/ops_scripts_smoke_test.sh

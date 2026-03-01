@@ -24,6 +24,15 @@ parse_bool_token_strict() {
   esac
 }
 
+parse_u64_token_strict() {
+  local raw
+  raw="$(trim_string "$1")"
+  if [[ ! "$raw" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+  printf '%s' "$raw"
+}
+
 normalize_bool_token() {
   local raw
   raw="$(trim_string "$1")"
