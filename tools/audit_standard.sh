@@ -36,6 +36,15 @@ if [[ "$contract_smoke_timeout_sec" -eq 0 ]]; then
   echo "AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $CONTRACT_SMOKE_TIMEOUT_RAW" >&2
   exit 1
 fi
+PACKAGE_TEST_TIMEOUT_RAW="${AUDIT_PACKAGE_TEST_TIMEOUT_SEC:-600}"
+if ! package_test_timeout_sec="$(parse_u64_token_strict "$PACKAGE_TEST_TIMEOUT_RAW")"; then
+  echo "AUDIT_PACKAGE_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $PACKAGE_TEST_TIMEOUT_RAW" >&2
+  exit 1
+fi
+if [[ "$package_test_timeout_sec" -eq 0 ]]; then
+  echo "AUDIT_PACKAGE_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $PACKAGE_TEST_TIMEOUT_RAW" >&2
+  exit 1
+fi
 
 run_ops_smoke() {
   if command -v timeout >/dev/null 2>&1; then
@@ -89,6 +98,15 @@ add_unique_package() {
   CHANGED_PACKAGES+=("$package")
 }
 
+run_package_tests() {
+  local package="$1"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$package_test_timeout_sec" cargo test -p "$package" -q
+    return
+  fi
+  cargo test -p "$package" -q
+}
+
 if ! changed_files="$(collect_changed_files)"; then
   if [[ -n "$DIFF_RANGE" ]]; then
     echo "AUDIT_DIFF_RANGE is invalid: $DIFF_RANGE" >&2
@@ -140,8 +158,8 @@ else
     if [[ "$package" == "copybot-executor" ]]; then
       continue
     fi
-    echo "[audit:standard] cargo test -p $package -q"
-    cargo test -p "$package" -q
+    echo "[audit:standard] cargo test -p $package -q (timeout=${package_test_timeout_sec}s)"
+    run_package_tests "$package"
   done
 fi
 

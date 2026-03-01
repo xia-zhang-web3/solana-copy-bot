@@ -4590,6 +4590,32 @@ run_audit_standard_contract_smoke_strict_bool_guard_case() {
   echo "[ok] audit standard contract-smoke strict bool guard"
 }
 
+run_audit_standard_package_test_timeout_guard_case() {
+  local invalid_output=""
+  if invalid_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_PACKAGE_TEST_TIMEOUT_SEC="abc" \
+      bash "$ROOT_DIR/tools/audit_standard.sh" 2>&1
+  )"; then
+    echo "expected audit_standard.sh to fail for invalid AUDIT_PACKAGE_TEST_TIMEOUT_SEC token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected audit_standard.sh invalid AUDIT_PACKAGE_TEST_TIMEOUT_SEC exit code 1, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "AUDIT_PACKAGE_TEST_TIMEOUT_SEC must be integer seconds >= 1"
+  if grep -Fq "[audit:standard] running quick baseline" <<<"$invalid_output"; then
+    echo "expected audit_standard.sh to fail before quick baseline for invalid package-test timeout" >&2
+    exit 1
+  fi
+  echo "[ok] audit standard package-test timeout strict guard"
+}
+
 run_audit_ops_smoke_timeout_guard_case() {
   local invalid_standard_output=""
   if invalid_standard_output="$(
@@ -4982,6 +5008,7 @@ main() {
   run_audit_standard_strict_bool_guard_case
   run_audit_standard_invalid_diff_range_guard_case
   run_audit_standard_contract_smoke_strict_bool_guard_case
+  run_audit_standard_package_test_timeout_guard_case
   run_audit_ops_smoke_timeout_guard_case
   run_audit_contract_smoke_timeout_guard_case
   run_audit_executor_test_timeout_guard_case
