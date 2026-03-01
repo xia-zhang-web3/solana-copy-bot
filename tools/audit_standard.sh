@@ -66,10 +66,18 @@ add_unique_package() {
   CHANGED_PACKAGES+=("$package")
 }
 
+if ! changed_files="$(collect_changed_files)"; then
+  if [[ -n "$DIFF_RANGE" ]]; then
+    echo "AUDIT_DIFF_RANGE is invalid: $DIFF_RANGE" >&2
+  else
+    echo "failed to collect changed files from working tree" >&2
+  fi
+  exit 1
+fi
+
 echo "[audit:standard] running quick baseline"
 bash tools/audit_quick.sh
 
-changed_files="$(collect_changed_files || true)"
 
 if [[ -n "$DIFF_RANGE" ]]; then
   echo "[audit:standard] diff range: $DIFF_RANGE"
