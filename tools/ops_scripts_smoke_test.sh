@@ -913,6 +913,68 @@ assert_sha256_field_matches_file() {
   fi
 }
 
+assert_bundled_summary_manifest_package_status_parity() {
+  local text="$1"
+  local bundle_path=""
+  local summary_path=""
+  local manifest_path=""
+  bundle_path="$(extract_field_value "$text" "package_bundle_path")"
+  summary_path="$(extract_field_value "$text" "artifact_summary")"
+  manifest_path="$(extract_field_value "$text" "artifact_manifest")"
+  if [[ -z "$bundle_path" || ! -f "$bundle_path" ]]; then
+    echo "expected package bundle archive at $bundle_path" >&2
+    exit 1
+  fi
+  if [[ -z "$summary_path" || -z "$manifest_path" ]]; then
+    echo "expected non-empty artifact_summary/artifact_manifest fields for bundle content validation" >&2
+    exit 1
+  fi
+
+  local bundle_tar_list=""
+  bundle_tar_list="$(tar -tzf "$bundle_path")"
+  local summary_artifact_basename=""
+  local manifest_artifact_basename=""
+  summary_artifact_basename="$(basename "$summary_path")"
+  manifest_artifact_basename="$(basename "$manifest_path")"
+  local summary_entry_in_tar=""
+  local manifest_entry_in_tar=""
+  summary_entry_in_tar="$(printf '%s\n' "$bundle_tar_list" | awk -F/ -v target="$summary_artifact_basename" '$NF==target{print; exit}')"
+  manifest_entry_in_tar="$(printf '%s\n' "$bundle_tar_list" | awk -F/ -v target="$manifest_artifact_basename" '$NF==target{print; exit}')"
+  if [[ -z "$summary_entry_in_tar" ]]; then
+    echo "expected bundled summary artifact entry for $summary_artifact_basename" >&2
+    exit 1
+  fi
+  if [[ -z "$manifest_entry_in_tar" ]]; then
+    echo "expected bundled manifest artifact entry for $manifest_artifact_basename" >&2
+    exit 1
+  fi
+
+  local bundled_summary_text=""
+  local bundled_manifest_text=""
+  bundled_summary_text="$(tar -xOf "$bundle_path" "$summary_entry_in_tar")"
+  bundled_manifest_text="$(tar -xOf "$bundle_path" "$manifest_entry_in_tar")"
+  assert_contains "$bundled_summary_text" "package_bundle_artifacts_written:"
+  assert_contains "$bundled_summary_text" "package_bundle_exit_code:"
+  assert_contains "$bundled_manifest_text" "summary_sha256:"
+
+  local stdout_bundle_written=""
+  local stdout_bundle_exit=""
+  local bundled_bundle_written=""
+  local bundled_bundle_exit=""
+  stdout_bundle_written="$(extract_field_value "$text" "package_bundle_artifacts_written")"
+  stdout_bundle_exit="$(extract_field_value "$text" "package_bundle_exit_code")"
+  bundled_bundle_written="$(extract_field_value "$bundled_summary_text" "package_bundle_artifacts_written")"
+  bundled_bundle_exit="$(extract_field_value "$bundled_summary_text" "package_bundle_exit_code")"
+  if [[ "$bundled_bundle_written" != "$stdout_bundle_written" ]]; then
+    echo "expected bundled summary package_bundle_artifacts_written=$stdout_bundle_written, got $bundled_bundle_written" >&2
+    exit 1
+  fi
+  if [[ "$bundled_bundle_exit" != "$stdout_bundle_exit" ]]; then
+    echo "expected bundled summary package_bundle_exit_code=$stdout_bundle_exit, got $bundled_bundle_exit" >&2
+    exit 1
+  fi
+}
+
 assert_field_in() {
   local text="$1"
   local key="$2"
@@ -2153,6 +2215,7 @@ run_execution_route_fee_signoff_case() {
     echo "expected package bundle archive at $final_route_fee_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$final_bundle_output"
 
   local final_nogo_output=""
   if final_nogo_output="$(
@@ -3550,6 +3613,7 @@ run_executor_rollout_evidence_case() {
     echo "expected package bundle archive at $executor_package_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$final_bundle_output"
 
   local final_hold_output=""
   if final_hold_output="$(
@@ -3780,52 +3844,12 @@ run_execution_server_rollout_report_case() {
     echo "expected package bundle archive at $server_rollout_bundle_path" >&2
     exit 1
   fi
-  local bundle_tar_list=""
-  bundle_tar_list="$(tar -tzf "$server_rollout_bundle_path")"
-  local summary_artifact_path=""
-  local manifest_artifact_path=""
-  summary_artifact_path="$(extract_field_value "$bundle_output" "artifact_summary")"
-  manifest_artifact_path="$(extract_field_value "$bundle_output" "artifact_manifest")"
-  local summary_artifact_basename=""
-  local manifest_artifact_basename=""
-  summary_artifact_basename="$(basename "$summary_artifact_path")"
-  manifest_artifact_basename="$(basename "$manifest_artifact_path")"
-  local summary_entry_in_tar=""
-  local manifest_entry_in_tar=""
-  summary_entry_in_tar="$(printf '%s\n' "$bundle_tar_list" | awk -F/ -v target="$summary_artifact_basename" '$NF==target{print; exit}')"
-  manifest_entry_in_tar="$(printf '%s\n' "$bundle_tar_list" | awk -F/ -v target="$manifest_artifact_basename" '$NF==target{print; exit}')"
-  if [[ -z "$summary_entry_in_tar" ]]; then
-    echo "expected bundled summary artifact entry for $summary_artifact_basename" >&2
-    exit 1
-  fi
-  if [[ -z "$manifest_entry_in_tar" ]]; then
-    echo "expected bundled manifest artifact entry for $manifest_artifact_basename" >&2
-    exit 1
-  fi
-  local bundled_summary_text=""
+  assert_bundled_summary_manifest_package_status_parity "$bundle_output"
   local bundled_manifest_text=""
-  bundled_summary_text="$(tar -xOf "$server_rollout_bundle_path" "$summary_entry_in_tar")"
-  bundled_manifest_text="$(tar -xOf "$server_rollout_bundle_path" "$manifest_entry_in_tar")"
-  assert_contains "$bundled_summary_text" "package_bundle_artifacts_written:"
-  assert_contains "$bundled_summary_text" "package_bundle_exit_code:"
-  assert_contains "$bundled_manifest_text" "summary_sha256:"
+  local bundled_manifest_entry=""
+  bundled_manifest_entry="$(tar -tzf "$server_rollout_bundle_path" | awk -F/ -v target="$(basename "$(extract_field_value "$bundle_output" "artifact_manifest")")" '$NF==target{print; exit}')"
+  bundled_manifest_text="$(tar -xOf "$server_rollout_bundle_path" "$bundled_manifest_entry")"
   assert_contains "$bundled_manifest_text" "preflight_capture_sha256:"
-  local stdout_bundle_written=""
-  local stdout_bundle_exit=""
-  local bundled_bundle_written=""
-  local bundled_bundle_exit=""
-  stdout_bundle_written="$(extract_field_value "$bundle_output" "package_bundle_artifacts_written")"
-  stdout_bundle_exit="$(extract_field_value "$bundle_output" "package_bundle_exit_code")"
-  bundled_bundle_written="$(extract_field_value "$bundled_summary_text" "package_bundle_artifacts_written")"
-  bundled_bundle_exit="$(extract_field_value "$bundled_summary_text" "package_bundle_exit_code")"
-  if [[ "$bundled_bundle_written" != "$stdout_bundle_written" ]]; then
-    echo "expected bundled summary package_bundle_artifacts_written=$stdout_bundle_written, got $bundled_bundle_written" >&2
-    exit 1
-  fi
-  if [[ "$bundled_bundle_exit" != "$stdout_bundle_exit" ]]; then
-    echo "expected bundled summary package_bundle_exit_code=$stdout_bundle_exit, got $bundled_bundle_exit" >&2
-    exit 1
-  fi
 
   local invalid_bool_output=""
   if invalid_bool_output="$(
@@ -3895,8 +3919,8 @@ run_adapter_rollout_evidence_case() {
   assert_contains "$pass_output" "devnet_rehearsal_verdict: GO"
   assert_contains "$pass_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$pass_output" "dynamic_tip_policy_verdict: SKIP"
-  assert_contains "$pass_output" "dynamic_cu_hint_api_total: 1"
-  assert_contains "$pass_output" "dynamic_cu_hint_rpc_total: 1"
+  assert_contains "$pass_output" "dynamic_cu_hint_api_total: 0"
+  assert_contains "$pass_output" "dynamic_cu_hint_rpc_total: 0"
   assert_contains "$pass_output" "dynamic_cu_hint_api_configured: false"
   assert_contains "$pass_output" "dynamic_cu_hint_source_verdict: SKIP"
   assert_field_equals "$pass_output" "dynamic_cu_hint_source_reason_code" "policy_disabled"
@@ -4141,6 +4165,7 @@ run_adapter_rollout_evidence_case() {
     echo "expected package bundle archive at $package_bundle_path" >&2
     exit 1
   fi
+  assert_bundled_summary_manifest_package_status_parity "$final_bundle_output"
 
   local final_nested_isolation_output=""
   if final_nested_isolation_output="$(
