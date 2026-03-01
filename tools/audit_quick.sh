@@ -21,6 +21,15 @@ if [[ "$contract_smoke_timeout_sec" -eq 0 ]]; then
   echo "AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC must be integer seconds >= 1, got: $CONTRACT_SMOKE_TIMEOUT_RAW" >&2
   exit 1
 fi
+EXECUTOR_TEST_TIMEOUT_RAW="${AUDIT_EXECUTOR_TEST_TIMEOUT_SEC:-600}"
+if ! executor_test_timeout_sec="$(parse_u64_token_strict "$EXECUTOR_TEST_TIMEOUT_RAW")"; then
+  echo "AUDIT_EXECUTOR_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $EXECUTOR_TEST_TIMEOUT_RAW" >&2
+  exit 1
+fi
+if [[ "$executor_test_timeout_sec" -eq 0 ]]; then
+  echo "AUDIT_EXECUTOR_TEST_TIMEOUT_SEC must be integer seconds >= 1, got: $EXECUTOR_TEST_TIMEOUT_RAW" >&2
+  exit 1
+fi
 
 run_contract_smoke() {
   if command -v timeout >/dev/null 2>&1; then
@@ -30,8 +39,16 @@ run_contract_smoke() {
   bash tools/executor_contract_smoke_test.sh
 }
 
-echo "[audit:quick] cargo test -p copybot-executor -q"
-cargo test -p copybot-executor -q
+run_executor_tests() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$executor_test_timeout_sec" cargo test -p copybot-executor -q
+    return
+  fi
+  cargo test -p copybot-executor -q
+}
+
+echo "[audit:quick] cargo test -p copybot-executor -q (timeout=${executor_test_timeout_sec}s)"
+run_executor_tests
 
 if [[ "$skip_contract_smoke" == "false" ]]; then
   echo "[audit:quick] tools/executor_contract_smoke_test.sh (timeout=${contract_smoke_timeout_sec}s)"
