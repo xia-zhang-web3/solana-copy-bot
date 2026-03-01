@@ -4675,6 +4675,32 @@ run_audit_contract_smoke_timeout_guard_case() {
   echo "[ok] audit contract smoke timeout strict guard"
 }
 
+run_audit_workspace_test_timeout_guard_case() {
+  local invalid_output=""
+  if invalid_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_WORKSPACE_TEST_TIMEOUT_SEC="abc" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for invalid AUDIT_WORKSPACE_TEST_TIMEOUT_SEC token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh invalid AUDIT_WORKSPACE_TEST_TIMEOUT_SEC exit code 1, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "AUDIT_WORKSPACE_TEST_TIMEOUT_SEC must be integer seconds >= 1"
+  if grep -Fq "[audit:full] running quick baseline" <<<"$invalid_output"; then
+    echo "expected audit_full.sh to fail before baseline for invalid workspace timeout" >&2
+    exit 1
+  fi
+  echo "[ok] audit workspace test timeout strict guard"
+}
+
 run_audit_full_strict_bool_guard_case() {
   local invalid_output=""
   if invalid_output="$(
@@ -4933,6 +4959,7 @@ main() {
   run_audit_standard_contract_smoke_strict_bool_guard_case
   run_audit_ops_smoke_timeout_guard_case
   run_audit_contract_smoke_timeout_guard_case
+  run_audit_workspace_test_timeout_guard_case
   run_audit_full_strict_bool_guard_case
   run_audit_full_contract_smoke_strict_bool_guard_case
   run_evidence_bundle_pack_case
