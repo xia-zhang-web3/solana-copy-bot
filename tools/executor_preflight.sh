@@ -269,7 +269,7 @@ normalized_routes_lines() {
   local raw normalized
   local -a values=()
   IFS=',' read -r -a values <<< "$csv"
-  for raw in "${values[@]}"; do
+  for raw in "${values[@]-}"; do
     normalized="$(normalize_route_token "$raw")"
     [[ -z "$normalized" ]] && continue
     if printf '%s\n' "$seen" | grep -Fqx -- "$normalized"; then
@@ -444,7 +444,7 @@ preflight_reason: bool parsing failed before preflight gate evaluation
 error_count: ${#errors[@]}
 artifacts_written: false
 EOF
-  for error in "${errors[@]}"; do
+  for error in "${errors[@]-}"; do
     echo "error: $error"
   done
   exit 1
@@ -783,7 +783,7 @@ summary="$({
   echo "artifacts_written: $artifacts_written"
   if ((${#errors[@]} > 0)); then
     echo "error_count: ${#errors[@]}"
-    for error in "${errors[@]}"; do
+    for error in "${errors[@]-}"; do
       echo "error: $error"
     done
   fi

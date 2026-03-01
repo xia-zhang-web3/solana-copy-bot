@@ -2164,6 +2164,7 @@ run_adapter_preflight_case() {
   local db_path="$1"
   local pass_cfg="$TMP_DIR/adapter-preflight-pass.toml"
   local fail_cfg="$TMP_DIR/adapter-preflight-fail.toml"
+  local empty_allowlist_cfg="$TMP_DIR/adapter-preflight-empty-allowlist.toml"
   local missing_map_cfg="$TMP_DIR/adapter-preflight-missing-map.toml"
   local invalid_route_order_cfg="$TMP_DIR/adapter-preflight-invalid-route-order.toml"
   local fastlane_cfg="$TMP_DIR/adapter-preflight-fastlane.toml"
@@ -2242,6 +2243,20 @@ run_adapter_preflight_case() {
   fi
   assert_contains "$fail_output" "preflight_verdict: FAIL"
   assert_contains "$fail_output" "submit_adapter_require_policy_echo must be true in production-like env profiles"
+
+  write_config_empty_allowlist "$empty_allowlist_cfg" "$db_path"
+  local empty_allowlist_output
+  if empty_allowlist_output="$(
+    CONFIG_PATH="$empty_allowlist_cfg" \
+      SOLANA_COPY_BOT_EXECUTION_ENABLED="true" \
+      SOLANA_COPY_BOT_EXECUTION_MODE="adapter_submit_confirm" \
+      bash "$ROOT_DIR/tools/execution_adapter_preflight.sh" 2>&1
+  )"; then
+    echo "expected adapter preflight failure for empty submit_allowed_routes in adapter mode" >&2
+    exit 1
+  fi
+  assert_contains "$empty_allowlist_output" "preflight_verdict: FAIL"
+  assert_contains "$empty_allowlist_output" "execution.submit_allowed_routes must not be empty in adapter_submit_confirm mode"
 
   write_config_adapter_preflight_missing_route_policy_map "$missing_map_cfg" "$db_path"
   if missing_map_output="$(
@@ -2350,7 +2365,7 @@ run_adapter_preflight_case() {
   assert_contains "$env_malformed_route_map_output" "preflight_verdict: FAIL"
   assert_contains "$env_malformed_route_map_output" "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS contains malformed token (expected route:value): rpc"
 
-  echo "[ok] adapter preflight pass/fail + route-policy + route-order + secret diagnostics + numeric parity guards"
+  echo "[ok] adapter preflight pass/fail + empty-allowlist guard + route-policy + route-order + secret diagnostics + numeric parity guards"
 }
 
 run_executor_preflight_case() {

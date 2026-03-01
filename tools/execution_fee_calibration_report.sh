@@ -131,7 +131,7 @@ csv_contains_route() {
     return 1
   fi
   IFS=',' read -r -a values <<< "$csv"
-  for raw in "${values[@]}"; do
+  for raw in "${values[@]-}"; do
     value="$(normalize_route_token "$raw")"
     if [[ "$value" == "$needle" ]]; then
       return 0
@@ -149,7 +149,7 @@ csv_first_route() {
     return
   fi
   IFS=',' read -r -a values <<< "$csv"
-  for raw in "${values[@]}"; do
+  for raw in "${values[@]-}"; do
     normalized="$(normalize_route_token "$raw")"
     if [[ -n "$normalized" ]]; then
       printf "%s" "$normalized"
@@ -169,7 +169,7 @@ csv_second_route() {
     return
   fi
   IFS=',' read -r -a values <<< "$csv"
-  for raw in "${values[@]}"; do
+  for raw in "${values[@]-}"; do
     normalized="$(normalize_route_token "$raw")"
     if [[ -z "$normalized" ]]; then
       continue
@@ -195,7 +195,7 @@ csv_route_count() {
     return
   fi
   IFS=',' read -r -a values <<< "$csv"
-  for raw in "${values[@]}"; do
+  for raw in "${values[@]-}"; do
     normalized="$(normalize_route_token "$raw")"
     if [[ -z "$normalized" ]]; then
       continue
@@ -271,7 +271,7 @@ build_allowed_routes_values() {
     return
   fi
   IFS=',' read -r -a raw_routes <<< "$csv"
-  for raw_route in "${raw_routes[@]}"; do
+  for raw_route in "${raw_routes[@]-}"; do
     normalized="$(normalize_route_token "$raw_route")"
     if [[ -z "$normalized" ]]; then
       continue

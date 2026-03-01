@@ -300,7 +300,7 @@ csv_contains_route() {
     return 1
   fi
   IFS=',' read -r -a values <<< "$csv"
-  for raw in "${values[@]}"; do
+  for raw in "${values[@]-}"; do
     normalized="$(normalize_route_token "$raw")"
     if [[ "$normalized" == "$needle" ]]; then
       return 0
@@ -318,7 +318,7 @@ csv_first_duplicate_normalized() {
     return 1
   fi
   IFS=',' read -r -a values <<< "$csv"
-  for raw in "${values[@]}"; do
+  for raw in "${values[@]-}"; do
     normalized="$(normalize_route_token "$raw")"
     if [[ -z "$normalized" ]]; then
       continue
@@ -658,7 +658,7 @@ route_pairs_to_keys_csv() {
     return
   fi
   IFS=',' read -r -a pairs <<< "$pairs_csv"
-  for pair in "${pairs[@]}"; do
+  for pair in "${pairs[@]-}"; do
     route="${pair%%:*}"
     if [[ -z "$route" ]]; then
       continue
@@ -961,7 +961,7 @@ if (( ${#errors[@]} > 0 )); then
   echo "execution_mode: ${execution_mode:-paper}"
   echo "preflight_verdict: FAIL"
   echo "error_count: ${#errors[@]}"
-  for error in "${errors[@]}"; do
+  for error in "${errors[@]-}"; do
     echo "error: $error"
   done
   exit 1
@@ -1093,7 +1093,7 @@ fi
 declare -a allowed_routes_normalized=()
 allowed_routes_seen=""
 IFS=',' read -r -a submit_allowed_routes_values <<< "$submit_allowed_routes_csv"
-for raw_route in "${submit_allowed_routes_values[@]}"; do
+for raw_route in "${submit_allowed_routes_values[@]-}"; do
   normalized_route="$(normalize_route_token "$raw_route")"
   if [[ -z "$normalized_route" ]]; then
     continue
@@ -1110,7 +1110,7 @@ if [[ -n "${submit_route_order_csv//[[:space:]]/}" ]]; then
     errors+=("execution.submit_route_order contains duplicate route after normalization: $duplicate_route")
   fi
   IFS=',' read -r -a submit_route_order_values <<< "$submit_route_order_csv"
-  for raw_route in "${submit_route_order_values[@]}"; do
+  for raw_route in "${submit_route_order_values[@]-}"; do
     normalized_route="$(normalize_route_token "$raw_route")"
     if [[ -z "$normalized_route" ]]; then
       errors+=("execution.submit_route_order contains an empty route value")
@@ -1160,7 +1160,7 @@ validate_route_policy_map_coverage() {
   if duplicate_map_route="$(csv_first_duplicate_normalized "$map_keys_csv")"; then
     errors+=("${field_name} contains duplicate route key after normalization: $duplicate_map_route")
   fi
-  for normalized_route in "${allowed_routes_normalized[@]}"; do
+  for normalized_route in "${allowed_routes_normalized[@]-}"; do
     if ! csv_contains_route "$map_keys_csv" "$normalized_route"; then
       errors+=("${field_name} is missing entry for allowed route=$normalized_route")
     fi
@@ -1248,7 +1248,7 @@ echo "hmac_secret_file_set: $([[ -n "$hmac_secret_file_raw" ]] && echo true || e
 if (( ${#errors[@]} > 0 )); then
   echo "preflight_verdict: FAIL"
   echo "error_count: ${#errors[@]}"
-  for error in "${errors[@]}"; do
+  for error in "${errors[@]-}"; do
     echo "error: $error"
   done
   exit 1
