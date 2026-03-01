@@ -4565,6 +4565,31 @@ run_audit_standard_invalid_diff_range_guard_case() {
   echo "[ok] audit standard invalid diff range guard"
 }
 
+run_audit_standard_contract_smoke_strict_bool_guard_case() {
+  local invalid_output=""
+  if invalid_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="maybe" \
+      bash "$ROOT_DIR/tools/audit_standard.sh" 2>&1
+  )"; then
+    echo "expected audit_standard.sh to fail for invalid AUDIT_SKIP_CONTRACT_SMOKE token" >&2
+    exit 1
+  else
+    local invalid_exit_code=$?
+    if [[ "$invalid_exit_code" -ne 1 ]]; then
+      echo "expected audit_standard.sh invalid AUDIT_SKIP_CONTRACT_SMOKE exit code 1, got $invalid_exit_code" >&2
+      echo "$invalid_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_output" "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token"
+  if grep -Fq "[audit:standard] running quick baseline" <<<"$invalid_output"; then
+    echo "expected audit_standard.sh to fail before quick baseline for invalid AUDIT_SKIP_CONTRACT_SMOKE" >&2
+    exit 1
+  fi
+  echo "[ok] audit standard contract-smoke strict bool guard"
+}
+
 run_audit_full_strict_bool_guard_case() {
   local invalid_output=""
   if invalid_output="$(
@@ -4820,6 +4845,7 @@ main() {
   run_audit_quick_strict_bool_guard_case
   run_audit_standard_strict_bool_guard_case
   run_audit_standard_invalid_diff_range_guard_case
+  run_audit_standard_contract_smoke_strict_bool_guard_case
   run_audit_full_strict_bool_guard_case
   run_audit_full_contract_smoke_strict_bool_guard_case
   run_evidence_bundle_pack_case

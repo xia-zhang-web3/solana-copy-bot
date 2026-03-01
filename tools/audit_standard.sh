@@ -13,6 +13,11 @@ if ! skip_ops_smoke="$(parse_bool_token_strict "$SKIP_OPS_SMOKE_RAW")"; then
   echo "AUDIT_SKIP_OPS_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_OPS_SMOKE_RAW" >&2
   exit 1
 fi
+SKIP_CONTRACT_SMOKE_RAW="${AUDIT_SKIP_CONTRACT_SMOKE:-$skip_ops_smoke}"
+if ! skip_contract_smoke="$(parse_bool_token_strict "$SKIP_CONTRACT_SMOKE_RAW")"; then
+  echo "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_CONTRACT_SMOKE_RAW" >&2
+  exit 1
+fi
 
 run_ops_smoke() {
   if command -v timeout >/dev/null 2>&1; then
@@ -76,7 +81,7 @@ if ! changed_files="$(collect_changed_files)"; then
 fi
 
 echo "[audit:standard] running quick baseline"
-bash tools/audit_quick.sh
+AUDIT_SKIP_CONTRACT_SMOKE="$skip_contract_smoke" bash tools/audit_quick.sh
 
 
 if [[ -n "$DIFF_RANGE" ]]; then
