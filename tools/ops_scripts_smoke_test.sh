@@ -3654,6 +3654,159 @@ run_executor_rollout_evidence_case() {
   echo "[ok] executor rollout/final evidence helpers"
 }
 
+run_execution_server_rollout_report_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local executor_env_path="$TMP_DIR/server-rollout-executor.env"
+  local adapter_env_path="$TMP_DIR/server-rollout-adapter.env"
+  local fake_curl_bin="$TMP_DIR/fake-curl-server-rollout"
+  local auth_token="server-rollout-token"
+  local port="18093"
+  local output_root="$TMP_DIR/server-rollout-output"
+  local bundle_output_dir="$TMP_DIR/server-rollout-bundles"
+
+  write_executor_env_preflight "$executor_env_path" "$port" "$auth_token"
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
+  echo "COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=true" >>"$adapter_env_path"
+  write_fake_curl_executor_preflight "$fake_curl_bin" "$auth_token"
+
+  local output
+  local rollout_exit_code=0
+  if output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$output_root" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60
+  )"; then
+    rollout_exit_code=0
+  else
+    rollout_exit_code=$?
+  fi
+  if [[ "$rollout_exit_code" -ne 2 ]]; then
+    echo "expected server rollout hold exit code 2, got $rollout_exit_code" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+  assert_contains "$output" "=== Execution Server Rollout Report ==="
+  assert_field_equals "$output" "preflight_verdict" "PASS"
+  assert_field_equals "$output" "fee_decomposition_verdict" "WARN"
+  assert_field_equals "$output" "route_profile_verdict" "WARN"
+  assert_field_equals "$output" "go_nogo_verdict" "GO"
+  assert_field_equals "$output" "rehearsal_verdict" "GO"
+  assert_field_equals "$output" "executor_final_verdict" "GO"
+  assert_field_equals "$output" "adapter_final_verdict" "GO"
+  assert_field_equals "$output" "server_rollout_verdict" "HOLD"
+  assert_field_equals "$output" "server_rollout_reason_code" "calibration_fee_not_pass"
+  assert_contains "$output" "artifacts_written: true"
+  assert_sha256_field "$output" "summary_sha256"
+  assert_sha256_field "$output" "manifest_sha256"
+  assert_sha256_field "$output" "preflight_capture_sha256"
+  assert_sha256_field "$output" "calibration_capture_sha256"
+  assert_sha256_field "$output" "go_nogo_capture_sha256"
+  assert_sha256_field "$output" "rehearsal_capture_sha256"
+  assert_sha256_field "$output" "executor_final_capture_sha256"
+  assert_sha256_field "$output" "adapter_final_capture_sha256"
+  assert_sha256_field_matches_file "$output" "summary_sha256" "artifact_summary"
+  assert_sha256_field_matches_file "$output" "manifest_sha256" "artifact_manifest"
+  if ! ls "$output_root"/execution_server_rollout_summary_*.txt >/dev/null 2>&1; then
+    echo "expected server rollout summary artifact in $output_root" >&2
+    exit 1
+  fi
+  if ! ls "$output_root"/execution_server_rollout_manifest_*.txt >/dev/null 2>&1; then
+    echo "expected server rollout manifest artifact in $output_root" >&2
+    exit 1
+  fi
+
+  local bundle_output
+  local bundle_exit_code=0
+  if bundle_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-with-bundle" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      PACKAGE_BUNDLE_ENABLED="true" \
+      PACKAGE_BUNDLE_LABEL="execution_server_rollout_smoke_bundle" \
+      PACKAGE_BUNDLE_OUTPUT_DIR="$bundle_output_dir" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60
+  )"; then
+    bundle_exit_code=0
+  else
+    bundle_exit_code=$?
+  fi
+  if [[ "$bundle_exit_code" -ne 2 ]]; then
+    echo "expected bundled server rollout hold exit code 2, got $bundle_exit_code" >&2
+    echo "$bundle_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$bundle_output" "server_rollout_verdict" "HOLD"
+  assert_field_equals "$bundle_output" "server_rollout_reason_code" "calibration_fee_not_pass"
+  assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
+  assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
+  assert_sha256_field "$bundle_output" "package_bundle_sha256"
+  assert_field_non_empty "$bundle_output" "package_bundle_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_sha256_path"
+  assert_field_non_empty "$bundle_output" "package_bundle_contents_manifest"
+  local server_rollout_bundle_path=""
+  server_rollout_bundle_path="$(extract_field_value "$bundle_output" "package_bundle_path")"
+  if [[ ! -f "$server_rollout_bundle_path" ]]; then
+    echo "expected package bundle archive at $server_rollout_bundle_path" >&2
+    exit 1
+  fi
+
+  local invalid_bool_output=""
+  if invalid_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="maybe" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail for invalid GO_NOGO_REQUIRE_JITO_RPC_POLICY token" >&2
+    exit 1
+  else
+    local invalid_bool_exit_code=$?
+    if [[ "$invalid_bool_exit_code" -ne 3 ]]; then
+      echo "expected server rollout invalid bool exit code 3, got $invalid_bool_exit_code" >&2
+      echo "$invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_bool_output" "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token"
+  assert_field_equals "$invalid_bool_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$invalid_bool_output" "server_rollout_reason_code" "input_error"
+  echo "[ok] execution server rollout report"
+}
+
 run_adapter_rollout_evidence_case() {
   local db_path="$1"
   local config_path="$2"
@@ -5282,6 +5435,7 @@ main() {
   run_go_nogo_preflight_fail_case "$legacy_db"
   run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
+  run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg"
 
   local modern_db="$TMP_DIR/modern.db"
   local modern_cfg="$TMP_DIR/modern.toml"
