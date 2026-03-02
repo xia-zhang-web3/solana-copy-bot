@@ -1001,7 +1001,9 @@ fi
 adapter_route_allowlist_raw="$(first_non_empty "$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_ROUTE_ALLOWLIST)" "paper,rpc,fastlane,jito")"
 adapter_route_allowlist_csv=""
 adapter_submit_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL)"
+adapter_submit_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL)"
 adapter_simulate_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL)"
+adapter_simulate_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL)"
 adapter_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE "adapter upstream auth")"
 
 parse_route_allowlist_csv_strict_into "$adapter_route_allowlist_raw" "COPYBOT_ADAPTER_ROUTE_ALLOWLIST" adapter_route_allowlist_csv
@@ -1032,9 +1034,15 @@ while IFS= read -r route; do
   adapter_route_submit="$(first_non_empty \
     "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SUBMIT_URL")" \
     "$adapter_submit_default")"
+  adapter_route_submit_fallback="$(first_non_empty \
+    "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SUBMIT_FALLBACK_URL")" \
+    "$adapter_submit_fallback_default")"
   adapter_route_simulate="$(first_non_empty \
     "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SIMULATE_URL")" \
     "$adapter_simulate_default")"
+  adapter_route_simulate_fallback="$(first_non_empty \
+    "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SIMULATE_FALLBACK_URL")" \
+    "$adapter_simulate_fallback_default")"
 
   if [[ -z "$adapter_route_submit" ]]; then
     errors+=("missing adapter submit upstream URL for route=$route (set COPYBOT_ADAPTER_ROUTE_${route_upper}_SUBMIT_URL or COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL)")
@@ -1043,21 +1051,38 @@ while IFS= read -r route; do
     errors+=("missing adapter simulate upstream URL for route=$route (set COPYBOT_ADAPTER_ROUTE_${route_upper}_SIMULATE_URL or COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL)")
   fi
 
+  submit_identity=""
   if [[ -n "$adapter_route_submit" && -n "$expected_submit_identity" ]]; then
-    submit_identity=""
     if validate_endpoint_identity_into "$adapter_route_submit" "invalid adapter submit URL for route=$route" submit_identity && [[ "$submit_identity" != "$expected_submit_identity" ]]; then
       errors+=("adapter submit URL for route=$route must target executor submit endpoint ($EXECUTOR_EXPECT_SUBMIT_URL)")
     fi
   elif [[ -n "$adapter_route_submit" ]]; then
     validate_endpoint_identity_into "$adapter_route_submit" "invalid adapter submit URL for route=$route" submit_identity || true
   fi
+
+  if [[ -n "$adapter_route_submit_fallback" ]]; then
+    submit_fallback_identity=""
+    validate_endpoint_identity_into "$adapter_route_submit_fallback" "invalid adapter submit fallback URL for route=$route" submit_fallback_identity || true
+    if [[ -n "$submit_identity" && -n "$submit_fallback_identity" && "$submit_identity" == "$submit_fallback_identity" ]]; then
+      errors+=("adapter submit fallback URL for route=$route must resolve to distinct endpoint")
+    fi
+  fi
+
+  simulate_identity=""
   if [[ -n "$adapter_route_simulate" && -n "$expected_simulate_identity" ]]; then
-    simulate_identity=""
     if validate_endpoint_identity_into "$adapter_route_simulate" "invalid adapter simulate URL for route=$route" simulate_identity && [[ "$simulate_identity" != "$expected_simulate_identity" ]]; then
       errors+=("adapter simulate URL for route=$route must target executor simulate endpoint ($EXECUTOR_EXPECT_SIMULATE_URL)")
     fi
   elif [[ -n "$adapter_route_simulate" ]]; then
     validate_endpoint_identity_into "$adapter_route_simulate" "invalid adapter simulate URL for route=$route" simulate_identity || true
+  fi
+
+  if [[ -n "$adapter_route_simulate_fallback" ]]; then
+    simulate_fallback_identity=""
+    validate_endpoint_identity_into "$adapter_route_simulate_fallback" "invalid adapter simulate fallback URL for route=$route" simulate_fallback_identity || true
+    if [[ -n "$simulate_identity" && -n "$simulate_fallback_identity" && "$simulate_identity" == "$simulate_fallback_identity" ]]; then
+      errors+=("adapter simulate fallback URL for route=$route must resolve to distinct endpoint")
+    fi
   fi
 
   if [[ "$executor_bearer_required" == "true" ]]; then

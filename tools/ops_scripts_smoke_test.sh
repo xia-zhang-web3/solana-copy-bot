@@ -3219,6 +3219,54 @@ run_executor_preflight_case() {
   assert_contains "$invalid_adapter_simulate_url_output" "preflight_verdict: FAIL"
   assert_contains "$invalid_adapter_simulate_url_output" "invalid adapter simulate URL for route=paper: ftp://127.0.0.1:${port}/simulate"
 
+  local invalid_adapter_submit_fallback_url_output
+  if invalid_adapter_submit_fallback_url_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL="ftp://127.0.0.1:${port}/submit-fallback" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for invalid adapter submit fallback URL scheme" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_adapter_submit_fallback_url_output" "preflight_verdict: FAIL"
+  assert_contains "$invalid_adapter_submit_fallback_url_output" "invalid adapter submit fallback URL for route=paper: ftp://127.0.0.1:${port}/submit-fallback"
+
+  local adapter_submit_fallback_identity_violation_output
+  if adapter_submit_fallback_identity_violation_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL="http://127.0.0.1:${port}/submit" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter submit fallback endpoint identity collision" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_submit_fallback_identity_violation_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_submit_fallback_identity_violation_output" "adapter submit fallback URL for route=paper must resolve to distinct endpoint"
+
+  local adapter_simulate_fallback_identity_violation_output
+  if adapter_simulate_fallback_identity_violation_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL="http://127.0.0.1:${port}/simulate" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter simulate fallback endpoint identity collision" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_simulate_fallback_identity_violation_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_simulate_fallback_identity_violation_output" "adapter simulate fallback URL for route=paper must resolve to distinct endpoint"
+
   local submit_fallback_identity_violation_output
   if submit_fallback_identity_violation_output="$(
     PATH="$fake_curl_bin:$PATH" \
