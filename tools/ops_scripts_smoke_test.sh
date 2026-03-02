@@ -3168,6 +3168,89 @@ run_executor_preflight_case() {
   assert_contains "$adapter_allowlist_empty_entry_output" "preflight_verdict: FAIL"
   assert_contains "$adapter_allowlist_empty_entry_output" "COPYBOT_ADAPTER_ROUTE_ALLOWLIST contains empty route entry"
 
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
+
+  local fastlane_policy_violation_output
+  if fastlane_policy_violation_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper,rpc,fastlane" \
+      COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for fastlane allowlist with submit_fastlane disabled" >&2
+    exit 1
+  fi
+  assert_contains "$fastlane_policy_violation_output" "preflight_verdict: FAIL"
+  assert_contains "$fastlane_policy_violation_output" "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false"
+
+  local invalid_executor_submit_url_output
+  if invalid_executor_submit_url_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL="ftp://executor.upstream.local/submit" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for invalid executor route submit URL scheme" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_executor_submit_url_output" "preflight_verdict: FAIL"
+  assert_contains "$invalid_executor_submit_url_output" "invalid submit URL for executor route=rpc: ftp://executor.upstream.local/submit"
+
+  local invalid_adapter_simulate_url_output
+  if invalid_adapter_simulate_url_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL="ftp://127.0.0.1:${port}/simulate" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for invalid adapter simulate URL scheme" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_adapter_simulate_url_output" "preflight_verdict: FAIL"
+  assert_contains "$invalid_adapter_simulate_url_output" "invalid adapter simulate URL for route=paper: ftp://127.0.0.1:${port}/simulate"
+
+  local submit_fallback_identity_violation_output
+  if submit_fallback_identity_violation_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_FALLBACK_URL="https://executor.upstream.local/submit" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for submit fallback endpoint identity collision" >&2
+    exit 1
+  fi
+  assert_contains "$submit_fallback_identity_violation_output" "preflight_verdict: FAIL"
+  assert_contains "$submit_fallback_identity_violation_output" "submit fallback URL for executor route=paper must resolve to distinct endpoint"
+
+  local send_rpc_fallback_identity_violation_output
+  if send_rpc_fallback_identity_violation_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_FALLBACK_URL="https://executor.send-rpc.local/rpc" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for send-rpc fallback endpoint identity collision" >&2
+    exit 1
+  fi
+  assert_contains "$send_rpc_fallback_identity_violation_output" "preflight_verdict: FAIL"
+  assert_contains "$send_rpc_fallback_identity_violation_output" "send-rpc fallback URL for executor route=rpc must resolve to distinct endpoint"
+
   local signer_pubkey_invalid_shape_output
   if signer_pubkey_invalid_shape_output="$(
     PATH="$fake_curl_bin:$PATH" \

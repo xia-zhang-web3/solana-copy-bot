@@ -342,6 +342,20 @@ normalized_routes_lines() {
   done
 }
 
+sorted_routes_csv() {
+  local csv="$1"
+  local routes=""
+  while IFS= read -r route; do
+    [[ -z "$route" ]] && continue
+    routes+="${route}"$'\n'
+  done < <(normalized_routes_lines "$csv")
+  if [[ -z "$routes" ]]; then
+    printf ''
+    return
+  fi
+  printf '%s' "$routes" | sort | paste -sd, -
+}
+
 routes_array_to_csv() {
   local out=""
   local route
@@ -407,9 +421,19 @@ import sys
 from urllib.parse import urlsplit
 
 endpoint = sys.argv[1].strip()
+if not endpoint:
+    raise SystemExit("endpoint is empty")
 parsed = urlsplit(endpoint)
 scheme = parsed.scheme.lower()
+if scheme not in {"http", "https"}:
+    raise SystemExit(f"unsupported scheme {parsed.scheme}")
 host = (parsed.hostname or "").lower()
+if not host:
+    raise SystemExit("host missing")
+if parsed.username or parsed.password:
+    raise SystemExit("URL credentials are not allowed")
+if parsed.query or parsed.fragment:
+    raise SystemExit("query/fragment are not allowed")
 if parsed.port is not None:
     port = parsed.port
 elif scheme == "http":
@@ -421,6 +445,20 @@ else:
 path = parsed.path if parsed.path else "/"
 print(f"{scheme}://{host}:{port}{path}")
 PY
+}
+
+validate_endpoint_identity_into() {
+  local endpoint="$1"
+  local error_prefix="$2"
+  local output_var="$3"
+  local identity=""
+  if ! identity="$(endpoint_identity "$endpoint" 2>/dev/null)"; then
+    errors+=("$error_prefix: $endpoint")
+    printf -v "$output_var" ''
+    return 1
+  fi
+  printf -v "$output_var" '%s' "$identity"
+  return 0
 }
 
 url_from_bind_addr() {
@@ -731,7 +769,9 @@ executor_route_allowlist_csv=""
 executor_submit_fastlane_enabled_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED)" "false")"
 executor_allow_unauthenticated_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED)" "false")"
 executor_upstream_submit_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL)"
+executor_upstream_submit_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_FALLBACK_URL)"
 executor_upstream_simulate_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL)"
+executor_upstream_simulate_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_FALLBACK_URL)"
 executor_send_rpc_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_URL)"
 executor_send_rpc_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL)"
 executor_signer_source_expected_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_SOURCE)" "file")"
@@ -773,26 +813,78 @@ case "$executor_signer_source_expected" in
     ;;
 esac
 
+if csv_contains_route "$executor_route_allowlist_csv" "fastlane" && [[ "$executor_submit_fastlane_enabled" != "true" ]]; then
+  errors+=("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false (allowlist=$(sorted_routes_csv "$executor_route_allowlist_csv"))")
+fi
+
 while IFS= read -r route; do
   [[ -z "$route" ]] && continue
   route_upper="$(printf '%s' "$route" | tr '[:lower:]' '[:upper:]')"
-  route_submit="$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_URL")"
-  route_simulate="$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SIMULATE_URL")"
+  route_submit="$(first_non_empty \
+    "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_URL")" \
+    "$executor_upstream_submit_default")"
+  route_submit_fallback="$(first_non_empty \
+    "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_FALLBACK_URL")" \
+    "$executor_upstream_submit_fallback_default")"
+  route_simulate="$(first_non_empty \
+    "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SIMULATE_URL")" \
+    "$executor_upstream_simulate_default")"
+  route_simulate_fallback="$(first_non_empty \
+    "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SIMULATE_FALLBACK_URL")" \
+    "$executor_upstream_simulate_fallback_default")"
   route_send_rpc="$(first_non_empty \
     "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_URL")" \
     "$executor_send_rpc_default")"
   route_send_rpc_fallback="$(first_non_empty \
     "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_FALLBACK_URL")" \
     "$executor_send_rpc_fallback_default")"
-  if [[ -z "$route_submit" && -z "$executor_upstream_submit_default" ]]; then
+  if [[ -z "$route_submit" ]]; then
     errors+=("missing submit backend URL for executor route=$route (set COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_URL or COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL)")
   fi
-  if [[ -z "$route_simulate" && -z "$executor_upstream_simulate_default" ]]; then
+  if [[ -z "$route_simulate" ]]; then
     errors+=("missing simulate backend URL for executor route=$route (set COPYBOT_EXECUTOR_ROUTE_${route_upper}_SIMULATE_URL or COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL)")
   fi
   if [[ -n "$route_send_rpc_fallback" && -z "$route_send_rpc" ]]; then
     errors+=("missing primary send-rpc URL for executor route=$route while send-rpc fallback is configured")
   fi
+
+  route_submit_identity=""
+  route_submit_fallback_identity=""
+  route_simulate_identity=""
+  route_simulate_fallback_identity=""
+  route_send_rpc_identity=""
+  route_send_rpc_fallback_identity=""
+
+  if [[ -n "$route_submit" ]]; then
+    validate_endpoint_identity_into "$route_submit" "invalid submit URL for executor route=$route" route_submit_identity || true
+  fi
+  if [[ -n "$route_submit_fallback" ]]; then
+    validate_endpoint_identity_into "$route_submit_fallback" "invalid submit fallback URL for executor route=$route" route_submit_fallback_identity || true
+    if [[ -n "$route_submit_identity" && -n "$route_submit_fallback_identity" && "$route_submit_identity" == "$route_submit_fallback_identity" ]]; then
+      errors+=("submit fallback URL for executor route=$route must resolve to distinct endpoint")
+    fi
+  fi
+
+  if [[ -n "$route_simulate" ]]; then
+    validate_endpoint_identity_into "$route_simulate" "invalid simulate URL for executor route=$route" route_simulate_identity || true
+  fi
+  if [[ -n "$route_simulate_fallback" ]]; then
+    validate_endpoint_identity_into "$route_simulate_fallback" "invalid simulate fallback URL for executor route=$route" route_simulate_fallback_identity || true
+    if [[ -n "$route_simulate_identity" && -n "$route_simulate_fallback_identity" && "$route_simulate_identity" == "$route_simulate_fallback_identity" ]]; then
+      errors+=("simulate fallback URL for executor route=$route must resolve to distinct endpoint")
+    fi
+  fi
+
+  if [[ -n "$route_send_rpc" ]]; then
+    validate_endpoint_identity_into "$route_send_rpc" "invalid send-rpc URL for executor route=$route" route_send_rpc_identity || true
+  fi
+  if [[ -n "$route_send_rpc_fallback" ]]; then
+    validate_endpoint_identity_into "$route_send_rpc_fallback" "invalid send-rpc fallback URL for executor route=$route" route_send_rpc_fallback_identity || true
+    if [[ -n "$route_send_rpc_identity" && -n "$route_send_rpc_fallback_identity" && "$route_send_rpc_identity" == "$route_send_rpc_fallback_identity" ]]; then
+      errors+=("send-rpc fallback URL for executor route=$route must resolve to distinct endpoint")
+    fi
+  fi
+
   if [[ -n "$route_send_rpc" ]]; then
     expected_send_rpc_enabled_routes+=("$route")
   fi
@@ -896,18 +988,20 @@ while IFS= read -r route; do
   fi
 
   if [[ -n "$adapter_route_submit" && -n "$expected_submit_identity" ]]; then
-    if ! submit_identity="$(endpoint_identity "$adapter_route_submit" 2>/dev/null)"; then
-      errors+=("invalid adapter submit URL for route=$route: $adapter_route_submit")
-    elif [[ "$submit_identity" != "$expected_submit_identity" ]]; then
+    submit_identity=""
+    if validate_endpoint_identity_into "$adapter_route_submit" "invalid adapter submit URL for route=$route" submit_identity && [[ "$submit_identity" != "$expected_submit_identity" ]]; then
       errors+=("adapter submit URL for route=$route must target executor submit endpoint ($EXECUTOR_EXPECT_SUBMIT_URL)")
     fi
+  elif [[ -n "$adapter_route_submit" ]]; then
+    validate_endpoint_identity_into "$adapter_route_submit" "invalid adapter submit URL for route=$route" submit_identity || true
   fi
   if [[ -n "$adapter_route_simulate" && -n "$expected_simulate_identity" ]]; then
-    if ! simulate_identity="$(endpoint_identity "$adapter_route_simulate" 2>/dev/null)"; then
-      errors+=("invalid adapter simulate URL for route=$route: $adapter_route_simulate")
-    elif [[ "$simulate_identity" != "$expected_simulate_identity" ]]; then
+    simulate_identity=""
+    if validate_endpoint_identity_into "$adapter_route_simulate" "invalid adapter simulate URL for route=$route" simulate_identity && [[ "$simulate_identity" != "$expected_simulate_identity" ]]; then
       errors+=("adapter simulate URL for route=$route must target executor simulate endpoint ($EXECUTOR_EXPECT_SIMULATE_URL)")
     fi
+  elif [[ -n "$adapter_route_simulate" ]]; then
+    validate_endpoint_identity_into "$adapter_route_simulate" "invalid adapter simulate URL for route=$route" simulate_identity || true
   fi
 
   if [[ "$executor_bearer_required" == "true" ]]; then
