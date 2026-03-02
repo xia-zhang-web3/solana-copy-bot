@@ -510,13 +510,14 @@ executor_upstream_submit_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYB
 executor_upstream_simulate_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL)"
 executor_send_rpc_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_URL)"
 executor_send_rpc_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL)"
-executor_signer_source_expected_raw="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_SOURCE)"
+executor_signer_source_expected_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_SOURCE)" "file")"
 executor_signer_source_expected="$(printf '%s' "$executor_signer_source_expected_raw" | tr '[:upper:]' '[:lower:]')"
 executor_signer_pubkey="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_PUBKEY)"
 declare -a expected_send_rpc_enabled_routes=()
 declare -a expected_send_rpc_fallback_routes=()
 expected_send_rpc_enabled_routes_csv=""
 expected_send_rpc_fallback_routes_csv=""
+executor_signer_source_expected_valid="true"
 
 executor_submit_fastlane_enabled="$(parse_bool_token "$executor_submit_fastlane_enabled_raw")"
 if [[ -z "$executor_submit_fastlane_enabled" ]]; then
@@ -532,9 +533,14 @@ fi
 if [[ -z "$executor_signer_pubkey" ]]; then
   errors+=("COPYBOT_EXECUTOR_SIGNER_PUBKEY must be non-empty")
 fi
-if [[ -z "$executor_signer_source_expected" ]]; then
-  errors+=("COPYBOT_EXECUTOR_SIGNER_SOURCE must be non-empty")
-fi
+case "$executor_signer_source_expected" in
+  file|kms)
+    ;;
+  *)
+    errors+=("COPYBOT_EXECUTOR_SIGNER_SOURCE must be one of: file,kms")
+    executor_signer_source_expected_valid="false"
+    ;;
+esac
 
 if [[ -z "${executor_route_allowlist_csv//[[:space:]]/}" ]]; then
   errors+=("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST must not be empty")
@@ -739,7 +745,7 @@ if command -v curl >/dev/null 2>&1; then
       fi
       if [[ -z "$health_signer_source" ]]; then
         errors+=("executor health signer_source must be non-empty")
-      elif [[ "$health_signer_source" != "$executor_signer_source_expected" ]]; then
+      elif [[ "$executor_signer_source_expected_valid" == "true" && "$health_signer_source" != "$executor_signer_source_expected" ]]; then
         errors+=("executor signer_source mismatch: health=$health_signer_source expected=$executor_signer_source_expected")
       fi
       if [[ -z "$health_signer_pubkey" ]]; then

@@ -2754,6 +2754,25 @@ run_executor_preflight_case() {
   assert_contains "$submit_fastlane_mismatch_output" "preflight_verdict: FAIL"
   assert_contains "$submit_fastlane_mismatch_output" "executor submit_fastlane_enabled mismatch: health=true expected=false"
 
+  local executor_env_no_signer_source_path="$TMP_DIR/executor-preflight-no-signer-source.env"
+  awk '
+    $0 ~ /^COPYBOT_EXECUTOR_SIGNER_SOURCE=/ { next }
+    { print }
+  ' "$executor_env_path" >"$executor_env_no_signer_source_path"
+  local missing_signer_source_pass_output
+  missing_signer_source_pass_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_no_signer_source_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE="file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh"
+  )"
+  assert_contains "$missing_signer_source_pass_output" "preflight_verdict: PASS"
+  assert_field_equals "$missing_signer_source_pass_output" "executor_signer_source_expected" "file"
+  assert_field_equals "$missing_signer_source_pass_output" "health_signer_source" "file"
+
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token" "paper,rpc,jito,fastlane"
   local allowlist_mismatch_output
   if allowlist_mismatch_output="$(
