@@ -65,6 +65,7 @@ signoff_artifacts_written="false"
 signoff_artifact_summary="n/a"
 signoff_artifact_manifest="n/a"
 signoff_summary_sha256="n/a"
+signoff_nested_package_bundle_enabled="unknown"
 if ((${#input_errors[@]} == 0)); then
   if signoff_output="$(
     CONFIG_PATH="$CONFIG_PATH" \
@@ -100,6 +101,13 @@ if ((${#input_errors[@]} == 0)); then
   signoff_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$signoff_output")")"
   signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$signoff_output")")"
   signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$signoff_output")")"
+  signoff_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$signoff_output")")"
+  if ! signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$signoff_output")"; then
+    input_errors+=("nested route/fee signoff package_bundle_enabled must be boolean token, got: ${signoff_nested_package_bundle_enabled_raw:-<empty>}")
+    signoff_nested_package_bundle_enabled="unknown"
+  elif [[ "$signoff_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested route/fee signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
 
   if [[ "$signoff_verdict" == "UNKNOWN" ]]; then
     signoff_reason="unable to classify route/fee signoff verdict (exit=$signoff_exit_code)"
@@ -113,6 +121,12 @@ if ((${#input_errors[@]} == 0)); then
   fi
 else
   signoff_exit_code=3
+  signoff_verdict="NO_GO"
+  signoff_reason="${input_errors[0]}"
+  signoff_reason_code="input_error"
+fi
+
+if ((${#input_errors[@]} > 0)); then
   signoff_verdict="NO_GO"
   signoff_reason="${input_errors[0]}"
   signoff_reason_code="input_error"
@@ -166,6 +180,7 @@ signoff_artifact_manifest: ${signoff_artifact_manifest:-n/a}
 signoff_summary_sha256: ${signoff_summary_sha256:-n/a}
 signoff_artifact_summary_sha256: $signoff_artifact_summary_sha256
 signoff_artifact_manifest_sha256: $signoff_artifact_manifest_sha256
+signoff_nested_package_bundle_enabled: ${signoff_nested_package_bundle_enabled:-unknown}
 final_route_fee_package_verdict: $signoff_verdict
 final_route_fee_package_reason: ${signoff_reason:-n/a}
 final_route_fee_package_reason_code: ${signoff_reason_code:-n/a}

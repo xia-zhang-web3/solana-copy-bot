@@ -93,6 +93,7 @@ rollout_artifacts_written="false"
 rollout_artifact_summary="n/a"
 rollout_artifact_manifest="n/a"
 rollout_summary_sha256="n/a"
+rollout_nested_package_bundle_enabled="unknown"
 if ((${#input_errors[@]} == 0)); then
   if rollout_output="$(
     EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -131,6 +132,13 @@ if ((${#input_errors[@]} == 0)); then
   rollout_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$rollout_output")")"
   rollout_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rollout_output")")"
   rollout_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rollout_output")")"
+  rollout_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rollout_output")")"
+  if ! rollout_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rollout_output")"; then
+    input_errors+=("nested executor rollout package_bundle_enabled must be boolean token, got: ${rollout_nested_package_bundle_enabled_raw:-<empty>}")
+    rollout_nested_package_bundle_enabled="unknown"
+  elif [[ "$rollout_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested executor rollout helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
 
   if [[ "$rollout_verdict" == "UNKNOWN" ]]; then
     rollout_reason="unable to classify executor rollout verdict (exit=$rollout_exit_code)"
@@ -144,6 +152,12 @@ if ((${#input_errors[@]} == 0)); then
   fi
 elif ((${#input_errors[@]} > 0)); then
   rollout_exit_code=3
+  rollout_verdict="NO_GO"
+  rollout_reason="${input_errors[0]}"
+  rollout_reason_code="input_error"
+fi
+
+if ((${#input_errors[@]} > 0)); then
   rollout_verdict="NO_GO"
   rollout_reason="${input_errors[0]}"
   rollout_reason_code="input_error"
@@ -198,6 +212,7 @@ rollout_artifact_manifest: ${rollout_artifact_manifest:-n/a}
 rollout_summary_sha256: ${rollout_summary_sha256:-n/a}
 rollout_artifact_summary_sha256: $rollout_artifact_summary_sha256
 rollout_artifact_manifest_sha256: $rollout_artifact_manifest_sha256
+rollout_nested_package_bundle_enabled: ${rollout_nested_package_bundle_enabled:-unknown}
 final_executor_package_verdict: $rollout_verdict
 final_executor_package_reason: ${rollout_reason:-n/a}
 final_executor_package_reason_code: ${rollout_reason_code:-n/a}
