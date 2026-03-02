@@ -116,6 +116,7 @@ declare -a window_fastlane_feature_flag_verdicts=()
 declare -a window_fastlane_feature_flag_reasons=()
 declare -a window_fastlane_feature_flag_reason_codes=()
 declare -a window_go_nogo_artifacts_written=()
+declare -a window_go_nogo_nested_package_bundle_enabled=()
 declare -a window_go_nogo_artifact_manifests=()
 declare -a window_go_nogo_calibration_sha256=()
 declare -a window_go_nogo_snapshot_sha256=()
@@ -192,6 +193,13 @@ if ((${#input_errors[@]} == 0)); then
     fallback_used_events="$(trim_string "$(extract_field "fallback_used_events" "$go_nogo_output")")"
     hint_mismatch_events="$(trim_string "$(extract_field "hint_mismatch_events" "$go_nogo_output")")"
     go_nogo_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$go_nogo_output")")"
+    go_nogo_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$go_nogo_output")")"
+    if ! go_nogo_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$go_nogo_output")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go package_bundle_enabled must be boolean token, got: ${go_nogo_nested_package_bundle_enabled_raw:-<empty>}")
+      go_nogo_nested_package_bundle_enabled="unknown"
+    elif [[ "$go_nogo_nested_package_bundle_enabled" != "false" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go helper must run with PACKAGE_BUNDLE_ENABLED=false")
+    fi
     go_nogo_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$go_nogo_output")")"
     go_nogo_calibration_sha256="$(trim_string "$(extract_field "calibration_sha256" "$go_nogo_output")")"
     go_nogo_snapshot_sha256="$(trim_string "$(extract_field "snapshot_sha256" "$go_nogo_output")")"
@@ -262,6 +270,7 @@ if ((${#input_errors[@]} == 0)); then
     window_fastlane_feature_flag_reasons+=("$fastlane_feature_flag_reason")
     window_fastlane_feature_flag_reason_codes+=("$fastlane_feature_flag_reason_code")
     window_go_nogo_artifacts_written+=("$go_nogo_artifacts_written")
+    window_go_nogo_nested_package_bundle_enabled+=("$go_nogo_nested_package_bundle_enabled")
     window_go_nogo_artifact_manifests+=("${go_nogo_artifact_manifest:-n/a}")
     window_go_nogo_calibration_sha256+=("${go_nogo_calibration_sha256:-n/a}")
     window_go_nogo_snapshot_sha256+=("${go_nogo_snapshot_sha256:-n/a}")
@@ -443,6 +452,7 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_reason: ${window_fastlane_feature_flag_reasons[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_reason_code: ${window_fastlane_feature_flag_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifacts_written: ${window_go_nogo_artifacts_written[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_go_nogo_nested_package_bundle_enabled: ${window_go_nogo_nested_package_bundle_enabled[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifact_manifest: ${window_go_nogo_artifact_manifests[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_calibration_sha256: ${window_go_nogo_calibration_sha256[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_snapshot_sha256: ${window_go_nogo_snapshot_sha256[$idx]}"

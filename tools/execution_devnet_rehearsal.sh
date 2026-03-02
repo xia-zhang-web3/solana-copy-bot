@@ -313,6 +313,30 @@ if [[ -n "$route_fee_signoff_output_dir" ]]; then
   printf '%s\n' "$route_fee_signoff_output" > "$route_fee_signoff_nested_capture_path"
 fi
 
+go_nogo_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$go_nogo_output")")"
+if ! go_nogo_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$go_nogo_output")"; then
+  config_errors+=("nested go/no-go package_bundle_enabled must be boolean token, got: ${go_nogo_nested_package_bundle_enabled_raw:-<empty>}")
+  go_nogo_nested_package_bundle_enabled="unknown"
+elif [[ "$go_nogo_nested_package_bundle_enabled" != "false" ]]; then
+  config_errors+=("nested go/no-go helper must run with PACKAGE_BUNDLE_ENABLED=false")
+fi
+
+windowed_signoff_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$windowed_signoff_output")")"
+if ! windowed_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$windowed_signoff_output")"; then
+  config_errors+=("nested windowed signoff package_bundle_enabled must be boolean token, got: ${windowed_signoff_nested_package_bundle_enabled_raw:-<empty>}")
+  windowed_signoff_nested_package_bundle_enabled="unknown"
+elif [[ "$windowed_signoff_nested_package_bundle_enabled" != "false" ]]; then
+  config_errors+=("nested windowed signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+fi
+
+route_fee_signoff_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$route_fee_signoff_output")")"
+if ! route_fee_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_signoff_output")"; then
+  config_errors+=("nested route/fee signoff package_bundle_enabled must be boolean token, got: ${route_fee_signoff_nested_package_bundle_enabled_raw:-<empty>}")
+  route_fee_signoff_nested_package_bundle_enabled="unknown"
+elif [[ "$route_fee_signoff_nested_package_bundle_enabled" != "false" ]]; then
+  config_errors+=("nested route/fee signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+fi
+
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
 overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
 overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
@@ -589,6 +613,7 @@ go_nogo_snapshot_sha256: ${go_nogo_snapshot_sha256:-n/a}
 go_nogo_preflight_sha256: ${go_nogo_preflight_sha256:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
 go_nogo_artifacts_written: $go_nogo_artifacts_written
+go_nogo_nested_package_bundle_enabled: ${go_nogo_nested_package_bundle_enabled:-unknown}
 windowed_signoff_required: $windowed_signoff_required_norm
 windowed_signoff_windows_csv: $WINDOWED_SIGNOFF_WINDOWS_CSV
 windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass
@@ -599,6 +624,7 @@ windowed_signoff_reason: ${windowed_signoff_reason:-n/a}
 windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
 windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
 windowed_signoff_artifacts_written: $windowed_signoff_artifacts_written
+windowed_signoff_nested_package_bundle_enabled: ${windowed_signoff_nested_package_bundle_enabled:-unknown}
 route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 route_fee_signoff_exit_code: $route_fee_signoff_exit_code
@@ -608,6 +634,7 @@ route_fee_signoff_reason_code: ${route_fee_signoff_reason_code:-n/a}
 route_fee_signoff_artifact_manifest: ${route_fee_signoff_artifact_manifest:-n/a}
 route_fee_signoff_summary_sha256: ${route_fee_signoff_summary_sha256:-n/a}
 route_fee_signoff_artifacts_written: $route_fee_signoff_artifacts_written
+route_fee_signoff_nested_package_bundle_enabled: ${route_fee_signoff_nested_package_bundle_enabled:-unknown}
 route_fee_primary_route_stable: ${route_fee_primary_route_stable:-false}
 route_fee_stable_primary_route: ${route_fee_stable_primary_route:-n/a}
 route_fee_fallback_route_stable: ${route_fee_fallback_route_stable:-false}
