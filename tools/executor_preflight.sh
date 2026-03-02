@@ -477,6 +477,93 @@ else:
 PY
 }
 
+json_routes_contract_violations() {
+  local body="$1"
+  local key="$2"
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    return 0
+  fi
+  "$PYTHON3_BIN" - "$key" "$body" <<'PY'
+import json
+import sys
+
+key = sys.argv[1]
+raw = (sys.argv[2] or "").strip()
+if not raw:
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    raise SystemExit(0)
+if not isinstance(data, dict) or key not in data:
+    raise SystemExit(0)
+value = data.get(key)
+if not isinstance(value, list):
+    raise SystemExit(0)
+
+seen = set()
+seen_order = []
+for index, item in enumerate(value):
+    if not isinstance(item, str):
+        if item is None:
+            item_type = "null"
+        elif isinstance(item, bool):
+            item_type = "bool"
+        elif isinstance(item, (int, float)):
+            item_type = "number"
+        elif isinstance(item, dict):
+            item_type = "object"
+        else:
+            item_type = type(item).__name__
+        print(f"non_string:{index}:{item_type}")
+        continue
+    token = item.strip()
+    if not token:
+        print(f"empty:{index}")
+        continue
+    normalized = token.lower()
+    if token != normalized:
+        print(f"not_lowercase:{index}:{item}")
+    if normalized in seen:
+        print(f"duplicate:{index}:{normalized}")
+    seen.add(normalized)
+    if normalized not in seen_order:
+        seen_order.append(normalized)
+
+sorted_order = sorted(seen_order)
+if seen_order != sorted_order:
+    print(f"not_sorted:{','.join(seen_order)}:{','.join(sorted_order)}")
+PY
+}
+
+append_routes_contract_errors() {
+  local body="$1"
+  local key="$2"
+  local field_label="$3"
+  local violation kind index value
+  while IFS= read -r violation; do
+    [[ -z "$violation" ]] && continue
+    IFS=':' read -r kind index value <<<"$violation"
+    case "$kind" in
+      non_string)
+        errors+=("executor health $field_label must contain only string route tokens, got: $value at index=$index")
+        ;;
+      empty)
+        errors+=("executor health $field_label must not contain empty route token at index=$index")
+        ;;
+      not_lowercase)
+        errors+=("executor health $field_label route token must be lowercase at index=$index, got: $value")
+        ;;
+      duplicate)
+        errors+=("executor health $field_label contains duplicate route token after normalization: $value")
+        ;;
+      not_sorted)
+        errors+=("executor health $field_label route tokens must be sorted lexicographically, got: $index expected: $value")
+        ;;
+    esac
+  done < <(json_routes_contract_violations "$body" "$key")
+}
+
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
@@ -840,6 +927,11 @@ if command -v curl >/dev/null 2>&1; then
       if [[ "$health_send_rpc_alias_field_kind" != "missing" && "$health_send_rpc_alias_field_kind" != "array" ]]; then
         errors+=("executor health send_rpc_routes alias must be array when present, got: $health_send_rpc_alias_field_kind")
       fi
+      append_routes_contract_errors "$health_body" "enabled_routes" "enabled_routes"
+      append_routes_contract_errors "$health_body" "routes" "routes alias"
+      append_routes_contract_errors "$health_body" "send_rpc_enabled_routes" "send_rpc_enabled_routes"
+      append_routes_contract_errors "$health_body" "send_rpc_fallback_routes" "send_rpc_fallback_routes"
+      append_routes_contract_errors "$health_body" "send_rpc_routes" "send_rpc_routes alias"
       if [[ -z "$health_signer_source" ]]; then
         errors+=("executor health signer_source must be non-empty")
       elif [[ "$executor_signer_source_expected_valid" == "true" && "$health_signer_source" != "$executor_signer_source_expected" ]]; then

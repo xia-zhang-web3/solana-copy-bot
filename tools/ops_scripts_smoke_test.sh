@@ -618,9 +618,9 @@ expected_token='__EXPECTED_TOKEN__'
 simulate_without_auth_status="${FAKE_EXECUTOR_SIMULATE_WITHOUT_AUTH_STATUS:-200}"
 simulate_with_auth_status="${FAKE_EXECUTOR_SIMULATE_WITH_AUTH_STATUS:-200}"
 simulate_invalid_auth_status="${FAKE_EXECUTOR_SIMULATE_INVALID_AUTH_STATUS:-200}"
-health_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_CSV:-paper,rpc,jito}"
+health_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_CSV:-jito,paper,rpc}"
 health_routes_alias_csv="${FAKE_EXECUTOR_HEALTH_ROUTES_CSV:-$health_enabled_routes_csv}"
-health_send_rpc_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV:-rpc,jito}"
+health_send_rpc_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV:-jito,rpc}"
 health_send_rpc_fallback_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_CSV:-jito}"
 health_send_rpc_alias_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_CSV:-$health_send_rpc_enabled_routes_csv}"
 health_enabled_routes_json_raw="${FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_JSON:-}"
@@ -2649,14 +2649,14 @@ run_executor_preflight_case() {
   assert_field_equals "$pass_output" "health_signer_pubkey_field_kind" "string"
   assert_field_equals "$pass_output" "health_submit_fastlane_enabled" "false"
   assert_field_equals "$pass_output" "health_submit_fastlane_enabled_field_kind" "bool"
-  assert_field_equals "$pass_output" "health_routes_alias_csv" "paper,rpc,jito"
+  assert_field_equals "$pass_output" "health_routes_alias_csv" "jito,paper,rpc"
   assert_field_equals "$pass_output" "health_routes_field_kind" "array"
   assert_field_equals "$pass_output" "health_routes_alias_field_kind" "array"
   assert_field_equals "$pass_output" "expected_send_rpc_enabled_routes_csv" "rpc,jito"
   assert_field_equals "$pass_output" "expected_send_rpc_fallback_routes_csv" "jito"
-  assert_field_equals "$pass_output" "health_send_rpc_enabled_routes_csv" "rpc,jito"
+  assert_field_equals "$pass_output" "health_send_rpc_enabled_routes_csv" "jito,rpc"
   assert_field_equals "$pass_output" "health_send_rpc_fallback_routes_csv" "jito"
-  assert_field_equals "$pass_output" "health_send_rpc_alias_routes_csv" "rpc,jito"
+  assert_field_equals "$pass_output" "health_send_rpc_alias_routes_csv" "jito,rpc"
   assert_field_equals "$pass_output" "health_send_rpc_enabled_field_kind" "array"
   assert_field_equals "$pass_output" "health_send_rpc_fallback_field_kind" "array"
   assert_field_equals "$pass_output" "health_send_rpc_alias_field_kind" "array"
@@ -2853,14 +2853,14 @@ run_executor_preflight_case() {
       ADAPTER_ENV_PATH="$adapter_env_path" \
       HTTP_TIMEOUT_SEC="3" \
       FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_CSV="" \
-      FAKE_EXECUTOR_HEALTH_ROUTES_CSV="paper,rpc,jito" \
+      FAKE_EXECUTOR_HEALTH_ROUTES_CSV="jito,paper,rpc" \
       FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV="" \
-      FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_CSV="rpc,jito" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_CSV="jito,rpc" \
       bash "$ROOT_DIR/tools/executor_preflight.sh"
   )"
   assert_contains "$alias_fallback_pass_output" "preflight_verdict: PASS"
-  assert_field_equals "$alias_fallback_pass_output" "health_routes_csv" "paper,rpc,jito"
-  assert_field_equals "$alias_fallback_pass_output" "health_send_rpc_enabled_routes_csv" "rpc,jito"
+  assert_field_equals "$alias_fallback_pass_output" "health_routes_csv" "jito,paper,rpc"
+  assert_field_equals "$alias_fallback_pass_output" "health_send_rpc_enabled_routes_csv" "jito,rpc"
 
   local routes_field_type_mismatch_output
   if routes_field_type_mismatch_output="$(
@@ -2895,6 +2895,102 @@ run_executor_preflight_case() {
   fi
   assert_contains "$send_rpc_enabled_field_type_mismatch_output" "preflight_verdict: FAIL"
   assert_contains "$send_rpc_enabled_field_type_mismatch_output" "executor health send_rpc_enabled_routes must be array when present, got: object"
+
+  local routes_non_string_entry_output
+  if routes_non_string_entry_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_JSON="[\"paper\",123,\"rpc\",\"jito\"]" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-string entry in health enabled_routes" >&2
+    exit 1
+  fi
+  assert_contains "$routes_non_string_entry_output" "preflight_verdict: FAIL"
+  assert_contains "$routes_non_string_entry_output" "executor health enabled_routes must contain only string route tokens, got: number at index=1"
+
+  local routes_uppercase_entry_output
+  if routes_uppercase_entry_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_JSON="[\"paper\",\"RPC\",\"jito\"]" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for uppercase route token in health enabled_routes" >&2
+    exit 1
+  fi
+  assert_contains "$routes_uppercase_entry_output" "preflight_verdict: FAIL"
+  assert_contains "$routes_uppercase_entry_output" "executor health enabled_routes route token must be lowercase at index=1, got: RPC"
+
+  local routes_duplicate_entry_output
+  if routes_duplicate_entry_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_JSON="[\"paper\",\"rpc\",\"RPC\",\"jito\"]" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for duplicate route token in health enabled_routes" >&2
+    exit 1
+  fi
+  assert_contains "$routes_duplicate_entry_output" "preflight_verdict: FAIL"
+  assert_contains "$routes_duplicate_entry_output" "executor health enabled_routes contains duplicate route token after normalization: rpc"
+
+  local routes_unsorted_output
+  if routes_unsorted_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_JSON="[\"rpc\",\"paper\",\"jito\"]" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for unsorted health enabled_routes" >&2
+    exit 1
+  fi
+  assert_contains "$routes_unsorted_output" "preflight_verdict: FAIL"
+  assert_contains "$routes_unsorted_output" "executor health enabled_routes route tokens must be sorted lexicographically, got: rpc,paper,jito expected: jito,paper,rpc"
+
+  local send_rpc_fallback_empty_entry_output
+  if send_rpc_fallback_empty_entry_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_JSON="[\"jito\",\" \"]" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for empty token in health send_rpc_fallback_routes" >&2
+    exit 1
+  fi
+  assert_contains "$send_rpc_fallback_empty_entry_output" "preflight_verdict: FAIL"
+  assert_contains "$send_rpc_fallback_empty_entry_output" "executor health send_rpc_fallback_routes must not contain empty route token at index=1"
+
+  local send_rpc_enabled_unsorted_output
+  if send_rpc_enabled_unsorted_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_JSON="[\"rpc\",\"jito\"]" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for unsorted health send_rpc_enabled_routes" >&2
+    exit 1
+  fi
+  assert_contains "$send_rpc_enabled_unsorted_output" "preflight_verdict: FAIL"
+  assert_contains "$send_rpc_enabled_unsorted_output" "executor health send_rpc_enabled_routes route tokens must be sorted lexicographically, got: rpc,jito expected: jito,rpc"
 
   local status_field_type_mismatch_output
   if status_field_type_mismatch_output="$(
