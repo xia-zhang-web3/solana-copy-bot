@@ -3138,6 +3138,58 @@ run_devnet_rehearsal_case() {
   fi
   assert_contains "$invalid_profile_output" "DEVNET_REHEARSAL_PROFILE must be one of: full,core_only"
 
+  local required_windowed_disabled_output=""
+  if required_windowed_disabled_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="true" \
+      DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF="false" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for required windowed signoff with stage disabled" >&2
+    exit 1
+  else
+    local required_windowed_disabled_exit_code=$?
+    if [[ "$required_windowed_disabled_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required windowed signoff with stage disabled, got $required_windowed_disabled_exit_code" >&2
+      echo "$required_windowed_disabled_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$required_windowed_disabled_output" "windowed_signoff_required" "true"
+  assert_field_equals "$required_windowed_disabled_output" "devnet_rehearsal_run_windowed_signoff" "false"
+  assert_field_equals "$required_windowed_disabled_output" "windowed_signoff_verdict" "SKIP"
+  assert_field_equals "$required_windowed_disabled_output" "devnet_rehearsal_verdict" "NO_GO"
+  assert_field_equals "$required_windowed_disabled_output" "devnet_rehearsal_reason_code" "config_error"
+  assert_contains "$required_windowed_disabled_output" "config_error: WINDOWED_SIGNOFF_REQUIRED=true requires DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF=true"
+
+  local required_route_fee_disabled_output=""
+  if required_route_fee_disabled_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      DEVNET_REHEARSAL_RUN_ROUTE_FEE_SIGNOFF="false" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for required route/fee signoff with stage disabled" >&2
+    exit 1
+  else
+    local required_route_fee_disabled_exit_code=$?
+    if [[ "$required_route_fee_disabled_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for required route/fee signoff with stage disabled, got $required_route_fee_disabled_exit_code" >&2
+      echo "$required_route_fee_disabled_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$required_route_fee_disabled_output" "route_fee_signoff_required" "true"
+  assert_field_equals "$required_route_fee_disabled_output" "devnet_rehearsal_run_route_fee_signoff" "false"
+  assert_field_equals "$required_route_fee_disabled_output" "route_fee_signoff_verdict" "SKIP"
+  assert_field_equals "$required_route_fee_disabled_output" "devnet_rehearsal_verdict" "NO_GO"
+  assert_field_equals "$required_route_fee_disabled_output" "devnet_rehearsal_reason_code" "config_error"
+  assert_contains "$required_route_fee_disabled_output" "config_error: ROUTE_FEE_SIGNOFF_REQUIRED=true requires DEVNET_REHEARSAL_RUN_ROUTE_FEE_SIGNOFF=true"
+
   local required_nogo_output=""
   if required_nogo_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
