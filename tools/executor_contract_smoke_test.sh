@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTRACT_FILE="$ROOT_DIR/ops/executor_contract_v1.md"
 PLAN_FILE="$ROOT_DIR/ops/executor_backend_master_plan_2026-02-24.md"
+EXECUTOR_CONTRACT_SMOKE_MODE="${EXECUTOR_CONTRACT_SMOKE_MODE:-full}"
+EXECUTOR_CONTRACT_SMOKE_TARGET_TESTS="${EXECUTOR_CONTRACT_SMOKE_TARGET_TESTS:-}"
 
 fail() {
   echo "[fail] $1" >&2
@@ -14,11 +16,26 @@ pass() {
   echo "[ok] $1"
 }
 
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
 [[ -f "$CONTRACT_FILE" ]] || fail "missing canonical contract: $CONTRACT_FILE"
 [[ -f "$PLAN_FILE" ]] || fail "missing executor master plan: $PLAN_FILE"
 [[ -f "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" ]] || fail "missing helper: tools/executor_rollout_evidence_report.sh"
 [[ -f "$ROOT_DIR/tools/executor_final_evidence_report.sh" ]] || fail "missing helper: tools/executor_final_evidence_report.sh"
 pass "executor evidence helpers present"
+
+case "$EXECUTOR_CONTRACT_SMOKE_MODE" in
+full | targeted)
+  ;;
+*)
+  fail "EXECUTOR_CONTRACT_SMOKE_MODE must be one of: full,targeted (got: $EXECUTOR_CONTRACT_SMOKE_MODE)"
+  ;;
+esac
 
 required_contract_patterns=(
   "# Executor Contract v1 \(Canonical\)"
@@ -50,9 +67,6 @@ for pattern in "${required_plan_patterns[@]}"; do
   rg -q "$pattern" "$PLAN_FILE" || fail "plan missing required section: $pattern"
 done
 pass "master plan sections present"
-
-cargo test -p copybot-executor -q >/dev/null
-pass "copybot-executor tests pass"
 
 contract_guard_tests=(
   "simulate_reject_status_is_http_200_for_retryable_and_terminal"
@@ -550,20 +564,80 @@ contract_guard_tests=(
   "upstream_outcome_rejects_conflicting_ok_accepted_flags_without_status"
 )
 
-if [[ "${EXECUTOR_CONTRACT_SMOKE_RUN_EACH_GUARD:-false}" == "true" ]]; then
-  for test_name in "${contract_guard_tests[@]}"; do
+is_known_contract_guard_test() {
+  local target_test_name="$1"
+  local guard_test_name=""
+  for guard_test_name in "${contract_guard_tests[@]-}"; do
+    if [[ "$guard_test_name" == "$target_test_name" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_contract_guard_test_registration() {
+  local -a tests_to_check=("$@")
+  local contract_test_list=""
+  contract_test_list="$(mktemp)"
+  cargo test -p copybot-executor -- --list >"$contract_test_list"
+  local test_name=""
+  for test_name in "${tests_to_check[@]}"; do
+    if ! rg -q "(^|::)${test_name}: test$" "$contract_test_list"; then
+      rm -f "$contract_test_list"
+      fail "missing contract guard test registration: $test_name"
+    fi
+  done
+  rm -f "$contract_test_list"
+}
+
+run_contract_guard_tests() {
+  local -a tests_to_run=("$@")
+  local test_name=""
+  for test_name in "${tests_to_run[@]}"; do
     cargo test -p copybot-executor -q "$test_name" >/dev/null
   done
-  pass "contract guard tests pass"
-else
-  contract_test_list="$(mktemp)"
-  trap 'rm -f "$contract_test_list"' EXIT
-  cargo test -p copybot-executor -- --list >"$contract_test_list"
-  for test_name in "${contract_guard_tests[@]}"; do
-    rg -q "(^|::)${test_name}: test$" "$contract_test_list" \
-      || fail "missing contract guard test registration: $test_name"
+}
+
+resolve_targeted_guard_tests() {
+  local -a raw_target_tests=()
+  IFS=',' read -r -a raw_target_tests <<<"$EXECUTOR_CONTRACT_SMOKE_TARGET_TESTS"
+  targeted_contract_guard_tests=()
+  local raw_test_name=""
+  local normalized_test_name=""
+  for raw_test_name in "${raw_target_tests[@]-}"; do
+    normalized_test_name="$(trim_whitespace "$raw_test_name")"
+    if [[ -z "$normalized_test_name" ]]; then
+      continue
+    fi
+    if ! is_known_contract_guard_test "$normalized_test_name"; then
+      fail "unknown targeted contract guard test: $normalized_test_name"
+    fi
+    targeted_contract_guard_tests+=("$normalized_test_name")
   done
-  pass "contract guard tests pass"
-fi
+  if ((${#targeted_contract_guard_tests[@]} == 0)); then
+    fail "EXECUTOR_CONTRACT_SMOKE_TARGET_TESTS must contain at least one known guard test"
+  fi
+}
+
+case "$EXECUTOR_CONTRACT_SMOKE_MODE" in
+full)
+  cargo test -p copybot-executor -q >/dev/null
+  pass "copybot-executor tests pass"
+
+  if [[ "${EXECUTOR_CONTRACT_SMOKE_RUN_EACH_GUARD:-false}" == "true" ]]; then
+    run_contract_guard_tests "${contract_guard_tests[@]}"
+    pass "contract guard tests pass"
+  else
+    validate_contract_guard_test_registration "${contract_guard_tests[@]}"
+    pass "contract guard tests pass"
+  fi
+  ;;
+targeted)
+  resolve_targeted_guard_tests
+  validate_contract_guard_test_registration "${targeted_contract_guard_tests[@]-}"
+  run_contract_guard_tests "${targeted_contract_guard_tests[@]-}"
+  pass "targeted contract guard tests pass (count=${#targeted_contract_guard_tests[@]})"
+  ;;
+esac
 
 echo "executor contract smoke: PASS"
