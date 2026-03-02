@@ -33,6 +33,7 @@ ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRI
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-executor_rollout_evidence}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_DIR}"
+EXECUTOR_ROLLOUT_PROFILE="${EXECUTOR_ROLLOUT_PROFILE:-full}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -66,6 +67,40 @@ parse_rollout_bool_setting_into() {
   printf -v "$output_var" '%s' "$parsed_value"
 }
 
+executor_rollout_run_rotation_default="true"
+executor_rollout_run_preflight_default="true"
+executor_rollout_run_rehearsal_default="true"
+case "$EXECUTOR_ROLLOUT_PROFILE" in
+full)
+  ;;
+precheck_only)
+  executor_rollout_run_rehearsal_default="false"
+  ;;
+rehearsal_only)
+  executor_rollout_run_rotation_default="false"
+  executor_rollout_run_preflight_default="false"
+  ;;
+*)
+  input_errors+=("EXECUTOR_ROLLOUT_PROFILE must be one of: full,precheck_only,rehearsal_only (got: $EXECUTOR_ROLLOUT_PROFILE)")
+  ;;
+esac
+
+executor_rollout_run_rotation_raw="$executor_rollout_run_rotation_default"
+if [[ -n "${EXECUTOR_ROLLOUT_RUN_ROTATION+x}" ]]; then
+  executor_rollout_run_rotation_raw="$EXECUTOR_ROLLOUT_RUN_ROTATION"
+fi
+executor_rollout_run_preflight_raw="$executor_rollout_run_preflight_default"
+if [[ -n "${EXECUTOR_ROLLOUT_RUN_PREFLIGHT+x}" ]]; then
+  executor_rollout_run_preflight_raw="$EXECUTOR_ROLLOUT_RUN_PREFLIGHT"
+fi
+executor_rollout_run_rehearsal_raw="$executor_rollout_run_rehearsal_default"
+if [[ -n "${EXECUTOR_ROLLOUT_RUN_REHEARSAL+x}" ]]; then
+  executor_rollout_run_rehearsal_raw="$EXECUTOR_ROLLOUT_RUN_REHEARSAL"
+fi
+
+parse_rollout_bool_setting_into "EXECUTOR_ROLLOUT_RUN_ROTATION" "$executor_rollout_run_rotation_raw" executor_rollout_run_rotation_norm
+parse_rollout_bool_setting_into "EXECUTOR_ROLLOUT_RUN_PREFLIGHT" "$executor_rollout_run_preflight_raw" executor_rollout_run_preflight_norm
+parse_rollout_bool_setting_into "EXECUTOR_ROLLOUT_RUN_REHEARSAL" "$executor_rollout_run_rehearsal_raw" executor_rollout_run_rehearsal_norm
 parse_rollout_bool_setting_into "RUN_TESTS" "$RUN_TESTS" run_tests_norm
 parse_rollout_bool_setting_into "DEVNET_REHEARSAL_TEST_MODE" "$DEVNET_REHEARSAL_TEST_MODE" devnet_rehearsal_test_mode_norm
 parse_rollout_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
@@ -77,6 +112,9 @@ parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_RE
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_rollout_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
+if [[ "$executor_rollout_run_rotation_norm" != "true" && "$executor_rollout_run_preflight_norm" != "true" && "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
+  input_errors+=("at least one stage must be enabled (set EXECUTOR_ROLLOUT_RUN_ROTATION/EXECUTOR_ROLLOUT_RUN_PREFLIGHT/EXECUTOR_ROLLOUT_RUN_REHEARSAL)")
+fi
 if [[ "$package_bundle_enabled_norm" == "true" && -z "$OUTPUT_DIR" ]]; then
   input_errors+=("PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set")
 fi
@@ -99,7 +137,13 @@ rotation_artifact_report=""
 rotation_artifact_manifest=""
 rotation_report_sha256=""
 rotation_artifacts_written="false"
-if ((${#input_errors[@]} == 0)) && [[ -f "$EXECUTOR_ENV_PATH" ]]; then
+if [[ "$executor_rollout_run_rotation_norm" != "true" ]]; then
+  rotation_output=$'rotation_readiness_verdict: SKIP\nrotation_readiness_reason: stage_disabled\nartifacts_written: false'
+  rotation_exit_code=0
+  rotation_verdict="SKIP"
+  rotation_reason="rotation stage disabled by EXECUTOR_ROLLOUT_RUN_ROTATION=false"
+  rotation_artifacts_written="n/a"
+elif ((${#input_errors[@]} == 0)) && [[ -f "$EXECUTOR_ENV_PATH" ]]; then
   if rotation_output="$(
     EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       OUTPUT_DIR="$rotation_output_dir" \
@@ -146,7 +190,14 @@ preflight_artifact_summary=""
 preflight_artifact_manifest=""
 preflight_summary_sha256=""
 preflight_artifacts_written="false"
-if ((${#input_errors[@]} == 0)) && [[ -f "$CONFIG_PATH" && -f "$EXECUTOR_ENV_PATH" && -f "$ADAPTER_ENV_PATH" ]]; then
+if [[ "$executor_rollout_run_preflight_norm" != "true" ]]; then
+  preflight_output=$'preflight_verdict: SKIP\npreflight_reason: stage_disabled\npreflight_reason_code: stage_disabled\nartifacts_written: false'
+  preflight_exit_code=0
+  preflight_verdict="SKIP"
+  preflight_reason="executor preflight stage disabled by EXECUTOR_ROLLOUT_RUN_PREFLIGHT=false"
+  preflight_reason_code="stage_disabled"
+  preflight_artifacts_written="n/a"
+elif ((${#input_errors[@]} == 0)) && [[ -f "$CONFIG_PATH" && -f "$EXECUTOR_ENV_PATH" && -f "$ADAPTER_ENV_PATH" ]]; then
   if preflight_output="$(
     CONFIG_PATH="$CONFIG_PATH" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -210,7 +261,15 @@ rehearsal_artifacts_written="false"
 rehearsal_nested_package_bundle_enabled="unknown"
 tests_run=""
 tests_failed=""
-if ((${#input_errors[@]} > 0)); then
+if [[ "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
+  rehearsal_output=$'devnet_rehearsal_verdict: SKIP\ndevnet_rehearsal_reason: stage_disabled\ndevnet_rehearsal_reason_code: stage_disabled\nartifacts_written: false\npackage_bundle_enabled: false'
+  rehearsal_exit_code=0
+  rehearsal_verdict="SKIP"
+  rehearsal_reason="devnet rehearsal stage disabled by EXECUTOR_ROLLOUT_RUN_REHEARSAL=false"
+  rehearsal_reason_code="stage_disabled"
+  rehearsal_artifacts_written="n/a"
+  rehearsal_nested_package_bundle_enabled="n/a"
+elif ((${#input_errors[@]} > 0)); then
   rehearsal_exit_code=3
   rehearsal_verdict="NO_GO"
   rehearsal_reason="${input_errors[0]}"
@@ -308,45 +367,45 @@ if ((${#input_errors[@]} > 0)); then
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="${input_errors[0]}"
   executor_rollout_reason_code="input_error"
-elif [[ "$rotation_verdict" == "FAIL" ]]; then
+elif [[ "$executor_rollout_run_rotation_norm" == "true" && "$rotation_verdict" == "FAIL" ]]; then
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="signer rotation readiness failed: ${rotation_reason:-n/a}"
   executor_rollout_reason_code="rotation_fail"
-elif [[ "$rotation_verdict" == "UNKNOWN" ]]; then
+elif [[ "$executor_rollout_run_rotation_norm" == "true" && "$rotation_verdict" == "UNKNOWN" ]]; then
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="signer rotation readiness verdict unknown; fail-closed"
   executor_rollout_reason_code="rotation_unknown"
-elif [[ "$preflight_verdict" == "FAIL" ]]; then
+elif [[ "$executor_rollout_run_preflight_norm" == "true" && "$preflight_verdict" == "FAIL" ]]; then
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="executor preflight failed: ${preflight_reason:-n/a}"
   executor_rollout_reason_code="preflight_fail"
-elif [[ "$preflight_verdict" == "UNKNOWN" ]]; then
+elif [[ "$executor_rollout_run_preflight_norm" == "true" && "$preflight_verdict" == "UNKNOWN" ]]; then
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="executor preflight verdict unknown; fail-closed"
   executor_rollout_reason_code="preflight_unknown"
-elif [[ "$rehearsal_verdict" == "NO_GO" ]]; then
+elif [[ "$executor_rollout_run_rehearsal_norm" == "true" && "$rehearsal_verdict" == "NO_GO" ]]; then
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="devnet rehearsal returned NO_GO: ${rehearsal_reason:-n/a}"
   executor_rollout_reason_code="rehearsal_no_go"
-elif [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
+elif [[ "$executor_rollout_run_rehearsal_norm" == "true" && "$rehearsal_verdict" == "UNKNOWN" ]]; then
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="devnet rehearsal verdict unknown; fail-closed"
   executor_rollout_reason_code="rehearsal_unknown"
-elif [[ "$rotation_verdict" == "WARN" || "$preflight_verdict" == "SKIP" || "$rehearsal_verdict" == "HOLD" ]]; then
+elif [[ "$executor_rollout_run_rotation_norm" == "true" && "$rotation_verdict" == "WARN" ]]; then
   executor_rollout_verdict="HOLD"
-  if [[ "$rotation_verdict" == "WARN" ]]; then
-    executor_rollout_reason="signer rotation readiness returned WARN: ${rotation_reason:-n/a}"
-    executor_rollout_reason_code="rotation_warn"
-  elif [[ "$preflight_verdict" == "SKIP" ]]; then
-    executor_rollout_reason="executor preflight returned SKIP: ${preflight_reason:-n/a}"
-    executor_rollout_reason_code="preflight_skip"
-  else
-    executor_rollout_reason="devnet rehearsal returned HOLD: ${rehearsal_reason:-n/a}"
-    executor_rollout_reason_code="rehearsal_hold"
-  fi
-elif [[ "$rotation_verdict" == "PASS" && "$preflight_verdict" == "PASS" && "$rehearsal_verdict" == "GO" ]]; then
+  executor_rollout_reason="signer rotation readiness returned WARN: ${rotation_reason:-n/a}"
+  executor_rollout_reason_code="rotation_warn"
+elif [[ "$executor_rollout_run_preflight_norm" == "true" && "$preflight_verdict" == "SKIP" ]]; then
+  executor_rollout_verdict="HOLD"
+  executor_rollout_reason="executor preflight returned SKIP: ${preflight_reason:-n/a}"
+  executor_rollout_reason_code="preflight_skip"
+elif [[ "$executor_rollout_run_rehearsal_norm" == "true" && "$rehearsal_verdict" == "HOLD" ]]; then
+  executor_rollout_verdict="HOLD"
+  executor_rollout_reason="devnet rehearsal returned HOLD: ${rehearsal_reason:-n/a}"
+  executor_rollout_reason_code="rehearsal_hold"
+elif [[ ( "$executor_rollout_run_rotation_norm" != "true" || "$rotation_verdict" == "PASS" ) && ( "$executor_rollout_run_preflight_norm" != "true" || "$preflight_verdict" == "PASS" ) && ( "$executor_rollout_run_rehearsal_norm" != "true" || "$rehearsal_verdict" == "GO" ) ]]; then
   executor_rollout_verdict="GO"
-  executor_rollout_reason="signer rotation readiness, executor preflight, and devnet rehearsal gates passed"
+  executor_rollout_reason="enabled rollout stages passed"
   executor_rollout_reason_code="gates_pass"
 fi
 
@@ -372,6 +431,10 @@ config: $CONFIG_PATH
 service: $SERVICE
 window_hours: $WINDOW_HOURS
 risk_events_minutes: $RISK_EVENTS_MINUTES
+executor_rollout_profile: $EXECUTOR_ROLLOUT_PROFILE
+executor_rollout_run_rotation: $executor_rollout_run_rotation_norm
+executor_rollout_run_preflight: $executor_rollout_run_preflight_norm
+executor_rollout_run_rehearsal: $executor_rollout_run_rehearsal_norm
 
 rotation_readiness_verdict: $rotation_verdict
 rotation_readiness_reason: ${rotation_reason:-n/a}

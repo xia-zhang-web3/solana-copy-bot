@@ -38,6 +38,7 @@ REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-adapter_rollout_evidence}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_DIR}"
+ADAPTER_ROLLOUT_PROFILE="${ADAPTER_ROLLOUT_PROFILE:-full}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -68,6 +69,41 @@ parse_rollout_bool_setting_into() {
   printf -v "$output_var" '%s' "$parsed_value"
 }
 
+adapter_rollout_run_rotation_default="true"
+adapter_rollout_run_rehearsal_default="true"
+adapter_rollout_run_route_fee_signoff_default="true"
+case "$ADAPTER_ROLLOUT_PROFILE" in
+full)
+  ;;
+rehearsal_only)
+  adapter_rollout_run_rotation_default="false"
+  adapter_rollout_run_route_fee_signoff_default="false"
+  ;;
+route_fee_only)
+  adapter_rollout_run_rotation_default="false"
+  adapter_rollout_run_rehearsal_default="false"
+  ;;
+*)
+  input_errors+=("ADAPTER_ROLLOUT_PROFILE must be one of: full,rehearsal_only,route_fee_only (got: $ADAPTER_ROLLOUT_PROFILE)")
+  ;;
+esac
+
+adapter_rollout_run_rotation_raw="$adapter_rollout_run_rotation_default"
+if [[ -n "${ADAPTER_ROLLOUT_RUN_ROTATION+x}" ]]; then
+  adapter_rollout_run_rotation_raw="$ADAPTER_ROLLOUT_RUN_ROTATION"
+fi
+adapter_rollout_run_rehearsal_raw="$adapter_rollout_run_rehearsal_default"
+if [[ -n "${ADAPTER_ROLLOUT_RUN_REHEARSAL+x}" ]]; then
+  adapter_rollout_run_rehearsal_raw="$ADAPTER_ROLLOUT_RUN_REHEARSAL"
+fi
+adapter_rollout_run_route_fee_signoff_raw="$adapter_rollout_run_route_fee_signoff_default"
+if [[ -n "${ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF+x}" ]]; then
+  adapter_rollout_run_route_fee_signoff_raw="$ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF"
+fi
+
+parse_rollout_bool_setting_into "ADAPTER_ROLLOUT_RUN_ROTATION" "$adapter_rollout_run_rotation_raw" adapter_rollout_run_rotation_norm
+parse_rollout_bool_setting_into "ADAPTER_ROLLOUT_RUN_REHEARSAL" "$adapter_rollout_run_rehearsal_raw" adapter_rollout_run_rehearsal_norm
+parse_rollout_bool_setting_into "ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF" "$adapter_rollout_run_route_fee_signoff_raw" adapter_rollout_run_route_fee_signoff_norm
 parse_rollout_bool_setting_into "RUN_TESTS" "$RUN_TESTS" run_tests_norm
 parse_rollout_bool_setting_into "DEVNET_REHEARSAL_TEST_MODE" "$DEVNET_REHEARSAL_TEST_MODE" devnet_rehearsal_test_mode_norm
 parse_rollout_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
@@ -81,6 +117,18 @@ parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FE
 parse_rollout_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
 parse_rollout_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" rehearsal_route_fee_signoff_go_nogo_test_mode_norm
 parse_rollout_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
+if [[ "$adapter_rollout_run_rotation_norm" != "true" && "$adapter_rollout_run_rehearsal_norm" != "true" && "$adapter_rollout_run_route_fee_signoff_norm" != "true" ]]; then
+  input_errors+=("at least one stage must be enabled (set ADAPTER_ROLLOUT_RUN_ROTATION/ADAPTER_ROLLOUT_RUN_REHEARSAL/ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF)")
+fi
+if [[ "$rehearsal_route_fee_signoff_required_norm" == "true" && "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
+  input_errors+=("REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED=true requires ADAPTER_ROLLOUT_RUN_REHEARSAL=true")
+fi
+if [[ "$windowed_signoff_required_norm" == "true" && "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
+  input_errors+=("WINDOWED_SIGNOFF_REQUIRED=true requires ADAPTER_ROLLOUT_RUN_REHEARSAL=true")
+fi
+if [[ "$route_fee_signoff_required_norm" == "true" && "$adapter_rollout_run_route_fee_signoff_norm" != "true" ]]; then
+  input_errors+=("ROUTE_FEE_SIGNOFF_REQUIRED=true requires ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF=true")
+fi
 if [[ "$package_bundle_enabled_norm" == "true" && -z "$OUTPUT_DIR" ]]; then
   input_errors+=("PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set")
 fi
@@ -103,7 +151,13 @@ rotation_artifact_report=""
 rotation_artifact_manifest=""
 rotation_report_sha256=""
 rotation_artifacts_written="false"
-if ((${#input_errors[@]} == 0)) && [[ -f "$ADAPTER_ENV_PATH" ]]; then
+if [[ "$adapter_rollout_run_rotation_norm" != "true" ]]; then
+  rotation_output=$'rotation_readiness_verdict: SKIP\nrotation_readiness_reason: stage_disabled\nartifacts_written: false'
+  rotation_exit_code=0
+  rotation_verdict="SKIP"
+  rotation_reason="rotation stage disabled by ADAPTER_ROLLOUT_RUN_ROTATION=false"
+  rotation_artifacts_written="n/a"
+elif ((${#input_errors[@]} == 0)) && [[ -f "$ADAPTER_ENV_PATH" ]]; then
   if rotation_output="$(
     ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
       OUTPUT_DIR="$rotation_output_dir" \
@@ -226,7 +280,18 @@ rehearsal_route_fee_fee_decomposition_pass_count=""
 rehearsal_route_fee_window_count=""
 tests_run=""
 tests_failed=""
-if ((${#input_errors[@]} > 0)); then
+if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
+  rehearsal_output=$'devnet_rehearsal_verdict: SKIP\ndevnet_rehearsal_reason: stage_disabled\ndevnet_rehearsal_reason_code: stage_disabled\nartifacts_written: false\npackage_bundle_enabled: false'
+  rehearsal_exit_code=0
+  rehearsal_verdict="SKIP"
+  rehearsal_reason="devnet rehearsal stage disabled by ADAPTER_ROLLOUT_RUN_REHEARSAL=false"
+  rehearsal_reason_code="stage_disabled"
+  rehearsal_artifacts_written="n/a"
+  rehearsal_nested_package_bundle_enabled="n/a"
+  go_nogo_artifacts_written="n/a"
+  windowed_signoff_artifacts_written="n/a"
+  rehearsal_route_fee_signoff_artifacts_written="n/a"
+elif ((${#input_errors[@]} > 0)); then
   rehearsal_exit_code=3
   rehearsal_verdict="NO_GO"
   rehearsal_reason="${input_errors[0]}"
@@ -432,7 +497,16 @@ route_fee_stable_fallback_route=""
 route_fee_route_profile_pass_count=""
 route_fee_fee_decomposition_pass_count=""
 route_fee_window_count=""
-if ((${#input_errors[@]} > 0)); then
+if [[ "$adapter_rollout_run_route_fee_signoff_norm" != "true" ]]; then
+  route_fee_signoff_output=$'signoff_verdict: SKIP\nsignoff_reason: stage_disabled\nsignoff_reason_code: stage_disabled\nartifacts_written: false\npackage_bundle_enabled: false'
+  route_fee_signoff_exit_code=0
+  route_fee_signoff_verdict="SKIP"
+  route_fee_signoff_reason="route/fee signoff stage disabled by ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF=false"
+  route_fee_signoff_reason_code="stage_disabled"
+  route_fee_signoff_windows_csv="$ROUTE_FEE_SIGNOFF_WINDOWS_CSV"
+  route_fee_signoff_artifacts_written="n/a"
+  route_fee_signoff_nested_package_bundle_enabled="n/a"
+elif ((${#input_errors[@]} > 0)); then
   route_fee_signoff_exit_code=3
   route_fee_signoff_verdict="UNKNOWN"
   route_fee_signoff_reason="skipped due input validation errors"
@@ -512,7 +586,9 @@ else
 fi
 
 if [[ -n "$route_fee_signoff_test_verdict_override_raw" ]]; then
-  if [[ "$route_fee_signoff_go_nogo_test_mode" == "true" ]]; then
+  if [[ "$adapter_rollout_run_route_fee_signoff_norm" != "true" ]]; then
+    input_errors+=("ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE requires ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF=true")
+  elif [[ "$route_fee_signoff_go_nogo_test_mode" == "true" ]]; then
     route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$route_fee_signoff_test_verdict_override_raw")"
     route_fee_signoff_reason="test override active (ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE=${route_fee_signoff_test_verdict_override_raw})"
     route_fee_signoff_reason_code="test_override"
@@ -528,19 +604,19 @@ if ((${#input_errors[@]} > 0)); then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="${input_errors[0]}"
   adapter_rollout_reason_code="input_error"
-elif [[ "$rotation_verdict" == "FAIL" ]]; then
+elif [[ "$adapter_rollout_run_rotation_norm" == "true" && "$rotation_verdict" == "FAIL" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="rotation readiness failed: ${rotation_reason:-n/a}"
   adapter_rollout_reason_code="rotation_fail"
-elif [[ "$rotation_verdict" == "UNKNOWN" ]]; then
+elif [[ "$adapter_rollout_run_rotation_norm" == "true" && "$rotation_verdict" == "UNKNOWN" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="rotation readiness verdict unknown; fail-closed"
   adapter_rollout_reason_code="rotation_unknown"
-elif [[ "$rehearsal_verdict" == "NO_GO" ]]; then
+elif [[ "$adapter_rollout_run_rehearsal_norm" == "true" && "$rehearsal_verdict" == "NO_GO" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="devnet rehearsal returned NO_GO: ${rehearsal_reason:-n/a}"
   adapter_rollout_reason_code="rehearsal_no_go"
-elif [[ "$rehearsal_verdict" == "UNKNOWN" ]]; then
+elif [[ "$adapter_rollout_run_rehearsal_norm" == "true" && "$rehearsal_verdict" == "UNKNOWN" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="devnet rehearsal verdict unknown; fail-closed"
   adapter_rollout_reason_code="rehearsal_unknown"
@@ -552,25 +628,25 @@ elif [[ "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" 
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="required route/fee signoff returned NO_GO: ${route_fee_signoff_reason:-n/a}"
   adapter_rollout_reason_code="route_fee_signoff_no_go"
-elif [[ "$rotation_verdict" == "WARN" || "$rehearsal_verdict" == "HOLD" || ( "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "HOLD" ) ]]; then
+elif [[ "$adapter_rollout_run_rotation_norm" == "true" && "$rotation_verdict" == "WARN" ]]; then
   adapter_rollout_verdict="HOLD"
-  if [[ "$rotation_verdict" == "WARN" ]]; then
-    adapter_rollout_reason="rotation readiness returned WARN: ${rotation_reason:-n/a}"
-    adapter_rollout_reason_code="rotation_warn"
-  elif [[ "$rehearsal_verdict" == "HOLD" ]]; then
-    adapter_rollout_reason="devnet rehearsal returned HOLD: ${rehearsal_reason:-n/a}"
-    adapter_rollout_reason_code="rehearsal_hold"
-  else
-    adapter_rollout_reason="required route/fee signoff returned HOLD: ${route_fee_signoff_reason:-n/a}"
-    adapter_rollout_reason_code="route_fee_signoff_hold"
-  fi
-elif [[ "$rotation_verdict" == "PASS" && "$rehearsal_verdict" == "GO" && ( "$route_fee_signoff_required" != "true" || "$route_fee_signoff_verdict" == "GO" ) ]]; then
+  adapter_rollout_reason="rotation readiness returned WARN: ${rotation_reason:-n/a}"
+  adapter_rollout_reason_code="rotation_warn"
+elif [[ "$adapter_rollout_run_rehearsal_norm" == "true" && "$rehearsal_verdict" == "HOLD" ]]; then
+  adapter_rollout_verdict="HOLD"
+  adapter_rollout_reason="devnet rehearsal returned HOLD: ${rehearsal_reason:-n/a}"
+  adapter_rollout_reason_code="rehearsal_hold"
+elif [[ "$route_fee_signoff_required" == "true" && "$route_fee_signoff_verdict" == "HOLD" ]]; then
+  adapter_rollout_verdict="HOLD"
+  adapter_rollout_reason="required route/fee signoff returned HOLD: ${route_fee_signoff_reason:-n/a}"
+  adapter_rollout_reason_code="route_fee_signoff_hold"
+elif [[ ( "$adapter_rollout_run_rotation_norm" != "true" || "$rotation_verdict" == "PASS" ) && ( "$adapter_rollout_run_rehearsal_norm" != "true" || "$rehearsal_verdict" == "GO" ) && ( "$route_fee_signoff_required" != "true" || "$route_fee_signoff_verdict" == "GO" ) ]]; then
   adapter_rollout_verdict="GO"
   if [[ "$route_fee_signoff_required" == "true" ]]; then
-    adapter_rollout_reason="rotation readiness, devnet rehearsal, and required route/fee signoff gates passed"
+    adapter_rollout_reason="enabled stages and required route/fee signoff gates passed"
     adapter_rollout_reason_code="gates_pass_with_route_fee"
   else
-    adapter_rollout_reason="rotation readiness and devnet rehearsal gates passed"
+    adapter_rollout_reason="enabled stages passed"
     adapter_rollout_reason_code="gates_pass"
   fi
 fi
@@ -596,6 +672,10 @@ config: $CONFIG_PATH
 service: $SERVICE
 window_hours: $WINDOW_HOURS
 risk_events_minutes: $RISK_EVENTS_MINUTES
+adapter_rollout_profile: $ADAPTER_ROLLOUT_PROFILE
+adapter_rollout_run_rotation: $adapter_rollout_run_rotation_norm
+adapter_rollout_run_rehearsal: $adapter_rollout_run_rehearsal_norm
+adapter_rollout_run_route_fee_signoff: $adapter_rollout_run_route_fee_signoff_norm
 
 rotation_readiness_verdict: $rotation_verdict
 rotation_readiness_reason: ${rotation_reason:-n/a}

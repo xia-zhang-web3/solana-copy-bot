@@ -3520,6 +3520,10 @@ run_executor_rollout_evidence_case() {
       bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60
   )"
   assert_contains "$pass_output" "=== Executor Rollout Evidence Summary ==="
+  assert_field_equals "$pass_output" "executor_rollout_profile" "full"
+  assert_field_equals "$pass_output" "executor_rollout_run_rotation" "true"
+  assert_field_equals "$pass_output" "executor_rollout_run_preflight" "true"
+  assert_field_equals "$pass_output" "executor_rollout_run_rehearsal" "true"
   assert_field_equals "$pass_output" "rotation_readiness_verdict" "PASS"
   assert_field_equals "$pass_output" "preflight_verdict" "PASS"
   assert_field_equals "$pass_output" "devnet_rehearsal_verdict" "GO"
@@ -3708,6 +3712,115 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$hold_output" "devnet_rehearsal_verdict" "HOLD"
   assert_field_equals "$hold_output" "executor_rollout_verdict" "HOLD"
   assert_field_equals "$hold_output" "executor_rollout_reason_code" "rehearsal_hold"
+
+  local precheck_profile_output
+  precheck_profile_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      EXECUTOR_ROLLOUT_PROFILE="precheck_only" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60
+  )"
+  assert_field_equals "$precheck_profile_output" "executor_rollout_profile" "precheck_only"
+  assert_field_equals "$precheck_profile_output" "executor_rollout_run_rotation" "true"
+  assert_field_equals "$precheck_profile_output" "executor_rollout_run_preflight" "true"
+  assert_field_equals "$precheck_profile_output" "executor_rollout_run_rehearsal" "false"
+  assert_field_equals "$precheck_profile_output" "rotation_readiness_verdict" "PASS"
+  assert_field_equals "$precheck_profile_output" "preflight_verdict" "PASS"
+  assert_field_equals "$precheck_profile_output" "devnet_rehearsal_verdict" "SKIP"
+  assert_field_equals "$precheck_profile_output" "devnet_rehearsal_reason_code" "stage_disabled"
+  assert_field_equals "$precheck_profile_output" "executor_rollout_verdict" "GO"
+  assert_field_equals "$precheck_profile_output" "executor_rollout_reason_code" "gates_pass"
+
+  local rehearsal_only_profile_output
+  rehearsal_only_profile_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      EXECUTOR_ROLLOUT_PROFILE="rehearsal_only" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60
+  )"
+  assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_profile" "rehearsal_only"
+  assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_run_rotation" "false"
+  assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_run_preflight" "false"
+  assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_run_rehearsal" "true"
+  assert_field_equals "$rehearsal_only_profile_output" "rotation_readiness_verdict" "SKIP"
+  assert_field_equals "$rehearsal_only_profile_output" "preflight_verdict" "SKIP"
+  assert_field_equals "$rehearsal_only_profile_output" "devnet_rehearsal_verdict" "GO"
+  assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_verdict" "GO"
+  assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_reason_code" "gates_pass"
+
+  local invalid_profile_output=""
+  if invalid_profile_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ROLLOUT_PROFILE="bogus_profile" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor rollout helper when EXECUTOR_ROLLOUT_PROFILE is invalid" >&2
+    exit 1
+  else
+    local invalid_profile_exit_code=$?
+    if [[ "$invalid_profile_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for invalid executor rollout profile, got $invalid_profile_exit_code" >&2
+      echo "$invalid_profile_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_profile_output" "EXECUTOR_ROLLOUT_PROFILE must be one of: full,precheck_only,rehearsal_only"
+  assert_field_equals "$invalid_profile_output" "executor_rollout_reason_code" "input_error"
+
+  local all_disabled_output=""
+  if all_disabled_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ROLLOUT_RUN_ROTATION="false" \
+      EXECUTOR_ROLLOUT_RUN_PREFLIGHT="false" \
+      EXECUTOR_ROLLOUT_RUN_REHEARSAL="false" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor rollout helper when all stages are disabled" >&2
+    exit 1
+  else
+    local all_disabled_exit_code=$?
+    if [[ "$all_disabled_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for executor rollout all-stages-disabled case, got $all_disabled_exit_code" >&2
+      echo "$all_disabled_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$all_disabled_output" "at least one stage must be enabled"
+  assert_field_equals "$all_disabled_output" "executor_rollout_reason_code" "input_error"
 
   local final_output
   final_output="$(
@@ -4230,6 +4343,10 @@ run_adapter_rollout_evidence_case() {
       bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60
   )"
   assert_contains "$pass_output" "=== Adapter Rollout Evidence Summary ==="
+  assert_field_equals "$pass_output" "adapter_rollout_profile" "full"
+  assert_field_equals "$pass_output" "adapter_rollout_run_rotation" "true"
+  assert_field_equals "$pass_output" "adapter_rollout_run_rehearsal" "true"
+  assert_field_equals "$pass_output" "adapter_rollout_run_route_fee_signoff" "true"
   assert_contains "$pass_output" "rotation_readiness_verdict: PASS"
   assert_contains "$pass_output" "rotation_artifact_manifest:"
   assert_contains "$pass_output" "rotation_report_sha256:"
@@ -4413,6 +4530,108 @@ run_adapter_rollout_evidence_case() {
   assert_field_equals "$invalid_bool_output" "rotation_readiness_verdict" "UNKNOWN"
   assert_field_equals "$invalid_bool_output" "route_fee_signoff_verdict" "UNKNOWN"
   assert_field_equals "$invalid_bool_output" "devnet_rehearsal_reason_code" "input_error"
+
+  local rehearsal_only_profile_output
+  rehearsal_only_profile_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ADAPTER_ROLLOUT_PROFILE="rehearsal_only" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60
+  )"
+  assert_field_equals "$rehearsal_only_profile_output" "adapter_rollout_profile" "rehearsal_only"
+  assert_field_equals "$rehearsal_only_profile_output" "adapter_rollout_run_rotation" "false"
+  assert_field_equals "$rehearsal_only_profile_output" "adapter_rollout_run_rehearsal" "true"
+  assert_field_equals "$rehearsal_only_profile_output" "adapter_rollout_run_route_fee_signoff" "false"
+  assert_field_equals "$rehearsal_only_profile_output" "rotation_readiness_verdict" "SKIP"
+  assert_field_equals "$rehearsal_only_profile_output" "devnet_rehearsal_verdict" "GO"
+  assert_field_equals "$rehearsal_only_profile_output" "route_fee_signoff_verdict" "SKIP"
+  assert_field_equals "$rehearsal_only_profile_output" "route_fee_signoff_reason_code" "stage_disabled"
+  assert_field_equals "$rehearsal_only_profile_output" "adapter_rollout_verdict" "GO"
+  assert_field_equals "$rehearsal_only_profile_output" "adapter_rollout_reason_code" "gates_pass"
+
+  local route_fee_only_profile_output
+  route_fee_only_profile_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ADAPTER_ROLLOUT_PROFILE="route_fee_only" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="24" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60
+  )"
+  assert_field_equals "$route_fee_only_profile_output" "adapter_rollout_profile" "route_fee_only"
+  assert_field_equals "$route_fee_only_profile_output" "adapter_rollout_run_rotation" "false"
+  assert_field_equals "$route_fee_only_profile_output" "adapter_rollout_run_rehearsal" "false"
+  assert_field_equals "$route_fee_only_profile_output" "adapter_rollout_run_route_fee_signoff" "true"
+  assert_field_equals "$route_fee_only_profile_output" "rotation_readiness_verdict" "SKIP"
+  assert_field_equals "$route_fee_only_profile_output" "devnet_rehearsal_verdict" "SKIP"
+  assert_field_equals "$route_fee_only_profile_output" "route_fee_signoff_verdict" "GO"
+  assert_field_equals "$route_fee_only_profile_output" "route_fee_signoff_reason_code" "test_override"
+  assert_field_equals "$route_fee_only_profile_output" "adapter_rollout_verdict" "GO"
+  assert_field_equals "$route_fee_only_profile_output" "adapter_rollout_reason_code" "gates_pass_with_route_fee"
+
+  local invalid_profile_output=""
+  if invalid_profile_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      ADAPTER_ROLLOUT_PROFILE="bogus_profile" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for adapter rollout helper when ADAPTER_ROLLOUT_PROFILE is invalid" >&2
+    exit 1
+  else
+    local invalid_profile_exit_code=$?
+    if [[ "$invalid_profile_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for invalid adapter rollout profile, got $invalid_profile_exit_code" >&2
+      echo "$invalid_profile_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_profile_output" "ADAPTER_ROLLOUT_PROFILE must be one of: full,rehearsal_only,route_fee_only"
+  assert_field_equals "$invalid_profile_output" "adapter_rollout_reason_code" "input_error"
+
+  local all_disabled_output=""
+  if all_disabled_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      ADAPTER_ROLLOUT_RUN_ROTATION="false" \
+      ADAPTER_ROLLOUT_RUN_REHEARSAL="false" \
+      ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for adapter rollout helper when all stages are disabled" >&2
+    exit 1
+  else
+    local all_disabled_exit_code=$?
+    if [[ "$all_disabled_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for adapter rollout all-stages-disabled case, got $all_disabled_exit_code" >&2
+      echo "$all_disabled_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$all_disabled_output" "at least one stage must be enabled"
+  assert_field_equals "$all_disabled_output" "adapter_rollout_reason_code" "input_error"
 
   local final_artifacts_dir="$TMP_DIR/adapter-rollout-final-package"
   local final_output
