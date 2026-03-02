@@ -19,6 +19,21 @@ if ! skip_executor_tests="$(parse_bool_token_strict "$SKIP_EXECUTOR_TESTS_RAW")"
   echo "AUDIT_SKIP_EXECUTOR_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_EXECUTOR_TESTS_RAW" >&2
   exit 1
 fi
+EXECUTOR_TEST_MODE_RAW="${AUDIT_EXECUTOR_TEST_MODE:-full}"
+case "$EXECUTOR_TEST_MODE_RAW" in
+full | targeted)
+  executor_test_mode="$EXECUTOR_TEST_MODE_RAW"
+  ;;
+*)
+  echo "AUDIT_EXECUTOR_TEST_MODE must be one of: full,targeted (got: $EXECUTOR_TEST_MODE_RAW)" >&2
+  exit 1
+  ;;
+esac
+executor_test_targets="$(trim_string "${AUDIT_EXECUTOR_TEST_TARGETS:-}")"
+if [[ "$executor_test_mode" == "targeted" && -z "$executor_test_targets" ]]; then
+  echo "AUDIT_EXECUTOR_TEST_TARGETS must be non-empty when AUDIT_EXECUTOR_TEST_MODE=targeted" >&2
+  exit 1
+fi
 CONTRACT_SMOKE_MODE_RAW="${AUDIT_CONTRACT_SMOKE_MODE:-full}"
 case "$CONTRACT_SMOKE_MODE_RAW" in
 full | targeted)
@@ -53,12 +68,33 @@ run_contract_smoke() {
 }
 
 run_executor_tests() {
+  if [[ "$executor_test_mode" == "targeted" ]]; then
+    local -a target_entries=()
+    IFS=',' read -r -a target_entries <<<"$executor_test_targets"
+    local target_raw=""
+    local target_name=""
+    local executed_targets=0
+    for target_raw in "${target_entries[@]-}"; do
+      target_name="$(trim_string "$target_raw")"
+      if [[ -z "$target_name" ]]; then
+        continue
+      fi
+      run_with_timeout_if_available "$executor_test_timeout_sec" \
+        cargo test -p copybot-executor -q "$target_name"
+      executed_targets=$((executed_targets + 1))
+    done
+    if ((executed_targets == 0)); then
+      echo "AUDIT_EXECUTOR_TEST_TARGETS must contain at least one non-empty target when AUDIT_EXECUTOR_TEST_MODE=targeted" >&2
+      exit 1
+    fi
+    return
+  fi
   run_with_timeout_if_available "$executor_test_timeout_sec" \
     cargo test -p copybot-executor -q
 }
 
 if [[ "$skip_executor_tests" == "false" ]]; then
-  echo "[audit:quick] cargo test -p copybot-executor -q (timeout=${executor_test_timeout_sec}s)"
+  echo "[audit:quick] cargo test -p copybot-executor -q (mode=${executor_test_mode}, timeout=${executor_test_timeout_sec}s)"
   run_executor_tests
 else
   echo "[audit:quick] AUDIT_SKIP_EXECUTOR_TESTS=true -> skipped cargo test -p copybot-executor -q"

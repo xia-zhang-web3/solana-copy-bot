@@ -25,6 +25,21 @@ if ! skip_executor_tests="$(parse_bool_token_strict "$SKIP_EXECUTOR_TESTS_RAW")"
   echo "AUDIT_SKIP_EXECUTOR_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_EXECUTOR_TESTS_RAW" >&2
   exit 1
 fi
+EXECUTOR_TEST_MODE_RAW="${AUDIT_EXECUTOR_TEST_MODE:-full}"
+case "$EXECUTOR_TEST_MODE_RAW" in
+full | targeted)
+  executor_test_mode="$EXECUTOR_TEST_MODE_RAW"
+  ;;
+*)
+  echo "AUDIT_EXECUTOR_TEST_MODE must be one of: full,targeted (got: $EXECUTOR_TEST_MODE_RAW)" >&2
+  exit 1
+  ;;
+esac
+executor_test_targets="$(trim_string "${AUDIT_EXECUTOR_TEST_TARGETS:-}")"
+if [[ "$executor_test_mode" == "targeted" && -z "$executor_test_targets" ]]; then
+  echo "AUDIT_EXECUTOR_TEST_TARGETS must be non-empty when AUDIT_EXECUTOR_TEST_MODE=targeted" >&2
+  exit 1
+fi
 SKIP_WORKSPACE_TESTS_RAW="${AUDIT_SKIP_WORKSPACE_TESTS:-false}"
 if ! skip_workspace_tests="$(parse_bool_token_strict "$SKIP_WORKSPACE_TESTS_RAW")"; then
   echo "AUDIT_SKIP_WORKSPACE_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_WORKSPACE_TESTS_RAW" >&2
@@ -102,6 +117,8 @@ AUDIT_SKIP_CONTRACT_SMOKE="$skip_contract_smoke" \
 AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC="$contract_smoke_timeout_sec" \
 AUDIT_SKIP_EXECUTOR_TESTS="$skip_executor_tests" \
 AUDIT_EXECUTOR_TEST_TIMEOUT_SEC="$executor_test_timeout_sec" \
+AUDIT_EXECUTOR_TEST_MODE="$executor_test_mode" \
+AUDIT_EXECUTOR_TEST_TARGETS="$executor_test_targets" \
 AUDIT_CONTRACT_SMOKE_MODE="$contract_smoke_mode" \
 AUDIT_CONTRACT_SMOKE_TARGET_TESTS="$contract_smoke_target_tests" \
   bash tools/audit_quick.sh
