@@ -6,6 +6,8 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 source "$ROOT_DIR/tools/lib/common.sh"
 
+OPS_SMOKE_TARGET_CASES="${OPS_SMOKE_TARGET_CASES:-}"
+
 require_bin() {
   local bin="$1"
   if ! command -v "$bin" >/dev/null 2>&1; then
@@ -5767,7 +5769,140 @@ EOF_POISON_INDEX
   echo "[ok] evidence bundle pack"
 }
 
+run_targeted_smoke_cases() {
+  local target_cases_raw="$1"
+  local -a target_cases=()
+  IFS=',' read -r -a target_cases <<<"$target_cases_raw"
+  if ((${#target_cases[@]} == 0)); then
+    echo "OPS_SMOKE_TARGET_CASES must contain at least one case name" >&2
+    exit 1
+  fi
+
+  write_fake_journalctl
+
+  local legacy_db="$TMP_DIR/targeted-legacy.db"
+  local legacy_cfg="$TMP_DIR/targeted-legacy.toml"
+  local devnet_rehearsal_cfg="$TMP_DIR/targeted-devnet-rehearsal.toml"
+  local fixtures_ready="false"
+  local executed_cases=0
+
+  local target_case_raw=""
+  local target_case=""
+  for target_case_raw in "${target_cases[@]-}"; do
+    target_case="$(trim_string "$target_case_raw")"
+    if [[ -z "$target_case" ]]; then
+      continue
+    fi
+    case "$target_case" in
+    common_strict_bool_parser | run_common_strict_bool_parser_case)
+      run_common_strict_bool_parser_case
+      executed_cases=$((executed_cases + 1))
+      ;;
+    common_bool_compat_wrapper | run_common_bool_compat_wrapper_case)
+      run_common_bool_compat_wrapper_case
+      executed_cases=$((executed_cases + 1))
+      ;;
+    common_timeout_parser | run_common_timeout_parser_case)
+      run_common_timeout_parser_case
+      executed_cases=$((executed_cases + 1))
+      ;;
+    audit_quick_bool_guard | run_audit_quick_strict_bool_guard_case)
+      run_audit_quick_strict_bool_guard_case
+      executed_cases=$((executed_cases + 1))
+      ;;
+    audit_standard_bool_guard | run_audit_standard_strict_bool_guard_case)
+      run_audit_standard_strict_bool_guard_case
+      executed_cases=$((executed_cases + 1))
+      ;;
+    evidence_bundle_pack | run_evidence_bundle_pack_case)
+      run_evidence_bundle_pack_case
+      executed_cases=$((executed_cases + 1))
+      ;;
+    windowed_signoff | run_windowed_signoff_report_case | route_fee_signoff | run_execution_route_fee_signoff_case | devnet_rehearsal | run_devnet_rehearsal_case | executor_rollout_evidence | run_executor_rollout_evidence_case | adapter_rollout_evidence | run_adapter_rollout_evidence_case | execution_server_rollout | run_execution_server_rollout_report_case | execution_runtime_readiness | run_execution_runtime_readiness_report_case)
+      if [[ "$fixtures_ready" != "true" ]]; then
+        create_legacy_db "$legacy_db"
+        write_config "$legacy_cfg" "$legacy_db"
+        write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
+        fixtures_ready="true"
+      fi
+      case "$target_case" in
+      windowed_signoff | run_windowed_signoff_report_case)
+        run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      route_fee_signoff | run_execution_route_fee_signoff_case)
+        run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      devnet_rehearsal | run_devnet_rehearsal_case)
+        run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      executor_rollout_evidence | run_executor_rollout_evidence_case)
+        run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      adapter_rollout_evidence | run_adapter_rollout_evidence_case)
+        run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      execution_server_rollout | run_execution_server_rollout_report_case)
+        run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      execution_runtime_readiness | run_execution_runtime_readiness_report_case)
+        run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      esac
+      ;;
+    *)
+      echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
+      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, evidence_bundle_pack, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness" >&2
+      exit 1
+      ;;
+    esac
+  done
+
+  if ((executed_cases == 0)); then
+    echo "OPS_SMOKE_TARGET_CASES must contain at least one non-empty case name" >&2
+    exit 1
+  fi
+
+  echo "ops scripts smoke targeted: PASS (cases=$target_cases_raw)"
+}
+
+run_ops_smoke_targeted_dispatch_case() {
+  local targeted_output=""
+  targeted_output="$(
+    OPS_SMOKE_TARGET_CASES="common_strict_bool_parser,common_timeout_parser" \
+      bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
+  )"
+  assert_contains "$targeted_output" "[ok] common strict bool parser"
+  assert_contains "$targeted_output" "[ok] common timeout parser"
+  assert_contains "$targeted_output" "ops scripts smoke targeted: PASS"
+  if grep -Fq "[ok] execution runtime readiness report" <<<"$targeted_output"; then
+    echo "targeted smoke dispatcher must not execute unrelated heavy cases" >&2
+    exit 1
+  fi
+
+  local invalid_output_path="$TMP_DIR/ops-smoke-target-invalid.out"
+  if OPS_SMOKE_TARGET_CASES="unknown_case" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_output_path" 2>&1; then
+    echo "expected targeted smoke mode to fail on unknown case entry" >&2
+    exit 1
+  fi
+  local invalid_output=""
+  invalid_output="$(cat "$invalid_output_path")"
+  assert_contains "$invalid_output" "unknown OPS_SMOKE_TARGET_CASES entry: unknown_case"
+  echo "[ok] ops smoke targeted dispatcher"
+}
+
 main() {
+  if [[ -n "$OPS_SMOKE_TARGET_CASES" ]]; then
+    run_targeted_smoke_cases "$OPS_SMOKE_TARGET_CASES"
+    return 0
+  fi
+
   write_fake_journalctl
   run_common_strict_bool_parser_case
   run_common_bool_compat_wrapper_case
@@ -5788,6 +5923,7 @@ main() {
   run_audit_full_strict_bool_guard_case
   run_audit_full_contract_smoke_strict_bool_guard_case
   run_evidence_bundle_pack_case
+  run_ops_smoke_targeted_dispatch_case
 
   local legacy_db="$TMP_DIR/legacy.db"
   local legacy_cfg="$TMP_DIR/legacy.toml"
