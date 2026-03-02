@@ -687,6 +687,7 @@ health_contract_version="n/a"
 health_routes_csv="n/a"
 health_send_rpc_enabled_routes_csv="n/a"
 health_send_rpc_fallback_routes_csv="n/a"
+health_send_rpc_alias_routes_csv="n/a"
 idempotency_store_status="n/a"
 auth_probe_without_auth_code="n/a"
 auth_probe_with_auth_code="n/a"
@@ -704,9 +705,10 @@ if command -v curl >/dev/null 2>&1; then
       if [[ -z "$health_routes_csv" ]]; then
         health_routes_csv="$(json_routes_csv_field "$health_body" "routes")"
       fi
+      health_send_rpc_alias_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_routes")"
       health_send_rpc_enabled_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_enabled_routes")"
       if [[ -z "$health_send_rpc_enabled_routes_csv" ]]; then
-        health_send_rpc_enabled_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_routes")"
+        health_send_rpc_enabled_routes_csv="$health_send_rpc_alias_routes_csv"
       fi
       health_send_rpc_fallback_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_fallback_routes")"
       if [[ "$health_http_status" != "200" ]]; then
@@ -745,6 +747,20 @@ if command -v curl >/dev/null 2>&1; then
           errors+=("health send-rpc fallback routes missing executor route=$route")
         fi
       done < <(normalized_routes_lines "$expected_send_rpc_fallback_routes_csv")
+      if [[ -n "$health_send_rpc_alias_routes_csv" && -n "$health_send_rpc_enabled_routes_csv" ]]; then
+        while IFS= read -r route; do
+          [[ -z "$route" ]] && continue
+          if ! csv_contains_route "$health_send_rpc_enabled_routes_csv" "$route"; then
+            errors+=("health send-rpc alias routes include unexpected route=$route")
+          fi
+        done < <(normalized_routes_lines "$health_send_rpc_alias_routes_csv")
+        while IFS= read -r route; do
+          [[ -z "$route" ]] && continue
+          if ! csv_contains_route "$health_send_rpc_alias_routes_csv" "$route"; then
+            errors+=("health send-rpc alias routes missing enabled route=$route")
+          fi
+        done < <(normalized_routes_lines "$health_send_rpc_enabled_routes_csv")
+      fi
       while IFS= read -r route; do
         [[ -z "$route" ]] && continue
         if ! csv_contains_route "$expected_send_rpc_fallback_routes_csv" "$route"; then
@@ -844,6 +860,7 @@ summary="$({
   echo "health_routes_csv: $health_routes_csv"
   echo "health_send_rpc_enabled_routes_csv: $health_send_rpc_enabled_routes_csv"
   echo "health_send_rpc_fallback_routes_csv: $health_send_rpc_fallback_routes_csv"
+  echo "health_send_rpc_alias_routes_csv: $health_send_rpc_alias_routes_csv"
   echo "idempotency_store_status: $idempotency_store_status"
   echo "auth_probe_without_auth_code: $auth_probe_without_auth_code"
   echo "auth_probe_with_auth_http_status: $auth_probe_with_auth_http_status"
