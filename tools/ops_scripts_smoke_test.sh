@@ -6379,6 +6379,47 @@ run_audit_executor_test_mode_guard_case() {
   fi
   assert_contains "$unknown_target_output" "unknown executor test target in AUDIT_EXECUTOR_TEST_TARGETS: definitely_nonexistent_test_name_12345"
 
+  local ambiguous_target_output=""
+  if ambiguous_target_output="$(
+    AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="false" \
+      AUDIT_EXECUTOR_TEST_MODE="targeted" \
+      AUDIT_EXECUTOR_TEST_TARGETS="route" \
+      bash "$ROOT_DIR/tools/audit_quick.sh" 2>&1
+  )"; then
+    echo "expected audit_quick.sh to fail for ambiguous AUDIT_EXECUTOR_TEST_TARGETS entry in targeted mode" >&2
+    exit 1
+  else
+    local ambiguous_target_exit_code=$?
+    if [[ "$ambiguous_target_exit_code" -ne 1 ]]; then
+      echo "expected audit_quick.sh ambiguous AUDIT_EXECUTOR_TEST_TARGETS exit code 1, got $ambiguous_target_exit_code" >&2
+      echo "$ambiguous_target_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$ambiguous_target_output" "ambiguous executor test target in AUDIT_EXECUTOR_TEST_TARGETS: route"
+  assert_contains "$ambiguous_target_output" "matched tests:"
+
+  local duplicate_target_output=""
+  if duplicate_target_output="$(
+    AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="false" \
+      AUDIT_EXECUTOR_TEST_MODE="targeted" \
+      AUDIT_EXECUTOR_TEST_TARGETS="constant_time_eq_checks_content,constant_time_eq_checks_content" \
+      bash "$ROOT_DIR/tools/audit_quick.sh" 2>&1
+  )"; then
+    echo "expected audit_quick.sh to fail for duplicate AUDIT_EXECUTOR_TEST_TARGETS entry in targeted mode" >&2
+    exit 1
+  else
+    local duplicate_target_exit_code=$?
+    if [[ "$duplicate_target_exit_code" -ne 1 ]]; then
+      echo "expected audit_quick.sh duplicate AUDIT_EXECUTOR_TEST_TARGETS exit code 1, got $duplicate_target_exit_code" >&2
+      echo "$duplicate_target_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$duplicate_target_output" "duplicate executor test target in AUDIT_EXECUTOR_TEST_TARGETS after resolution"
+
   local standard_unknown_target_output=""
   if standard_unknown_target_output="$(
     AUDIT_SKIP_OPS_SMOKE="true" \

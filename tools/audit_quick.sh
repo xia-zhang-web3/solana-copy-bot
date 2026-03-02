@@ -71,9 +71,11 @@ run_executor_tests() {
   if [[ "$executor_test_mode" == "targeted" ]]; then
     local -a target_entries=()
     local -a normalized_targets=()
+    local -a resolved_targets=()
     IFS=',' read -r -a target_entries <<<"$executor_test_targets"
     local target_raw=""
     local target_name=""
+    local resolved_target=""
     for target_raw in "${target_entries[@]-}"; do
       target_name="$(trim_string "$target_raw")"
       if [[ -z "$target_name" ]]; then
@@ -96,7 +98,7 @@ run_executor_tests() {
     fi
 
     local listed_tests=""
-    listed_tests="$(awk '/: test$/ { print }' "$tests_list_path")"
+    listed_tests="$(awk -F': test$' '/: test$/ { print $1 }' "$tests_list_path")"
     rm -f "$tests_list_path"
     if [[ -z "$listed_tests" ]]; then
       echo "failed to enumerate executor tests for AUDIT_EXECUTOR_TEST_MODE=targeted" >&2
@@ -104,13 +106,37 @@ run_executor_tests() {
     fi
 
     for target_name in "${normalized_targets[@]-}"; do
-      if ! grep -Fq -- "$target_name" <<<"$listed_tests"; then
-        echo "unknown executor test target in AUDIT_EXECUTOR_TEST_TARGETS: $target_name" >&2
+      resolved_target=""
+      if grep -Fxq -- "$target_name" <<<"$listed_tests"; then
+        resolved_target="$target_name"
+      else
+        local matches=""
+        matches="$(awk -v needle="$target_name" 'index($0, needle) > 0 { print }' <<<"$listed_tests")"
+        local match_count=0
+        if [[ -n "$matches" ]]; then
+          match_count="$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')"
+        fi
+        if [[ "$match_count" == "0" ]]; then
+          echo "unknown executor test target in AUDIT_EXECUTOR_TEST_TARGETS: $target_name" >&2
+          exit 1
+        fi
+        if [[ "$match_count" != "1" ]]; then
+          echo "ambiguous executor test target in AUDIT_EXECUTOR_TEST_TARGETS: $target_name" >&2
+          echo "matched tests:" >&2
+          printf '%s\n' "$matches" >&2
+          exit 1
+        fi
+        resolved_target="$(printf '%s\n' "$matches" | head -n 1)"
+      fi
+
+      if grep -Fxq -- "$resolved_target" <<<"$(printf '%s\n' "${resolved_targets[@]-}")"; then
+        echo "duplicate executor test target in AUDIT_EXECUTOR_TEST_TARGETS after resolution: $target_name -> $resolved_target" >&2
         exit 1
       fi
+      resolved_targets+=("$resolved_target")
     done
 
-    for target_name in "${normalized_targets[@]-}"; do
+    for target_name in "${resolved_targets[@]-}"; do
       run_with_timeout_if_available "$executor_test_timeout_sec" \
         cargo test -p copybot-executor -q "$target_name"
     done
