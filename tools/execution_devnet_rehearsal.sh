@@ -350,12 +350,24 @@ dynamic_cu_hint_api_configured="$(trim_string "$(extract_field "dynamic_cu_hint_
 dynamic_cu_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$go_nogo_output")")"
 dynamic_cu_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$go_nogo_output")")"
 dynamic_cu_hint_source_reason_code="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason_code" "$go_nogo_output")")"
-go_nogo_require_jito_rpc_policy="$(normalize_bool_token "$(extract_field "go_nogo_require_jito_rpc_policy" "$go_nogo_output")")"
+go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "go_nogo_require_jito_rpc_policy" "$go_nogo_output")")"
+if ! go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "go_nogo_require_jito_rpc_policy" "$go_nogo_output")"; then
+  config_errors+=("nested go/no-go go_nogo_require_jito_rpc_policy must be boolean token, got: ${go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+  go_nogo_require_jito_rpc_policy="unknown"
+fi
 jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$go_nogo_output")")"
 jito_rpc_policy_reason="$(trim_string "$(extract_field "jito_rpc_policy_reason" "$go_nogo_output")")"
 jito_rpc_policy_reason_code="$(trim_string "$(extract_field "jito_rpc_policy_reason_code" "$go_nogo_output")")"
-go_nogo_require_fastlane_disabled="$(normalize_bool_token "$(extract_field "go_nogo_require_fastlane_disabled" "$go_nogo_output")")"
-submit_fastlane_enabled="$(normalize_bool_token "$(extract_field "submit_fastlane_enabled" "$go_nogo_output")")"
+go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "go_nogo_require_fastlane_disabled" "$go_nogo_output")")"
+if ! go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "go_nogo_require_fastlane_disabled" "$go_nogo_output")"; then
+  config_errors+=("nested go/no-go go_nogo_require_fastlane_disabled must be boolean token, got: ${go_nogo_require_fastlane_disabled_raw:-<empty>}")
+  go_nogo_require_fastlane_disabled="unknown"
+fi
+submit_fastlane_enabled_raw="$(trim_string "$(extract_field "submit_fastlane_enabled" "$go_nogo_output")")"
+if ! submit_fastlane_enabled="$(extract_bool_field_strict "submit_fastlane_enabled" "$go_nogo_output")"; then
+  config_errors+=("nested go/no-go submit_fastlane_enabled must be boolean token, got: ${submit_fastlane_enabled_raw:-<empty>}")
+  submit_fastlane_enabled="unknown"
+fi
 fastlane_feature_flag_verdict="$(normalize_gate_verdict "$(extract_field "fastlane_feature_flag_verdict" "$go_nogo_output")")"
 fastlane_feature_flag_reason="$(trim_string "$(extract_field "fastlane_feature_flag_reason" "$go_nogo_output")")"
 fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$go_nogo_output")")"
@@ -384,8 +396,16 @@ if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" 
 fi
 windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$windowed_signoff_output")")"
 windowed_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$windowed_signoff_output")")"
-windowed_signoff_require_dynamic_hint_source_pass="$(normalize_bool_token "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")")"
-windowed_signoff_require_dynamic_tip_policy_pass="$(normalize_bool_token "$(extract_field "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")")"
+windowed_signoff_require_dynamic_hint_source_pass_raw="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")")"
+if ! windowed_signoff_require_dynamic_hint_source_pass="$(extract_bool_field_strict "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")"; then
+  config_errors+=("nested windowed signoff windowed_signoff_require_dynamic_hint_source_pass must be boolean token, got: ${windowed_signoff_require_dynamic_hint_source_pass_raw:-<empty>}")
+  windowed_signoff_require_dynamic_hint_source_pass="unknown"
+fi
+windowed_signoff_require_dynamic_tip_policy_pass_raw="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")")"
+if ! windowed_signoff_require_dynamic_tip_policy_pass="$(extract_bool_field_strict "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")"; then
+  config_errors+=("nested windowed signoff windowed_signoff_require_dynamic_tip_policy_pass must be boolean token, got: ${windowed_signoff_require_dynamic_tip_policy_pass_raw:-<empty>}")
+  windowed_signoff_require_dynamic_tip_policy_pass="unknown"
+fi
 windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$windowed_signoff_output")")"
 windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$windowed_signoff_output")")"
 windowed_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$windowed_signoff_output")")"
@@ -404,9 +424,17 @@ if ! route_fee_signoff_artifacts_written="$(extract_bool_field_strict "artifacts
   config_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${route_fee_signoff_artifacts_written_raw:-<empty>}")
   route_fee_signoff_artifacts_written="unknown"
 fi
-route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
+route_fee_primary_route_stable_raw="$(trim_string "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
+if ! route_fee_primary_route_stable="$(extract_bool_field_strict "primary_route_stable" "$route_fee_signoff_output")"; then
+  config_errors+=("nested route/fee signoff primary_route_stable must be boolean token, got: ${route_fee_primary_route_stable_raw:-<empty>}")
+  route_fee_primary_route_stable="unknown"
+fi
 route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_signoff_output")")"
-route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"
+route_fee_fallback_route_stable_raw="$(trim_string "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"
+if ! route_fee_fallback_route_stable="$(extract_bool_field_strict "fallback_route_stable" "$route_fee_signoff_output")"; then
+  config_errors+=("nested route/fee signoff fallback_route_stable must be boolean token, got: ${route_fee_fallback_route_stable_raw:-<empty>}")
+  route_fee_fallback_route_stable="unknown"
+fi
 route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_signoff_output")")"
 route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_profile_pass_count" "$route_fee_signoff_output")")"
 route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "fee_decomposition_pass_count" "$route_fee_signoff_output")")"
@@ -699,12 +727,23 @@ if [[ -n "$OUTPUT_DIR" ]]; then
     )"; then
       package_bundle_exit_code=0
       package_bundle_error="n/a"
-      package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
-      package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
-      package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
-      package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
-      package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
-      package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+      package_bundle_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$package_bundle_output")")"
+      if ! package_bundle_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$package_bundle_output")"; then
+        package_bundle_exit_code=1
+        package_bundle_artifacts_written="false"
+        package_bundle_error="bundle helper returned invalid artifacts_written token: ${package_bundle_artifacts_written_raw:-<empty>}"
+        package_bundle_path="n/a"
+        package_bundle_sha256="n/a"
+        package_bundle_sha256_path="n/a"
+        package_bundle_contents_manifest="n/a"
+        package_bundle_file_count="n/a"
+      else
+        package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+        package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+        package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+        package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+        package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+      fi
     else
       package_bundle_exit_code=$?
       package_bundle_artifacts_written="false"

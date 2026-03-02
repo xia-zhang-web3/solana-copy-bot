@@ -613,12 +613,23 @@ if [[ -n "$OUTPUT_DIR" ]]; then
     )"; then
       package_bundle_exit_code=0
       package_bundle_error="n/a"
-      package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
-      package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
-      package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
-      package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
-      package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
-      package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+      package_bundle_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$package_bundle_output")")"
+      if ! package_bundle_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$package_bundle_output")"; then
+        package_bundle_exit_code=1
+        package_bundle_artifacts_written="false"
+        package_bundle_error="bundle helper returned invalid artifacts_written token: ${package_bundle_artifacts_written_raw:-<empty>}"
+        package_bundle_path="n/a"
+        package_bundle_sha256="n/a"
+        package_bundle_sha256_path="n/a"
+        package_bundle_contents_manifest="n/a"
+        package_bundle_file_count="n/a"
+      else
+        package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+        package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+        package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+        package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+        package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+      fi
     else
       package_bundle_exit_code=$?
       package_bundle_artifacts_written="false"

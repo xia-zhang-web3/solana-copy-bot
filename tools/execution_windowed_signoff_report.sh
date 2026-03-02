@@ -209,10 +209,18 @@ if ((${#input_errors[@]} == 0)); then
     go_nogo_snapshot_sha256="$(trim_string "$(extract_field "snapshot_sha256" "$go_nogo_output")")"
     go_nogo_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$go_nogo_output")")"
     go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
-    dynamic_policy_config_enabled="$(normalize_bool_token "$(extract_field "dynamic_cu_policy_config_enabled" "$go_nogo_output")")"
+    dynamic_policy_config_enabled_raw="$(trim_string "$(extract_field "dynamic_cu_policy_config_enabled" "$go_nogo_output")")"
+    if ! dynamic_policy_config_enabled="$(extract_bool_field_strict "dynamic_cu_policy_config_enabled" "$go_nogo_output")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go dynamic_cu_policy_config_enabled must be boolean token, got: ${dynamic_policy_config_enabled_raw:-<empty>}")
+      dynamic_policy_config_enabled="unknown"
+    fi
     dynamic_hint_source_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_cu_hint_source_verdict" "$go_nogo_output")")"
     dynamic_hint_source_reason="$(trim_string "$(extract_field "dynamic_cu_hint_source_reason" "$go_nogo_output")")"
-    dynamic_tip_policy_config_enabled="$(normalize_bool_token "$(extract_field "dynamic_tip_policy_config_enabled" "$go_nogo_output")")"
+    dynamic_tip_policy_config_enabled_raw="$(trim_string "$(extract_field "dynamic_tip_policy_config_enabled" "$go_nogo_output")")"
+    if ! dynamic_tip_policy_config_enabled="$(extract_bool_field_strict "dynamic_tip_policy_config_enabled" "$go_nogo_output")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go dynamic_tip_policy_config_enabled must be boolean token, got: ${dynamic_tip_policy_config_enabled_raw:-<empty>}")
+      dynamic_tip_policy_config_enabled="unknown"
+    fi
     dynamic_tip_policy_verdict="$(normalize_gate_verdict "$(extract_field "dynamic_tip_policy_verdict" "$go_nogo_output")")"
     dynamic_tip_policy_reason="$(trim_string "$(extract_field "dynamic_tip_policy_reason" "$go_nogo_output")")"
     jito_rpc_policy_verdict="$(normalize_gate_verdict "$(extract_field "jito_rpc_policy_verdict" "$go_nogo_output")")"
@@ -502,12 +510,23 @@ if [[ -n "$OUTPUT_DIR" ]]; then
     )"; then
       package_bundle_exit_code=0
       package_bundle_error="n/a"
-      package_bundle_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$package_bundle_output")")"
-      package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
-      package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
-      package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
-      package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
-      package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+      package_bundle_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$package_bundle_output")")"
+      if ! package_bundle_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$package_bundle_output")"; then
+        package_bundle_exit_code=1
+        package_bundle_artifacts_written="false"
+        package_bundle_error="bundle helper returned invalid artifacts_written token: ${package_bundle_artifacts_written_raw:-<empty>}"
+        package_bundle_path="n/a"
+        package_bundle_sha256="n/a"
+        package_bundle_sha256_path="n/a"
+        package_bundle_contents_manifest="n/a"
+        package_bundle_file_count="n/a"
+      else
+        package_bundle_path="$(trim_string "$(extract_field "bundle_path" "$package_bundle_output")")"
+        package_bundle_sha256="$(trim_string "$(extract_field "bundle_sha256" "$package_bundle_output")")"
+        package_bundle_sha256_path="$(trim_string "$(extract_field "bundle_sha256_path" "$package_bundle_output")")"
+        package_bundle_contents_manifest="$(trim_string "$(extract_field "contents_manifest" "$package_bundle_output")")"
+        package_bundle_file_count="$(trim_string "$(extract_field "file_count" "$package_bundle_output")")"
+      fi
     else
       package_bundle_exit_code=$?
       package_bundle_artifacts_written="false"
