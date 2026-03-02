@@ -36,8 +36,7 @@ REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_runtime_readiness}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_ROOT}"
-RUNTIME_READINESS_RUN_ADAPTER_FINAL="${RUNTIME_READINESS_RUN_ADAPTER_FINAL:-true}"
-RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL="${RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL:-true}"
+RUNTIME_READINESS_PROFILE="${RUNTIME_READINESS_PROFILE:-full}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -56,6 +55,33 @@ parse_runtime_bool_setting_into() {
   printf -v "$output_var" '%s' "$parsed_value"
 }
 
+runtime_readiness_run_adapter_final_default="true"
+runtime_readiness_run_route_fee_final_default="true"
+case "$RUNTIME_READINESS_PROFILE" in
+full)
+  ;;
+adapter_only)
+  runtime_readiness_run_adapter_final_default="true"
+  runtime_readiness_run_route_fee_final_default="false"
+  ;;
+route_fee_only)
+  runtime_readiness_run_adapter_final_default="false"
+  runtime_readiness_run_route_fee_final_default="true"
+  ;;
+*)
+  input_errors+=("RUNTIME_READINESS_PROFILE must be one of: full,adapter_only,route_fee_only (got: $RUNTIME_READINESS_PROFILE)")
+  ;;
+esac
+
+runtime_readiness_run_adapter_final_raw="$runtime_readiness_run_adapter_final_default"
+if [[ -n "${RUNTIME_READINESS_RUN_ADAPTER_FINAL+x}" ]]; then
+  runtime_readiness_run_adapter_final_raw="${RUNTIME_READINESS_RUN_ADAPTER_FINAL}"
+fi
+runtime_readiness_run_route_fee_final_raw="$runtime_readiness_run_route_fee_final_default"
+if [[ -n "${RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL+x}" ]]; then
+  runtime_readiness_run_route_fee_final_raw="${RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL}"
+fi
+
 parse_runtime_bool_setting_into "RUN_TESTS" "$RUN_TESTS" run_tests_norm
 parse_runtime_bool_setting_into "DEVNET_REHEARSAL_TEST_MODE" "$DEVNET_REHEARSAL_TEST_MODE" devnet_rehearsal_test_mode_norm
 parse_runtime_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
@@ -67,8 +93,8 @@ parse_runtime_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PAS
 parse_runtime_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_runtime_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
 parse_runtime_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
-parse_runtime_bool_setting_into "RUNTIME_READINESS_RUN_ADAPTER_FINAL" "$RUNTIME_READINESS_RUN_ADAPTER_FINAL" runtime_readiness_run_adapter_final_norm
-parse_runtime_bool_setting_into "RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL" "$RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL" runtime_readiness_run_route_fee_final_norm
+parse_runtime_bool_setting_into "RUNTIME_READINESS_RUN_ADAPTER_FINAL" "$runtime_readiness_run_adapter_final_raw" runtime_readiness_run_adapter_final_norm
+parse_runtime_bool_setting_into "RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL" "$runtime_readiness_run_route_fee_final_raw" runtime_readiness_run_route_fee_final_norm
 
 if [[ "$runtime_readiness_run_adapter_final_norm" != "true" && "$runtime_readiness_run_route_fee_final_norm" != "true" ]]; then
   input_errors+=("at least one stage must be enabled: RUNTIME_READINESS_RUN_ADAPTER_FINAL or RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL")
@@ -362,6 +388,7 @@ rehearsal_route_fee_signoff_required: $rehearsal_route_fee_signoff_required_norm
 rehearsal_route_fee_signoff_windows_csv: $REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 route_fee_signoff_test_verdict_override: ${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-n/a}
 rehearsal_route_fee_signoff_test_verdict_override: ${REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-n/a}
+runtime_readiness_profile: $RUNTIME_READINESS_PROFILE
 runtime_readiness_run_adapter_final: $runtime_readiness_run_adapter_final_norm
 runtime_readiness_run_route_fee_final: $runtime_readiness_run_route_fee_final_norm
 package_bundle_enabled: $package_bundle_enabled_norm

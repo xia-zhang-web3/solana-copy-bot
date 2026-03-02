@@ -17,6 +17,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-state/server-rollout-$(date -u +"%Y%m%dT%H%M%SZ")}"
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_server_rollout}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_ROOT}"
+SERVER_ROLLOUT_PROFILE="${SERVER_ROLLOUT_PROFILE:-full}"
 
 RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
@@ -44,8 +45,6 @@ REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_
 REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE}"
 REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE}"
 REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
-SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT="${SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT:-true}"
-SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT="${SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT:-true}"
 
 now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 now_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -65,6 +64,29 @@ if [[ ! -f "$ADAPTER_ENV_PATH" ]]; then
 fi
 if [[ ! -f "$CONFIG_PATH" ]]; then
   input_errors+=("config file not found: $CONFIG_PATH")
+fi
+
+server_rollout_run_go_nogo_direct_default="true"
+server_rollout_run_rehearsal_direct_default="true"
+case "$SERVER_ROLLOUT_PROFILE" in
+full)
+  ;;
+finals_only)
+  server_rollout_run_go_nogo_direct_default="false"
+  server_rollout_run_rehearsal_direct_default="false"
+  ;;
+*)
+  input_errors+=("SERVER_ROLLOUT_PROFILE must be one of: full,finals_only (got: $SERVER_ROLLOUT_PROFILE)")
+  ;;
+esac
+
+server_rollout_run_go_nogo_direct_raw="$server_rollout_run_go_nogo_direct_default"
+if [[ -n "${SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT+x}" ]]; then
+  server_rollout_run_go_nogo_direct_raw="${SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT}"
+fi
+server_rollout_run_rehearsal_direct_raw="$server_rollout_run_rehearsal_direct_default"
+if [[ -n "${SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT+x}" ]]; then
+  server_rollout_run_rehearsal_direct_raw="${SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT}"
 fi
 
 parse_bool_setting_into() {
@@ -92,8 +114,8 @@ parse_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOF
 parse_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
 parse_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" rehearsal_route_fee_signoff_go_nogo_test_mode_norm
 parse_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
-parse_bool_setting_into "SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT" "$SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT" server_rollout_run_go_nogo_direct_norm
-parse_bool_setting_into "SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT" "$SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT" server_rollout_run_rehearsal_direct_norm
+parse_bool_setting_into "SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT" "$server_rollout_run_go_nogo_direct_raw" server_rollout_run_go_nogo_direct_norm
+parse_bool_setting_into "SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT" "$server_rollout_run_rehearsal_direct_raw" server_rollout_run_rehearsal_direct_norm
 
 mkdir -p "$OUTPUT_ROOT"
 step_root="$OUTPUT_ROOT/steps"
@@ -508,6 +530,7 @@ route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 rehearsal_route_fee_signoff_required: $rehearsal_route_fee_signoff_required_norm
 rehearsal_route_fee_signoff_windows_csv: $REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV
+server_rollout_profile: $SERVER_ROLLOUT_PROFILE
 server_rollout_run_go_nogo_direct: $server_rollout_run_go_nogo_direct_norm
 server_rollout_run_rehearsal_direct: $server_rollout_run_rehearsal_direct_norm
 package_bundle_enabled: $package_bundle_enabled_norm

@@ -3949,6 +3949,47 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "server_rollout_verdict" "HOLD"
   assert_field_equals "$skip_direct_output" "server_rollout_reason_code" "calibration_fee_not_pass"
 
+  local profile_skip_output=""
+  local profile_skip_exit_code=0
+  if profile_skip_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-profile-skip" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      SERVER_ROLLOUT_PROFILE="finals_only" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60
+  )"; then
+    profile_skip_exit_code=0
+  else
+    profile_skip_exit_code=$?
+  fi
+  if [[ "$profile_skip_exit_code" -ne 2 ]]; then
+    echo "expected server rollout finals_only profile hold exit code 2, got $profile_skip_exit_code" >&2
+    echo "$profile_skip_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$profile_skip_output" "server_rollout_profile" "finals_only"
+  assert_field_equals "$profile_skip_output" "server_rollout_run_go_nogo_direct" "false"
+  assert_field_equals "$profile_skip_output" "server_rollout_run_rehearsal_direct" "false"
+  assert_field_equals "$profile_skip_output" "go_nogo_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "rehearsal_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "go_nogo_reason_code" "stage_disabled"
+  assert_field_equals "$profile_skip_output" "rehearsal_reason_code" "stage_disabled"
+
   local bundle_output
   local bundle_exit_code=0
   if bundle_output="$(
@@ -4035,6 +4076,29 @@ run_execution_server_rollout_report_case() {
   assert_contains "$invalid_bool_output" "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token"
   assert_field_equals "$invalid_bool_output" "server_rollout_verdict" "NO_GO"
   assert_field_equals "$invalid_bool_output" "server_rollout_reason_code" "input_error"
+
+  local invalid_profile_output=""
+  if invalid_profile_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVER_ROLLOUT_PROFILE="bogus_profile" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail for invalid SERVER_ROLLOUT_PROFILE" >&2
+    exit 1
+  else
+    local invalid_profile_exit_code=$?
+    if [[ "$invalid_profile_exit_code" -ne 3 ]]; then
+      echo "expected server rollout invalid profile exit code 3, got $invalid_profile_exit_code" >&2
+      echo "$invalid_profile_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_profile_output" "SERVER_ROLLOUT_PROFILE must be one of: full,finals_only"
+  assert_field_equals "$invalid_profile_output" "server_rollout_reason_code" "input_error"
   echo "[ok] execution server rollout report"
 }
 
@@ -4923,6 +4987,64 @@ run_execution_runtime_readiness_report_case() {
   assert_field_equals "$skip_route_fee_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$skip_route_fee_output" "final_runtime_package_reason_code" "gates_pass"
 
+  local profile_adapter_only_output=""
+  profile_adapter_only_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-profile-adapter-only" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      RUNTIME_READINESS_PROFILE="adapter_only" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"
+  assert_field_equals "$profile_adapter_only_output" "runtime_readiness_profile" "adapter_only"
+  assert_field_equals "$profile_adapter_only_output" "runtime_readiness_run_adapter_final" "true"
+  assert_field_equals "$profile_adapter_only_output" "runtime_readiness_run_route_fee_final" "false"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_verdict" "GO"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_verdict" "SKIP"
+  assert_field_equals "$profile_adapter_only_output" "runtime_readiness_verdict" "GO"
+
+  local profile_route_fee_only_output=""
+  profile_route_fee_only_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-profile-route-fee-only" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      RUNTIME_READINESS_PROFILE="route_fee_only" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"
+  assert_field_equals "$profile_route_fee_only_output" "runtime_readiness_profile" "route_fee_only"
+  assert_field_equals "$profile_route_fee_only_output" "runtime_readiness_run_adapter_final" "false"
+  assert_field_equals "$profile_route_fee_only_output" "runtime_readiness_run_route_fee_final" "true"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_verdict" "SKIP"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_verdict" "GO"
+  assert_field_equals "$profile_route_fee_only_output" "runtime_readiness_verdict" "GO"
+
   local bundle_output=""
   bundle_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -5023,6 +5145,28 @@ run_execution_runtime_readiness_report_case() {
   fi
   assert_contains "$invalid_stage_toggle_output" "input_error: at least one stage must be enabled"
   assert_field_equals "$invalid_stage_toggle_output" "runtime_readiness_reason_code" "input_error"
+
+  local invalid_profile_output=""
+  if invalid_profile_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      RUNTIME_READINESS_PROFILE="bogus_profile" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24" 2>&1
+  )"; then
+    echo "expected NO_GO exit for runtime readiness invalid profile" >&2
+    exit 1
+  else
+    local invalid_profile_exit_code=$?
+    if [[ "$invalid_profile_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for runtime readiness invalid profile, got $invalid_profile_exit_code" >&2
+      echo "$invalid_profile_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_profile_output" "input_error: RUNTIME_READINESS_PROFILE must be one of: full,adapter_only,route_fee_only"
+  assert_field_equals "$invalid_profile_output" "runtime_readiness_reason_code" "input_error"
   echo "[ok] execution runtime readiness report"
 }
 
