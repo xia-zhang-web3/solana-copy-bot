@@ -4739,6 +4739,24 @@ run_execution_runtime_readiness_report_case() {
   assert_field_non_empty "$bundle_output" "package_bundle_sha256_path"
   assert_field_non_empty "$bundle_output" "package_bundle_contents_manifest"
   assert_bundled_summary_manifest_package_status_parity "$bundle_output"
+  local bundle_adapter_capture_path=""
+  local bundle_route_fee_capture_path=""
+  bundle_adapter_capture_path="$(extract_field_value "$bundle_output" "artifact_adapter_capture")"
+  bundle_route_fee_capture_path="$(extract_field_value "$bundle_output" "artifact_route_fee_capture")"
+  if [[ -z "$bundle_adapter_capture_path" || ! -f "$bundle_adapter_capture_path" ]]; then
+    echo "expected runtime readiness adapter capture artifact at $bundle_adapter_capture_path" >&2
+    exit 1
+  fi
+  if [[ -z "$bundle_route_fee_capture_path" || ! -f "$bundle_route_fee_capture_path" ]]; then
+    echo "expected runtime readiness route/fee capture artifact at $bundle_route_fee_capture_path" >&2
+    exit 1
+  fi
+  local bundle_adapter_capture_text=""
+  local bundle_route_fee_capture_text=""
+  bundle_adapter_capture_text="$(cat "$bundle_adapter_capture_path")"
+  bundle_route_fee_capture_text="$(cat "$bundle_route_fee_capture_path")"
+  assert_contains "$bundle_adapter_capture_text" "package_bundle_enabled: false"
+  assert_contains "$bundle_route_fee_capture_text" "package_bundle_enabled: false"
 
   local invalid_bool_output=""
   if invalid_bool_output="$(

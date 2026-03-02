@@ -132,6 +132,7 @@ if ((${#input_errors[@]} == 0)); then
       REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+      PACKAGE_BUNDLE_ENABLED="false" \
       bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" "$ADAPTER_WINDOWS_CSV" "$risk_events_minutes" 2>&1
   } )"; then
     adapter_exit_code=0
@@ -169,6 +170,7 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+      PACKAGE_BUNDLE_ENABLED="false" \
       bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "$ROUTE_FEE_WINDOWS_CSV" "$risk_events_minutes" 2>&1
   } )"; then
     route_fee_exit_code=0
