@@ -194,6 +194,7 @@ impl ExecutorConfig {
 
         let mut route_backends = HashMap::new();
         let mut any_upstream_fallback_endpoint = false;
+        let mut any_send_rpc_primary_endpoint = false;
         let mut any_send_rpc_fallback_endpoint = false;
         for route in &route_allowlist {
             let route_upper = route.to_ascii_uppercase();
@@ -261,8 +262,10 @@ impl ExecutorConfig {
                 .or_else(|| default_send_rpc_fallback.clone());
             let has_upstream_fallback_endpoint =
                 submit_fallback_url.is_some() || simulate_fallback_url.is_some();
+            let has_send_rpc_primary_endpoint = send_rpc_url.is_some();
             let has_send_rpc_fallback_endpoint = send_rpc_fallback_url.is_some();
             any_upstream_fallback_endpoint |= has_upstream_fallback_endpoint;
+            any_send_rpc_primary_endpoint |= has_send_rpc_primary_endpoint;
             any_send_rpc_fallback_endpoint |= has_send_rpc_fallback_endpoint;
             validate_endpoint_url(submit_url.as_str())
                 .map_err(|error| anyhow!("invalid submit URL for route={}: {}", route, error))?;
@@ -355,13 +358,27 @@ impl ExecutorConfig {
             } else {
                 None
             };
-            let send_rpc_primary_auth_token = resolve_secret_source(
+            let route_specific_send_rpc_primary_auth_token = resolve_secret_source(
                 send_rpc_auth_key.as_str(),
                 optional_non_empty_env(send_rpc_auth_key.as_str())?.as_deref(),
                 send_rpc_auth_file_key.as_str(),
                 optional_non_empty_env(send_rpc_auth_file_key.as_str())?.as_deref(),
-            )?
-            .or_else(|| default_send_rpc_auth_token.clone());
+            )?;
+            if route_specific_send_rpc_primary_auth_token.is_some() && !has_send_rpc_primary_endpoint
+            {
+                return Err(anyhow!(
+                    "{} or {} requires route={} send-rpc endpoint",
+                    send_rpc_auth_key,
+                    send_rpc_auth_file_key,
+                    route
+                ));
+            }
+            let send_rpc_primary_auth_token = if has_send_rpc_primary_endpoint {
+                route_specific_send_rpc_primary_auth_token
+                    .or_else(|| default_send_rpc_auth_token.clone())
+            } else {
+                None
+            };
             let route_specific_send_rpc_fallback_auth_token = resolve_secret_source(
                 send_rpc_fallback_auth_key.as_str(),
                 optional_non_empty_env(send_rpc_fallback_auth_key.as_str())?.as_deref(),
@@ -404,6 +421,11 @@ impl ExecutorConfig {
         if default_fallback_auth_token.is_some() && !any_upstream_fallback_endpoint {
             return Err(anyhow!(
                 "COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE requires at least one upstream fallback endpoint"
+            ));
+        }
+        if default_send_rpc_auth_token.is_some() && !any_send_rpc_primary_endpoint {
+            return Err(anyhow!(
+                "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE requires at least one send-rpc endpoint"
             ));
         }
         if default_send_rpc_fallback_auth_token.is_some() && !any_send_rpc_fallback_endpoint {
@@ -1831,6 +1853,73 @@ mod tests {
     }
 
     #[test]
+    fn executor_config_from_env_rejects_route_specific_send_rpc_auth_without_send_rpc_endpoint() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_AUTH_TOKEN",
+                    "unused-send-rpc-primary-token",
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("route-specific send-rpc auth without endpoint must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_AUTH_TOKEN"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error.to_string().contains("requires route=rpc send-rpc endpoint"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_route_specific_send_rpc_auth_file_without_send_rpc_endpoint(
+    ) {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                with_temp_secret_file("unused-send-rpc-primary-file-token", |secret_path| {
+                    set_minimal_executor_env_for_from_env(keypair_path);
+                    env::set_var(
+                        "COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_AUTH_TOKEN_FILE",
+                        secret_path.to_str().expect("utf8 secret path"),
+                    );
+
+                    let error = match crate::ExecutorConfig::from_env() {
+                        Ok(_) => {
+                            panic!(
+                                "route-specific send-rpc auth file without endpoint must reject"
+                            )
+                        }
+                        Err(error) => error,
+                    };
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_AUTH_TOKEN_FILE"),
+                        "unexpected error: {}",
+                        error
+                    );
+                    assert!(
+                        error.to_string().contains("requires route=rpc send-rpc endpoint"),
+                        "unexpected error: {}",
+                        error
+                    );
+                });
+            });
+        });
+    }
+
+    #[test]
     fn executor_config_from_env_rejects_route_specific_upstream_fallback_auth_without_fallback_endpoint()
     {
         with_clean_executor_env(|| {
@@ -2032,6 +2121,74 @@ mod tests {
                     );
                     assert!(
                         error.to_string().contains("at least one upstream fallback endpoint"),
+                        "unexpected error: {}",
+                        error
+                    );
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_global_send_rpc_auth_without_any_send_rpc_endpoint() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN",
+                    "unused-global-send-rpc-primary-token",
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("global send-rpc auth without endpoints must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN"),
+                    "unexpected error: {}",
+                    error
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("at least one send-rpc endpoint"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_global_send_rpc_auth_file_without_any_send_rpc_endpoint() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                with_temp_secret_file("unused-global-send-rpc-primary-file-token", |secret_path| {
+                    set_minimal_executor_env_for_from_env(keypair_path);
+                    env::set_var(
+                        "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE",
+                        secret_path.to_str().expect("utf8 secret path"),
+                    );
+
+                    let error = match crate::ExecutorConfig::from_env() {
+                        Ok(_) => {
+                            panic!("global send-rpc auth file without endpoints must reject")
+                        }
+                        Err(error) => error,
+                    };
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE"),
+                        "unexpected error: {}",
+                        error
+                    );
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("at least one send-rpc endpoint"),
                         "unexpected error: {}",
                         error
                     );

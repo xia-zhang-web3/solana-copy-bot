@@ -23,6 +23,7 @@ pub(crate) async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResp
     Json(build_healthz_payload(HealthzPayloadInputs {
         contract_version: state.config.contract_version.as_str(),
         enabled_routes: &state.config.route_allowlist,
+        route_backends: &state.config.route_backends,
         signer_source: state.config.signer_source.as_str(),
         signer_kms_key_id_configured: state.config.signer_kms_key_id.is_some(),
         signer_keypair_file_configured: state.config.signer_keypair_file.is_some(),

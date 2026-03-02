@@ -190,6 +190,8 @@ Executor health response should include at minimum:
 3. `enabled_routes`
 4. `signer_source` (`kms|file`)
 5. optional: `idempotency_store_status`
+6. optional: `send_rpc_enabled_routes`
+7. optional: `send_rpc_fallback_routes`
 
 ## 9) Solana Execution Core Design (mandatory)
 

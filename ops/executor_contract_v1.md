@@ -24,6 +24,8 @@ Status: frozen for Phase 0 implementation start
 3. `enabled_routes`
 4. `signer_source` (`kms|file`)
 5. optional: `idempotency_store_status`
+6. optional: `send_rpc_enabled_routes` (sorted routes with primary send-rpc endpoint)
+7. optional: `send_rpc_fallback_routes` (sorted routes with send-rpc fallback endpoint)
 
 ## 3) Request Contract
 

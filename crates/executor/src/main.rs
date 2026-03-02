@@ -232,6 +232,25 @@ async fn main() -> Result<()> {
 
     let router = build_router(state.clone());
     let configured_routes = sorted_routes(&state.config.route_allowlist);
+    let send_rpc_routes: HashSet<String> = state
+        .config
+        .route_backends
+        .iter()
+        .filter_map(|(route, backend)| backend.send_rpc_url.is_some().then_some(route.clone()))
+        .collect();
+    let configured_send_rpc_routes = sorted_routes(&send_rpc_routes);
+    let send_rpc_fallback_routes: HashSet<String> = state
+        .config
+        .route_backends
+        .iter()
+        .filter_map(|(route, backend)| {
+            backend
+                .send_rpc_fallback_url
+                .is_some()
+                .then_some(route.clone())
+        })
+        .collect();
+    let configured_send_rpc_fallback_routes = sorted_routes(&send_rpc_fallback_routes);
 
     info!(
         bind_addr = %state.config.bind_addr,
@@ -241,6 +260,8 @@ async fn main() -> Result<()> {
         signer_keypair_file_configured = state.config.signer_keypair_file.is_some(),
         contract_version = %state.config.contract_version,
         routes = ?configured_routes,
+        send_rpc_routes = ?configured_send_rpc_routes,
+        send_rpc_fallback_routes = ?configured_send_rpc_fallback_routes,
         submit_fastlane_enabled = state.config.submit_fastlane_enabled,
         hmac_nonce_cache_max_entries = state.config.hmac_nonce_cache_max_entries,
         idempotency_db_path = %state.config.idempotency_db_path,
