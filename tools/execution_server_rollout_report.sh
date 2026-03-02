@@ -44,6 +44,8 @@ REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_
 REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE}"
 REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE}"
 REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
+SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT="${SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT:-true}"
+SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT="${SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT:-true}"
 
 now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 now_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -90,6 +92,8 @@ parse_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOF
 parse_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
 parse_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" rehearsal_route_fee_signoff_go_nogo_test_mode_norm
 parse_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
+parse_bool_setting_into "SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT" "$SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT" server_rollout_run_go_nogo_direct_norm
+parse_bool_setting_into "SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT" "$SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT" server_rollout_run_rehearsal_direct_norm
 
 mkdir -p "$OUTPUT_ROOT"
 step_root="$OUTPUT_ROOT/steps"
@@ -179,92 +183,120 @@ if ((${#input_errors[@]} == 0)); then
   route_profile_reason="$(trim_string "$(extract_field "route_profile_reason" "$calibration_output")")"
   calibration_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$calibration_output")")"
 
-  go_nogo_output_dir="$step_root/go_nogo"
-  mkdir -p "$go_nogo_output_dir"
-  if go_nogo_output="$(
-    DB_PATH="${DB_PATH:-}" \
-      CONFIG_PATH="$CONFIG_PATH" \
-      SERVICE="$SERVICE" \
-      OUTPUT_DIR="$go_nogo_output_dir" \
-      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
-      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
-      GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
-      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
-      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
-      PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
-  )"; then
-    go_nogo_exit_code=0
+  if [[ "$server_rollout_run_go_nogo_direct_norm" == "true" ]]; then
+    go_nogo_output_dir="$step_root/go_nogo"
+    mkdir -p "$go_nogo_output_dir"
+    if go_nogo_output="$(
+      DB_PATH="${DB_PATH:-}" \
+        CONFIG_PATH="$CONFIG_PATH" \
+        SERVICE="$SERVICE" \
+        OUTPUT_DIR="$go_nogo_output_dir" \
+        GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
+        GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+        GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
+        GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
+        GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
+        PACKAGE_BUNDLE_ENABLED="false" \
+        bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+    )"; then
+      go_nogo_exit_code=0
+    else
+      go_nogo_exit_code=$?
+    fi
+    overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
+    overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
+    overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
+    go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
+    go_nogo_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$go_nogo_output")")"
+    if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$go_nogo_output")"; then
+      input_errors+=("nested go/no-go artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
+      go_nogo_artifacts_written="unknown"
+    elif [[ "$go_nogo_artifacts_written" != "true" ]]; then
+      input_errors+=("nested go/no-go artifacts_written must be true")
+    fi
+    go_nogo_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$go_nogo_output")")"
+    if ! go_nogo_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$go_nogo_output")"; then
+      input_errors+=("nested go/no-go package_bundle_enabled must be boolean token, got: ${go_nogo_nested_package_bundle_enabled_raw:-<empty>}")
+      go_nogo_nested_package_bundle_enabled="unknown"
+    elif [[ "$go_nogo_nested_package_bundle_enabled" != "false" ]]; then
+      input_errors+=("nested go/no-go helper must run with PACKAGE_BUNDLE_ENABLED=false")
+    fi
   else
-    go_nogo_exit_code=$?
-  fi
-  overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
-  overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
-  overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
-  go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
-  go_nogo_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$go_nogo_output")")"
-  if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$go_nogo_output")"; then
-    input_errors+=("nested go/no-go artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
-    go_nogo_artifacts_written="unknown"
-  elif [[ "$go_nogo_artifacts_written" != "true" ]]; then
-    input_errors+=("nested go/no-go artifacts_written must be true")
-  fi
-  go_nogo_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$go_nogo_output")")"
-  if ! go_nogo_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$go_nogo_output")"; then
-    input_errors+=("nested go/no-go package_bundle_enabled must be boolean token, got: ${go_nogo_nested_package_bundle_enabled_raw:-<empty>}")
-    go_nogo_nested_package_bundle_enabled="unknown"
-  elif [[ "$go_nogo_nested_package_bundle_enabled" != "false" ]]; then
-    input_errors+=("nested go/no-go helper must run with PACKAGE_BUNDLE_ENABLED=false")
+    go_nogo_exit_code=0
+    overall_go_nogo_verdict="SKIP"
+    overall_go_nogo_reason="direct go/no-go stage disabled via SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT=false"
+    overall_go_nogo_reason_code="stage_disabled"
+    go_nogo_artifacts_written="n/a"
+    go_nogo_nested_package_bundle_enabled="n/a"
+    go_nogo_output="overall_go_nogo_verdict: SKIP
+overall_go_nogo_reason: direct go/no-go stage disabled via SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT=false
+overall_go_nogo_reason_code: stage_disabled
+artifacts_written: false
+package_bundle_enabled: false"
   fi
 
-  rehearsal_output_dir="$step_root/rehearsal"
-  mkdir -p "$rehearsal_output_dir"
-  if rehearsal_output="$(
-    DB_PATH="${DB_PATH:-}" \
-      CONFIG_PATH="$CONFIG_PATH" \
-      SERVICE="$SERVICE" \
-      OUTPUT_DIR="$rehearsal_output_dir" \
-      RUN_TESTS="$run_tests_norm" \
-      DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
-      GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
-      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
-      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
-      WINDOWED_SIGNOFF_REQUIRED="$windowed_signoff_required_norm" \
-      WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
-      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
-      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
-      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
-      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
-      ROUTE_FEE_SIGNOFF_REQUIRED="$route_fee_signoff_required_norm" \
-      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
-      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode_norm" \
-      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
-      ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
-      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
-      PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
-  )"; then
-    rehearsal_exit_code=0
+  if [[ "$server_rollout_run_rehearsal_direct_norm" == "true" ]]; then
+    rehearsal_output_dir="$step_root/rehearsal"
+    mkdir -p "$rehearsal_output_dir"
+    if rehearsal_output="$(
+      DB_PATH="${DB_PATH:-}" \
+        CONFIG_PATH="$CONFIG_PATH" \
+        SERVICE="$SERVICE" \
+        OUTPUT_DIR="$rehearsal_output_dir" \
+        RUN_TESTS="$run_tests_norm" \
+        DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
+        GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
+        GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
+        GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
+        WINDOWED_SIGNOFF_REQUIRED="$windowed_signoff_required_norm" \
+        WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
+        WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
+        WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
+        GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
+        GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+        ROUTE_FEE_SIGNOFF_REQUIRED="$route_fee_signoff_required_norm" \
+        ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
+        ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode_norm" \
+        ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
+        ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
+        ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+        PACKAGE_BUNDLE_ENABLED="false" \
+        bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+    )"; then
+      rehearsal_exit_code=0
+    else
+      rehearsal_exit_code=$?
+    fi
+    rehearsal_verdict="$(normalize_rehearsal_verdict "$(extract_field "devnet_rehearsal_verdict" "$rehearsal_output")")"
+    rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
+    rehearsal_reason_code="$(trim_string "$(extract_field "devnet_rehearsal_reason_code" "$rehearsal_output")")"
+    rehearsal_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rehearsal_output")")"
+    rehearsal_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$rehearsal_output")")"
+    if ! rehearsal_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rehearsal_output")"; then
+      input_errors+=("nested devnet rehearsal artifacts_written must be boolean token, got: ${rehearsal_artifacts_written_raw:-<empty>}")
+      rehearsal_artifacts_written="unknown"
+    elif [[ "$rehearsal_artifacts_written" != "true" ]]; then
+      input_errors+=("nested devnet rehearsal artifacts_written must be true")
+    fi
+    rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
+    if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then
+      input_errors+=("nested devnet rehearsal package_bundle_enabled must be boolean token, got: ${rehearsal_nested_package_bundle_enabled_raw:-<empty>}")
+      rehearsal_nested_package_bundle_enabled="unknown"
+    elif [[ "$rehearsal_nested_package_bundle_enabled" != "false" ]]; then
+      input_errors+=("nested devnet rehearsal helper must run with PACKAGE_BUNDLE_ENABLED=false")
+    fi
   else
-    rehearsal_exit_code=$?
-  fi
-  rehearsal_verdict="$(normalize_rehearsal_verdict "$(extract_field "devnet_rehearsal_verdict" "$rehearsal_output")")"
-  rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
-  rehearsal_reason_code="$(trim_string "$(extract_field "devnet_rehearsal_reason_code" "$rehearsal_output")")"
-  rehearsal_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rehearsal_output")")"
-  rehearsal_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$rehearsal_output")")"
-  if ! rehearsal_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rehearsal_output")"; then
-    input_errors+=("nested devnet rehearsal artifacts_written must be boolean token, got: ${rehearsal_artifacts_written_raw:-<empty>}")
-    rehearsal_artifacts_written="unknown"
-  elif [[ "$rehearsal_artifacts_written" != "true" ]]; then
-    input_errors+=("nested devnet rehearsal artifacts_written must be true")
-  fi
-  rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
-  if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then
-    input_errors+=("nested devnet rehearsal package_bundle_enabled must be boolean token, got: ${rehearsal_nested_package_bundle_enabled_raw:-<empty>}")
-    rehearsal_nested_package_bundle_enabled="unknown"
-  elif [[ "$rehearsal_nested_package_bundle_enabled" != "false" ]]; then
-    input_errors+=("nested devnet rehearsal helper must run with PACKAGE_BUNDLE_ENABLED=false")
+    rehearsal_exit_code=0
+    rehearsal_verdict="SKIP"
+    rehearsal_reason="direct devnet rehearsal stage disabled via SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT=false"
+    rehearsal_reason_code="stage_disabled"
+    rehearsal_artifacts_written="n/a"
+    rehearsal_nested_package_bundle_enabled="n/a"
+    rehearsal_output="devnet_rehearsal_verdict: SKIP
+devnet_rehearsal_reason: direct devnet rehearsal stage disabled via SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT=false
+devnet_rehearsal_reason_code: stage_disabled
+artifacts_written: false
+package_bundle_enabled: false"
   fi
 
   executor_final_output_dir="$step_root/executor_final"
@@ -427,16 +459,20 @@ else
     set_hold_if_go "calibration route profile not PASS (${route_profile_verdict}): ${route_profile_reason:-n/a}" "calibration_route_not_pass"
   fi
 
-  if [[ "$overall_go_nogo_verdict" == "NO_GO" || "$overall_go_nogo_verdict" == "UNKNOWN" ]]; then
-    set_no_go "go/no-go stage not GO (${overall_go_nogo_verdict}): ${overall_go_nogo_reason:-n/a}" "go_nogo_not_go"
-  elif [[ "$overall_go_nogo_verdict" == "HOLD" ]]; then
-    set_hold_if_go "go/no-go stage HOLD: ${overall_go_nogo_reason:-n/a}" "go_nogo_hold"
+  if [[ "$server_rollout_run_go_nogo_direct_norm" == "true" ]]; then
+    if [[ "$overall_go_nogo_verdict" == "NO_GO" || "$overall_go_nogo_verdict" == "UNKNOWN" ]]; then
+      set_no_go "go/no-go stage not GO (${overall_go_nogo_verdict}): ${overall_go_nogo_reason:-n/a}" "go_nogo_not_go"
+    elif [[ "$overall_go_nogo_verdict" == "HOLD" ]]; then
+      set_hold_if_go "go/no-go stage HOLD: ${overall_go_nogo_reason:-n/a}" "go_nogo_hold"
+    fi
   fi
 
-  if [[ "$rehearsal_verdict" == "NO_GO" || "$rehearsal_verdict" == "UNKNOWN" ]]; then
-    set_no_go "devnet rehearsal not GO (${rehearsal_verdict}): ${rehearsal_reason:-n/a}" "rehearsal_not_go"
-  elif [[ "$rehearsal_verdict" == "HOLD" ]]; then
-    set_hold_if_go "devnet rehearsal HOLD: ${rehearsal_reason:-n/a}" "rehearsal_hold"
+  if [[ "$server_rollout_run_rehearsal_direct_norm" == "true" ]]; then
+    if [[ "$rehearsal_verdict" == "NO_GO" || "$rehearsal_verdict" == "UNKNOWN" ]]; then
+      set_no_go "devnet rehearsal not GO (${rehearsal_verdict}): ${rehearsal_reason:-n/a}" "rehearsal_not_go"
+    elif [[ "$rehearsal_verdict" == "HOLD" ]]; then
+      set_hold_if_go "devnet rehearsal HOLD: ${rehearsal_reason:-n/a}" "rehearsal_hold"
+    fi
   fi
 
   if [[ "$executor_final_verdict" == "NO_GO" || "$executor_final_verdict" == "UNKNOWN" ]]; then
@@ -472,6 +508,8 @@ route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 rehearsal_route_fee_signoff_required: $rehearsal_route_fee_signoff_required_norm
 rehearsal_route_fee_signoff_windows_csv: $REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV
+server_rollout_run_go_nogo_direct: $server_rollout_run_go_nogo_direct_norm
+server_rollout_run_rehearsal_direct: $server_rollout_run_rehearsal_direct_norm
 package_bundle_enabled: $package_bundle_enabled_norm
 package_bundle_label: $PACKAGE_BUNDLE_LABEL
 package_bundle_output_dir: $PACKAGE_BUNDLE_OUTPUT_DIR

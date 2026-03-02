@@ -36,6 +36,8 @@ REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_runtime_readiness}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_ROOT}"
+RUNTIME_READINESS_RUN_ADAPTER_FINAL="${RUNTIME_READINESS_RUN_ADAPTER_FINAL:-true}"
+RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL="${RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL:-true}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -65,6 +67,12 @@ parse_runtime_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PAS
 parse_runtime_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_runtime_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
 parse_runtime_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
+parse_runtime_bool_setting_into "RUNTIME_READINESS_RUN_ADAPTER_FINAL" "$RUNTIME_READINESS_RUN_ADAPTER_FINAL" runtime_readiness_run_adapter_final_norm
+parse_runtime_bool_setting_into "RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL" "$RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL" runtime_readiness_run_route_fee_final_norm
+
+if [[ "$runtime_readiness_run_adapter_final_norm" != "true" && "$runtime_readiness_run_route_fee_final_norm" != "true" ]]; then
+  input_errors+=("at least one stage must be enabled: RUNTIME_READINESS_RUN_ADAPTER_FINAL or RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL")
+fi
 
 risk_events_minutes=""
 if ! risk_events_minutes="$(parse_u64_token_strict "$RISK_EVENTS_MINUTES_RAW")"; then
@@ -112,127 +120,155 @@ route_fee_stable_fallback_route="n/a"
 route_fee_final_nested_package_bundle_enabled="n/a"
 
 if ((${#input_errors[@]} == 0)); then
-  if adapter_output="$({
-    ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
-      CONFIG_PATH="$CONFIG_PATH" \
-      SERVICE="$SERVICE" \
-      OUTPUT_ROOT="$adapter_output_root" \
-      RUN_TESTS="$run_tests_norm" \
-      DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
-      GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
-      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
-      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
-      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
-      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
-      WINDOWED_SIGNOFF_REQUIRED="$windowed_signoff_required_norm" \
-      WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
-      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
-      WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
-      ROUTE_FEE_SIGNOFF_REQUIRED="$route_fee_signoff_required_norm" \
-      ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
-      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="$rehearsal_route_fee_signoff_required_norm" \
-      REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
-      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
-      REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
-      PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" "$ADAPTER_WINDOWS_CSV" "$risk_events_minutes" 2>&1
-  } )"; then
+  if [[ "$runtime_readiness_run_adapter_final_norm" == "true" ]]; then
+    if adapter_output="$({
+      ADAPTER_ENV_PATH="$ADAPTER_ENV_PATH" \
+        CONFIG_PATH="$CONFIG_PATH" \
+        SERVICE="$SERVICE" \
+        OUTPUT_ROOT="$adapter_output_root" \
+        RUN_TESTS="$run_tests_norm" \
+        DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
+        GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
+        GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
+        GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
+        GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
+        GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+        WINDOWED_SIGNOFF_REQUIRED="$windowed_signoff_required_norm" \
+        WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
+        WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
+        WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
+        ROUTE_FEE_SIGNOFF_REQUIRED="$route_fee_signoff_required_norm" \
+        ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
+        REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="$rehearsal_route_fee_signoff_required_norm" \
+        REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
+        ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+        REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+        PACKAGE_BUNDLE_ENABLED="false" \
+        bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" "$ADAPTER_WINDOWS_CSV" "$risk_events_minutes" 2>&1
+    } )"; then
+      adapter_exit_code=0
+    else
+      adapter_exit_code=$?
+    fi
+
+    adapter_verdict="$(normalize_go_nogo_verdict "$(first_non_empty "$(extract_field "final_rollout_package_verdict" "$adapter_output")" "$(extract_field "rollout_verdict" "$adapter_output")")")"
+    adapter_reason="$(trim_string "$(first_non_empty "$(extract_field "final_rollout_package_reason" "$adapter_output")" "$(extract_field "rollout_reason" "$adapter_output")")")"
+    adapter_reason_code="$(trim_string "$(first_non_empty "$(extract_field "final_rollout_package_reason_code" "$adapter_output")" "$(extract_field "rollout_reason_code" "$adapter_output")")")"
+    adapter_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$adapter_output")")"
+    if ! adapter_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$adapter_output")"; then
+      input_errors+=("nested adapter rollout final artifacts_written must be boolean token, got: ${adapter_artifacts_written_raw:-<empty>}")
+      adapter_artifacts_written="unknown"
+    elif [[ "$adapter_artifacts_written" != "true" ]]; then
+      input_errors+=("nested adapter rollout final artifacts_written must be true")
+    fi
+    adapter_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$adapter_output")")"
+    adapter_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$adapter_output")")"
+    adapter_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$adapter_output")")"
+    adapter_manifest_sha256="$(trim_string "$(extract_field "manifest_sha256" "$adapter_output")")"
+    adapter_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$adapter_output")")"
+    if ! adapter_final_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$adapter_output")"; then
+      input_errors+=("nested adapter rollout final package_bundle_enabled must be boolean token, got: ${adapter_nested_package_bundle_enabled_raw:-<empty>}")
+      adapter_final_nested_package_bundle_enabled="unknown"
+    elif [[ "$adapter_final_nested_package_bundle_enabled" != "false" ]]; then
+      input_errors+=("nested adapter rollout final helper must run with PACKAGE_BUNDLE_ENABLED=false")
+    fi
+
+    if [[ "$adapter_verdict" == "UNKNOWN" ]]; then
+      adapter_reason="unable to classify adapter final verdict (exit=${adapter_exit_code})"
+      adapter_reason_code="unknown_verdict"
+    elif [[ -z "$adapter_reason" ]]; then
+      adapter_reason="adapter final helper reported ${adapter_verdict}"
+      adapter_reason_code="missing_reason"
+    fi
+    if [[ -z "$adapter_reason_code" ]]; then
+      adapter_reason_code="n/a"
+    fi
+  else
     adapter_exit_code=0
+    adapter_verdict="SKIP"
+    adapter_reason="adapter final stage disabled via RUNTIME_READINESS_RUN_ADAPTER_FINAL=false"
+    adapter_reason_code="stage_disabled"
+    adapter_artifacts_written="n/a"
+    adapter_final_nested_package_bundle_enabled="n/a"
+    adapter_output="final_rollout_package_verdict: SKIP
+final_rollout_package_reason: adapter final stage disabled via RUNTIME_READINESS_RUN_ADAPTER_FINAL=false
+final_rollout_package_reason_code: stage_disabled
+artifacts_written: false
+package_bundle_enabled: false"
+  fi
+
+  if [[ "$runtime_readiness_run_route_fee_final_norm" == "true" ]]; then
+    if route_fee_output="$({
+      CONFIG_PATH="$CONFIG_PATH" \
+        SERVICE="$SERVICE" \
+        OUTPUT_ROOT="$route_fee_output_root" \
+        GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
+        GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+        GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
+        GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
+        GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
+        ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+        PACKAGE_BUNDLE_ENABLED="false" \
+        bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "$ROUTE_FEE_WINDOWS_CSV" "$risk_events_minutes" 2>&1
+    } )"; then
+      route_fee_exit_code=0
+    else
+      route_fee_exit_code=$?
+    fi
+
+    route_fee_verdict="$(normalize_go_nogo_verdict "$(first_non_empty "$(extract_field "final_route_fee_package_verdict" "$route_fee_output")" "$(extract_field "signoff_verdict" "$route_fee_output")")")"
+    route_fee_reason="$(trim_string "$(first_non_empty "$(extract_field "final_route_fee_package_reason" "$route_fee_output")" "$(extract_field "signoff_reason" "$route_fee_output")")")"
+    route_fee_reason_code="$(trim_string "$(first_non_empty "$(extract_field "final_route_fee_package_reason_code" "$route_fee_output")" "$(extract_field "signoff_reason_code" "$route_fee_output")")")"
+    route_fee_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$route_fee_output")")"
+    if ! route_fee_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_output")"; then
+      input_errors+=("nested route fee final artifacts_written must be boolean token, got: ${route_fee_artifacts_written_raw:-<empty>}")
+      route_fee_artifacts_written="unknown"
+    elif [[ "$route_fee_artifacts_written" != "true" ]]; then
+      input_errors+=("nested route fee final artifacts_written must be true")
+    fi
+    route_fee_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$route_fee_output")")"
+    route_fee_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_output")")"
+    route_fee_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_output")")"
+    route_fee_manifest_sha256="$(trim_string "$(extract_field "manifest_sha256" "$route_fee_output")")"
+
+    route_fee_window_count="$(trim_string "$(extract_field "window_count" "$route_fee_output")")"
+    route_fee_go_nogo_go_count="$(trim_string "$(extract_field "go_nogo_go_count" "$route_fee_output")")"
+    route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_profile_pass_count" "$route_fee_output")")"
+    route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "fee_decomposition_pass_count" "$route_fee_output")")"
+    route_fee_primary_route_stable="$(trim_string "$(extract_field "primary_route_stable" "$route_fee_output")")"
+    route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_output")")"
+    route_fee_fallback_route_stable="$(trim_string "$(extract_field "fallback_route_stable" "$route_fee_output")")"
+    route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_output")")"
+    route_fee_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$route_fee_output")")"
+    if ! route_fee_final_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_output")"; then
+      input_errors+=("nested route fee final package_bundle_enabled must be boolean token, got: ${route_fee_nested_package_bundle_enabled_raw:-<empty>}")
+      route_fee_final_nested_package_bundle_enabled="unknown"
+    elif [[ "$route_fee_final_nested_package_bundle_enabled" != "false" ]]; then
+      input_errors+=("nested route fee final helper must run with PACKAGE_BUNDLE_ENABLED=false")
+    fi
+
+    if [[ "$route_fee_verdict" == "UNKNOWN" ]]; then
+      route_fee_reason="unable to classify route/fee final verdict (exit=${route_fee_exit_code})"
+      route_fee_reason_code="unknown_verdict"
+    elif [[ -z "$route_fee_reason" ]]; then
+      route_fee_reason="route/fee final helper reported ${route_fee_verdict}"
+      route_fee_reason_code="missing_reason"
+    fi
+    if [[ -z "$route_fee_reason_code" ]]; then
+      route_fee_reason_code="n/a"
+    fi
   else
-    adapter_exit_code=$?
-  fi
-
-  adapter_verdict="$(normalize_go_nogo_verdict "$(first_non_empty "$(extract_field "final_rollout_package_verdict" "$adapter_output")" "$(extract_field "rollout_verdict" "$adapter_output")")")"
-  adapter_reason="$(trim_string "$(first_non_empty "$(extract_field "final_rollout_package_reason" "$adapter_output")" "$(extract_field "rollout_reason" "$adapter_output")")")"
-  adapter_reason_code="$(trim_string "$(first_non_empty "$(extract_field "final_rollout_package_reason_code" "$adapter_output")" "$(extract_field "rollout_reason_code" "$adapter_output")")")"
-  adapter_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$adapter_output")")"
-  if ! adapter_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$adapter_output")"; then
-    input_errors+=("nested adapter rollout final artifacts_written must be boolean token, got: ${adapter_artifacts_written_raw:-<empty>}")
-    adapter_artifacts_written="unknown"
-  elif [[ "$adapter_artifacts_written" != "true" ]]; then
-    input_errors+=("nested adapter rollout final artifacts_written must be true")
-  fi
-  adapter_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$adapter_output")")"
-  adapter_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$adapter_output")")"
-  adapter_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$adapter_output")")"
-  adapter_manifest_sha256="$(trim_string "$(extract_field "manifest_sha256" "$adapter_output")")"
-  adapter_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$adapter_output")")"
-  if ! adapter_final_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$adapter_output")"; then
-    input_errors+=("nested adapter rollout final package_bundle_enabled must be boolean token, got: ${adapter_nested_package_bundle_enabled_raw:-<empty>}")
-    adapter_final_nested_package_bundle_enabled="unknown"
-  elif [[ "$adapter_final_nested_package_bundle_enabled" != "false" ]]; then
-    input_errors+=("nested adapter rollout final helper must run with PACKAGE_BUNDLE_ENABLED=false")
-  fi
-
-  if [[ "$adapter_verdict" == "UNKNOWN" ]]; then
-    adapter_reason="unable to classify adapter final verdict (exit=${adapter_exit_code})"
-    adapter_reason_code="unknown_verdict"
-  elif [[ -z "$adapter_reason" ]]; then
-    adapter_reason="adapter final helper reported ${adapter_verdict}"
-    adapter_reason_code="missing_reason"
-  fi
-  if [[ -z "$adapter_reason_code" ]]; then
-    adapter_reason_code="n/a"
-  fi
-
-  if route_fee_output="$({
-    CONFIG_PATH="$CONFIG_PATH" \
-      SERVICE="$SERVICE" \
-      OUTPUT_ROOT="$route_fee_output_root" \
-      GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
-      GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
-      GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
-      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
-      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
-      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
-      PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "$ROUTE_FEE_WINDOWS_CSV" "$risk_events_minutes" 2>&1
-  } )"; then
     route_fee_exit_code=0
-  else
-    route_fee_exit_code=$?
-  fi
-
-  route_fee_verdict="$(normalize_go_nogo_verdict "$(first_non_empty "$(extract_field "final_route_fee_package_verdict" "$route_fee_output")" "$(extract_field "signoff_verdict" "$route_fee_output")")")"
-  route_fee_reason="$(trim_string "$(first_non_empty "$(extract_field "final_route_fee_package_reason" "$route_fee_output")" "$(extract_field "signoff_reason" "$route_fee_output")")")"
-  route_fee_reason_code="$(trim_string "$(first_non_empty "$(extract_field "final_route_fee_package_reason_code" "$route_fee_output")" "$(extract_field "signoff_reason_code" "$route_fee_output")")")"
-  route_fee_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$route_fee_output")")"
-  if ! route_fee_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_output")"; then
-    input_errors+=("nested route fee final artifacts_written must be boolean token, got: ${route_fee_artifacts_written_raw:-<empty>}")
-    route_fee_artifacts_written="unknown"
-  elif [[ "$route_fee_artifacts_written" != "true" ]]; then
-    input_errors+=("nested route fee final artifacts_written must be true")
-  fi
-  route_fee_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$route_fee_output")")"
-  route_fee_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_output")")"
-  route_fee_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_output")")"
-  route_fee_manifest_sha256="$(trim_string "$(extract_field "manifest_sha256" "$route_fee_output")")"
-
-  route_fee_window_count="$(trim_string "$(extract_field "window_count" "$route_fee_output")")"
-  route_fee_go_nogo_go_count="$(trim_string "$(extract_field "go_nogo_go_count" "$route_fee_output")")"
-  route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_profile_pass_count" "$route_fee_output")")"
-  route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "fee_decomposition_pass_count" "$route_fee_output")")"
-  route_fee_primary_route_stable="$(trim_string "$(extract_field "primary_route_stable" "$route_fee_output")")"
-  route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_output")")"
-  route_fee_fallback_route_stable="$(trim_string "$(extract_field "fallback_route_stable" "$route_fee_output")")"
-  route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_output")")"
-  route_fee_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$route_fee_output")")"
-  if ! route_fee_final_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_output")"; then
-    input_errors+=("nested route fee final package_bundle_enabled must be boolean token, got: ${route_fee_nested_package_bundle_enabled_raw:-<empty>}")
-    route_fee_final_nested_package_bundle_enabled="unknown"
-  elif [[ "$route_fee_final_nested_package_bundle_enabled" != "false" ]]; then
-    input_errors+=("nested route fee final helper must run with PACKAGE_BUNDLE_ENABLED=false")
-  fi
-
-  if [[ "$route_fee_verdict" == "UNKNOWN" ]]; then
-    route_fee_reason="unable to classify route/fee final verdict (exit=${route_fee_exit_code})"
-    route_fee_reason_code="unknown_verdict"
-  elif [[ -z "$route_fee_reason" ]]; then
-    route_fee_reason="route/fee final helper reported ${route_fee_verdict}"
-    route_fee_reason_code="missing_reason"
-  fi
-  if [[ -z "$route_fee_reason_code" ]]; then
-    route_fee_reason_code="n/a"
+    route_fee_verdict="SKIP"
+    route_fee_reason="route/fee final stage disabled via RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL=false"
+    route_fee_reason_code="stage_disabled"
+    route_fee_artifacts_written="n/a"
+    route_fee_final_nested_package_bundle_enabled="n/a"
+    route_fee_output="final_route_fee_package_verdict: SKIP
+final_route_fee_package_reason: route/fee final stage disabled via RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL=false
+final_route_fee_package_reason_code: stage_disabled
+artifacts_written: false
+package_bundle_enabled: false"
   fi
 fi
 
@@ -270,27 +306,27 @@ if ((${#input_errors[@]} > 0)); then
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="${input_errors[0]}"
   runtime_readiness_reason_code="input_error"
-elif [[ "$adapter_verdict" == "UNKNOWN" ]]; then
+elif [[ "$runtime_readiness_run_adapter_final_norm" == "true" && "$adapter_verdict" == "UNKNOWN" ]]; then
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="adapter final verdict unknown: ${adapter_reason:-n/a}"
   runtime_readiness_reason_code="adapter_unknown_verdict"
-elif [[ "$route_fee_verdict" == "UNKNOWN" ]]; then
+elif [[ "$runtime_readiness_run_route_fee_final_norm" == "true" && "$route_fee_verdict" == "UNKNOWN" ]]; then
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="route/fee final verdict unknown: ${route_fee_reason:-n/a}"
   runtime_readiness_reason_code="route_fee_unknown_verdict"
-elif [[ "$adapter_verdict" == "NO_GO" ]]; then
+elif [[ "$runtime_readiness_run_adapter_final_norm" == "true" && "$adapter_verdict" == "NO_GO" ]]; then
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="adapter final package is NO_GO: ${adapter_reason:-n/a}"
   runtime_readiness_reason_code="adapter_no_go"
-elif [[ "$route_fee_verdict" == "NO_GO" ]]; then
+elif [[ "$runtime_readiness_run_route_fee_final_norm" == "true" && "$route_fee_verdict" == "NO_GO" ]]; then
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="route/fee final package is NO_GO: ${route_fee_reason:-n/a}"
   runtime_readiness_reason_code="route_fee_no_go"
-elif [[ "$adapter_verdict" == "HOLD" ]]; then
+elif [[ "$runtime_readiness_run_adapter_final_norm" == "true" && "$adapter_verdict" == "HOLD" ]]; then
   runtime_readiness_verdict="HOLD"
   runtime_readiness_reason="adapter final package is HOLD: ${adapter_reason:-n/a}"
   runtime_readiness_reason_code="adapter_hold"
-elif [[ "$route_fee_verdict" == "HOLD" ]]; then
+elif [[ "$runtime_readiness_run_route_fee_final_norm" == "true" && "$route_fee_verdict" == "HOLD" ]]; then
   runtime_readiness_verdict="HOLD"
   runtime_readiness_reason="route/fee final package is HOLD: ${route_fee_reason:-n/a}"
   runtime_readiness_reason_code="route_fee_hold"
@@ -326,6 +362,8 @@ rehearsal_route_fee_signoff_required: $rehearsal_route_fee_signoff_required_norm
 rehearsal_route_fee_signoff_windows_csv: $REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 route_fee_signoff_test_verdict_override: ${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-n/a}
 rehearsal_route_fee_signoff_test_verdict_override: ${REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-n/a}
+runtime_readiness_run_adapter_final: $runtime_readiness_run_adapter_final_norm
+runtime_readiness_run_route_fee_final: $runtime_readiness_run_route_fee_final_norm
 package_bundle_enabled: $package_bundle_enabled_norm
 package_bundle_label: $PACKAGE_BUNDLE_LABEL
 package_bundle_output_dir: ${PACKAGE_BUNDLE_OUTPUT_DIR:-n/a}

@@ -3904,6 +3904,51 @@ run_execution_server_rollout_report_case() {
     exit 1
   fi
 
+  local skip_direct_output=""
+  local skip_direct_exit_code=0
+  if skip_direct_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-skip-direct" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT="false" \
+      SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT="false" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60
+  )"; then
+    skip_direct_exit_code=0
+  else
+    skip_direct_exit_code=$?
+  fi
+  if [[ "$skip_direct_exit_code" -ne 2 ]]; then
+    echo "expected server rollout skip-direct hold exit code 2, got $skip_direct_exit_code" >&2
+    echo "$skip_direct_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$skip_direct_output" "server_rollout_run_go_nogo_direct" "false"
+  assert_field_equals "$skip_direct_output" "server_rollout_run_rehearsal_direct" "false"
+  assert_field_equals "$skip_direct_output" "go_nogo_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "rehearsal_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "go_nogo_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "rehearsal_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "executor_final_verdict" "GO"
+  assert_field_equals "$skip_direct_output" "adapter_final_verdict" "GO"
+  assert_field_equals "$skip_direct_output" "server_rollout_verdict" "HOLD"
+  assert_field_equals "$skip_direct_output" "server_rollout_reason_code" "calibration_fee_not_pass"
+
   local bundle_output
   local bundle_exit_code=0
   if bundle_output="$(
@@ -4847,6 +4892,37 @@ run_execution_runtime_readiness_report_case() {
     exit 1
   fi
 
+  local skip_route_fee_output=""
+  skip_route_fee_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-skip-route-fee" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      RUNTIME_READINESS_RUN_ADAPTER_FINAL="true" \
+      RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL="false" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"
+  assert_field_equals "$skip_route_fee_output" "runtime_readiness_run_adapter_final" "true"
+  assert_field_equals "$skip_route_fee_output" "runtime_readiness_run_route_fee_final" "false"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_verdict" "GO"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_verdict" "SKIP"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_reason_code" "stage_disabled"
+  assert_field_equals "$skip_route_fee_output" "runtime_readiness_verdict" "GO"
+  assert_field_equals "$skip_route_fee_output" "final_runtime_package_reason_code" "gates_pass"
+
   local bundle_output=""
   bundle_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -4924,6 +5000,29 @@ run_execution_runtime_readiness_report_case() {
   assert_contains "$invalid_bool_output" "input_error: PACKAGE_BUNDLE_ENABLED must be a boolean token"
   assert_field_equals "$invalid_bool_output" "runtime_readiness_reason_code" "input_error"
   assert_field_equals "$invalid_bool_output" "final_runtime_package_reason_code" "input_error"
+
+  local invalid_stage_toggle_output=""
+  if invalid_stage_toggle_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      RUNTIME_READINESS_RUN_ADAPTER_FINAL="false" \
+      RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL="false" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24" 2>&1
+  )"; then
+    echo "expected NO_GO exit for runtime readiness with both stages disabled" >&2
+    exit 1
+  else
+    local invalid_stage_toggle_exit_code=$?
+    if [[ "$invalid_stage_toggle_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for runtime readiness stage toggle misconfiguration, got $invalid_stage_toggle_exit_code" >&2
+      echo "$invalid_stage_toggle_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_stage_toggle_output" "input_error: at least one stage must be enabled"
+  assert_field_equals "$invalid_stage_toggle_output" "runtime_readiness_reason_code" "input_error"
   echo "[ok] execution runtime readiness report"
 }
 
