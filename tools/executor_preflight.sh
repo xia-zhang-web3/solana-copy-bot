@@ -1005,6 +1005,7 @@ adapter_submit_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT
 adapter_simulate_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL)"
 adapter_simulate_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL)"
 adapter_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE "adapter upstream auth")"
+adapter_fallback_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "adapter upstream fallback auth")"
 
 parse_route_allowlist_csv_strict_into "$adapter_route_allowlist_raw" "COPYBOT_ADAPTER_ROUTE_ALLOWLIST" adapter_route_allowlist_csv
 
@@ -1093,6 +1094,17 @@ while IFS= read -r route; do
       errors+=("adapter auth token missing for route=$route while executor bearer auth is required")
     elif [[ -n "$executor_bearer_token" && "$route_auth_token" != "$executor_bearer_token" ]]; then
       errors+=("adapter auth token mismatch for route=$route vs executor bearer token")
+    fi
+
+    if [[ -n "$adapter_route_submit_fallback" || -n "$adapter_route_simulate_fallback" ]]; then
+      route_fallback_auth_token="$(first_non_empty \
+        "$(read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_FALLBACK_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_FALLBACK_AUTH_TOKEN_FILE" "adapter route fallback auth ($route)")" \
+        "$(first_non_empty "$adapter_fallback_auth_default" "$route_auth_token")")"
+      if [[ -z "$route_fallback_auth_token" ]]; then
+        errors+=("adapter fallback auth token missing for route=$route while executor bearer auth is required and adapter fallback endpoint is configured")
+      elif [[ -n "$executor_bearer_token" && "$route_fallback_auth_token" != "$executor_bearer_token" ]]; then
+        errors+=("adapter fallback auth token mismatch for route=$route vs executor bearer token")
+      fi
     fi
   fi
 done < <(normalized_routes_lines "$adapter_route_allowlist_csv")

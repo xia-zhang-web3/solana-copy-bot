@@ -3267,6 +3267,23 @@ run_executor_preflight_case() {
   assert_contains "$adapter_simulate_fallback_identity_violation_output" "preflight_verdict: FAIL"
   assert_contains "$adapter_simulate_fallback_identity_violation_output" "adapter simulate fallback URL for route=paper must resolve to distinct endpoint"
 
+  local adapter_fallback_auth_mismatch_output
+  if adapter_fallback_auth_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL="http://127.0.0.1:${port}/submit-fallback" \
+      COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN="mismatch-token" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter fallback auth mismatch while fallback endpoint is configured" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_fallback_auth_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_fallback_auth_mismatch_output" "adapter fallback auth token mismatch for route=paper vs executor bearer token"
+
   local submit_fallback_identity_violation_output
   if submit_fallback_identity_violation_output="$(
     PATH="$fake_curl_bin:$PATH" \
