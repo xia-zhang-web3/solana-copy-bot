@@ -3267,6 +3267,9 @@ run_executor_preflight_case() {
   assert_contains "$send_rpc_fallback_identity_violation_output" "preflight_verdict: FAIL"
   assert_contains "$send_rpc_fallback_identity_violation_output" "send-rpc fallback URL for executor route=rpc must resolve to distinct endpoint"
 
+  local auth_topology_secret_file="$TMP_DIR/executor-preflight-auth-topology.secret"
+  printf 'file-auth-token' >"$auth_topology_secret_file"
+
   local global_upstream_fallback_auth_without_endpoint_output
   if global_upstream_fallback_auth_without_endpoint_output="$(
     PATH="$fake_curl_bin:$PATH" \
@@ -3284,6 +3287,24 @@ run_executor_preflight_case() {
   fi
   assert_contains "$global_upstream_fallback_auth_without_endpoint_output" "preflight_verdict: FAIL"
   assert_contains "$global_upstream_fallback_auth_without_endpoint_output" "COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE requires at least one submit/simulate fallback endpoint"
+
+  local global_upstream_fallback_auth_file_without_endpoint_output
+  if global_upstream_fallback_auth_file_without_endpoint_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper" \
+      COPYBOT_ADAPTER_ROUTE_ALLOWLIST="paper" \
+      COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE="$auth_topology_secret_file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for global upstream fallback auth file without any fallback endpoints" >&2
+    exit 1
+  fi
+  assert_contains "$global_upstream_fallback_auth_file_without_endpoint_output" "preflight_verdict: FAIL"
+  assert_contains "$global_upstream_fallback_auth_file_without_endpoint_output" "COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE requires at least one submit/simulate fallback endpoint"
 
   local global_send_rpc_auth_without_endpoint_output
   if global_send_rpc_auth_without_endpoint_output="$(
@@ -3303,6 +3324,24 @@ run_executor_preflight_case() {
   assert_contains "$global_send_rpc_auth_without_endpoint_output" "preflight_verdict: FAIL"
   assert_contains "$global_send_rpc_auth_without_endpoint_output" "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE requires at least one send-rpc endpoint"
 
+  local global_send_rpc_auth_file_without_endpoint_output
+  if global_send_rpc_auth_file_without_endpoint_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper" \
+      COPYBOT_ADAPTER_ROUTE_ALLOWLIST="paper" \
+      COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE="$auth_topology_secret_file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for global send-rpc auth file without send-rpc endpoints" >&2
+    exit 1
+  fi
+  assert_contains "$global_send_rpc_auth_file_without_endpoint_output" "preflight_verdict: FAIL"
+  assert_contains "$global_send_rpc_auth_file_without_endpoint_output" "COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE requires at least one send-rpc endpoint"
+
   local global_send_rpc_fallback_auth_without_endpoint_output
   if global_send_rpc_fallback_auth_without_endpoint_output="$(
     PATH="$fake_curl_bin:$PATH" \
@@ -3321,6 +3360,24 @@ run_executor_preflight_case() {
   assert_contains "$global_send_rpc_fallback_auth_without_endpoint_output" "preflight_verdict: FAIL"
   assert_contains "$global_send_rpc_fallback_auth_without_endpoint_output" "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE requires at least one send-rpc fallback endpoint"
 
+  local global_send_rpc_fallback_auth_file_without_endpoint_output
+  if global_send_rpc_fallback_auth_file_without_endpoint_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper" \
+      COPYBOT_ADAPTER_ROUTE_ALLOWLIST="paper" \
+      COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE="$auth_topology_secret_file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for global send-rpc fallback auth file without fallback endpoints" >&2
+    exit 1
+  fi
+  assert_contains "$global_send_rpc_fallback_auth_file_without_endpoint_output" "preflight_verdict: FAIL"
+  assert_contains "$global_send_rpc_fallback_auth_file_without_endpoint_output" "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE requires at least one send-rpc fallback endpoint"
+
   local route_upstream_fallback_auth_without_endpoint_output
   if route_upstream_fallback_auth_without_endpoint_output="$(
     PATH="$fake_curl_bin:$PATH" \
@@ -3336,6 +3393,22 @@ run_executor_preflight_case() {
   fi
   assert_contains "$route_upstream_fallback_auth_without_endpoint_output" "preflight_verdict: FAIL"
   assert_contains "$route_upstream_fallback_auth_without_endpoint_output" "COPYBOT_EXECUTOR_ROUTE_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_ROUTE_RPC_FALLBACK_AUTH_TOKEN_FILE requires route=rpc submit/simulate fallback endpoint"
+
+  local route_upstream_fallback_auth_file_without_endpoint_output
+  if route_upstream_fallback_auth_file_without_endpoint_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_RPC_FALLBACK_AUTH_TOKEN_FILE="$auth_topology_secret_file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for route-specific fallback auth file without fallback endpoint" >&2
+    exit 1
+  fi
+  assert_contains "$route_upstream_fallback_auth_file_without_endpoint_output" "preflight_verdict: FAIL"
+  assert_contains "$route_upstream_fallback_auth_file_without_endpoint_output" "COPYBOT_EXECUTOR_ROUTE_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_ROUTE_RPC_FALLBACK_AUTH_TOKEN_FILE requires route=rpc submit/simulate fallback endpoint"
 
   local route_send_rpc_auth_without_endpoint_output
   if route_send_rpc_auth_without_endpoint_output="$(
@@ -3353,6 +3426,22 @@ run_executor_preflight_case() {
   assert_contains "$route_send_rpc_auth_without_endpoint_output" "preflight_verdict: FAIL"
   assert_contains "$route_send_rpc_auth_without_endpoint_output" "COPYBOT_EXECUTOR_ROUTE_PAPER_SEND_RPC_AUTH_TOKEN or COPYBOT_EXECUTOR_ROUTE_PAPER_SEND_RPC_AUTH_TOKEN_FILE requires route=paper send-rpc endpoint"
 
+  local route_send_rpc_auth_file_without_endpoint_output
+  if route_send_rpc_auth_file_without_endpoint_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_PAPER_SEND_RPC_AUTH_TOKEN_FILE="$auth_topology_secret_file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for route-specific send-rpc auth file without primary send-rpc endpoint" >&2
+    exit 1
+  fi
+  assert_contains "$route_send_rpc_auth_file_without_endpoint_output" "preflight_verdict: FAIL"
+  assert_contains "$route_send_rpc_auth_file_without_endpoint_output" "COPYBOT_EXECUTOR_ROUTE_PAPER_SEND_RPC_AUTH_TOKEN or COPYBOT_EXECUTOR_ROUTE_PAPER_SEND_RPC_AUTH_TOKEN_FILE requires route=paper send-rpc endpoint"
+
   local route_send_rpc_fallback_auth_without_endpoint_output
   if route_send_rpc_fallback_auth_without_endpoint_output="$(
     PATH="$fake_curl_bin:$PATH" \
@@ -3368,6 +3457,22 @@ run_executor_preflight_case() {
   fi
   assert_contains "$route_send_rpc_fallback_auth_without_endpoint_output" "preflight_verdict: FAIL"
   assert_contains "$route_send_rpc_fallback_auth_without_endpoint_output" "COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE requires route=rpc send-rpc fallback endpoint"
+
+  local route_send_rpc_fallback_auth_file_without_endpoint_output
+  if route_send_rpc_fallback_auth_file_without_endpoint_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE="$auth_topology_secret_file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for route-specific send-rpc fallback auth file without fallback endpoint" >&2
+    exit 1
+  fi
+  assert_contains "$route_send_rpc_fallback_auth_file_without_endpoint_output" "preflight_verdict: FAIL"
+  assert_contains "$route_send_rpc_fallback_auth_file_without_endpoint_output" "COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE requires route=rpc send-rpc fallback endpoint"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
 
