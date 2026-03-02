@@ -101,6 +101,8 @@ if ((${#input_errors[@]} == 0)); then
   if ! signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$signoff_output")"; then
     input_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${signoff_artifacts_written_raw:-<empty>}")
     signoff_artifacts_written="unknown"
+  elif [[ "$signoff_artifacts_written" != "true" ]]; then
+    input_errors+=("nested route/fee signoff artifacts_written must be true")
   fi
   signoff_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$signoff_output")")"
   signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$signoff_output")")"

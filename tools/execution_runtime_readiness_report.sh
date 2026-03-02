@@ -149,6 +149,8 @@ if ((${#input_errors[@]} == 0)); then
   if ! adapter_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$adapter_output")"; then
     input_errors+=("nested adapter rollout final artifacts_written must be boolean token, got: ${adapter_artifacts_written_raw:-<empty>}")
     adapter_artifacts_written="unknown"
+  elif [[ "$adapter_artifacts_written" != "true" ]]; then
+    input_errors+=("nested adapter rollout final artifacts_written must be true")
   fi
   adapter_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$adapter_output")")"
   adapter_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$adapter_output")")"
@@ -198,6 +200,8 @@ if ((${#input_errors[@]} == 0)); then
   if ! route_fee_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_output")"; then
     input_errors+=("nested route fee final artifacts_written must be boolean token, got: ${route_fee_artifacts_written_raw:-<empty>}")
     route_fee_artifacts_written="unknown"
+  elif [[ "$route_fee_artifacts_written" != "true" ]]; then
+    input_errors+=("nested route fee final artifacts_written must be true")
   fi
   route_fee_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$route_fee_output")")"
   route_fee_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_output")")"

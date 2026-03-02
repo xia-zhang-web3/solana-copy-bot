@@ -132,6 +132,8 @@ if ((${#input_errors[@]} == 0)); then
   if ! rollout_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rollout_output")"; then
     input_errors+=("nested executor rollout artifacts_written must be boolean token, got: ${rollout_artifacts_written_raw:-<empty>}")
     rollout_artifacts_written="unknown"
+  elif [[ "$rollout_artifacts_written" != "true" ]]; then
+    input_errors+=("nested executor rollout artifacts_written must be true")
   fi
   rollout_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$rollout_output")")"
   rollout_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rollout_output")")"
