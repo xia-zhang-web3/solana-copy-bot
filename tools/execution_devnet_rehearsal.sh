@@ -14,6 +14,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-}"
 RUN_TESTS="${RUN_TESTS:-true}"
 # Test-only override: when true, allows GO with RUN_TESTS=false.
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
+DEVNET_REHEARSAL_PROFILE="${DEVNET_REHEARSAL_PROFILE:-full}"
 WINDOWED_SIGNOFF_WINDOWS_CSV="${WINDOWED_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 WINDOWED_SIGNOFF_REQUIRED="${WINDOWED_SIGNOFF_REQUIRED:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
@@ -160,11 +161,34 @@ PY
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
+devnet_rehearsal_run_windowed_signoff_raw="true"
+devnet_rehearsal_run_route_fee_signoff_raw="true"
+case "$DEVNET_REHEARSAL_PROFILE" in
+  full)
+    ;;
+  core_only)
+    devnet_rehearsal_run_windowed_signoff_raw="false"
+    devnet_rehearsal_run_route_fee_signoff_raw="false"
+    ;;
+  *)
+    echo "DEVNET_REHEARSAL_PROFILE must be one of: full,core_only (got: $DEVNET_REHEARSAL_PROFILE)" >&2
+    exit 1
+    ;;
+esac
+if [[ -n "${DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF+x}" ]]; then
+  devnet_rehearsal_run_windowed_signoff_raw="${DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF}"
+fi
+if [[ -n "${DEVNET_REHEARSAL_RUN_ROUTE_FEE_SIGNOFF+x}" ]]; then
+  devnet_rehearsal_run_route_fee_signoff_raw="${DEVNET_REHEARSAL_RUN_ROUTE_FEE_SIGNOFF}"
+fi
+
 run_tests_norm="$(parse_rehearsal_bool_setting "RUN_TESTS" "$RUN_TESTS")"
 test_mode_norm="$(parse_rehearsal_bool_setting "DEVNET_REHEARSAL_TEST_MODE" "$DEVNET_REHEARSAL_TEST_MODE")"
 windowed_signoff_required_norm="$(parse_rehearsal_bool_setting "WINDOWED_SIGNOFF_REQUIRED" "$WINDOWED_SIGNOFF_REQUIRED")"
 windowed_signoff_require_dynamic_hint_source_pass_norm="$(parse_rehearsal_bool_setting "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS")"
 windowed_signoff_require_dynamic_tip_policy_pass_norm="$(parse_rehearsal_bool_setting "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS")"
+devnet_rehearsal_run_windowed_signoff_norm="$(parse_rehearsal_bool_setting "DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF" "$devnet_rehearsal_run_windowed_signoff_raw")"
+devnet_rehearsal_run_route_fee_signoff_norm="$(parse_rehearsal_bool_setting "DEVNET_REHEARSAL_RUN_ROUTE_FEE_SIGNOFF" "$devnet_rehearsal_run_route_fee_signoff_raw")"
 go_nogo_require_jito_rpc_policy_norm="$(parse_rehearsal_bool_setting "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY")"
 go_nogo_require_fastlane_disabled_norm="$(parse_rehearsal_bool_setting "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED")"
 go_nogo_test_mode_norm="$(parse_rehearsal_bool_setting "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE")"
@@ -197,6 +221,12 @@ if [[ "$execution_mode" != "adapter_submit_confirm" ]]; then
 fi
 if ! devnet_rpc_check="$(validate_devnet_rpc_url "$devnet_rpc_url" 2>&1)"; then
   config_errors+=("execution.rpc_devnet_http_url invalid: $devnet_rpc_check")
+fi
+if [[ "$windowed_signoff_required_norm" == "true" && "$devnet_rehearsal_run_windowed_signoff_norm" != "true" ]]; then
+  config_errors+=("WINDOWED_SIGNOFF_REQUIRED=true requires DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF=true")
+fi
+if [[ "$route_fee_signoff_required_norm" == "true" && "$devnet_rehearsal_run_route_fee_signoff_norm" != "true" ]]; then
+  config_errors+=("ROUTE_FEE_SIGNOFF_REQUIRED=true requires DEVNET_REHEARSAL_RUN_ROUTE_FEE_SIGNOFF=true")
 fi
 
 preflight_output=""
@@ -258,23 +288,38 @@ fi
 
 windowed_signoff_output=""
 windowed_signoff_exit_code=0
-if windowed_signoff_output="$(
-  CONFIG_PATH="$CONFIG_PATH" \
-  SERVICE="$SERVICE" \
-  GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
-  GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
-  GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
-  GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
-  GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
-  WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
-  WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
-  PACKAGE_BUNDLE_ENABLED="false" \
-  OUTPUT_DIR="$windowed_signoff_output_dir" \
-  bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" "$WINDOWED_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
-)"; then
-  windowed_signoff_exit_code=0
+if [[ "$devnet_rehearsal_run_windowed_signoff_norm" == "true" ]]; then
+  if windowed_signoff_output="$(
+    CONFIG_PATH="$CONFIG_PATH" \
+    SERVICE="$SERVICE" \
+    GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
+    GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
+    GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+    GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
+    GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+    WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
+    WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
+    PACKAGE_BUNDLE_ENABLED="false" \
+    OUTPUT_DIR="$windowed_signoff_output_dir" \
+    bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" "$WINDOWED_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+  )"; then
+    windowed_signoff_exit_code=0
+  else
+    windowed_signoff_exit_code=$?
+  fi
 else
-  windowed_signoff_exit_code=$?
+  windowed_signoff_exit_code=0
+  windowed_signoff_output="$(cat <<EOF
+signoff_verdict: SKIP
+signoff_reason: windowed signoff stage disabled via DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF=false
+windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dynamic_hint_source_pass_norm
+windowed_signoff_require_dynamic_tip_policy_pass: $windowed_signoff_require_dynamic_tip_policy_pass_norm
+artifact_manifest: n/a
+summary_sha256: n/a
+artifacts_written: false
+package_bundle_enabled: false
+EOF
+)"
 fi
 windowed_signoff_nested_capture_path=""
 if [[ -n "$windowed_signoff_output_dir" ]]; then
@@ -290,22 +335,44 @@ fi
 
 route_fee_signoff_output=""
 route_fee_signoff_exit_code=0
-if route_fee_signoff_output="$(
-  DB_PATH="${DB_PATH:-}" \
-  CONFIG_PATH="$CONFIG_PATH" \
-  SERVICE="$SERVICE" \
-  GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
-  GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
-  GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode_norm" \
-  GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_fee_override" \
-  GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_route_override" \
-  PACKAGE_BUNDLE_ENABLED="false" \
-  OUTPUT_DIR="$route_fee_signoff_output_dir" \
-  bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
-)"; then
-  route_fee_signoff_exit_code=0
+if [[ "$devnet_rehearsal_run_route_fee_signoff_norm" == "true" ]]; then
+  if route_fee_signoff_output="$(
+    DB_PATH="${DB_PATH:-}" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    SERVICE="$SERVICE" \
+    GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
+    GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+    GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode_norm" \
+    GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_fee_override" \
+    GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_route_override" \
+    PACKAGE_BUNDLE_ENABLED="false" \
+    OUTPUT_DIR="$route_fee_signoff_output_dir" \
+    bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+  )"; then
+    route_fee_signoff_exit_code=0
+  else
+    route_fee_signoff_exit_code=$?
+  fi
 else
-  route_fee_signoff_exit_code=$?
+  route_fee_signoff_exit_code=0
+  route_fee_signoff_output="$(cat <<EOF
+signoff_verdict: SKIP
+signoff_reason: route/fee signoff stage disabled via DEVNET_REHEARSAL_RUN_ROUTE_FEE_SIGNOFF=false
+signoff_reason_code: stage_disabled
+windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
+artifact_manifest: n/a
+summary_sha256: n/a
+artifacts_written: false
+package_bundle_enabled: false
+primary_route_stable: false
+stable_primary_route: n/a
+fallback_route_stable: false
+stable_fallback_route: n/a
+route_profile_pass_count: n/a
+fee_decomposition_pass_count: n/a
+window_count: n/a
+EOF
+)"
 fi
 route_fee_signoff_nested_capture_path=""
 if [[ -n "$route_fee_signoff_output_dir" ]]; then
@@ -322,19 +389,27 @@ elif [[ "$go_nogo_nested_package_bundle_enabled" != "false" ]]; then
 fi
 
 windowed_signoff_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$windowed_signoff_output")")"
-if ! windowed_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$windowed_signoff_output")"; then
-  config_errors+=("nested windowed signoff package_bundle_enabled must be boolean token, got: ${windowed_signoff_nested_package_bundle_enabled_raw:-<empty>}")
-  windowed_signoff_nested_package_bundle_enabled="unknown"
-elif [[ "$windowed_signoff_nested_package_bundle_enabled" != "false" ]]; then
-  config_errors+=("nested windowed signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+if [[ "$devnet_rehearsal_run_windowed_signoff_norm" == "true" ]]; then
+  if ! windowed_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$windowed_signoff_output")"; then
+    config_errors+=("nested windowed signoff package_bundle_enabled must be boolean token, got: ${windowed_signoff_nested_package_bundle_enabled_raw:-<empty>}")
+    windowed_signoff_nested_package_bundle_enabled="unknown"
+  elif [[ "$windowed_signoff_nested_package_bundle_enabled" != "false" ]]; then
+    config_errors+=("nested windowed signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
+else
+  windowed_signoff_nested_package_bundle_enabled="n/a"
 fi
 
 route_fee_signoff_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$route_fee_signoff_output")")"
-if ! route_fee_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_signoff_output")"; then
-  config_errors+=("nested route/fee signoff package_bundle_enabled must be boolean token, got: ${route_fee_signoff_nested_package_bundle_enabled_raw:-<empty>}")
-  route_fee_signoff_nested_package_bundle_enabled="unknown"
-elif [[ "$route_fee_signoff_nested_package_bundle_enabled" != "false" ]]; then
-  config_errors+=("nested route/fee signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+if [[ "$devnet_rehearsal_run_route_fee_signoff_norm" == "true" ]]; then
+  if ! route_fee_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_signoff_output")"; then
+    config_errors+=("nested route/fee signoff package_bundle_enabled must be boolean token, got: ${route_fee_signoff_nested_package_bundle_enabled_raw:-<empty>}")
+    route_fee_signoff_nested_package_bundle_enabled="unknown"
+  elif [[ "$route_fee_signoff_nested_package_bundle_enabled" != "false" ]]; then
+    config_errors+=("nested route/fee signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
+else
+  route_fee_signoff_nested_package_bundle_enabled="n/a"
 fi
 
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
@@ -398,53 +473,79 @@ elif [[ -n "$go_nogo_output_dir" && "$go_nogo_artifacts_written" != "true" ]]; t
 fi
 windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$windowed_signoff_output")")"
 windowed_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$windowed_signoff_output")")"
-windowed_signoff_require_dynamic_hint_source_pass_raw="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")")"
-if ! windowed_signoff_require_dynamic_hint_source_pass="$(extract_bool_field_strict "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")"; then
-  config_errors+=("nested windowed signoff windowed_signoff_require_dynamic_hint_source_pass must be boolean token, got: ${windowed_signoff_require_dynamic_hint_source_pass_raw:-<empty>}")
-  windowed_signoff_require_dynamic_hint_source_pass="unknown"
-fi
-windowed_signoff_require_dynamic_tip_policy_pass_raw="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")")"
-if ! windowed_signoff_require_dynamic_tip_policy_pass="$(extract_bool_field_strict "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")"; then
-  config_errors+=("nested windowed signoff windowed_signoff_require_dynamic_tip_policy_pass must be boolean token, got: ${windowed_signoff_require_dynamic_tip_policy_pass_raw:-<empty>}")
-  windowed_signoff_require_dynamic_tip_policy_pass="unknown"
-fi
-windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$windowed_signoff_output")")"
-windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$windowed_signoff_output")")"
-windowed_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$windowed_signoff_output")")"
-if ! windowed_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$windowed_signoff_output")"; then
-  config_errors+=("nested windowed signoff artifacts_written must be boolean token, got: ${windowed_signoff_artifacts_written_raw:-<empty>}")
-  windowed_signoff_artifacts_written="unknown"
-elif [[ -n "$windowed_signoff_output_dir" && "$windowed_signoff_artifacts_written" != "true" ]]; then
-  config_errors+=("nested windowed signoff artifacts_written must be true")
+if [[ "$devnet_rehearsal_run_windowed_signoff_norm" == "true" ]]; then
+  windowed_signoff_require_dynamic_hint_source_pass_raw="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")")"
+  if ! windowed_signoff_require_dynamic_hint_source_pass="$(extract_bool_field_strict "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")"; then
+    config_errors+=("nested windowed signoff windowed_signoff_require_dynamic_hint_source_pass must be boolean token, got: ${windowed_signoff_require_dynamic_hint_source_pass_raw:-<empty>}")
+    windowed_signoff_require_dynamic_hint_source_pass="unknown"
+  fi
+  windowed_signoff_require_dynamic_tip_policy_pass_raw="$(trim_string "$(extract_field "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")")"
+  if ! windowed_signoff_require_dynamic_tip_policy_pass="$(extract_bool_field_strict "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")"; then
+    config_errors+=("nested windowed signoff windowed_signoff_require_dynamic_tip_policy_pass must be boolean token, got: ${windowed_signoff_require_dynamic_tip_policy_pass_raw:-<empty>}")
+    windowed_signoff_require_dynamic_tip_policy_pass="unknown"
+  fi
+  windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$windowed_signoff_output")")"
+  windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$windowed_signoff_output")")"
+  windowed_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$windowed_signoff_output")")"
+  if ! windowed_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$windowed_signoff_output")"; then
+    config_errors+=("nested windowed signoff artifacts_written must be boolean token, got: ${windowed_signoff_artifacts_written_raw:-<empty>}")
+    windowed_signoff_artifacts_written="unknown"
+  elif [[ -n "$windowed_signoff_output_dir" && "$windowed_signoff_artifacts_written" != "true" ]]; then
+    config_errors+=("nested windowed signoff artifacts_written must be true")
+  fi
+else
+  windowed_signoff_verdict="SKIP"
+  windowed_signoff_reason="windowed signoff stage disabled via DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF=false"
+  windowed_signoff_require_dynamic_hint_source_pass="$windowed_signoff_require_dynamic_hint_source_pass_norm"
+  windowed_signoff_require_dynamic_tip_policy_pass="$windowed_signoff_require_dynamic_tip_policy_pass_norm"
+  windowed_signoff_artifact_manifest="n/a"
+  windowed_signoff_summary_sha256="n/a"
+  windowed_signoff_artifacts_written="n/a"
 fi
 route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$route_fee_signoff_output")")"
 route_fee_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$route_fee_signoff_output")")"
 route_fee_signoff_reason_code="$(trim_string "$(extract_field "signoff_reason_code" "$route_fee_signoff_output")")"
 route_fee_signoff_windows_csv="$(trim_string "$(extract_field "windows_csv" "$route_fee_signoff_output")")"
-route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
-route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
-route_fee_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
-if ! route_fee_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_signoff_output")"; then
-  config_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${route_fee_signoff_artifacts_written_raw:-<empty>}")
-  route_fee_signoff_artifacts_written="unknown"
-elif [[ -n "$route_fee_signoff_output_dir" && "$route_fee_signoff_artifacts_written" != "true" ]]; then
-  config_errors+=("nested route/fee signoff artifacts_written must be true")
+if [[ "$devnet_rehearsal_run_route_fee_signoff_norm" == "true" ]]; then
+  route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
+  route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
+  route_fee_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+  if ! route_fee_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_signoff_output")"; then
+    config_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${route_fee_signoff_artifacts_written_raw:-<empty>}")
+    route_fee_signoff_artifacts_written="unknown"
+  elif [[ -n "$route_fee_signoff_output_dir" && "$route_fee_signoff_artifacts_written" != "true" ]]; then
+    config_errors+=("nested route/fee signoff artifacts_written must be true")
+  fi
+  route_fee_primary_route_stable_raw="$(trim_string "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
+  if ! route_fee_primary_route_stable="$(extract_bool_field_strict "primary_route_stable" "$route_fee_signoff_output")"; then
+    config_errors+=("nested route/fee signoff primary_route_stable must be boolean token, got: ${route_fee_primary_route_stable_raw:-<empty>}")
+    route_fee_primary_route_stable="unknown"
+  fi
+  route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_signoff_output")")"
+  route_fee_fallback_route_stable_raw="$(trim_string "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"
+  if ! route_fee_fallback_route_stable="$(extract_bool_field_strict "fallback_route_stable" "$route_fee_signoff_output")"; then
+    config_errors+=("nested route/fee signoff fallback_route_stable must be boolean token, got: ${route_fee_fallback_route_stable_raw:-<empty>}")
+    route_fee_fallback_route_stable="unknown"
+  fi
+  route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_signoff_output")")"
+  route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_profile_pass_count" "$route_fee_signoff_output")")"
+  route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "fee_decomposition_pass_count" "$route_fee_signoff_output")")"
+  route_fee_window_count="$(trim_string "$(extract_field "window_count" "$route_fee_signoff_output")")"
+else
+  route_fee_signoff_verdict="SKIP"
+  route_fee_signoff_reason="route/fee signoff stage disabled via DEVNET_REHEARSAL_RUN_ROUTE_FEE_SIGNOFF=false"
+  route_fee_signoff_reason_code="stage_disabled"
+  route_fee_signoff_artifact_manifest="n/a"
+  route_fee_signoff_summary_sha256="n/a"
+  route_fee_signoff_artifacts_written="n/a"
+  route_fee_primary_route_stable="n/a"
+  route_fee_stable_primary_route="n/a"
+  route_fee_fallback_route_stable="n/a"
+  route_fee_stable_fallback_route="n/a"
+  route_fee_route_profile_pass_count="n/a"
+  route_fee_fee_decomposition_pass_count="n/a"
+  route_fee_window_count="n/a"
 fi
-route_fee_primary_route_stable_raw="$(trim_string "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
-if ! route_fee_primary_route_stable="$(extract_bool_field_strict "primary_route_stable" "$route_fee_signoff_output")"; then
-  config_errors+=("nested route/fee signoff primary_route_stable must be boolean token, got: ${route_fee_primary_route_stable_raw:-<empty>}")
-  route_fee_primary_route_stable="unknown"
-fi
-route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_signoff_output")")"
-route_fee_fallback_route_stable_raw="$(trim_string "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"
-if ! route_fee_fallback_route_stable="$(extract_bool_field_strict "fallback_route_stable" "$route_fee_signoff_output")"; then
-  config_errors+=("nested route/fee signoff fallback_route_stable must be boolean token, got: ${route_fee_fallback_route_stable_raw:-<empty>}")
-  route_fee_fallback_route_stable="unknown"
-fi
-route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_signoff_output")")"
-route_fee_route_profile_pass_count="$(trim_string "$(extract_field "route_profile_pass_count" "$route_fee_signoff_output")")"
-route_fee_fee_decomposition_pass_count="$(trim_string "$(extract_field "fee_decomposition_pass_count" "$route_fee_signoff_output")")"
-route_fee_window_count="$(trim_string "$(extract_field "window_count" "$route_fee_signoff_output")")"
 if [[ "$overall_go_nogo_verdict" == "UNKNOWN" && "$go_nogo_exit_code" -ne 0 && -z "$overall_go_nogo_reason" ]]; then
   overall_go_nogo_reason="execution_go_nogo_report exited with code $go_nogo_exit_code"
 fi
@@ -611,6 +712,9 @@ config: $CONFIG_PATH
 service: $SERVICE
 window_hours: $WINDOW_HOURS
 risk_events_minutes: $RISK_EVENTS_MINUTES
+devnet_rehearsal_profile: $DEVNET_REHEARSAL_PROFILE
+devnet_rehearsal_run_windowed_signoff: $devnet_rehearsal_run_windowed_signoff_norm
+devnet_rehearsal_run_route_fee_signoff: $devnet_rehearsal_run_route_fee_signoff_norm
 
 execution_enabled: $execution_enabled
 execution_mode: $execution_mode

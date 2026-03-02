@@ -3098,6 +3098,46 @@ run_devnet_rehearsal_case() {
   fi
   assert_contains "$missing_output_dir_output" "PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set"
 
+  local core_only_output=""
+  core_only_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      RUN_TESTS="false" DEVNET_REHEARSAL_TEST_MODE="true" \
+      DEVNET_REHEARSAL_PROFILE="core_only" \
+      GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
+  )"
+  assert_field_equals "$core_only_output" "devnet_rehearsal_profile" "core_only"
+  assert_field_equals "$core_only_output" "devnet_rehearsal_run_windowed_signoff" "false"
+  assert_field_equals "$core_only_output" "devnet_rehearsal_run_route_fee_signoff" "false"
+  assert_field_equals "$core_only_output" "windowed_signoff_verdict" "SKIP"
+  assert_contains "$core_only_output" "windowed_signoff_reason: windowed signoff stage disabled via DEVNET_REHEARSAL_RUN_WINDOWED_SIGNOFF=false"
+  assert_field_equals "$core_only_output" "windowed_signoff_artifacts_written" "n/a"
+  assert_field_equals "$core_only_output" "windowed_signoff_nested_package_bundle_enabled" "n/a"
+  assert_field_equals "$core_only_output" "route_fee_signoff_verdict" "SKIP"
+  assert_field_equals "$core_only_output" "route_fee_signoff_reason_code" "stage_disabled"
+  assert_field_equals "$core_only_output" "route_fee_signoff_artifacts_written" "n/a"
+  assert_field_equals "$core_only_output" "route_fee_signoff_nested_package_bundle_enabled" "n/a"
+  assert_field_equals "$core_only_output" "devnet_rehearsal_verdict" "GO"
+  assert_field_equals "$core_only_output" "devnet_rehearsal_reason_code" "test_mode_override"
+
+  local invalid_profile_output=""
+  if invalid_profile_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      DEVNET_REHEARSAL_PROFILE="bogus_profile" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_devnet_rehearsal.sh to fail for invalid DEVNET_REHEARSAL_PROFILE" >&2
+    exit 1
+  else
+    local invalid_profile_exit_code=$?
+    if [[ "$invalid_profile_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid DEVNET_REHEARSAL_PROFILE, got $invalid_profile_exit_code" >&2
+      echo "$invalid_profile_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_profile_output" "DEVNET_REHEARSAL_PROFILE must be one of: full,core_only"
+
   local required_nogo_output=""
   if required_nogo_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
