@@ -260,6 +260,68 @@ normalize_route_token() {
   printf '%s' "$raw" | tr '[:upper:]' '[:lower:]'
 }
 
+is_known_route_token() {
+  local route="$1"
+  case "$route" in
+    paper|rpc|jito|fastlane)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+parse_route_allowlist_csv_strict_into() {
+  local csv="$1"
+  local env_key="$2"
+  local output_var="$3"
+  local remaining token_raw token_trim token_norm
+  local normalized_csv=""
+  local seen=""
+  local continue_loop="true"
+
+  if [[ -z "${csv//[[:space:]]/}" ]]; then
+    errors+=("$env_key must contain at least one route")
+    printf -v "$output_var" ''
+    return
+  fi
+
+  remaining="$csv"
+  while [[ "$continue_loop" == "true" ]]; do
+    if [[ "$remaining" == *,* ]]; then
+      token_raw="${remaining%%,*}"
+      remaining="${remaining#*,}"
+    else
+      token_raw="$remaining"
+      continue_loop="false"
+    fi
+
+    token_trim="$(trim_string "$token_raw")"
+    if [[ -z "$token_trim" ]]; then
+      errors+=("$env_key contains empty route entry")
+      continue
+    fi
+
+    token_norm="$(normalize_route_token "$token_trim")"
+    if ! is_known_route_token "$token_norm"; then
+      errors+=("$env_key contains unsupported route=$token_norm (supported: paper,rpc,jito,fastlane)")
+      continue
+    fi
+    if printf '%s\n' "$seen" | grep -Fqx -- "$token_norm"; then
+      errors+=("$env_key contains duplicate route=$token_norm")
+      continue
+    fi
+    seen+="${token_norm}"$'\n'
+    normalized_csv+="${normalized_csv:+,}${token_norm}"
+  done
+
+  if [[ -z "$normalized_csv" ]]; then
+    errors+=("$env_key must contain at least one route")
+  fi
+  printf -v "$output_var" '%s' "$normalized_csv"
+}
+
 normalized_routes_lines() {
   local csv="$1"
   if [[ -z "${csv//[[:space:]]/}" ]]; then
@@ -300,6 +362,38 @@ csv_contains_route() {
     fi
   done < <(normalized_routes_lines "$csv")
   return 1
+}
+
+validate_pubkey_like_token() {
+  local raw="$1"
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    return 0
+  fi
+  "$PYTHON3_BIN" - "$raw" <<'PY'
+import sys
+
+raw = (sys.argv[1] or "").strip()
+if not raw:
+    print("pubkey must be non-empty")
+    raise SystemExit(1)
+
+alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+alphabet_index = {ch: idx for idx, ch in enumerate(alphabet)}
+
+value = 0
+for ch in raw:
+    if ch not in alphabet_index:
+        print(f"invalid base58 character: {ch}")
+        raise SystemExit(1)
+    value = value * 58 + alphabet_index[ch]
+
+decoded = b"" if value == 0 else value.to_bytes((value.bit_length() + 7) // 8, "big")
+leading_ones = len(raw) - len(raw.lstrip("1"))
+decoded = (b"\x00" * leading_ones) + decoded
+if len(decoded) != 32:
+    print(f"decoded pubkey length must be 32 bytes, got: {len(decoded)}")
+    raise SystemExit(1)
+PY
 }
 
 endpoint_identity() {
@@ -632,7 +726,8 @@ fi
 
 executor_bind_addr="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BIND_ADDR)" "127.0.0.1:8090")"
 executor_contract_version_expected="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_CONTRACT_VERSION)" "v1")"
-executor_route_allowlist_csv="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_ROUTE_ALLOWLIST)" "paper,rpc,jito")"
+executor_route_allowlist_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_ROUTE_ALLOWLIST)" "paper,rpc,jito")"
+executor_route_allowlist_csv=""
 executor_submit_fastlane_enabled_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED)" "false")"
 executor_allow_unauthenticated_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED)" "false")"
 executor_upstream_submit_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL)"
@@ -648,6 +743,8 @@ expected_send_rpc_enabled_routes_csv=""
 expected_send_rpc_fallback_routes_csv=""
 executor_signer_source_expected_valid="true"
 
+parse_route_allowlist_csv_strict_into "$executor_route_allowlist_raw" "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST" executor_route_allowlist_csv
+
 executor_submit_fastlane_enabled="$(parse_bool_token "$executor_submit_fastlane_enabled_raw")"
 if [[ -z "$executor_submit_fastlane_enabled" ]]; then
   errors+=("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED must be boolean token")
@@ -661,6 +758,11 @@ fi
 
 if [[ -z "$executor_signer_pubkey" ]]; then
   errors+=("COPYBOT_EXECUTOR_SIGNER_PUBKEY must be non-empty")
+elif ! signer_pubkey_validation_error="$(validate_pubkey_like_token "$executor_signer_pubkey" 2>/dev/null)"; then
+  if [[ -z "$signer_pubkey_validation_error" ]]; then
+    signer_pubkey_validation_error="unknown validation error"
+  fi
+  errors+=("COPYBOT_EXECUTOR_SIGNER_PUBKEY must be valid base58 pubkey-like value: $signer_pubkey_validation_error")
 fi
 case "$executor_signer_source_expected" in
   file|kms)
@@ -670,10 +772,6 @@ case "$executor_signer_source_expected" in
     executor_signer_source_expected_valid="false"
     ;;
 esac
-
-if [[ -z "${executor_route_allowlist_csv//[[:space:]]/}" ]]; then
-  errors+=("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST must not be empty")
-fi
 
 while IFS= read -r route; do
   [[ -z "$route" ]] && continue
@@ -752,10 +850,13 @@ if [[ -z "$EXECUTOR_HEALTH_URL" ]]; then
   fi
 fi
 
-adapter_route_allowlist_csv="$(first_non_empty "$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_ROUTE_ALLOWLIST)" "paper,rpc,fastlane,jito")"
+adapter_route_allowlist_raw="$(first_non_empty "$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_ROUTE_ALLOWLIST)" "paper,rpc,fastlane,jito")"
+adapter_route_allowlist_csv=""
 adapter_submit_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL)"
 adapter_simulate_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL)"
 adapter_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE "adapter upstream auth")"
+
+parse_route_allowlist_csv_strict_into "$adapter_route_allowlist_raw" "COPYBOT_ADAPTER_ROUTE_ALLOWLIST" adapter_route_allowlist_csv
 
 expected_submit_identity=""
 expected_simulate_identity=""
@@ -1093,7 +1194,10 @@ summary="$({
   echo "executor_expected_submit_url: $EXECUTOR_EXPECT_SUBMIT_URL"
   echo "executor_expected_simulate_url: $EXECUTOR_EXPECT_SIMULATE_URL"
   echo "executor_contract_version_expected: $executor_contract_version_expected"
+  echo "executor_route_allowlist_raw: $executor_route_allowlist_raw"
   echo "executor_route_allowlist_csv: $executor_route_allowlist_csv"
+  echo "adapter_route_allowlist_raw: $adapter_route_allowlist_raw"
+  echo "adapter_route_allowlist_csv: $adapter_route_allowlist_csv"
   echo "expected_send_rpc_enabled_routes_csv: $expected_send_rpc_enabled_routes_csv"
   echo "expected_send_rpc_fallback_routes_csv: $expected_send_rpc_fallback_routes_csv"
   echo "executor_signer_source_expected: $executor_signer_source_expected"

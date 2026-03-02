@@ -577,7 +577,7 @@ write_executor_env_preflight() {
   cat >"$env_path" <<EOF
 COPYBOT_EXECUTOR_BIND_ADDR="127.0.0.1:${port}"
 COPYBOT_EXECUTOR_CONTRACT_VERSION="v1"
-COPYBOT_EXECUTOR_SIGNER_PUBKEY="Signer1111111111111111111111111111111111"
+COPYBOT_EXECUTOR_SIGNER_PUBKEY="11111111111111111111111111111111"
 COPYBOT_EXECUTOR_SIGNER_SOURCE="kms"
 COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID="kms-key-1"
 COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper,rpc,jito"
@@ -629,7 +629,7 @@ health_send_rpc_enabled_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED
 health_send_rpc_fallback_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_JSON:-}"
 health_send_rpc_alias_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_JSON:-}"
 health_signer_source="${FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE:-kms}"
-health_signer_pubkey="${FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY:-Signer1111111111111111111111111111111111}"
+health_signer_pubkey="${FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY:-11111111111111111111111111111111}"
 health_submit_fastlane_enabled="${FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED:-false}"
 health_status_json_raw="${FAKE_EXECUTOR_HEALTH_STATUS_JSON:-}"
 health_contract_version_json_raw="${FAKE_EXECUTOR_HEALTH_CONTRACT_VERSION_JSON:-}"
@@ -2640,12 +2640,12 @@ run_executor_preflight_case() {
   assert_contains "$pass_output" "preflight_verdict: PASS"
   assert_field_equals "$pass_output" "preflight_reason_code" "checks_passed"
   assert_field_equals "$pass_output" "executor_signer_source_expected" "kms"
-  assert_field_equals "$pass_output" "executor_signer_pubkey_expected" "Signer1111111111111111111111111111111111"
+  assert_field_equals "$pass_output" "executor_signer_pubkey_expected" "11111111111111111111111111111111"
   assert_field_equals "$pass_output" "health_status_field_kind" "string"
   assert_field_equals "$pass_output" "health_contract_version_field_kind" "string"
   assert_field_equals "$pass_output" "health_signer_source" "kms"
   assert_field_equals "$pass_output" "health_signer_source_field_kind" "string"
-  assert_field_equals "$pass_output" "health_signer_pubkey" "Signer1111111111111111111111111111111111"
+  assert_field_equals "$pass_output" "health_signer_pubkey" "11111111111111111111111111111111"
   assert_field_equals "$pass_output" "health_signer_pubkey_field_kind" "string"
   assert_field_equals "$pass_output" "health_submit_fastlane_enabled" "false"
   assert_field_equals "$pass_output" "health_submit_fastlane_enabled_field_kind" "bool"
@@ -3103,6 +3103,86 @@ run_executor_preflight_case() {
   fi
   assert_contains "$allowlist_mismatch_output" "preflight_verdict: FAIL"
   assert_contains "$allowlist_mismatch_output" "adapter route allowlist includes route=fastlane that is not present in executor allowlist"
+
+  local executor_allowlist_duplicate_output
+  if executor_allowlist_duplicate_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper,rpc,RPC" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for duplicate executor route allowlist entry" >&2
+    exit 1
+  fi
+  assert_contains "$executor_allowlist_duplicate_output" "preflight_verdict: FAIL"
+  assert_contains "$executor_allowlist_duplicate_output" "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains duplicate route=rpc"
+
+  local executor_allowlist_unknown_route_output
+  if executor_allowlist_unknown_route_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper,faslane" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for unknown executor route allowlist entry" >&2
+    exit 1
+  fi
+  assert_contains "$executor_allowlist_unknown_route_output" "preflight_verdict: FAIL"
+  assert_contains "$executor_allowlist_unknown_route_output" "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains unsupported route=faslane (supported: paper,rpc,jito,fastlane)"
+
+  local executor_allowlist_empty_entry_output
+  if executor_allowlist_empty_entry_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_ALLOWLIST="paper,,jito" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for empty executor route allowlist entry" >&2
+    exit 1
+  fi
+  assert_contains "$executor_allowlist_empty_entry_output" "preflight_verdict: FAIL"
+  assert_contains "$executor_allowlist_empty_entry_output" "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST contains empty route entry"
+
+  local adapter_allowlist_empty_entry_output
+  if adapter_allowlist_empty_entry_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_ROUTE_ALLOWLIST="paper,,jito" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for empty adapter route allowlist entry" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_allowlist_empty_entry_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_allowlist_empty_entry_output" "COPYBOT_ADAPTER_ROUTE_ALLOWLIST contains empty route entry"
+
+  local signer_pubkey_invalid_shape_output
+  if signer_pubkey_invalid_shape_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_SIGNER_PUBKEY="not-base58!!" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for invalid signer pubkey base58 shape" >&2
+    exit 1
+  fi
+  assert_contains "$signer_pubkey_invalid_shape_output" "preflight_verdict: FAIL"
+  assert_contains "$signer_pubkey_invalid_shape_output" "COPYBOT_EXECUTOR_SIGNER_PUBKEY must be valid base58 pubkey-like value: invalid base58 character"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
   write_executor_env_preflight "$executor_env_path" "$port" "$auth_token" "true"
