@@ -586,6 +586,9 @@ COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=${allow_unauth}
 COPYBOT_EXECUTOR_BEARER_TOKEN="${token}"
 COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL="https://executor.upstream.local/submit"
 COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL="https://executor.upstream.local/simulate"
+COPYBOT_EXECUTOR_ROUTE_RPC_SEND_RPC_URL="https://executor.send-rpc.local/rpc"
+COPYBOT_EXECUTOR_ROUTE_JITO_SEND_RPC_URL="https://executor.send-rpc.local/jito"
+COPYBOT_EXECUTOR_ROUTE_JITO_SEND_RPC_FALLBACK_URL="https://executor.send-rpc-fallback.local/jito"
 EOF
 }
 
@@ -615,11 +618,35 @@ expected_token='__EXPECTED_TOKEN__'
 simulate_without_auth_status="${FAKE_EXECUTOR_SIMULATE_WITHOUT_AUTH_STATUS:-200}"
 simulate_with_auth_status="${FAKE_EXECUTOR_SIMULATE_WITH_AUTH_STATUS:-200}"
 simulate_invalid_auth_status="${FAKE_EXECUTOR_SIMULATE_INVALID_AUTH_STATUS:-200}"
+health_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_CSV:-paper,rpc,jito}"
+health_send_rpc_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV:-rpc,jito}"
+health_send_rpc_fallback_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_CSV:-jito}"
 output_file=""
 auth_header=""
 url=""
 status_code="200"
 body='{"status":"not_found"}'
+
+trim_string() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+csv_to_json_array() {
+  local csv="$1"
+  local out=""
+  local token normalized
+  local -a values=()
+  IFS=',' read -r -a values <<< "$csv"
+  for token in "${values[@]-}"; do
+    normalized="$(printf '%s' "$(trim_string "$token")" | tr '[:upper:]' '[:lower:]')"
+    [[ -z "$normalized" ]] && continue
+    out+="${out:+,}\"${normalized}\""
+  done
+  printf '[%s]' "$out"
+}
 
 while (($#)); do
   case "$1" in
@@ -657,7 +684,10 @@ while (($#)); do
 done
 
 if [[ "$url" == *"/healthz" ]]; then
-  body='{"status":"ok","contract_version":"v1","enabled_routes":["paper","rpc","jito"],"signer_source":"kms","idempotency_store_status":"ok"}'
+  health_enabled_routes_json="$(csv_to_json_array "$health_enabled_routes_csv")"
+  health_send_rpc_enabled_routes_json="$(csv_to_json_array "$health_send_rpc_enabled_routes_csv")"
+  health_send_rpc_fallback_routes_json="$(csv_to_json_array "$health_send_rpc_fallback_routes_csv")"
+  body="{\"status\":\"ok\",\"contract_version\":\"v1\",\"enabled_routes\":${health_enabled_routes_json},\"signer_source\":\"kms\",\"idempotency_store_status\":\"ok\",\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_enabled_routes_json}}"
   status_code="200"
 elif [[ "$url" == *"/simulate" ]]; then
   if [[ -z "$auth_header" ]]; then
@@ -2541,6 +2571,10 @@ run_executor_preflight_case() {
   assert_contains "$pass_output" "=== Executor Preflight ==="
   assert_contains "$pass_output" "preflight_verdict: PASS"
   assert_field_equals "$pass_output" "preflight_reason_code" "checks_passed"
+  assert_field_equals "$pass_output" "expected_send_rpc_enabled_routes_csv" "rpc,jito"
+  assert_field_equals "$pass_output" "expected_send_rpc_fallback_routes_csv" "jito"
+  assert_field_equals "$pass_output" "health_send_rpc_enabled_routes_csv" "rpc,jito"
+  assert_field_equals "$pass_output" "health_send_rpc_fallback_routes_csv" "jito"
   assert_field_equals "$pass_output" "auth_probe_with_auth_http_status" "200"
   assert_contains "$pass_output" "artifacts_written: true"
   assert_sha256_field "$pass_output" "summary_sha256"
@@ -2606,6 +2640,23 @@ run_executor_preflight_case() {
   fi
   assert_contains "$with_auth_5xx_output" "preflight_verdict: FAIL"
   assert_contains "$with_auth_5xx_output" "auth probe with configured bearer token must return HTTP 200, got 503"
+
+  local send_rpc_health_mismatch_output
+  if send_rpc_health_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV="rpc" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_CSV="" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for health send-rpc topology mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$send_rpc_health_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$send_rpc_health_mismatch_output" "health send-rpc enabled routes missing executor route=jito"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token" "paper,rpc,jito,fastlane"
   local allowlist_mismatch_output

@@ -280,6 +280,16 @@ normalized_routes_lines() {
   done
 }
 
+routes_array_to_csv() {
+  local out=""
+  local route
+  for route in "$@"; do
+    [[ -z "$route" ]] && continue
+    out+="${out:+,}${route}"
+  done
+  printf '%s' "$out"
+}
+
 csv_contains_route() {
   local csv="$1"
   local needle="$2"
@@ -498,7 +508,13 @@ executor_submit_fastlane_enabled_raw="$(first_non_empty "$(env_or_file_value "$E
 executor_allow_unauthenticated_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED)" "false")"
 executor_upstream_submit_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL)"
 executor_upstream_simulate_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL)"
+executor_send_rpc_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_URL)"
+executor_send_rpc_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL)"
 executor_signer_pubkey="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_PUBKEY)"
+declare -a expected_send_rpc_enabled_routes=()
+declare -a expected_send_rpc_fallback_routes=()
+expected_send_rpc_enabled_routes_csv=""
+expected_send_rpc_fallback_routes_csv=""
 
 executor_submit_fastlane_enabled="$(parse_bool_token "$executor_submit_fastlane_enabled_raw")"
 if [[ -z "$executor_submit_fastlane_enabled" ]]; then
@@ -524,13 +540,30 @@ while IFS= read -r route; do
   route_upper="$(printf '%s' "$route" | tr '[:lower:]' '[:upper:]')"
   route_submit="$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_URL")"
   route_simulate="$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SIMULATE_URL")"
+  route_send_rpc="$(first_non_empty \
+    "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_URL")" \
+    "$executor_send_rpc_default")"
+  route_send_rpc_fallback="$(first_non_empty \
+    "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_FALLBACK_URL")" \
+    "$executor_send_rpc_fallback_default")"
   if [[ -z "$route_submit" && -z "$executor_upstream_submit_default" ]]; then
     errors+=("missing submit backend URL for executor route=$route (set COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_URL or COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL)")
   fi
   if [[ -z "$route_simulate" && -z "$executor_upstream_simulate_default" ]]; then
     errors+=("missing simulate backend URL for executor route=$route (set COPYBOT_EXECUTOR_ROUTE_${route_upper}_SIMULATE_URL or COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL)")
   fi
+  if [[ -n "$route_send_rpc_fallback" && -z "$route_send_rpc" ]]; then
+    errors+=("missing primary send-rpc URL for executor route=$route while send-rpc fallback is configured")
+  fi
+  if [[ -n "$route_send_rpc" ]]; then
+    expected_send_rpc_enabled_routes+=("$route")
+  fi
+  if [[ -n "$route_send_rpc_fallback" ]]; then
+    expected_send_rpc_fallback_routes+=("$route")
+  fi
 done < <(normalized_routes_lines "$executor_route_allowlist_csv")
+expected_send_rpc_enabled_routes_csv="$(routes_array_to_csv "${expected_send_rpc_enabled_routes[@]-}")"
+expected_send_rpc_fallback_routes_csv="$(routes_array_to_csv "${expected_send_rpc_fallback_routes[@]-}")"
 
 executor_bearer_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BEARER_TOKEN COPYBOT_EXECUTOR_BEARER_TOKEN_FILE "executor ingress auth")"
 executor_hmac_key_id="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_KEY_ID)"
@@ -652,6 +685,8 @@ health_http_status="n/a"
 health_status_field="n/a"
 health_contract_version="n/a"
 health_routes_csv="n/a"
+health_send_rpc_enabled_routes_csv="n/a"
+health_send_rpc_fallback_routes_csv="n/a"
 idempotency_store_status="n/a"
 auth_probe_without_auth_code="n/a"
 auth_probe_with_auth_code="n/a"
@@ -669,6 +704,11 @@ if command -v curl >/dev/null 2>&1; then
       if [[ -z "$health_routes_csv" ]]; then
         health_routes_csv="$(json_routes_csv_field "$health_body" "routes")"
       fi
+      health_send_rpc_enabled_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_enabled_routes")"
+      if [[ -z "$health_send_rpc_enabled_routes_csv" ]]; then
+        health_send_rpc_enabled_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_routes")"
+      fi
+      health_send_rpc_fallback_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_fallback_routes")"
       if [[ "$health_http_status" != "200" ]]; then
         errors+=("executor health endpoint returned HTTP $health_http_status")
       fi
@@ -687,6 +727,33 @@ if command -v curl >/dev/null 2>&1; then
           errors+=("health enabled_routes missing executor route=$route")
         fi
       done < <(normalized_routes_lines "$executor_route_allowlist_csv")
+      while IFS= read -r route; do
+        [[ -z "$route" ]] && continue
+        if ! csv_contains_route "$health_send_rpc_enabled_routes_csv" "$route"; then
+          errors+=("health send-rpc enabled routes missing executor route=$route")
+        fi
+      done < <(normalized_routes_lines "$expected_send_rpc_enabled_routes_csv")
+      while IFS= read -r route; do
+        [[ -z "$route" ]] && continue
+        if ! csv_contains_route "$expected_send_rpc_enabled_routes_csv" "$route"; then
+          errors+=("health send-rpc enabled routes include unexpected route=$route")
+        fi
+      done < <(normalized_routes_lines "$health_send_rpc_enabled_routes_csv")
+      while IFS= read -r route; do
+        [[ -z "$route" ]] && continue
+        if ! csv_contains_route "$health_send_rpc_fallback_routes_csv" "$route"; then
+          errors+=("health send-rpc fallback routes missing executor route=$route")
+        fi
+      done < <(normalized_routes_lines "$expected_send_rpc_fallback_routes_csv")
+      while IFS= read -r route; do
+        [[ -z "$route" ]] && continue
+        if ! csv_contains_route "$expected_send_rpc_fallback_routes_csv" "$route"; then
+          errors+=("health send-rpc fallback routes include unexpected route=$route")
+        fi
+        if ! csv_contains_route "$health_send_rpc_enabled_routes_csv" "$route"; then
+          errors+=("health send-rpc fallback routes include route=$route without send-rpc primary route")
+        fi
+      done < <(normalized_routes_lines "$health_send_rpc_fallback_routes_csv")
     else
       errors+=("failed to query executor health endpoint: $EXECUTOR_HEALTH_URL")
     fi
@@ -767,12 +834,16 @@ summary="$({
   echo "executor_expected_simulate_url: $EXECUTOR_EXPECT_SIMULATE_URL"
   echo "executor_contract_version_expected: $executor_contract_version_expected"
   echo "executor_route_allowlist_csv: $executor_route_allowlist_csv"
+  echo "expected_send_rpc_enabled_routes_csv: $expected_send_rpc_enabled_routes_csv"
+  echo "expected_send_rpc_fallback_routes_csv: $expected_send_rpc_fallback_routes_csv"
   echo "executor_submit_fastlane_enabled: $executor_submit_fastlane_enabled"
   echo "executor_bearer_required: $executor_bearer_required"
   echo "health_http_status: $health_http_status"
   echo "health_status: $health_status_field"
   echo "health_contract_version: $health_contract_version"
   echo "health_routes_csv: $health_routes_csv"
+  echo "health_send_rpc_enabled_routes_csv: $health_send_rpc_enabled_routes_csv"
+  echo "health_send_rpc_fallback_routes_csv: $health_send_rpc_fallback_routes_csv"
   echo "idempotency_store_status: $idempotency_store_status"
   echo "auth_probe_without_auth_code: $auth_probe_without_auth_code"
   echo "auth_probe_with_auth_http_status: $auth_probe_with_auth_http_status"
