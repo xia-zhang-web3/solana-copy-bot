@@ -3822,6 +3822,54 @@ run_executor_rollout_evidence_case() {
   assert_contains "$all_disabled_output" "at least one stage must be enabled"
   assert_field_equals "$all_disabled_output" "executor_rollout_reason_code" "input_error"
 
+  local required_windowed_disabled_rehearsal_output=""
+  if required_windowed_disabled_rehearsal_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      WINDOWED_SIGNOFF_REQUIRED="true" \
+      EXECUTOR_ROLLOUT_RUN_REHEARSAL="false" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor rollout helper when WINDOWED_SIGNOFF_REQUIRED=true and rehearsal stage disabled" >&2
+    exit 1
+  else
+    local required_windowed_disabled_rehearsal_exit_code=$?
+    if [[ "$required_windowed_disabled_rehearsal_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for WINDOWED_SIGNOFF_REQUIRED + disabled rehearsal, got $required_windowed_disabled_rehearsal_exit_code" >&2
+      echo "$required_windowed_disabled_rehearsal_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$required_windowed_disabled_rehearsal_output" "WINDOWED_SIGNOFF_REQUIRED=true requires EXECUTOR_ROLLOUT_RUN_REHEARSAL=true"
+  assert_field_equals "$required_windowed_disabled_rehearsal_output" "executor_rollout_reason_code" "input_error"
+
+  local required_route_fee_disabled_rehearsal_output=""
+  if required_route_fee_disabled_rehearsal_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      EXECUTOR_ROLLOUT_RUN_REHEARSAL="false" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor rollout helper when ROUTE_FEE_SIGNOFF_REQUIRED=true and rehearsal stage disabled" >&2
+    exit 1
+  else
+    local required_route_fee_disabled_rehearsal_exit_code=$?
+    if [[ "$required_route_fee_disabled_rehearsal_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for ROUTE_FEE_SIGNOFF_REQUIRED + disabled rehearsal, got $required_route_fee_disabled_rehearsal_exit_code" >&2
+      echo "$required_route_fee_disabled_rehearsal_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$required_route_fee_disabled_rehearsal_output" "ROUTE_FEE_SIGNOFF_REQUIRED=true requires EXECUTOR_ROLLOUT_RUN_REHEARSAL=true"
+  assert_field_equals "$required_route_fee_disabled_rehearsal_output" "executor_rollout_reason_code" "input_error"
+
   local final_output
   final_output="$(
     PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
@@ -4632,6 +4680,75 @@ run_adapter_rollout_evidence_case() {
   fi
   assert_contains "$all_disabled_output" "at least one stage must be enabled"
   assert_field_equals "$all_disabled_output" "adapter_rollout_reason_code" "input_error"
+
+  local required_rehearsal_route_fee_disabled_stage_output=""
+  if required_rehearsal_route_fee_disabled_stage_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ADAPTER_ROLLOUT_RUN_REHEARSAL="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for adapter rollout helper when REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED=true and rehearsal stage disabled" >&2
+    exit 1
+  else
+    local required_rehearsal_route_fee_disabled_stage_exit_code=$?
+    if [[ "$required_rehearsal_route_fee_disabled_stage_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED + disabled rehearsal, got $required_rehearsal_route_fee_disabled_stage_exit_code" >&2
+      echo "$required_rehearsal_route_fee_disabled_stage_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$required_rehearsal_route_fee_disabled_stage_output" "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED=true requires ADAPTER_ROLLOUT_RUN_REHEARSAL=true"
+  assert_field_equals "$required_rehearsal_route_fee_disabled_stage_output" "adapter_rollout_reason_code" "input_error"
+
+  local required_windowed_disabled_stage_output=""
+  if required_windowed_disabled_stage_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      WINDOWED_SIGNOFF_REQUIRED="true" \
+      ADAPTER_ROLLOUT_RUN_REHEARSAL="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for adapter rollout helper when WINDOWED_SIGNOFF_REQUIRED=true and rehearsal stage disabled" >&2
+    exit 1
+  else
+    local required_windowed_disabled_stage_exit_code=$?
+    if [[ "$required_windowed_disabled_stage_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for WINDOWED_SIGNOFF_REQUIRED + disabled rehearsal, got $required_windowed_disabled_stage_exit_code" >&2
+      echo "$required_windowed_disabled_stage_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$required_windowed_disabled_stage_output" "WINDOWED_SIGNOFF_REQUIRED=true requires ADAPTER_ROLLOUT_RUN_REHEARSAL=true"
+  assert_field_equals "$required_windowed_disabled_stage_output" "adapter_rollout_reason_code" "input_error"
+
+  local required_route_fee_disabled_stage_output=""
+  if required_route_fee_disabled_stage_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="true" \
+      ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF="false" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for adapter rollout helper when ROUTE_FEE_SIGNOFF_REQUIRED=true and route-fee stage disabled" >&2
+    exit 1
+  else
+    local required_route_fee_disabled_stage_exit_code=$?
+    if [[ "$required_route_fee_disabled_stage_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for ROUTE_FEE_SIGNOFF_REQUIRED + disabled route-fee stage, got $required_route_fee_disabled_stage_exit_code" >&2
+      echo "$required_route_fee_disabled_stage_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$required_route_fee_disabled_stage_output" "ROUTE_FEE_SIGNOFF_REQUIRED=true requires ADAPTER_ROLLOUT_RUN_ROUTE_FEE_SIGNOFF=true"
+  assert_field_equals "$required_route_fee_disabled_stage_output" "adapter_rollout_reason_code" "input_error"
 
   local final_artifacts_dir="$TMP_DIR/adapter-rollout-final-package"
   local final_output

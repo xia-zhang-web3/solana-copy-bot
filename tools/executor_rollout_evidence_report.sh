@@ -115,6 +115,12 @@ parse_rollout_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLE
 if [[ "$executor_rollout_run_rotation_norm" != "true" && "$executor_rollout_run_preflight_norm" != "true" && "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
   input_errors+=("at least one stage must be enabled (set EXECUTOR_ROLLOUT_RUN_ROTATION/EXECUTOR_ROLLOUT_RUN_PREFLIGHT/EXECUTOR_ROLLOUT_RUN_REHEARSAL)")
 fi
+if [[ "$windowed_signoff_required_norm" == "true" && "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
+  input_errors+=("WINDOWED_SIGNOFF_REQUIRED=true requires EXECUTOR_ROLLOUT_RUN_REHEARSAL=true")
+fi
+if [[ "$route_fee_signoff_required_norm" == "true" && "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
+  input_errors+=("ROUTE_FEE_SIGNOFF_REQUIRED=true requires EXECUTOR_ROLLOUT_RUN_REHEARSAL=true")
+fi
 if [[ "$package_bundle_enabled_norm" == "true" && -z "$OUTPUT_DIR" ]]; then
   input_errors+=("PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set")
 fi
