@@ -6253,6 +6253,72 @@ run_audit_quick_strict_bool_guard_case() {
   echo "[ok] audit quick strict bool guard"
 }
 
+run_audit_contract_smoke_mode_guard_case() {
+  local invalid_mode_output=""
+  if invalid_mode_output="$(
+    AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_CONTRACT_SMOKE_MODE="bogus_mode" \
+      bash "$ROOT_DIR/tools/audit_quick.sh" 2>&1
+  )"; then
+    echo "expected audit_quick.sh to fail for invalid AUDIT_CONTRACT_SMOKE_MODE" >&2
+    exit 1
+  else
+    local invalid_mode_exit_code=$?
+    if [[ "$invalid_mode_exit_code" -ne 1 ]]; then
+      echo "expected audit_quick.sh invalid AUDIT_CONTRACT_SMOKE_MODE exit code 1, got $invalid_mode_exit_code" >&2
+      echo "$invalid_mode_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_mode_output" "AUDIT_CONTRACT_SMOKE_MODE must be one of: full,targeted"
+
+  local empty_targets_output=""
+  if empty_targets_output="$(
+    AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_CONTRACT_SMOKE_MODE="targeted" \
+      AUDIT_CONTRACT_SMOKE_TARGET_TESTS=" " \
+      bash "$ROOT_DIR/tools/audit_quick.sh" 2>&1
+  )"; then
+    echo "expected audit_quick.sh to fail for empty AUDIT_CONTRACT_SMOKE_TARGET_TESTS in targeted mode" >&2
+    exit 1
+  else
+    local empty_targets_exit_code=$?
+    if [[ "$empty_targets_exit_code" -ne 1 ]]; then
+      echo "expected audit_quick.sh empty AUDIT_CONTRACT_SMOKE_TARGET_TESTS exit code 1, got $empty_targets_exit_code" >&2
+      echo "$empty_targets_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$empty_targets_output" "AUDIT_CONTRACT_SMOKE_TARGET_TESTS must be non-empty when AUDIT_CONTRACT_SMOKE_MODE=targeted"
+
+  local standard_targeted_output=""
+  standard_targeted_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="false" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_PACKAGE_TESTS="true" \
+      AUDIT_CONTRACT_SMOKE_MODE="targeted" \
+      AUDIT_CONTRACT_SMOKE_TARGET_TESTS="constant_time_eq_checks_content" \
+      bash "$ROOT_DIR/tools/audit_standard.sh"
+  )"
+  assert_contains "$standard_targeted_output" "[audit:quick] tools/executor_contract_smoke_test.sh (mode=targeted"
+  assert_contains "$standard_targeted_output" "[audit:standard] PASS"
+
+  local full_targeted_output=""
+  full_targeted_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="false" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_CONTRACT_SMOKE_MODE="targeted" \
+      AUDIT_CONTRACT_SMOKE_TARGET_TESTS="constant_time_eq_checks_content" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_targeted_output" "[audit:quick] tools/executor_contract_smoke_test.sh (mode=targeted"
+  assert_contains "$full_targeted_output" "[audit:full] PASS"
+  echo "[ok] audit contract smoke mode guard"
+}
+
 run_evidence_bundle_pack_case() {
   local evidence_dir="$TMP_DIR/evidence-pack-input"
   local output_dir="$TMP_DIR/evidence-pack-out"
@@ -6485,6 +6551,10 @@ run_targeted_smoke_cases() {
       run_audit_standard_strict_bool_guard_case
       executed_cases=$((executed_cases + 1))
       ;;
+    audit_contract_smoke_mode_guard | run_audit_contract_smoke_mode_guard_case)
+      run_audit_contract_smoke_mode_guard_case
+      executed_cases=$((executed_cases + 1))
+      ;;
     evidence_bundle_pack | run_evidence_bundle_pack_case)
       run_evidence_bundle_pack_case
       executed_cases=$((executed_cases + 1))
@@ -6529,7 +6599,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, evidence_bundle_pack, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness" >&2
+      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, evidence_bundle_pack, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness" >&2
       exit 1
       ;;
     esac
@@ -6593,6 +6663,7 @@ main() {
   run_audit_workspace_test_timeout_guard_case
   run_audit_full_strict_bool_guard_case
   run_audit_full_contract_smoke_strict_bool_guard_case
+  run_audit_contract_smoke_mode_guard_case
   run_evidence_bundle_pack_case
   run_ops_smoke_targeted_dispatch_case
 

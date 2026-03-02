@@ -19,6 +19,21 @@ if ! skip_executor_tests="$(parse_bool_token_strict "$SKIP_EXECUTOR_TESTS_RAW")"
   echo "AUDIT_SKIP_EXECUTOR_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_EXECUTOR_TESTS_RAW" >&2
   exit 1
 fi
+CONTRACT_SMOKE_MODE_RAW="${AUDIT_CONTRACT_SMOKE_MODE:-full}"
+case "$CONTRACT_SMOKE_MODE_RAW" in
+full | targeted)
+  contract_smoke_mode="$CONTRACT_SMOKE_MODE_RAW"
+  ;;
+*)
+  echo "AUDIT_CONTRACT_SMOKE_MODE must be one of: full,targeted (got: $CONTRACT_SMOKE_MODE_RAW)" >&2
+  exit 1
+  ;;
+esac
+contract_smoke_target_tests="$(trim_string "${AUDIT_CONTRACT_SMOKE_TARGET_TESTS:-}")"
+if [[ "$contract_smoke_mode" == "targeted" && -z "$contract_smoke_target_tests" ]]; then
+  echo "AUDIT_CONTRACT_SMOKE_TARGET_TESTS must be non-empty when AUDIT_CONTRACT_SMOKE_MODE=targeted" >&2
+  exit 1
+fi
 CONTRACT_SMOKE_TIMEOUT_RAW="${AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC:-300}"
 if ! contract_smoke_timeout_sec="$(parse_timeout_sec_strict "$CONTRACT_SMOKE_TIMEOUT_RAW" 1 "$MAX_AUDIT_TIMEOUT_SEC")"; then
   echo "AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC must be integer seconds >= 1 and <= $MAX_AUDIT_TIMEOUT_SEC, got: $CONTRACT_SMOKE_TIMEOUT_RAW" >&2
@@ -31,7 +46,9 @@ if ! executor_test_timeout_sec="$(parse_timeout_sec_strict "$EXECUTOR_TEST_TIMEO
 fi
 
 run_contract_smoke() {
-  run_with_timeout_if_available "$contract_smoke_timeout_sec" \
+  EXECUTOR_CONTRACT_SMOKE_MODE="$contract_smoke_mode" \
+    EXECUTOR_CONTRACT_SMOKE_TARGET_TESTS="$contract_smoke_target_tests" \
+    run_with_timeout_if_available "$contract_smoke_timeout_sec" \
     bash tools/executor_contract_smoke_test.sh
 }
 
@@ -48,7 +65,7 @@ else
 fi
 
 if [[ "$skip_contract_smoke" == "false" ]]; then
-  echo "[audit:quick] tools/executor_contract_smoke_test.sh (timeout=${contract_smoke_timeout_sec}s)"
+  echo "[audit:quick] tools/executor_contract_smoke_test.sh (mode=${contract_smoke_mode}, timeout=${contract_smoke_timeout_sec}s)"
   run_contract_smoke
 else
   echo "[audit:quick] AUDIT_SKIP_CONTRACT_SMOKE=true -> skipped tools/executor_contract_smoke_test.sh"

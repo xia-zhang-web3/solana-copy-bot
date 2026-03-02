@@ -30,6 +30,21 @@ if ! skip_package_tests="$(parse_bool_token_strict "$SKIP_PACKAGE_TESTS_RAW")"; 
   echo "AUDIT_SKIP_PACKAGE_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_PACKAGE_TESTS_RAW" >&2
   exit 1
 fi
+CONTRACT_SMOKE_MODE_RAW="${AUDIT_CONTRACT_SMOKE_MODE:-full}"
+case "$CONTRACT_SMOKE_MODE_RAW" in
+full | targeted)
+  contract_smoke_mode="$CONTRACT_SMOKE_MODE_RAW"
+  ;;
+*)
+  echo "AUDIT_CONTRACT_SMOKE_MODE must be one of: full,targeted (got: $CONTRACT_SMOKE_MODE_RAW)" >&2
+  exit 1
+  ;;
+esac
+contract_smoke_target_tests="$(trim_string "${AUDIT_CONTRACT_SMOKE_TARGET_TESTS:-}")"
+if [[ "$contract_smoke_mode" == "targeted" && -z "$contract_smoke_target_tests" ]]; then
+  echo "AUDIT_CONTRACT_SMOKE_TARGET_TESTS must be non-empty when AUDIT_CONTRACT_SMOKE_MODE=targeted" >&2
+  exit 1
+fi
 OPS_SMOKE_TIMEOUT_RAW="${AUDIT_OPS_SMOKE_TIMEOUT_SEC:-300}"
 if ! ops_smoke_timeout_sec="$(parse_timeout_sec_strict "$OPS_SMOKE_TIMEOUT_RAW" 1 "$MAX_AUDIT_TIMEOUT_SEC")"; then
   echo "AUDIT_OPS_SMOKE_TIMEOUT_SEC must be integer seconds >= 1 and <= $MAX_AUDIT_TIMEOUT_SEC, got: $OPS_SMOKE_TIMEOUT_RAW" >&2
@@ -120,6 +135,8 @@ AUDIT_SKIP_CONTRACT_SMOKE="$skip_contract_smoke" \
 AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC="$contract_smoke_timeout_sec" \
 AUDIT_SKIP_EXECUTOR_TESTS="$skip_executor_tests" \
 AUDIT_EXECUTOR_TEST_TIMEOUT_SEC="$executor_test_timeout_sec" \
+AUDIT_CONTRACT_SMOKE_MODE="$contract_smoke_mode" \
+AUDIT_CONTRACT_SMOKE_TARGET_TESTS="$contract_smoke_target_tests" \
   bash tools/audit_quick.sh
 
 
