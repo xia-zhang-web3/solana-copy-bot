@@ -623,6 +623,11 @@ health_routes_alias_csv="${FAKE_EXECUTOR_HEALTH_ROUTES_CSV:-$health_enabled_rout
 health_send_rpc_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV:-rpc,jito}"
 health_send_rpc_fallback_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_CSV:-jito}"
 health_send_rpc_alias_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_CSV:-$health_send_rpc_enabled_routes_csv}"
+health_enabled_routes_json_raw="${FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_JSON:-}"
+health_routes_alias_json_raw="${FAKE_EXECUTOR_HEALTH_ROUTES_JSON:-}"
+health_send_rpc_enabled_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_JSON:-}"
+health_send_rpc_fallback_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_JSON:-}"
+health_send_rpc_alias_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_JSON:-}"
 health_signer_source="${FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE:-kms}"
 health_signer_pubkey="${FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY:-Signer1111111111111111111111111111111111}"
 health_submit_fastlane_enabled="${FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED:-false}"
@@ -689,11 +694,31 @@ while (($#)); do
 done
 
 if [[ "$url" == *"/healthz" ]]; then
-  health_enabled_routes_json="$(csv_to_json_array "$health_enabled_routes_csv")"
-  health_routes_alias_json="$(csv_to_json_array "$health_routes_alias_csv")"
-  health_send_rpc_enabled_routes_json="$(csv_to_json_array "$health_send_rpc_enabled_routes_csv")"
-  health_send_rpc_fallback_routes_json="$(csv_to_json_array "$health_send_rpc_fallback_routes_csv")"
-  health_send_rpc_alias_routes_json="$(csv_to_json_array "$health_send_rpc_alias_routes_csv")"
+  if [[ -n "$health_enabled_routes_json_raw" ]]; then
+    health_enabled_routes_json="$health_enabled_routes_json_raw"
+  else
+    health_enabled_routes_json="$(csv_to_json_array "$health_enabled_routes_csv")"
+  fi
+  if [[ -n "$health_routes_alias_json_raw" ]]; then
+    health_routes_alias_json="$health_routes_alias_json_raw"
+  else
+    health_routes_alias_json="$(csv_to_json_array "$health_routes_alias_csv")"
+  fi
+  if [[ -n "$health_send_rpc_enabled_routes_json_raw" ]]; then
+    health_send_rpc_enabled_routes_json="$health_send_rpc_enabled_routes_json_raw"
+  else
+    health_send_rpc_enabled_routes_json="$(csv_to_json_array "$health_send_rpc_enabled_routes_csv")"
+  fi
+  if [[ -n "$health_send_rpc_fallback_routes_json_raw" ]]; then
+    health_send_rpc_fallback_routes_json="$health_send_rpc_fallback_routes_json_raw"
+  else
+    health_send_rpc_fallback_routes_json="$(csv_to_json_array "$health_send_rpc_fallback_routes_csv")"
+  fi
+  if [[ -n "$health_send_rpc_alias_routes_json_raw" ]]; then
+    health_send_rpc_alias_routes_json="$health_send_rpc_alias_routes_json_raw"
+  else
+    health_send_rpc_alias_routes_json="$(csv_to_json_array "$health_send_rpc_alias_routes_csv")"
+  fi
   body="{\"status\":\"ok\",\"contract_version\":\"v1\",\"enabled_routes\":${health_enabled_routes_json},\"routes\":${health_routes_alias_json},\"signer_source\":\"${health_signer_source}\",\"submit_fastlane_enabled\":${health_submit_fastlane_enabled},\"signer_pubkey\":\"${health_signer_pubkey}\",\"idempotency_store_status\":\"ok\",\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_alias_routes_json}}"
   status_code="200"
 elif [[ "$url" == *"/simulate" ]]; then
@@ -2584,11 +2609,16 @@ run_executor_preflight_case() {
   assert_field_equals "$pass_output" "health_signer_pubkey" "Signer1111111111111111111111111111111111"
   assert_field_equals "$pass_output" "health_submit_fastlane_enabled" "false"
   assert_field_equals "$pass_output" "health_routes_alias_csv" "paper,rpc,jito"
+  assert_field_equals "$pass_output" "health_routes_field_kind" "array"
+  assert_field_equals "$pass_output" "health_routes_alias_field_kind" "array"
   assert_field_equals "$pass_output" "expected_send_rpc_enabled_routes_csv" "rpc,jito"
   assert_field_equals "$pass_output" "expected_send_rpc_fallback_routes_csv" "jito"
   assert_field_equals "$pass_output" "health_send_rpc_enabled_routes_csv" "rpc,jito"
   assert_field_equals "$pass_output" "health_send_rpc_fallback_routes_csv" "jito"
   assert_field_equals "$pass_output" "health_send_rpc_alias_routes_csv" "rpc,jito"
+  assert_field_equals "$pass_output" "health_send_rpc_enabled_field_kind" "array"
+  assert_field_equals "$pass_output" "health_send_rpc_fallback_field_kind" "array"
+  assert_field_equals "$pass_output" "health_send_rpc_alias_field_kind" "array"
   assert_field_equals "$pass_output" "auth_probe_with_auth_http_status" "200"
   assert_contains "$pass_output" "artifacts_written: true"
   assert_sha256_field "$pass_output" "summary_sha256"
@@ -2772,6 +2802,57 @@ run_executor_preflight_case() {
   assert_contains "$missing_signer_source_pass_output" "preflight_verdict: PASS"
   assert_field_equals "$missing_signer_source_pass_output" "executor_signer_source_expected" "file"
   assert_field_equals "$missing_signer_source_pass_output" "health_signer_source" "file"
+
+  local alias_fallback_pass_output
+  alias_fallback_pass_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_CSV="" \
+      FAKE_EXECUTOR_HEALTH_ROUTES_CSV="paper,rpc,jito" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV="" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_CSV="rpc,jito" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh"
+  )"
+  assert_contains "$alias_fallback_pass_output" "preflight_verdict: PASS"
+  assert_field_equals "$alias_fallback_pass_output" "health_routes_csv" "paper,rpc,jito"
+  assert_field_equals "$alias_fallback_pass_output" "health_send_rpc_enabled_routes_csv" "rpc,jito"
+
+  local routes_field_type_mismatch_output
+  if routes_field_type_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_JSON="\"paper,rpc,jito\"" \
+      FAKE_EXECUTOR_HEALTH_ROUTES_CSV="paper,rpc,jito" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-array health enabled_routes field" >&2
+    exit 1
+  fi
+  assert_contains "$routes_field_type_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$routes_field_type_mismatch_output" "executor health enabled_routes must be array when present, got: string"
+
+  local send_rpc_enabled_field_type_mismatch_output
+  if send_rpc_enabled_field_type_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_JSON="{\"route\":\"rpc\"}" \
+      FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_CSV="rpc,jito" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-array health send_rpc_enabled_routes field" >&2
+    exit 1
+  fi
+  assert_contains "$send_rpc_enabled_field_type_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$send_rpc_enabled_field_type_mismatch_output" "executor health send_rpc_enabled_routes must be array when present, got: object"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token" "paper,rpc,jito,fastlane"
   local allowlist_mismatch_output

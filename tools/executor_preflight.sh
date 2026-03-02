@@ -435,6 +435,48 @@ print(",".join(out))
 PY
 }
 
+json_field_kind() {
+  local body="$1"
+  local key="$2"
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    printf 'missing'
+    return 0
+  fi
+  "$PYTHON3_BIN" - "$key" "$body" <<'PY'
+import json
+import sys
+
+key = sys.argv[1]
+raw = (sys.argv[2] or "").strip()
+if not raw:
+    print("missing")
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    print("missing")
+    raise SystemExit(0)
+if not isinstance(data, dict) or key not in data:
+    print("missing")
+    raise SystemExit(0)
+value = data.get(key)
+if value is None:
+    print("null")
+elif isinstance(value, bool):
+    print("bool")
+elif isinstance(value, str):
+    print("string")
+elif isinstance(value, list):
+    print("array")
+elif isinstance(value, (int, float)):
+    print("number")
+elif isinstance(value, dict):
+    print("object")
+else:
+    print("unknown")
+PY
+}
+
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
 
@@ -697,9 +739,14 @@ health_status_field="n/a"
 health_contract_version="n/a"
 health_routes_csv="n/a"
 health_routes_alias_csv="n/a"
+health_routes_field_kind="n/a"
+health_routes_alias_field_kind="n/a"
 health_send_rpc_enabled_routes_csv="n/a"
 health_send_rpc_fallback_routes_csv="n/a"
 health_send_rpc_alias_routes_csv="n/a"
+health_send_rpc_enabled_field_kind="n/a"
+health_send_rpc_fallback_field_kind="n/a"
+health_send_rpc_alias_field_kind="n/a"
 health_signer_source="n/a"
 health_signer_pubkey="n/a"
 health_submit_fastlane_enabled="n/a"
@@ -720,6 +767,11 @@ if command -v curl >/dev/null 2>&1; then
       health_submit_fastlane_enabled_raw="$(json_string_field "$health_body" "submit_fastlane_enabled")"
       health_submit_fastlane_enabled="$(parse_bool_token "$health_submit_fastlane_enabled_raw")"
       idempotency_store_status="$(json_string_field "$health_body" "idempotency_store_status")"
+      health_routes_field_kind="$(json_field_kind "$health_body" "enabled_routes")"
+      health_routes_alias_field_kind="$(json_field_kind "$health_body" "routes")"
+      health_send_rpc_enabled_field_kind="$(json_field_kind "$health_body" "send_rpc_enabled_routes")"
+      health_send_rpc_fallback_field_kind="$(json_field_kind "$health_body" "send_rpc_fallback_routes")"
+      health_send_rpc_alias_field_kind="$(json_field_kind "$health_body" "send_rpc_routes")"
       health_routes_alias_csv="$(json_routes_csv_field "$health_body" "routes")"
       health_routes_csv="$(json_routes_csv_field "$health_body" "enabled_routes")"
       if [[ -z "$health_routes_csv" ]]; then
@@ -742,6 +794,21 @@ if command -v curl >/dev/null 2>&1; then
       fi
       if [[ "$health_contract_version" != "$executor_contract_version_expected" ]]; then
         errors+=("executor contract_version mismatch: health=$health_contract_version expected=$executor_contract_version_expected")
+      fi
+      if [[ "$health_routes_field_kind" != "missing" && "$health_routes_field_kind" != "array" ]]; then
+        errors+=("executor health enabled_routes must be array when present, got: $health_routes_field_kind")
+      fi
+      if [[ "$health_routes_alias_field_kind" != "missing" && "$health_routes_alias_field_kind" != "array" ]]; then
+        errors+=("executor health routes alias must be array when present, got: $health_routes_alias_field_kind")
+      fi
+      if [[ "$health_send_rpc_enabled_field_kind" != "missing" && "$health_send_rpc_enabled_field_kind" != "array" ]]; then
+        errors+=("executor health send_rpc_enabled_routes must be array when present, got: $health_send_rpc_enabled_field_kind")
+      fi
+      if [[ "$health_send_rpc_fallback_field_kind" != "missing" && "$health_send_rpc_fallback_field_kind" != "array" ]]; then
+        errors+=("executor health send_rpc_fallback_routes must be array when present, got: $health_send_rpc_fallback_field_kind")
+      fi
+      if [[ "$health_send_rpc_alias_field_kind" != "missing" && "$health_send_rpc_alias_field_kind" != "array" ]]; then
+        errors+=("executor health send_rpc_routes alias must be array when present, got: $health_send_rpc_alias_field_kind")
       fi
       if [[ -z "$health_signer_source" ]]; then
         errors+=("executor health signer_source must be non-empty")
@@ -919,9 +986,14 @@ summary="$({
   echo "health_submit_fastlane_enabled: $health_submit_fastlane_enabled"
   echo "health_routes_csv: $health_routes_csv"
   echo "health_routes_alias_csv: $health_routes_alias_csv"
+  echo "health_routes_field_kind: $health_routes_field_kind"
+  echo "health_routes_alias_field_kind: $health_routes_alias_field_kind"
   echo "health_send_rpc_enabled_routes_csv: $health_send_rpc_enabled_routes_csv"
   echo "health_send_rpc_fallback_routes_csv: $health_send_rpc_fallback_routes_csv"
   echo "health_send_rpc_alias_routes_csv: $health_send_rpc_alias_routes_csv"
+  echo "health_send_rpc_enabled_field_kind: $health_send_rpc_enabled_field_kind"
+  echo "health_send_rpc_fallback_field_kind: $health_send_rpc_fallback_field_kind"
+  echo "health_send_rpc_alias_field_kind: $health_send_rpc_alias_field_kind"
   echo "idempotency_store_status: $idempotency_store_status"
   echo "auth_probe_without_auth_code: $auth_probe_without_auth_code"
   echo "auth_probe_with_auth_http_status: $auth_probe_with_auth_http_status"
