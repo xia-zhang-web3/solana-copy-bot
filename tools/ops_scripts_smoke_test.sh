@@ -3235,6 +3235,22 @@ run_executor_preflight_case() {
   assert_contains "$submit_fallback_identity_violation_output" "preflight_verdict: FAIL"
   assert_contains "$submit_fallback_identity_violation_output" "submit fallback URL for executor route=paper must resolve to distinct endpoint"
 
+  local simulate_fallback_identity_violation_output
+  if simulate_fallback_identity_violation_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_FALLBACK_URL="https://executor.upstream.local/simulate" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for simulate fallback endpoint identity collision" >&2
+    exit 1
+  fi
+  assert_contains "$simulate_fallback_identity_violation_output" "preflight_verdict: FAIL"
+  assert_contains "$simulate_fallback_identity_violation_output" "simulate fallback URL for executor route=paper must resolve to distinct endpoint"
+
   local send_rpc_fallback_identity_violation_output
   if send_rpc_fallback_identity_violation_output="$(
     PATH="$fake_curl_bin:$PATH" \
