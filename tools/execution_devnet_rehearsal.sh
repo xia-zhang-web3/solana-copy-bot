@@ -377,21 +377,33 @@ go_nogo_calibration_sha256="$(trim_string "$(extract_field "calibration_sha256" 
 go_nogo_snapshot_sha256="$(trim_string "$(extract_field "snapshot_sha256" "$go_nogo_output")")"
 go_nogo_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$go_nogo_output")")"
 go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
-go_nogo_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$go_nogo_output")")"
+go_nogo_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$go_nogo_output")")"
+if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$go_nogo_output")"; then
+  config_errors+=("nested go/no-go artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
+  go_nogo_artifacts_written="unknown"
+fi
 windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$windowed_signoff_output")")"
 windowed_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$windowed_signoff_output")")"
 windowed_signoff_require_dynamic_hint_source_pass="$(normalize_bool_token "$(extract_field "windowed_signoff_require_dynamic_hint_source_pass" "$windowed_signoff_output")")"
 windowed_signoff_require_dynamic_tip_policy_pass="$(normalize_bool_token "$(extract_field "windowed_signoff_require_dynamic_tip_policy_pass" "$windowed_signoff_output")")"
 windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$windowed_signoff_output")")"
 windowed_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$windowed_signoff_output")")"
-windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$windowed_signoff_output")")"
+windowed_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$windowed_signoff_output")")"
+if ! windowed_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$windowed_signoff_output")"; then
+  config_errors+=("nested windowed signoff artifacts_written must be boolean token, got: ${windowed_signoff_artifacts_written_raw:-<empty>}")
+  windowed_signoff_artifacts_written="unknown"
+fi
 route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$route_fee_signoff_output")")"
 route_fee_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$route_fee_signoff_output")")"
 route_fee_signoff_reason_code="$(trim_string "$(extract_field "signoff_reason_code" "$route_fee_signoff_output")")"
 route_fee_signoff_windows_csv="$(trim_string "$(extract_field "windows_csv" "$route_fee_signoff_output")")"
 route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
 route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
-route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+route_fee_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+if ! route_fee_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_signoff_output")"; then
+  config_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${route_fee_signoff_artifacts_written_raw:-<empty>}")
+  route_fee_signoff_artifacts_written="unknown"
+fi
 route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
 route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_signoff_output")")"
 route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"

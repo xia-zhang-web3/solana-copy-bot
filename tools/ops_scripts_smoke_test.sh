@@ -1663,7 +1663,7 @@ run_windowed_signoff_report_case() {
   assert_contains "$go_output" "window_24h_go_nogo_snapshot_sha256:"
   assert_contains "$go_output" "window_24h_go_nogo_preflight_sha256:"
   assert_contains "$go_output" "window_24h_go_nogo_summary_sha256:"
-  assert_contains "$go_output" "window_24h_go_nogo_artifacts_written: true"
+  assert_field_equals "$go_output" "window_24h_go_nogo_artifacts_written" "true"
   assert_field_equals "$go_output" "window_24h_go_nogo_nested_package_bundle_enabled" "false"
   assert_sha256_field "$go_output" "summary_sha256"
   assert_sha256_field "$go_output" "window_24h_capture_sha256"
