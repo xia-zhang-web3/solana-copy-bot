@@ -631,6 +631,12 @@ health_send_rpc_alias_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_JS
 health_signer_source="${FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE:-kms}"
 health_signer_pubkey="${FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY:-Signer1111111111111111111111111111111111}"
 health_submit_fastlane_enabled="${FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED:-false}"
+health_status_json_raw="${FAKE_EXECUTOR_HEALTH_STATUS_JSON:-}"
+health_contract_version_json_raw="${FAKE_EXECUTOR_HEALTH_CONTRACT_VERSION_JSON:-}"
+health_signer_source_json_raw="${FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE_JSON:-}"
+health_signer_pubkey_json_raw="${FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY_JSON:-}"
+health_submit_fastlane_enabled_json_raw="${FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED_JSON:-}"
+health_idempotency_store_status_json_raw="${FAKE_EXECUTOR_HEALTH_IDEMPOTENCY_STORE_STATUS_JSON:-}"
 output_file=""
 auth_header=""
 url=""
@@ -719,7 +725,37 @@ if [[ "$url" == *"/healthz" ]]; then
   else
     health_send_rpc_alias_routes_json="$(csv_to_json_array "$health_send_rpc_alias_routes_csv")"
   fi
-  body="{\"status\":\"ok\",\"contract_version\":\"v1\",\"enabled_routes\":${health_enabled_routes_json},\"routes\":${health_routes_alias_json},\"signer_source\":\"${health_signer_source}\",\"submit_fastlane_enabled\":${health_submit_fastlane_enabled},\"signer_pubkey\":\"${health_signer_pubkey}\",\"idempotency_store_status\":\"ok\",\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_alias_routes_json}}"
+  if [[ -n "$health_status_json_raw" ]]; then
+    health_status_json="$health_status_json_raw"
+  else
+    health_status_json="\"ok\""
+  fi
+  if [[ -n "$health_contract_version_json_raw" ]]; then
+    health_contract_version_json="$health_contract_version_json_raw"
+  else
+    health_contract_version_json="\"v1\""
+  fi
+  if [[ -n "$health_signer_source_json_raw" ]]; then
+    health_signer_source_json="$health_signer_source_json_raw"
+  else
+    health_signer_source_json="\"${health_signer_source}\""
+  fi
+  if [[ -n "$health_signer_pubkey_json_raw" ]]; then
+    health_signer_pubkey_json="$health_signer_pubkey_json_raw"
+  else
+    health_signer_pubkey_json="\"${health_signer_pubkey}\""
+  fi
+  if [[ -n "$health_submit_fastlane_enabled_json_raw" ]]; then
+    health_submit_fastlane_enabled_json="$health_submit_fastlane_enabled_json_raw"
+  else
+    health_submit_fastlane_enabled_json="${health_submit_fastlane_enabled}"
+  fi
+  if [[ -n "$health_idempotency_store_status_json_raw" ]]; then
+    health_idempotency_store_status_json="$health_idempotency_store_status_json_raw"
+  else
+    health_idempotency_store_status_json="\"ok\""
+  fi
+  body="{\"status\":${health_status_json},\"contract_version\":${health_contract_version_json},\"enabled_routes\":${health_enabled_routes_json},\"routes\":${health_routes_alias_json},\"signer_source\":${health_signer_source_json},\"submit_fastlane_enabled\":${health_submit_fastlane_enabled_json},\"signer_pubkey\":${health_signer_pubkey_json},\"idempotency_store_status\":${health_idempotency_store_status_json},\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_alias_routes_json}}"
   status_code="200"
 elif [[ "$url" == *"/simulate" ]]; then
   if [[ -z "$auth_header" ]]; then
@@ -2605,9 +2641,14 @@ run_executor_preflight_case() {
   assert_field_equals "$pass_output" "preflight_reason_code" "checks_passed"
   assert_field_equals "$pass_output" "executor_signer_source_expected" "kms"
   assert_field_equals "$pass_output" "executor_signer_pubkey_expected" "Signer1111111111111111111111111111111111"
+  assert_field_equals "$pass_output" "health_status_field_kind" "string"
+  assert_field_equals "$pass_output" "health_contract_version_field_kind" "string"
   assert_field_equals "$pass_output" "health_signer_source" "kms"
+  assert_field_equals "$pass_output" "health_signer_source_field_kind" "string"
   assert_field_equals "$pass_output" "health_signer_pubkey" "Signer1111111111111111111111111111111111"
+  assert_field_equals "$pass_output" "health_signer_pubkey_field_kind" "string"
   assert_field_equals "$pass_output" "health_submit_fastlane_enabled" "false"
+  assert_field_equals "$pass_output" "health_submit_fastlane_enabled_field_kind" "bool"
   assert_field_equals "$pass_output" "health_routes_alias_csv" "paper,rpc,jito"
   assert_field_equals "$pass_output" "health_routes_field_kind" "array"
   assert_field_equals "$pass_output" "health_routes_alias_field_kind" "array"
@@ -2619,6 +2660,7 @@ run_executor_preflight_case() {
   assert_field_equals "$pass_output" "health_send_rpc_enabled_field_kind" "array"
   assert_field_equals "$pass_output" "health_send_rpc_fallback_field_kind" "array"
   assert_field_equals "$pass_output" "health_send_rpc_alias_field_kind" "array"
+  assert_field_equals "$pass_output" "idempotency_store_status_field_kind" "string"
   assert_field_equals "$pass_output" "auth_probe_with_auth_http_status" "200"
   assert_contains "$pass_output" "artifacts_written: true"
   assert_sha256_field "$pass_output" "summary_sha256"
@@ -2853,6 +2895,102 @@ run_executor_preflight_case() {
   fi
   assert_contains "$send_rpc_enabled_field_type_mismatch_output" "preflight_verdict: FAIL"
   assert_contains "$send_rpc_enabled_field_type_mismatch_output" "executor health send_rpc_enabled_routes must be array when present, got: object"
+
+  local status_field_type_mismatch_output
+  if status_field_type_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_STATUS_JSON="{\"state\":\"ok\"}" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-string health status field" >&2
+    exit 1
+  fi
+  assert_contains "$status_field_type_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$status_field_type_mismatch_output" "executor health status must be string when present, got: object"
+
+  local contract_version_field_type_mismatch_output
+  if contract_version_field_type_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_CONTRACT_VERSION_JSON="123" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-string health contract_version field" >&2
+    exit 1
+  fi
+  assert_contains "$contract_version_field_type_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$contract_version_field_type_mismatch_output" "executor health contract_version must be string when present, got: number"
+
+  local signer_source_field_type_mismatch_output
+  if signer_source_field_type_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE_JSON="true" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-string health signer_source field" >&2
+    exit 1
+  fi
+  assert_contains "$signer_source_field_type_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$signer_source_field_type_mismatch_output" "executor health signer_source must be string when present, got: bool"
+
+  local signer_pubkey_field_type_mismatch_output
+  if signer_pubkey_field_type_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY_JSON="123" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-string health signer_pubkey field" >&2
+    exit 1
+  fi
+  assert_contains "$signer_pubkey_field_type_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$signer_pubkey_field_type_mismatch_output" "executor health signer_pubkey must be string when present, got: number"
+
+  local submit_fastlane_field_type_mismatch_output
+  if submit_fastlane_field_type_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED_JSON="\"false\"" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-bool health submit_fastlane_enabled field" >&2
+    exit 1
+  fi
+  assert_contains "$submit_fastlane_field_type_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$submit_fastlane_field_type_mismatch_output" "executor health submit_fastlane_enabled must be bool when present, got: string"
+
+  local idempotency_store_status_field_type_mismatch_output
+  if idempotency_store_status_field_type_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_IDEMPOTENCY_STORE_STATUS_JSON="false" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for non-string health idempotency_store_status field" >&2
+    exit 1
+  fi
+  assert_contains "$idempotency_store_status_field_type_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$idempotency_store_status_field_type_mismatch_output" "executor health idempotency_store_status must be string when present, got: bool"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token" "paper,rpc,jito,fastlane"
   local allowlist_mismatch_output
@@ -7085,7 +7223,7 @@ run_targeted_smoke_cases() {
       run_evidence_bundle_pack_case
       executed_cases=$((executed_cases + 1))
       ;;
-    windowed_signoff | run_windowed_signoff_report_case | route_fee_signoff | run_execution_route_fee_signoff_case | devnet_rehearsal | run_devnet_rehearsal_case | executor_rollout_evidence | run_executor_rollout_evidence_case | adapter_rollout_evidence | run_adapter_rollout_evidence_case | execution_server_rollout | run_execution_server_rollout_report_case | execution_runtime_readiness | run_execution_runtime_readiness_report_case)
+    executor_preflight | run_executor_preflight_case | windowed_signoff | run_windowed_signoff_report_case | route_fee_signoff | run_execution_route_fee_signoff_case | devnet_rehearsal | run_devnet_rehearsal_case | executor_rollout_evidence | run_executor_rollout_evidence_case | adapter_rollout_evidence | run_adapter_rollout_evidence_case | execution_server_rollout | run_execution_server_rollout_report_case | execution_runtime_readiness | run_execution_runtime_readiness_report_case)
       if [[ "$fixtures_ready" != "true" ]]; then
         create_legacy_db "$legacy_db"
         write_config "$legacy_cfg" "$legacy_db"
@@ -7093,6 +7231,10 @@ run_targeted_smoke_cases() {
         fixtures_ready="true"
       fi
       case "$target_case" in
+      executor_preflight | run_executor_preflight_case)
+        run_executor_preflight_case "$legacy_db"
+        executed_cases=$((executed_cases + 1))
+        ;;
       windowed_signoff | run_windowed_signoff_report_case)
         run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
         executed_cases=$((executed_cases + 1))
@@ -7125,7 +7267,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness" >&2
+      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness" >&2
       exit 1
       ;;
     esac

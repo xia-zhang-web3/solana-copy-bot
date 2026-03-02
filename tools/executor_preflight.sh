@@ -737,6 +737,8 @@ done < <(normalized_routes_lines "$adapter_route_allowlist_csv")
 health_http_status="n/a"
 health_status_field="n/a"
 health_contract_version="n/a"
+health_status_field_kind="n/a"
+health_contract_version_field_kind="n/a"
 health_routes_csv="n/a"
 health_routes_alias_csv="n/a"
 health_routes_field_kind="n/a"
@@ -750,7 +752,11 @@ health_send_rpc_alias_field_kind="n/a"
 health_signer_source="n/a"
 health_signer_pubkey="n/a"
 health_submit_fastlane_enabled="n/a"
+health_signer_source_field_kind="n/a"
+health_signer_pubkey_field_kind="n/a"
+health_submit_fastlane_enabled_field_kind="n/a"
 idempotency_store_status="n/a"
+idempotency_store_status_field_kind="n/a"
 auth_probe_without_auth_code="n/a"
 auth_probe_with_auth_code="n/a"
 auth_probe_with_auth_http_status="n/a"
@@ -767,6 +773,12 @@ if command -v curl >/dev/null 2>&1; then
       health_submit_fastlane_enabled_raw="$(json_string_field "$health_body" "submit_fastlane_enabled")"
       health_submit_fastlane_enabled="$(parse_bool_token "$health_submit_fastlane_enabled_raw")"
       idempotency_store_status="$(json_string_field "$health_body" "idempotency_store_status")"
+      health_status_field_kind="$(json_field_kind "$health_body" "status")"
+      health_contract_version_field_kind="$(json_field_kind "$health_body" "contract_version")"
+      health_signer_source_field_kind="$(json_field_kind "$health_body" "signer_source")"
+      health_signer_pubkey_field_kind="$(json_field_kind "$health_body" "signer_pubkey")"
+      health_submit_fastlane_enabled_field_kind="$(json_field_kind "$health_body" "submit_fastlane_enabled")"
+      idempotency_store_status_field_kind="$(json_field_kind "$health_body" "idempotency_store_status")"
       health_routes_field_kind="$(json_field_kind "$health_body" "enabled_routes")"
       health_routes_alias_field_kind="$(json_field_kind "$health_body" "routes")"
       health_send_rpc_enabled_field_kind="$(json_field_kind "$health_body" "send_rpc_enabled_routes")"
@@ -794,6 +806,24 @@ if command -v curl >/dev/null 2>&1; then
       fi
       if [[ "$health_contract_version" != "$executor_contract_version_expected" ]]; then
         errors+=("executor contract_version mismatch: health=$health_contract_version expected=$executor_contract_version_expected")
+      fi
+      if [[ "$health_status_field_kind" != "missing" && "$health_status_field_kind" != "string" ]]; then
+        errors+=("executor health status must be string when present, got: $health_status_field_kind")
+      fi
+      if [[ "$health_contract_version_field_kind" != "missing" && "$health_contract_version_field_kind" != "string" ]]; then
+        errors+=("executor health contract_version must be string when present, got: $health_contract_version_field_kind")
+      fi
+      if [[ "$health_signer_source_field_kind" != "missing" && "$health_signer_source_field_kind" != "string" ]]; then
+        errors+=("executor health signer_source must be string when present, got: $health_signer_source_field_kind")
+      fi
+      if [[ "$health_signer_pubkey_field_kind" != "missing" && "$health_signer_pubkey_field_kind" != "string" ]]; then
+        errors+=("executor health signer_pubkey must be string when present, got: $health_signer_pubkey_field_kind")
+      fi
+      if [[ "$health_submit_fastlane_enabled_field_kind" != "missing" && "$health_submit_fastlane_enabled_field_kind" != "bool" ]]; then
+        errors+=("executor health submit_fastlane_enabled must be bool when present, got: $health_submit_fastlane_enabled_field_kind")
+      fi
+      if [[ "$idempotency_store_status_field_kind" != "missing" && "$idempotency_store_status_field_kind" != "string" ]]; then
+        errors+=("executor health idempotency_store_status must be string when present, got: $idempotency_store_status_field_kind")
       fi
       if [[ "$health_routes_field_kind" != "missing" && "$health_routes_field_kind" != "array" ]]; then
         errors+=("executor health enabled_routes must be array when present, got: $health_routes_field_kind")
@@ -980,10 +1010,15 @@ summary="$({
   echo "executor_bearer_required: $executor_bearer_required"
   echo "health_http_status: $health_http_status"
   echo "health_status: $health_status_field"
+  echo "health_status_field_kind: $health_status_field_kind"
   echo "health_contract_version: $health_contract_version"
+  echo "health_contract_version_field_kind: $health_contract_version_field_kind"
   echo "health_signer_source: $health_signer_source"
+  echo "health_signer_source_field_kind: $health_signer_source_field_kind"
   echo "health_signer_pubkey: $health_signer_pubkey"
+  echo "health_signer_pubkey_field_kind: $health_signer_pubkey_field_kind"
   echo "health_submit_fastlane_enabled: $health_submit_fastlane_enabled"
+  echo "health_submit_fastlane_enabled_field_kind: $health_submit_fastlane_enabled_field_kind"
   echo "health_routes_csv: $health_routes_csv"
   echo "health_routes_alias_csv: $health_routes_alias_csv"
   echo "health_routes_field_kind: $health_routes_field_kind"
@@ -995,6 +1030,7 @@ summary="$({
   echo "health_send_rpc_fallback_field_kind: $health_send_rpc_fallback_field_kind"
   echo "health_send_rpc_alias_field_kind: $health_send_rpc_alias_field_kind"
   echo "idempotency_store_status: $idempotency_store_status"
+  echo "idempotency_store_status_field_kind: $idempotency_store_status_field_kind"
   echo "auth_probe_without_auth_code: $auth_probe_without_auth_code"
   echo "auth_probe_with_auth_http_status: $auth_probe_with_auth_http_status"
   echo "auth_probe_with_auth_code: $auth_probe_with_auth_code"
