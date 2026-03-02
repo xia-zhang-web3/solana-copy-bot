@@ -89,6 +89,7 @@ adapter_artifact_summary="n/a"
 adapter_artifact_manifest="n/a"
 adapter_summary_sha256="n/a"
 adapter_manifest_sha256="n/a"
+adapter_final_nested_package_bundle_enabled="n/a"
 
 route_fee_output=""
 route_fee_exit_code="3"
@@ -108,6 +109,7 @@ route_fee_primary_route_stable="n/a"
 route_fee_stable_primary_route="n/a"
 route_fee_fallback_route_stable="n/a"
 route_fee_stable_fallback_route="n/a"
+route_fee_final_nested_package_bundle_enabled="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if adapter_output="$({
@@ -148,6 +150,13 @@ if ((${#input_errors[@]} == 0)); then
   adapter_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$adapter_output")")"
   adapter_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$adapter_output")")"
   adapter_manifest_sha256="$(trim_string "$(extract_field "manifest_sha256" "$adapter_output")")"
+  adapter_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$adapter_output")")"
+  if ! adapter_final_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$adapter_output")"; then
+    input_errors+=("nested adapter rollout final package_bundle_enabled must be boolean token, got: ${adapter_nested_package_bundle_enabled_raw:-<empty>}")
+    adapter_final_nested_package_bundle_enabled="unknown"
+  elif [[ "$adapter_final_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested adapter rollout final helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
 
   if [[ "$adapter_verdict" == "UNKNOWN" ]]; then
     adapter_reason="unable to classify adapter final verdict (exit=${adapter_exit_code})"
@@ -195,6 +204,13 @@ if ((${#input_errors[@]} == 0)); then
   route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_output")")"
   route_fee_fallback_route_stable="$(trim_string "$(extract_field "fallback_route_stable" "$route_fee_output")")"
   route_fee_stable_fallback_route="$(trim_string "$(extract_field "stable_fallback_route" "$route_fee_output")")"
+  route_fee_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$route_fee_output")")"
+  if ! route_fee_final_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_output")"; then
+    input_errors+=("nested route fee final package_bundle_enabled must be boolean token, got: ${route_fee_nested_package_bundle_enabled_raw:-<empty>}")
+    route_fee_final_nested_package_bundle_enabled="unknown"
+  elif [[ "$route_fee_final_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested route fee final helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
 
   if [[ "$route_fee_verdict" == "UNKNOWN" ]]; then
     route_fee_reason="unable to classify route/fee final verdict (exit=${route_fee_exit_code})"
@@ -311,6 +327,7 @@ adapter_final_artifact_summary: ${adapter_artifact_summary:-n/a}
 adapter_final_artifact_manifest: ${adapter_artifact_manifest:-n/a}
 adapter_final_summary_sha256: ${adapter_summary_sha256:-n/a}
 adapter_final_manifest_sha256: ${adapter_manifest_sha256:-n/a}
+adapter_final_nested_package_bundle_enabled: ${adapter_final_nested_package_bundle_enabled:-n/a}
 route_fee_final_exit_code: $route_fee_exit_code
 route_fee_final_verdict: $route_fee_verdict
 route_fee_final_reason: ${route_fee_reason:-n/a}
@@ -320,6 +337,7 @@ route_fee_final_artifact_summary: ${route_fee_artifact_summary:-n/a}
 route_fee_final_artifact_manifest: ${route_fee_artifact_manifest:-n/a}
 route_fee_final_summary_sha256: ${route_fee_summary_sha256:-n/a}
 route_fee_final_manifest_sha256: ${route_fee_manifest_sha256:-n/a}
+route_fee_final_nested_package_bundle_enabled: ${route_fee_final_nested_package_bundle_enabled:-n/a}
 route_fee_window_count: ${route_fee_window_count:-n/a}
 route_fee_go_nogo_go_count: ${route_fee_go_nogo_go_count:-n/a}
 route_fee_route_profile_pass_count: ${route_fee_route_profile_pass_count:-n/a}

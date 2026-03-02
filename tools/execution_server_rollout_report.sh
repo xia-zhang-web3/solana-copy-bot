@@ -118,6 +118,7 @@ overall_go_nogo_reason="not executed"
 overall_go_nogo_reason_code="not_executed"
 go_nogo_summary_sha256="n/a"
 go_nogo_capture="$step_root/go_nogo_capture_${now_compact}.txt"
+go_nogo_nested_package_bundle_enabled="n/a"
 
 rehearsal_output=""
 rehearsal_exit_code=3
@@ -126,6 +127,7 @@ rehearsal_reason="not executed"
 rehearsal_reason_code="not_executed"
 rehearsal_summary_sha256="n/a"
 rehearsal_capture="$step_root/rehearsal_capture_${now_compact}.txt"
+rehearsal_nested_package_bundle_enabled="n/a"
 
 executor_final_output=""
 executor_final_exit_code=3
@@ -134,6 +136,7 @@ executor_final_reason="not executed"
 executor_final_reason_code="not_executed"
 executor_final_summary_sha256="n/a"
 executor_final_capture="$step_root/executor_final_capture_${now_compact}.txt"
+executor_final_nested_package_bundle_enabled="n/a"
 
 adapter_final_output=""
 adapter_final_exit_code=3
@@ -142,6 +145,7 @@ adapter_final_reason="not executed"
 adapter_final_reason_code="not_executed"
 adapter_final_summary_sha256="n/a"
 adapter_final_capture="$step_root/adapter_final_capture_${now_compact}.txt"
+adapter_final_nested_package_bundle_enabled="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if preflight_output="$(
@@ -194,6 +198,13 @@ if ((${#input_errors[@]} == 0)); then
   overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
   overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
   go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
+  go_nogo_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$go_nogo_output")")"
+  if ! go_nogo_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$go_nogo_output")"; then
+    input_errors+=("nested go/no-go package_bundle_enabled must be boolean token, got: ${go_nogo_nested_package_bundle_enabled_raw:-<empty>}")
+    go_nogo_nested_package_bundle_enabled="unknown"
+  elif [[ "$go_nogo_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested go/no-go helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
 
   rehearsal_output_dir="$step_root/rehearsal"
   mkdir -p "$rehearsal_output_dir"
@@ -230,6 +241,13 @@ if ((${#input_errors[@]} == 0)); then
   rehearsal_reason="$(trim_string "$(extract_field "devnet_rehearsal_reason" "$rehearsal_output")")"
   rehearsal_reason_code="$(trim_string "$(extract_field "devnet_rehearsal_reason_code" "$rehearsal_output")")"
   rehearsal_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rehearsal_output")")"
+  rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
+  if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal package_bundle_enabled must be boolean token, got: ${rehearsal_nested_package_bundle_enabled_raw:-<empty>}")
+    rehearsal_nested_package_bundle_enabled="unknown"
+  elif [[ "$rehearsal_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested devnet rehearsal helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
 
   executor_final_output_dir="$step_root/executor_final"
   mkdir -p "$executor_final_output_dir"
@@ -268,6 +286,13 @@ if ((${#input_errors[@]} == 0)); then
   executor_final_reason="$(trim_string "$(extract_field "final_executor_package_reason" "$executor_final_output")")"
   executor_final_reason_code="$(trim_string "$(extract_field "final_executor_package_reason_code" "$executor_final_output")")"
   executor_final_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$executor_final_output")")"
+  executor_final_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$executor_final_output")")"
+  if ! executor_final_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$executor_final_output")"; then
+    input_errors+=("nested executor final package_bundle_enabled must be boolean token, got: ${executor_final_nested_package_bundle_enabled_raw:-<empty>}")
+    executor_final_nested_package_bundle_enabled="unknown"
+  elif [[ "$executor_final_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested executor final helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
 
   adapter_final_output_dir="$step_root/adapter_final"
   mkdir -p "$adapter_final_output_dir"
@@ -311,6 +336,13 @@ if ((${#input_errors[@]} == 0)); then
   adapter_final_reason="$(trim_string "$(extract_field "final_rollout_package_reason" "$adapter_final_output")")"
   adapter_final_reason_code="$(trim_string "$(extract_field "final_rollout_package_reason_code" "$adapter_final_output")")"
   adapter_final_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$adapter_final_output")")"
+  adapter_final_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$adapter_final_output")")"
+  if ! adapter_final_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final package_bundle_enabled must be boolean token, got: ${adapter_final_nested_package_bundle_enabled_raw:-<empty>}")
+    adapter_final_nested_package_bundle_enabled="unknown"
+  elif [[ "$adapter_final_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested adapter final helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
 fi
 
 printf '%s\n' "$preflight_output" >"$preflight_capture"
@@ -427,21 +459,25 @@ go_nogo_verdict: $overall_go_nogo_verdict
 go_nogo_reason: ${overall_go_nogo_reason:-n/a}
 go_nogo_reason_code: ${overall_go_nogo_reason_code:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
+go_nogo_nested_package_bundle_enabled: ${go_nogo_nested_package_bundle_enabled:-n/a}
 rehearsal_exit_code: $rehearsal_exit_code
 rehearsal_verdict: $rehearsal_verdict
 rehearsal_reason: ${rehearsal_reason:-n/a}
 rehearsal_reason_code: ${rehearsal_reason_code:-n/a}
 rehearsal_summary_sha256: ${rehearsal_summary_sha256:-n/a}
+rehearsal_nested_package_bundle_enabled: ${rehearsal_nested_package_bundle_enabled:-n/a}
 executor_final_exit_code: $executor_final_exit_code
 executor_final_verdict: $executor_final_verdict
 executor_final_reason: ${executor_final_reason:-n/a}
 executor_final_reason_code: ${executor_final_reason_code:-n/a}
 executor_final_summary_sha256: ${executor_final_summary_sha256:-n/a}
+executor_final_nested_package_bundle_enabled: ${executor_final_nested_package_bundle_enabled:-n/a}
 adapter_final_exit_code: $adapter_final_exit_code
 adapter_final_verdict: $adapter_final_verdict
 adapter_final_reason: ${adapter_final_reason:-n/a}
 adapter_final_reason_code: ${adapter_final_reason_code:-n/a}
 adapter_final_summary_sha256: ${adapter_final_summary_sha256:-n/a}
+adapter_final_nested_package_bundle_enabled: ${adapter_final_nested_package_bundle_enabled:-n/a}
 server_rollout_verdict: $overall_verdict
 server_rollout_reason: $overall_reason
 server_rollout_reason_code: $overall_reason_code

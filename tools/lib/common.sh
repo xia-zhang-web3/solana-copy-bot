@@ -95,6 +95,17 @@ extract_field() {
   '
 }
 
+extract_bool_field_strict() {
+  local key="$1"
+  local text="$2"
+  local raw=""
+  raw="$(trim_string "$(extract_field "$key" "$text")")"
+  if [[ -z "$raw" ]]; then
+    return 1
+  fi
+  parse_bool_token_strict "$raw"
+}
+
 first_non_empty() {
   local value
   for value in "$@"; do
