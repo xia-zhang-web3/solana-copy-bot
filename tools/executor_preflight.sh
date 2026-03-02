@@ -510,6 +510,8 @@ executor_upstream_submit_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYB
 executor_upstream_simulate_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL)"
 executor_send_rpc_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_URL)"
 executor_send_rpc_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL)"
+executor_signer_source_expected_raw="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_SOURCE)"
+executor_signer_source_expected="$(printf '%s' "$executor_signer_source_expected_raw" | tr '[:upper:]' '[:lower:]')"
 executor_signer_pubkey="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_PUBKEY)"
 declare -a expected_send_rpc_enabled_routes=()
 declare -a expected_send_rpc_fallback_routes=()
@@ -529,6 +531,9 @@ fi
 
 if [[ -z "$executor_signer_pubkey" ]]; then
   errors+=("COPYBOT_EXECUTOR_SIGNER_PUBKEY must be non-empty")
+fi
+if [[ -z "$executor_signer_source_expected" ]]; then
+  errors+=("COPYBOT_EXECUTOR_SIGNER_SOURCE must be non-empty")
 fi
 
 if [[ -z "${executor_route_allowlist_csv//[[:space:]]/}" ]]; then
@@ -685,9 +690,13 @@ health_http_status="n/a"
 health_status_field="n/a"
 health_contract_version="n/a"
 health_routes_csv="n/a"
+health_routes_alias_csv="n/a"
 health_send_rpc_enabled_routes_csv="n/a"
 health_send_rpc_fallback_routes_csv="n/a"
 health_send_rpc_alias_routes_csv="n/a"
+health_signer_source="n/a"
+health_signer_pubkey="n/a"
+health_submit_fastlane_enabled="n/a"
 idempotency_store_status="n/a"
 auth_probe_without_auth_code="n/a"
 auth_probe_with_auth_code="n/a"
@@ -700,10 +709,15 @@ if command -v curl >/dev/null 2>&1; then
       health_body="$(cat "$health_body_file")"
       health_status_field="$(json_string_field "$health_body" "status")"
       health_contract_version="$(json_string_field "$health_body" "contract_version")"
+      health_signer_source="$(printf '%s' "$(json_string_field "$health_body" "signer_source")" | tr '[:upper:]' '[:lower:]')"
+      health_signer_pubkey="$(json_string_field "$health_body" "signer_pubkey")"
+      health_submit_fastlane_enabled_raw="$(json_string_field "$health_body" "submit_fastlane_enabled")"
+      health_submit_fastlane_enabled="$(parse_bool_token "$health_submit_fastlane_enabled_raw")"
       idempotency_store_status="$(json_string_field "$health_body" "idempotency_store_status")"
+      health_routes_alias_csv="$(json_routes_csv_field "$health_body" "routes")"
       health_routes_csv="$(json_routes_csv_field "$health_body" "enabled_routes")"
       if [[ -z "$health_routes_csv" ]]; then
-        health_routes_csv="$(json_routes_csv_field "$health_body" "routes")"
+        health_routes_csv="$health_routes_alias_csv"
       fi
       health_send_rpc_alias_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_routes")"
       health_send_rpc_enabled_routes_csv="$(json_routes_csv_field "$health_body" "send_rpc_enabled_routes")"
@@ -723,12 +737,47 @@ if command -v curl >/dev/null 2>&1; then
       if [[ "$health_contract_version" != "$executor_contract_version_expected" ]]; then
         errors+=("executor contract_version mismatch: health=$health_contract_version expected=$executor_contract_version_expected")
       fi
+      if [[ -z "$health_signer_source" ]]; then
+        errors+=("executor health signer_source must be non-empty")
+      elif [[ "$health_signer_source" != "$executor_signer_source_expected" ]]; then
+        errors+=("executor signer_source mismatch: health=$health_signer_source expected=$executor_signer_source_expected")
+      fi
+      if [[ -z "$health_signer_pubkey" ]]; then
+        errors+=("executor health signer_pubkey must be non-empty")
+      elif [[ "$health_signer_pubkey" != "$executor_signer_pubkey" ]]; then
+        errors+=("executor signer_pubkey mismatch: health=$health_signer_pubkey expected=$executor_signer_pubkey")
+      fi
+      if [[ -z "$health_submit_fastlane_enabled" ]]; then
+        errors+=("executor health submit_fastlane_enabled must be boolean token, got: ${health_submit_fastlane_enabled_raw:-<empty>}")
+      elif [[ "$health_submit_fastlane_enabled" != "$executor_submit_fastlane_enabled" ]]; then
+        errors+=("executor submit_fastlane_enabled mismatch: health=$health_submit_fastlane_enabled expected=$executor_submit_fastlane_enabled")
+      fi
       while IFS= read -r route; do
         [[ -z "$route" ]] && continue
         if ! csv_contains_route "$health_routes_csv" "$route"; then
           errors+=("health enabled_routes missing executor route=$route")
         fi
       done < <(normalized_routes_lines "$executor_route_allowlist_csv")
+      while IFS= read -r route; do
+        [[ -z "$route" ]] && continue
+        if ! csv_contains_route "$executor_route_allowlist_csv" "$route"; then
+          errors+=("health enabled_routes include unexpected route=$route")
+        fi
+      done < <(normalized_routes_lines "$health_routes_csv")
+      if [[ -n "$health_routes_alias_csv" && -n "$health_routes_csv" ]]; then
+        while IFS= read -r route; do
+          [[ -z "$route" ]] && continue
+          if ! csv_contains_route "$health_routes_csv" "$route"; then
+            errors+=("health routes alias include unexpected route=$route")
+          fi
+        done < <(normalized_routes_lines "$health_routes_alias_csv")
+        while IFS= read -r route; do
+          [[ -z "$route" ]] && continue
+          if ! csv_contains_route "$health_routes_alias_csv" "$route"; then
+            errors+=("health routes alias missing enabled route=$route")
+          fi
+        done < <(normalized_routes_lines "$health_routes_csv")
+      fi
       while IFS= read -r route; do
         [[ -z "$route" ]] && continue
         if ! csv_contains_route "$health_send_rpc_enabled_routes_csv" "$route"; then
@@ -852,12 +901,18 @@ summary="$({
   echo "executor_route_allowlist_csv: $executor_route_allowlist_csv"
   echo "expected_send_rpc_enabled_routes_csv: $expected_send_rpc_enabled_routes_csv"
   echo "expected_send_rpc_fallback_routes_csv: $expected_send_rpc_fallback_routes_csv"
+  echo "executor_signer_source_expected: $executor_signer_source_expected"
+  echo "executor_signer_pubkey_expected: $executor_signer_pubkey"
   echo "executor_submit_fastlane_enabled: $executor_submit_fastlane_enabled"
   echo "executor_bearer_required: $executor_bearer_required"
   echo "health_http_status: $health_http_status"
   echo "health_status: $health_status_field"
   echo "health_contract_version: $health_contract_version"
+  echo "health_signer_source: $health_signer_source"
+  echo "health_signer_pubkey: $health_signer_pubkey"
+  echo "health_submit_fastlane_enabled: $health_submit_fastlane_enabled"
   echo "health_routes_csv: $health_routes_csv"
+  echo "health_routes_alias_csv: $health_routes_alias_csv"
   echo "health_send_rpc_enabled_routes_csv: $health_send_rpc_enabled_routes_csv"
   echo "health_send_rpc_fallback_routes_csv: $health_send_rpc_fallback_routes_csv"
   echo "health_send_rpc_alias_routes_csv: $health_send_rpc_alias_routes_csv"

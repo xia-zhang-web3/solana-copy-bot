@@ -619,9 +619,13 @@ simulate_without_auth_status="${FAKE_EXECUTOR_SIMULATE_WITHOUT_AUTH_STATUS:-200}
 simulate_with_auth_status="${FAKE_EXECUTOR_SIMULATE_WITH_AUTH_STATUS:-200}"
 simulate_invalid_auth_status="${FAKE_EXECUTOR_SIMULATE_INVALID_AUTH_STATUS:-200}"
 health_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_CSV:-paper,rpc,jito}"
+health_routes_alias_csv="${FAKE_EXECUTOR_HEALTH_ROUTES_CSV:-$health_enabled_routes_csv}"
 health_send_rpc_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV:-rpc,jito}"
 health_send_rpc_fallback_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_CSV:-jito}"
 health_send_rpc_alias_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_CSV:-$health_send_rpc_enabled_routes_csv}"
+health_signer_source="${FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE:-kms}"
+health_signer_pubkey="${FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY:-Signer1111111111111111111111111111111111}"
+health_submit_fastlane_enabled="${FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED:-false}"
 output_file=""
 auth_header=""
 url=""
@@ -686,10 +690,11 @@ done
 
 if [[ "$url" == *"/healthz" ]]; then
   health_enabled_routes_json="$(csv_to_json_array "$health_enabled_routes_csv")"
+  health_routes_alias_json="$(csv_to_json_array "$health_routes_alias_csv")"
   health_send_rpc_enabled_routes_json="$(csv_to_json_array "$health_send_rpc_enabled_routes_csv")"
   health_send_rpc_fallback_routes_json="$(csv_to_json_array "$health_send_rpc_fallback_routes_csv")"
   health_send_rpc_alias_routes_json="$(csv_to_json_array "$health_send_rpc_alias_routes_csv")"
-  body="{\"status\":\"ok\",\"contract_version\":\"v1\",\"enabled_routes\":${health_enabled_routes_json},\"signer_source\":\"kms\",\"idempotency_store_status\":\"ok\",\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_alias_routes_json}}"
+  body="{\"status\":\"ok\",\"contract_version\":\"v1\",\"enabled_routes\":${health_enabled_routes_json},\"routes\":${health_routes_alias_json},\"signer_source\":\"${health_signer_source}\",\"submit_fastlane_enabled\":${health_submit_fastlane_enabled},\"signer_pubkey\":\"${health_signer_pubkey}\",\"idempotency_store_status\":\"ok\",\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_alias_routes_json}}"
   status_code="200"
 elif [[ "$url" == *"/simulate" ]]; then
   if [[ -z "$auth_header" ]]; then
@@ -2573,6 +2578,12 @@ run_executor_preflight_case() {
   assert_contains "$pass_output" "=== Executor Preflight ==="
   assert_contains "$pass_output" "preflight_verdict: PASS"
   assert_field_equals "$pass_output" "preflight_reason_code" "checks_passed"
+  assert_field_equals "$pass_output" "executor_signer_source_expected" "kms"
+  assert_field_equals "$pass_output" "executor_signer_pubkey_expected" "Signer1111111111111111111111111111111111"
+  assert_field_equals "$pass_output" "health_signer_source" "kms"
+  assert_field_equals "$pass_output" "health_signer_pubkey" "Signer1111111111111111111111111111111111"
+  assert_field_equals "$pass_output" "health_submit_fastlane_enabled" "false"
+  assert_field_equals "$pass_output" "health_routes_alias_csv" "paper,rpc,jito"
   assert_field_equals "$pass_output" "expected_send_rpc_enabled_routes_csv" "rpc,jito"
   assert_field_equals "$pass_output" "expected_send_rpc_fallback_routes_csv" "jito"
   assert_field_equals "$pass_output" "health_send_rpc_enabled_routes_csv" "rpc,jito"
@@ -2677,6 +2688,71 @@ run_executor_preflight_case() {
   fi
   assert_contains "$send_rpc_alias_mismatch_output" "preflight_verdict: FAIL"
   assert_contains "$send_rpc_alias_mismatch_output" "health send-rpc alias routes missing enabled route=jito"
+
+  local routes_alias_mismatch_output
+  if routes_alias_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_CSV="paper,rpc,jito" \
+      FAKE_EXECUTOR_HEALTH_ROUTES_CSV="paper,rpc" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for health routes alias mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$routes_alias_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$routes_alias_mismatch_output" "health routes alias missing enabled route=jito"
+
+  local signer_source_mismatch_output
+  if signer_source_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE="file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for health signer_source mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$signer_source_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$signer_source_mismatch_output" "executor signer_source mismatch: health=file expected=kms"
+
+  local signer_pubkey_mismatch_output
+  if signer_pubkey_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY="SignerMismatch11111111111111111111111111" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for health signer_pubkey mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$signer_pubkey_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$signer_pubkey_mismatch_output" "executor signer_pubkey mismatch:"
+
+  local submit_fastlane_mismatch_output
+  if submit_fastlane_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED="true" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for health submit_fastlane_enabled mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$submit_fastlane_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$submit_fastlane_mismatch_output" "executor submit_fastlane_enabled mismatch: health=true expected=false"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token" "paper,rpc,jito,fastlane"
   local allowlist_mismatch_output
