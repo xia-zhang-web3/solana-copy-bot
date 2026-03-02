@@ -119,6 +119,8 @@ if ((${#input_errors[@]} == 0)) && [[ -f "$EXECUTOR_ENV_PATH" ]]; then
   if ! rotation_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rotation_output")"; then
     input_errors+=("rotation helper artifacts_written must be boolean token, got: ${rotation_artifacts_written_raw:-<empty>}")
     rotation_artifacts_written="unknown"
+  elif [[ -n "$rotation_output_dir" && "$rotation_artifacts_written" != "true" ]]; then
+    input_errors+=("rotation helper artifacts_written must be true")
   fi
   if [[ "$rotation_verdict" == "UNKNOWN" ]]; then
     rotation_reason="unable to classify rotation helper verdict (exit=$rotation_exit_code)"
@@ -172,6 +174,8 @@ if ((${#input_errors[@]} == 0)) && [[ -f "$CONFIG_PATH" && -f "$EXECUTOR_ENV_PAT
   if ! preflight_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$preflight_output")"; then
     input_errors+=("preflight helper artifacts_written must be boolean token, got: ${preflight_artifacts_written_raw:-<empty>}")
     preflight_artifacts_written="unknown"
+  elif [[ -n "$preflight_output_dir" && "$preflight_artifacts_written" != "true" ]]; then
+    input_errors+=("preflight helper artifacts_written must be true")
   fi
   if [[ "$preflight_verdict" == "UNKNOWN" ]]; then
     preflight_reason="unable to classify preflight helper verdict (exit=$preflight_exit_code)"
@@ -273,6 +277,8 @@ else
   if ! rehearsal_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rehearsal_output")"; then
     input_errors+=("nested devnet rehearsal artifacts_written must be boolean token, got: ${rehearsal_artifacts_written_raw:-<empty>}")
     rehearsal_artifacts_written="unknown"
+  elif [[ -n "$rehearsal_output_dir" && "$rehearsal_artifacts_written" != "true" ]]; then
+    input_errors+=("nested devnet rehearsal artifacts_written must be true")
   fi
   rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
   if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then

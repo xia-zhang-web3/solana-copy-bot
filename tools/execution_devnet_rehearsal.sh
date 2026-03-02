@@ -393,6 +393,8 @@ go_nogo_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written
 if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$go_nogo_output")"; then
   config_errors+=("nested go/no-go artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
   go_nogo_artifacts_written="unknown"
+elif [[ -n "$go_nogo_output_dir" && "$go_nogo_artifacts_written" != "true" ]]; then
+  config_errors+=("nested go/no-go artifacts_written must be true")
 fi
 windowed_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$windowed_signoff_output")")"
 windowed_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$windowed_signoff_output")")"
@@ -412,6 +414,8 @@ windowed_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifact
 if ! windowed_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$windowed_signoff_output")"; then
   config_errors+=("nested windowed signoff artifacts_written must be boolean token, got: ${windowed_signoff_artifacts_written_raw:-<empty>}")
   windowed_signoff_artifacts_written="unknown"
+elif [[ -n "$windowed_signoff_output_dir" && "$windowed_signoff_artifacts_written" != "true" ]]; then
+  config_errors+=("nested windowed signoff artifacts_written must be true")
 fi
 route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$route_fee_signoff_output")")"
 route_fee_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$route_fee_signoff_output")")"
@@ -423,6 +427,8 @@ route_fee_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifac
 if ! route_fee_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_signoff_output")"; then
   config_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${route_fee_signoff_artifacts_written_raw:-<empty>}")
   route_fee_signoff_artifacts_written="unknown"
+elif [[ -n "$route_fee_signoff_output_dir" && "$route_fee_signoff_artifacts_written" != "true" ]]; then
+  config_errors+=("nested route/fee signoff artifacts_written must be true")
 fi
 route_fee_primary_route_stable_raw="$(trim_string "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
 if ! route_fee_primary_route_stable="$(extract_bool_field_strict "primary_route_stable" "$route_fee_signoff_output")"; then

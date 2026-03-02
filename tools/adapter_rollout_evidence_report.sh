@@ -123,6 +123,8 @@ if ((${#input_errors[@]} == 0)) && [[ -f "$ADAPTER_ENV_PATH" ]]; then
   if ! rotation_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rotation_output")"; then
     input_errors+=("rotation helper artifacts_written must be boolean token, got: ${rotation_artifacts_written_raw:-<empty>}")
     rotation_artifacts_written="unknown"
+  elif [[ -n "$rotation_output_dir" && "$rotation_artifacts_written" != "true" ]]; then
+    input_errors+=("rotation helper artifacts_written must be true")
   fi
   rotation_first_error="$(printf '%s\n' "$rotation_output" | awk '
     /^--- errors ---$/ {in_errors=1; next}
@@ -334,6 +336,8 @@ else
   if ! go_nogo_artifacts_written="$(extract_bool_field_strict "go_nogo_artifacts_written" "$rehearsal_output")"; then
     input_errors+=("nested rehearsal go_nogo_artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
     go_nogo_artifacts_written="unknown"
+  elif [[ -n "$rehearsal_output_dir" && "$go_nogo_artifacts_written" != "true" ]]; then
+    input_errors+=("nested rehearsal go_nogo_artifacts_written must be true")
   fi
   rehearsal_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rehearsal_output")")"
   rehearsal_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rehearsal_output")")"
@@ -344,6 +348,8 @@ else
   if ! rehearsal_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rehearsal_output")"; then
     input_errors+=("nested devnet rehearsal artifacts_written must be boolean token, got: ${rehearsal_artifacts_written_raw:-<empty>}")
     rehearsal_artifacts_written="unknown"
+  elif [[ -n "$rehearsal_output_dir" && "$rehearsal_artifacts_written" != "true" ]]; then
+    input_errors+=("nested devnet rehearsal artifacts_written must be true")
   fi
   rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
   if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then
@@ -358,6 +364,8 @@ else
   if ! windowed_signoff_artifacts_written="$(extract_bool_field_strict "windowed_signoff_artifacts_written" "$rehearsal_output")"; then
     input_errors+=("nested rehearsal windowed_signoff_artifacts_written must be boolean token, got: ${windowed_signoff_artifacts_written_raw:-<empty>}")
     windowed_signoff_artifacts_written="unknown"
+  elif [[ -n "$rehearsal_output_dir" && "$windowed_signoff_artifacts_written" != "true" ]]; then
+    input_errors+=("nested rehearsal windowed_signoff_artifacts_written must be true")
   fi
   rehearsal_route_fee_signoff_required_raw="$(trim_string "$(extract_field "route_fee_signoff_required" "$rehearsal_output")")"
   if ! rehearsal_route_fee_signoff_required="$(extract_bool_field_strict "route_fee_signoff_required" "$rehearsal_output")"; then
@@ -375,6 +383,8 @@ else
   if ! rehearsal_route_fee_signoff_artifacts_written="$(extract_bool_field_strict "route_fee_signoff_artifacts_written" "$rehearsal_output")"; then
     input_errors+=("nested rehearsal route_fee_signoff_artifacts_written must be boolean token, got: ${rehearsal_route_fee_signoff_artifacts_written_raw:-<empty>}")
     rehearsal_route_fee_signoff_artifacts_written="unknown"
+  elif [[ -n "$rehearsal_output_dir" && "$rehearsal_route_fee_signoff_artifacts_written" != "true" ]]; then
+    input_errors+=("nested rehearsal route_fee_signoff_artifacts_written must be true")
   fi
   rehearsal_route_fee_primary_route_stable_raw="$(trim_string "$(extract_field "route_fee_primary_route_stable" "$rehearsal_output")")"
   if ! rehearsal_route_fee_primary_route_stable="$(extract_bool_field_strict "route_fee_primary_route_stable" "$rehearsal_output")"; then
@@ -467,6 +477,8 @@ else
   if ! route_fee_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_signoff_output")"; then
     input_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${route_fee_signoff_artifacts_written_raw:-<empty>}")
     route_fee_signoff_artifacts_written="unknown"
+  elif [[ -n "$route_fee_signoff_output_dir" && "$route_fee_signoff_artifacts_written" != "true" ]]; then
+    input_errors+=("nested route/fee signoff artifacts_written must be true")
   fi
   route_fee_signoff_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$route_fee_signoff_output")")"
   if ! route_fee_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_signoff_output")"; then

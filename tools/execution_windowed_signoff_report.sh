@@ -196,6 +196,8 @@ if ((${#input_errors[@]} == 0)); then
     if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$go_nogo_output")"; then
       input_errors+=("window ${window_hours}h nested go/no-go artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
       go_nogo_artifacts_written="unknown"
+    elif [[ -n "$go_nogo_output_dir" && "$go_nogo_artifacts_written" != "true" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go artifacts_written must be true")
     fi
     go_nogo_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$go_nogo_output")")"
     if ! go_nogo_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$go_nogo_output")"; then
