@@ -76,6 +76,7 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+      PACKAGE_BUNDLE_ENABLED="false" \
       bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     signoff_exit_code=0

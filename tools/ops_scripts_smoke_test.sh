@@ -2223,6 +2223,15 @@ run_execution_route_fee_signoff_case() {
     exit 1
   fi
   assert_bundled_summary_manifest_package_status_parity "$final_bundle_output"
+  local final_route_fee_signoff_capture_path
+  final_route_fee_signoff_capture_path="$(extract_field_value "$final_bundle_output" "artifact_signoff_capture")"
+  if [[ -z "$final_route_fee_signoff_capture_path" || ! -f "$final_route_fee_signoff_capture_path" ]]; then
+    echo "expected route/fee final nested signoff capture artifact at $final_route_fee_signoff_capture_path" >&2
+    exit 1
+  fi
+  local final_route_fee_signoff_capture_text
+  final_route_fee_signoff_capture_text="$(cat "$final_route_fee_signoff_capture_path")"
+  assert_contains "$final_route_fee_signoff_capture_text" "package_bundle_enabled: false"
 
   local final_nogo_output=""
   if final_nogo_output="$(
@@ -3623,6 +3632,15 @@ run_executor_rollout_evidence_case() {
     exit 1
   fi
   assert_bundled_summary_manifest_package_status_parity "$final_bundle_output"
+  local executor_final_rollout_capture_path
+  executor_final_rollout_capture_path="$(extract_field_value "$final_bundle_output" "artifact_rollout_capture")"
+  if [[ -z "$executor_final_rollout_capture_path" || ! -f "$executor_final_rollout_capture_path" ]]; then
+    echo "expected executor final nested rollout capture artifact at $executor_final_rollout_capture_path" >&2
+    exit 1
+  fi
+  local executor_final_rollout_capture_text
+  executor_final_rollout_capture_text="$(cat "$executor_final_rollout_capture_path")"
+  assert_contains "$executor_final_rollout_capture_text" "package_bundle_enabled: false"
 
   local final_hold_output=""
   if final_hold_output="$(
@@ -4177,6 +4195,15 @@ run_adapter_rollout_evidence_case() {
     exit 1
   fi
   assert_bundled_summary_manifest_package_status_parity "$final_bundle_output"
+  local adapter_final_rollout_capture_path
+  adapter_final_rollout_capture_path="$(extract_field_value "$final_bundle_output" "artifact_rollout_capture")"
+  if [[ -z "$adapter_final_rollout_capture_path" || ! -f "$adapter_final_rollout_capture_path" ]]; then
+    echo "expected adapter final nested rollout capture artifact at $adapter_final_rollout_capture_path" >&2
+    exit 1
+  fi
+  local adapter_final_rollout_capture_text
+  adapter_final_rollout_capture_text="$(cat "$adapter_final_rollout_capture_path")"
+  assert_contains "$adapter_final_rollout_capture_text" "package_bundle_enabled: false"
 
   local final_nested_isolation_output=""
   if final_nested_isolation_output="$(
