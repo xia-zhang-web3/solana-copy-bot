@@ -6319,6 +6319,93 @@ run_audit_contract_smoke_mode_guard_case() {
   echo "[ok] audit contract smoke mode guard"
 }
 
+run_audit_ops_smoke_mode_guard_case() {
+  local invalid_mode_output=""
+  if invalid_mode_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="bogus_mode" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for invalid AUDIT_OPS_SMOKE_MODE" >&2
+    exit 1
+  else
+    local invalid_mode_exit_code=$?
+    if [[ "$invalid_mode_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh invalid AUDIT_OPS_SMOKE_MODE exit code 1, got $invalid_mode_exit_code" >&2
+      echo "$invalid_mode_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_mode_output" "AUDIT_OPS_SMOKE_MODE must be one of: full,targeted"
+
+  local empty_targets_output=""
+  if empty_targets_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_TARGET_CASES=" " \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for empty AUDIT_OPS_SMOKE_TARGET_CASES in targeted mode" >&2
+    exit 1
+  else
+    local empty_targets_exit_code=$?
+    if [[ "$empty_targets_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh empty AUDIT_OPS_SMOKE_TARGET_CASES exit code 1, got $empty_targets_exit_code" >&2
+      echo "$empty_targets_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$empty_targets_output" "AUDIT_OPS_SMOKE_TARGET_CASES must be non-empty when AUDIT_OPS_SMOKE_MODE=targeted"
+
+  local full_targeted_output=""
+  full_targeted_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_targeted_output" "[ok] common timeout parser"
+  assert_contains "$full_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
+  assert_contains "$full_targeted_output" "[audit:full] PASS"
+
+  local standard_marker_path="$ROOT_DIR/ops/.audit_ops_smoke_targeted_marker.tmp"
+  printf 'marker\n' >"$standard_marker_path"
+
+  local standard_targeted_output=""
+  if standard_targeted_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_PACKAGE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
+      bash "$ROOT_DIR/tools/audit_standard.sh"
+  )"; then
+    rm -f "$standard_marker_path"
+  else
+    local standard_targeted_exit_code=$?
+    rm -f "$standard_marker_path"
+    echo "expected audit_standard.sh targeted ops-smoke run to pass, got exit code $standard_targeted_exit_code" >&2
+    echo "$standard_targeted_output" >&2
+    exit 1
+  fi
+
+  assert_contains "$standard_targeted_output" "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=targeted)"
+  assert_contains "$standard_targeted_output" "[ok] common timeout parser"
+  assert_contains "$standard_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
+  assert_contains "$standard_targeted_output" "[audit:standard] PASS"
+  echo "[ok] audit ops smoke mode guard"
+}
+
 run_evidence_bundle_pack_case() {
   local evidence_dir="$TMP_DIR/evidence-pack-input"
   local output_dir="$TMP_DIR/evidence-pack-out"
@@ -6555,6 +6642,10 @@ run_targeted_smoke_cases() {
       run_audit_contract_smoke_mode_guard_case
       executed_cases=$((executed_cases + 1))
       ;;
+    audit_ops_smoke_mode_guard | run_audit_ops_smoke_mode_guard_case)
+      run_audit_ops_smoke_mode_guard_case
+      executed_cases=$((executed_cases + 1))
+      ;;
     evidence_bundle_pack | run_evidence_bundle_pack_case)
       run_evidence_bundle_pack_case
       executed_cases=$((executed_cases + 1))
@@ -6599,7 +6690,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, evidence_bundle_pack, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness" >&2
+      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness" >&2
       exit 1
       ;;
     esac
@@ -6664,6 +6755,7 @@ main() {
   run_audit_full_strict_bool_guard_case
   run_audit_full_contract_smoke_strict_bool_guard_case
   run_audit_contract_smoke_mode_guard_case
+  run_audit_ops_smoke_mode_guard_case
   run_evidence_bundle_pack_case
   run_ops_smoke_targeted_dispatch_case
 
