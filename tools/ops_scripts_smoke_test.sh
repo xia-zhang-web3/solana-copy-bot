@@ -6359,6 +6359,70 @@ run_audit_executor_test_mode_guard_case() {
   fi
   assert_contains "$empty_targets_output" "AUDIT_EXECUTOR_TEST_TARGETS must be non-empty when AUDIT_EXECUTOR_TEST_MODE=targeted"
 
+  local unknown_target_output=""
+  if unknown_target_output="$(
+    AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="false" \
+      AUDIT_EXECUTOR_TEST_MODE="targeted" \
+      AUDIT_EXECUTOR_TEST_TARGETS="definitely_nonexistent_test_name_12345" \
+      bash "$ROOT_DIR/tools/audit_quick.sh" 2>&1
+  )"; then
+    echo "expected audit_quick.sh to fail for unknown AUDIT_EXECUTOR_TEST_TARGETS entry in targeted mode" >&2
+    exit 1
+  else
+    local unknown_target_exit_code=$?
+    if [[ "$unknown_target_exit_code" -ne 1 ]]; then
+      echo "expected audit_quick.sh unknown AUDIT_EXECUTOR_TEST_TARGETS exit code 1, got $unknown_target_exit_code" >&2
+      echo "$unknown_target_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$unknown_target_output" "unknown executor test target in AUDIT_EXECUTOR_TEST_TARGETS: definitely_nonexistent_test_name_12345"
+
+  local standard_unknown_target_output=""
+  if standard_unknown_target_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="false" \
+      AUDIT_SKIP_PACKAGE_TESTS="true" \
+      AUDIT_EXECUTOR_TEST_MODE="targeted" \
+      AUDIT_EXECUTOR_TEST_TARGETS="definitely_nonexistent_test_name_12345" \
+      bash "$ROOT_DIR/tools/audit_standard.sh" 2>&1
+  )"; then
+    echo "expected audit_standard.sh to fail for unknown AUDIT_EXECUTOR_TEST_TARGETS entry in targeted mode" >&2
+    exit 1
+  else
+    local standard_unknown_target_exit_code=$?
+    if [[ "$standard_unknown_target_exit_code" -ne 1 ]]; then
+      echo "expected audit_standard.sh unknown AUDIT_EXECUTOR_TEST_TARGETS exit code 1, got $standard_unknown_target_exit_code" >&2
+      echo "$standard_unknown_target_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$standard_unknown_target_output" "unknown executor test target in AUDIT_EXECUTOR_TEST_TARGETS: definitely_nonexistent_test_name_12345"
+
+  local full_unknown_target_output=""
+  if full_unknown_target_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="false" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_EXECUTOR_TEST_MODE="targeted" \
+      AUDIT_EXECUTOR_TEST_TARGETS="definitely_nonexistent_test_name_12345" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for unknown AUDIT_EXECUTOR_TEST_TARGETS entry in targeted mode" >&2
+    exit 1
+  else
+    local full_unknown_target_exit_code=$?
+    if [[ "$full_unknown_target_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh unknown AUDIT_EXECUTOR_TEST_TARGETS exit code 1, got $full_unknown_target_exit_code" >&2
+      echo "$full_unknown_target_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$full_unknown_target_output" "unknown executor test target in AUDIT_EXECUTOR_TEST_TARGETS: definitely_nonexistent_test_name_12345"
+
   local quick_targeted_output=""
   quick_targeted_output="$(
     AUDIT_SKIP_CONTRACT_SMOKE="true" \

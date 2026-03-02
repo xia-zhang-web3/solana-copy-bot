@@ -70,23 +70,50 @@ run_contract_smoke() {
 run_executor_tests() {
   if [[ "$executor_test_mode" == "targeted" ]]; then
     local -a target_entries=()
+    local -a normalized_targets=()
     IFS=',' read -r -a target_entries <<<"$executor_test_targets"
     local target_raw=""
     local target_name=""
-    local executed_targets=0
     for target_raw in "${target_entries[@]-}"; do
       target_name="$(trim_string "$target_raw")"
       if [[ -z "$target_name" ]]; then
         continue
       fi
-      run_with_timeout_if_available "$executor_test_timeout_sec" \
-        cargo test -p copybot-executor -q "$target_name"
-      executed_targets=$((executed_targets + 1))
+      normalized_targets+=("$target_name")
     done
-    if ((executed_targets == 0)); then
+    if ((${#normalized_targets[@]} == 0)); then
       echo "AUDIT_EXECUTOR_TEST_TARGETS must contain at least one non-empty target when AUDIT_EXECUTOR_TEST_MODE=targeted" >&2
       exit 1
     fi
+
+    local tests_list_path=""
+    tests_list_path="$(mktemp)"
+    if ! run_with_timeout_if_available "$executor_test_timeout_sec" \
+      cargo test -p copybot-executor -q -- --list >"$tests_list_path"; then
+      echo "failed to enumerate executor tests for AUDIT_EXECUTOR_TEST_MODE=targeted" >&2
+      rm -f "$tests_list_path"
+      exit 1
+    fi
+
+    local listed_tests=""
+    listed_tests="$(awk '/: test$/ { print }' "$tests_list_path")"
+    rm -f "$tests_list_path"
+    if [[ -z "$listed_tests" ]]; then
+      echo "failed to enumerate executor tests for AUDIT_EXECUTOR_TEST_MODE=targeted" >&2
+      exit 1
+    fi
+
+    for target_name in "${normalized_targets[@]-}"; do
+      if ! grep -Fq -- "$target_name" <<<"$listed_tests"; then
+        echo "unknown executor test target in AUDIT_EXECUTOR_TEST_TARGETS: $target_name" >&2
+        exit 1
+      fi
+    done
+
+    for target_name in "${normalized_targets[@]-}"; do
+      run_with_timeout_if_available "$executor_test_timeout_sec" \
+        cargo test -p copybot-executor -q "$target_name"
+    done
     return
   fi
   run_with_timeout_if_available "$executor_test_timeout_sec" \
