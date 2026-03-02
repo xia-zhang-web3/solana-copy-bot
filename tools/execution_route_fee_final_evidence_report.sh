@@ -97,7 +97,11 @@ if ((${#input_errors[@]} == 0)); then
   signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff_verdict" "$signoff_output")")"
   signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$signoff_output")")"
   signoff_reason_code="$(trim_string "$(extract_field "signoff_reason_code" "$signoff_output")")"
-  signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$signoff_output")")"
+  signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$signoff_output")")"
+  if ! signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$signoff_output")"; then
+    input_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${signoff_artifacts_written_raw:-<empty>}")
+    signoff_artifacts_written="unknown"
+  fi
   signoff_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$signoff_output")")"
   signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$signoff_output")")"
   signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$signoff_output")")"

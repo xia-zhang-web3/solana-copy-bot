@@ -128,7 +128,11 @@ if ((${#input_errors[@]} == 0)); then
   rollout_verdict="$(normalize_go_nogo_verdict "$(extract_field "executor_rollout_verdict" "$rollout_output")")"
   rollout_reason="$(trim_string "$(extract_field "executor_rollout_reason" "$rollout_output")")"
   rollout_reason_code="$(trim_string "$(extract_field "executor_rollout_reason_code" "$rollout_output")")"
-  rollout_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rollout_output")")"
+  rollout_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$rollout_output")")"
+  if ! rollout_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rollout_output")"; then
+    input_errors+=("nested executor rollout artifacts_written must be boolean token, got: ${rollout_artifacts_written_raw:-<empty>}")
+    rollout_artifacts_written="unknown"
+  fi
   rollout_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$rollout_output")")"
   rollout_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rollout_output")")"
   rollout_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rollout_output")")"

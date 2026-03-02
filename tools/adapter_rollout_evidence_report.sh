@@ -119,7 +119,11 @@ if ((${#input_errors[@]} == 0)) && [[ -f "$ADAPTER_ENV_PATH" ]]; then
   rotation_artifact_report="$(trim_string "$(extract_field "artifact_report" "$rotation_output")")"
   rotation_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rotation_output")")"
   rotation_report_sha256="$(trim_string "$(extract_field "report_sha256" "$rotation_output")")"
-  rotation_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rotation_output")")"
+  rotation_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$rotation_output")")"
+  if ! rotation_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rotation_output")"; then
+    input_errors+=("rotation helper artifacts_written must be boolean token, got: ${rotation_artifacts_written_raw:-<empty>}")
+    rotation_artifacts_written="unknown"
+  fi
   rotation_first_error="$(printf '%s\n' "$rotation_output" | awk '
     /^--- errors ---$/ {in_errors=1; next}
     /^--- / && in_errors {exit}
@@ -314,13 +318,21 @@ else
   go_nogo_snapshot_sha256="$(trim_string "$(extract_field "go_nogo_snapshot_sha256" "$rehearsal_output")")"
   go_nogo_preflight_sha256="$(trim_string "$(extract_field "go_nogo_preflight_sha256" "$rehearsal_output")")"
   go_nogo_summary_sha256="$(trim_string "$(extract_field "go_nogo_summary_sha256" "$rehearsal_output")")"
-  go_nogo_artifacts_written="$(normalize_bool_token "$(extract_field "go_nogo_artifacts_written" "$rehearsal_output")")"
+  go_nogo_artifacts_written_raw="$(trim_string "$(extract_field "go_nogo_artifacts_written" "$rehearsal_output")")"
+  if ! go_nogo_artifacts_written="$(extract_bool_field_strict "go_nogo_artifacts_written" "$rehearsal_output")"; then
+    input_errors+=("nested rehearsal go_nogo_artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
+    go_nogo_artifacts_written="unknown"
+  fi
   rehearsal_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rehearsal_output")")"
   rehearsal_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$rehearsal_output")")"
   rehearsal_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$rehearsal_output")")"
   rehearsal_go_nogo_sha256="$(trim_string "$(extract_field "go_nogo_sha256" "$rehearsal_output")")"
   rehearsal_tests_sha256="$(trim_string "$(extract_field "tests_sha256" "$rehearsal_output")")"
-  rehearsal_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rehearsal_output")")"
+  rehearsal_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$rehearsal_output")")"
+  if ! rehearsal_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal artifacts_written must be boolean token, got: ${rehearsal_artifacts_written_raw:-<empty>}")
+    rehearsal_artifacts_written="unknown"
+  fi
   rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
   if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then
     input_errors+=("nested devnet rehearsal package_bundle_enabled must be boolean token, got: ${rehearsal_nested_package_bundle_enabled_raw:-<empty>}")
@@ -330,7 +342,11 @@ else
   fi
   windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "windowed_signoff_artifact_manifest" "$rehearsal_output")")"
   windowed_signoff_summary_sha256="$(trim_string "$(extract_field "windowed_signoff_summary_sha256" "$rehearsal_output")")"
-  windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "windowed_signoff_artifacts_written" "$rehearsal_output")")"
+  windowed_signoff_artifacts_written_raw="$(trim_string "$(extract_field "windowed_signoff_artifacts_written" "$rehearsal_output")")"
+  if ! windowed_signoff_artifacts_written="$(extract_bool_field_strict "windowed_signoff_artifacts_written" "$rehearsal_output")"; then
+    input_errors+=("nested rehearsal windowed_signoff_artifacts_written must be boolean token, got: ${windowed_signoff_artifacts_written_raw:-<empty>}")
+    windowed_signoff_artifacts_written="unknown"
+  fi
   rehearsal_route_fee_signoff_required="$(normalize_bool_token "$(extract_field "route_fee_signoff_required" "$rehearsal_output")")"
   rehearsal_route_fee_signoff_windows_csv="$(trim_string "$(extract_field "route_fee_signoff_windows_csv" "$rehearsal_output")")"
   rehearsal_route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "route_fee_signoff_verdict" "$rehearsal_output")")"
@@ -339,7 +355,11 @@ else
   rehearsal_route_fee_signoff_exit_code="$(trim_string "$(extract_field "route_fee_signoff_exit_code" "$rehearsal_output")")"
   rehearsal_route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "route_fee_signoff_artifact_manifest" "$rehearsal_output")")"
   rehearsal_route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "route_fee_signoff_summary_sha256" "$rehearsal_output")")"
-  rehearsal_route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "route_fee_signoff_artifacts_written" "$rehearsal_output")")"
+  rehearsal_route_fee_signoff_artifacts_written_raw="$(trim_string "$(extract_field "route_fee_signoff_artifacts_written" "$rehearsal_output")")"
+  if ! rehearsal_route_fee_signoff_artifacts_written="$(extract_bool_field_strict "route_fee_signoff_artifacts_written" "$rehearsal_output")"; then
+    input_errors+=("nested rehearsal route_fee_signoff_artifacts_written must be boolean token, got: ${rehearsal_route_fee_signoff_artifacts_written_raw:-<empty>}")
+    rehearsal_route_fee_signoff_artifacts_written="unknown"
+  fi
   rehearsal_route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "route_fee_primary_route_stable" "$rehearsal_output")")"
   rehearsal_route_fee_stable_primary_route="$(trim_string "$(extract_field "route_fee_stable_primary_route" "$rehearsal_output")")"
   rehearsal_route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "route_fee_fallback_route_stable" "$rehearsal_output")")"
@@ -419,7 +439,11 @@ else
   route_fee_signoff_windows_csv="$(trim_string "$(extract_field "windows_csv" "$route_fee_signoff_output")")"
   route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
   route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
-  route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+  route_fee_signoff_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+  if ! route_fee_signoff_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_signoff_output")"; then
+    input_errors+=("nested route/fee signoff artifacts_written must be boolean token, got: ${route_fee_signoff_artifacts_written_raw:-<empty>}")
+    route_fee_signoff_artifacts_written="unknown"
+  fi
   route_fee_signoff_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$route_fee_signoff_output")")"
   if ! route_fee_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_signoff_output")"; then
     input_errors+=("nested route/fee signoff package_bundle_enabled must be boolean token, got: ${route_fee_signoff_nested_package_bundle_enabled_raw:-<empty>}")

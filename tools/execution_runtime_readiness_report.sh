@@ -145,7 +145,11 @@ if ((${#input_errors[@]} == 0)); then
   adapter_verdict="$(normalize_go_nogo_verdict "$(first_non_empty "$(extract_field "final_rollout_package_verdict" "$adapter_output")" "$(extract_field "rollout_verdict" "$adapter_output")")")"
   adapter_reason="$(trim_string "$(first_non_empty "$(extract_field "final_rollout_package_reason" "$adapter_output")" "$(extract_field "rollout_reason" "$adapter_output")")")"
   adapter_reason_code="$(trim_string "$(first_non_empty "$(extract_field "final_rollout_package_reason_code" "$adapter_output")" "$(extract_field "rollout_reason_code" "$adapter_output")")")"
-  adapter_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$adapter_output")")"
+  adapter_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$adapter_output")")"
+  if ! adapter_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$adapter_output")"; then
+    input_errors+=("nested adapter rollout final artifacts_written must be boolean token, got: ${adapter_artifacts_written_raw:-<empty>}")
+    adapter_artifacts_written="unknown"
+  fi
   adapter_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$adapter_output")")"
   adapter_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$adapter_output")")"
   adapter_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$adapter_output")")"
@@ -190,7 +194,11 @@ if ((${#input_errors[@]} == 0)); then
   route_fee_verdict="$(normalize_go_nogo_verdict "$(first_non_empty "$(extract_field "final_route_fee_package_verdict" "$route_fee_output")" "$(extract_field "signoff_verdict" "$route_fee_output")")")"
   route_fee_reason="$(trim_string "$(first_non_empty "$(extract_field "final_route_fee_package_reason" "$route_fee_output")" "$(extract_field "signoff_reason" "$route_fee_output")")")"
   route_fee_reason_code="$(trim_string "$(first_non_empty "$(extract_field "final_route_fee_package_reason_code" "$route_fee_output")" "$(extract_field "signoff_reason_code" "$route_fee_output")")")"
-  route_fee_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$route_fee_output")")"
+  route_fee_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$route_fee_output")")"
+  if ! route_fee_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$route_fee_output")"; then
+    input_errors+=("nested route fee final artifacts_written must be boolean token, got: ${route_fee_artifacts_written_raw:-<empty>}")
+    route_fee_artifacts_written="unknown"
+  fi
   route_fee_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$route_fee_output")")"
   route_fee_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_output")")"
   route_fee_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_output")")"

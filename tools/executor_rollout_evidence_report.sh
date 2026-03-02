@@ -115,7 +115,11 @@ if ((${#input_errors[@]} == 0)) && [[ -f "$EXECUTOR_ENV_PATH" ]]; then
   rotation_artifact_report="$(trim_string "$(extract_field "artifact_report" "$rotation_output")")"
   rotation_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$rotation_output")")"
   rotation_report_sha256="$(trim_string "$(extract_field "report_sha256" "$rotation_output")")"
-  rotation_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rotation_output")")"
+  rotation_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$rotation_output")")"
+  if ! rotation_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rotation_output")"; then
+    input_errors+=("rotation helper artifacts_written must be boolean token, got: ${rotation_artifacts_written_raw:-<empty>}")
+    rotation_artifacts_written="unknown"
+  fi
   if [[ "$rotation_verdict" == "UNKNOWN" ]]; then
     rotation_reason="unable to classify rotation helper verdict (exit=$rotation_exit_code)"
   elif [[ -z "$rotation_reason" ]]; then
@@ -164,7 +168,11 @@ if ((${#input_errors[@]} == 0)) && [[ -f "$CONFIG_PATH" && -f "$EXECUTOR_ENV_PAT
   preflight_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$preflight_output")")"
   preflight_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$preflight_output")")"
   preflight_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$preflight_output")")"
-  preflight_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$preflight_output")")"
+  preflight_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$preflight_output")")"
+  if ! preflight_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$preflight_output")"; then
+    input_errors+=("preflight helper artifacts_written must be boolean token, got: ${preflight_artifacts_written_raw:-<empty>}")
+    preflight_artifacts_written="unknown"
+  fi
   if [[ "$preflight_verdict" == "UNKNOWN" ]]; then
     preflight_reason="unable to classify preflight helper verdict (exit=$preflight_exit_code)"
     preflight_reason_code="unknown_verdict"
@@ -261,7 +269,11 @@ else
   rehearsal_preflight_sha256="$(trim_string "$(extract_field "preflight_sha256" "$rehearsal_output")")"
   rehearsal_go_nogo_sha256="$(trim_string "$(extract_field "go_nogo_sha256" "$rehearsal_output")")"
   rehearsal_tests_sha256="$(trim_string "$(extract_field "tests_sha256" "$rehearsal_output")")"
-  rehearsal_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rehearsal_output")")"
+  rehearsal_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$rehearsal_output")")"
+  if ! rehearsal_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal artifacts_written must be boolean token, got: ${rehearsal_artifacts_written_raw:-<empty>}")
+    rehearsal_artifacts_written="unknown"
+  fi
   rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
   if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then
     input_errors+=("nested devnet rehearsal package_bundle_enabled must be boolean token, got: ${rehearsal_nested_package_bundle_enabled_raw:-<empty>}")
