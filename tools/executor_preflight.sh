@@ -774,6 +774,10 @@ executor_upstream_simulate_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COP
 executor_upstream_simulate_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_FALLBACK_URL)"
 executor_send_rpc_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_URL)"
 executor_send_rpc_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL)"
+executor_upstream_auth_default="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN_FILE "executor upstream auth")"
+executor_upstream_fallback_auth_default="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "executor upstream fallback auth")"
+executor_send_rpc_auth_default="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE "executor send-rpc auth")"
+executor_send_rpc_fallback_auth_default="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE "executor send-rpc fallback auth")"
 executor_signer_source_expected_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_SOURCE)" "file")"
 executor_signer_source_expected="$(printf '%s' "$executor_signer_source_expected_raw" | tr '[:upper:]' '[:lower:]')"
 executor_signer_pubkey="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_PUBKEY)"
@@ -817,6 +821,10 @@ if csv_contains_route "$executor_route_allowlist_csv" "fastlane" && [[ "$executo
   errors+=("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST includes fastlane but COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED is false (allowlist=$(sorted_routes_csv "$executor_route_allowlist_csv"))")
 fi
 
+any_upstream_fallback_endpoint="false"
+any_send_rpc_primary_endpoint="false"
+any_send_rpc_fallback_endpoint="false"
+
 while IFS= read -r route; do
   [[ -z "$route" ]] && continue
   route_upper="$(printf '%s' "$route" | tr '[:lower:]' '[:upper:]')"
@@ -846,6 +854,44 @@ while IFS= read -r route; do
   fi
   if [[ -n "$route_send_rpc_fallback" && -z "$route_send_rpc" ]]; then
     errors+=("missing primary send-rpc URL for executor route=$route while send-rpc fallback is configured")
+  fi
+
+  has_upstream_fallback_endpoint="false"
+  has_send_rpc_primary_endpoint="false"
+  has_send_rpc_fallback_endpoint="false"
+  if [[ -n "$route_submit_fallback" || -n "$route_simulate_fallback" ]]; then
+    has_upstream_fallback_endpoint="true"
+    any_upstream_fallback_endpoint="true"
+  fi
+  if [[ -n "$route_send_rpc" ]]; then
+    has_send_rpc_primary_endpoint="true"
+    any_send_rpc_primary_endpoint="true"
+  fi
+  if [[ -n "$route_send_rpc_fallback" ]]; then
+    has_send_rpc_fallback_endpoint="true"
+    any_send_rpc_fallback_endpoint="true"
+  fi
+
+  route_fallback_auth_key="COPYBOT_EXECUTOR_ROUTE_${route_upper}_FALLBACK_AUTH_TOKEN"
+  route_fallback_auth_file_key="COPYBOT_EXECUTOR_ROUTE_${route_upper}_FALLBACK_AUTH_TOKEN_FILE"
+  route_send_rpc_auth_key="COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_AUTH_TOKEN"
+  route_send_rpc_auth_file_key="COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_AUTH_TOKEN_FILE"
+  route_send_rpc_fallback_auth_key="COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN"
+  route_send_rpc_fallback_auth_file_key="COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE"
+
+  route_specific_fallback_auth_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_fallback_auth_key" "$route_fallback_auth_file_key" "executor route upstream fallback auth ($route)")"
+  if [[ -n "$route_specific_fallback_auth_token" && "$has_upstream_fallback_endpoint" != "true" ]]; then
+    errors+=("${route_fallback_auth_key} or ${route_fallback_auth_file_key} requires route=${route} submit/simulate fallback endpoint")
+  fi
+
+  route_specific_send_rpc_primary_auth_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_send_rpc_auth_key" "$route_send_rpc_auth_file_key" "executor route send-rpc auth ($route)")"
+  if [[ -n "$route_specific_send_rpc_primary_auth_token" && "$has_send_rpc_primary_endpoint" != "true" ]]; then
+    errors+=("${route_send_rpc_auth_key} or ${route_send_rpc_auth_file_key} requires route=${route} send-rpc endpoint")
+  fi
+
+  route_specific_send_rpc_fallback_auth_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_send_rpc_fallback_auth_key" "$route_send_rpc_fallback_auth_file_key" "executor route send-rpc fallback auth ($route)")"
+  if [[ -n "$route_specific_send_rpc_fallback_auth_token" && "$has_send_rpc_fallback_endpoint" != "true" ]]; then
+    errors+=("${route_send_rpc_fallback_auth_key} or ${route_send_rpc_fallback_auth_file_key} requires route=${route} send-rpc fallback endpoint")
   fi
 
   route_submit_identity=""
@@ -894,6 +940,16 @@ while IFS= read -r route; do
 done < <(normalized_routes_lines "$executor_route_allowlist_csv")
 expected_send_rpc_enabled_routes_csv="$(routes_array_to_csv "${expected_send_rpc_enabled_routes[@]-}")"
 expected_send_rpc_fallback_routes_csv="$(routes_array_to_csv "${expected_send_rpc_fallback_routes[@]-}")"
+
+if [[ -n "$executor_upstream_fallback_auth_default" && "$any_upstream_fallback_endpoint" != "true" ]]; then
+  errors+=("COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE requires at least one submit/simulate fallback endpoint")
+fi
+if [[ -n "$executor_send_rpc_auth_default" && "$any_send_rpc_primary_endpoint" != "true" ]]; then
+  errors+=("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE requires at least one send-rpc endpoint")
+fi
+if [[ -n "$executor_send_rpc_fallback_auth_default" && "$any_send_rpc_fallback_endpoint" != "true" ]]; then
+  errors+=("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE requires at least one send-rpc fallback endpoint")
+fi
 
 executor_bearer_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BEARER_TOKEN COPYBOT_EXECUTOR_BEARER_TOKEN_FILE "executor ingress auth")"
 executor_hmac_key_id="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_KEY_ID)"
@@ -1275,6 +1331,23 @@ if [[ -n "$OUTPUT_DIR" ]]; then
   artifacts_written="true"
 fi
 
+executor_upstream_auth_configured="false"
+executor_upstream_fallback_auth_configured="false"
+executor_send_rpc_auth_configured="false"
+executor_send_rpc_fallback_auth_configured="false"
+if [[ -n "$executor_upstream_auth_default" ]]; then
+  executor_upstream_auth_configured="true"
+fi
+if [[ -n "$executor_upstream_fallback_auth_default" ]]; then
+  executor_upstream_fallback_auth_configured="true"
+fi
+if [[ -n "$executor_send_rpc_auth_default" ]]; then
+  executor_send_rpc_auth_configured="true"
+fi
+if [[ -n "$executor_send_rpc_fallback_auth_default" ]]; then
+  executor_send_rpc_fallback_auth_configured="true"
+fi
+
 summary="$({
   echo "=== Executor Preflight ==="
   echo "config: $CONFIG_PATH"
@@ -1297,6 +1370,13 @@ summary="$({
   echo "executor_signer_source_expected: $executor_signer_source_expected"
   echo "executor_signer_pubkey_expected: $executor_signer_pubkey"
   echo "executor_submit_fastlane_enabled: $executor_submit_fastlane_enabled"
+  echo "executor_upstream_auth_configured: $executor_upstream_auth_configured"
+  echo "executor_upstream_fallback_auth_configured: $executor_upstream_fallback_auth_configured"
+  echo "executor_send_rpc_auth_configured: $executor_send_rpc_auth_configured"
+  echo "executor_send_rpc_fallback_auth_configured: $executor_send_rpc_fallback_auth_configured"
+  echo "executor_any_upstream_fallback_endpoint: $any_upstream_fallback_endpoint"
+  echo "executor_any_send_rpc_primary_endpoint: $any_send_rpc_primary_endpoint"
+  echo "executor_any_send_rpc_fallback_endpoint: $any_send_rpc_fallback_endpoint"
   echo "executor_bearer_required: $executor_bearer_required"
   echo "health_http_status: $health_http_status"
   echo "health_status: $health_status_field"
