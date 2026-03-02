@@ -1717,6 +1717,15 @@ run_windowed_signoff_report_case() {
     exit 1
   fi
   assert_bundled_summary_manifest_package_status_parity "$bundle_output"
+  local windowed_go_nogo_capture_path
+  windowed_go_nogo_capture_path="$(extract_field_value "$bundle_output" "window_24h_capture_path")"
+  if [[ -z "$windowed_go_nogo_capture_path" || "$windowed_go_nogo_capture_path" == "n/a" || ! -f "$windowed_go_nogo_capture_path" ]]; then
+    echo "expected windowed signoff nested go/no-go capture artifact at $windowed_go_nogo_capture_path" >&2
+    exit 1
+  fi
+  local windowed_go_nogo_capture_text
+  windowed_go_nogo_capture_text="$(cat "$windowed_go_nogo_capture_path")"
+  assert_contains "$windowed_go_nogo_capture_text" "package_bundle_enabled: false"
 
   local missing_output_dir_output=""
   if missing_output_dir_output="$(
@@ -3013,6 +3022,33 @@ run_devnet_rehearsal_case() {
     exit 1
   fi
   assert_bundled_summary_manifest_package_status_parity "$bundle_output"
+  local rehearsal_go_nogo_capture_path=""
+  local rehearsal_windowed_signoff_capture_path=""
+  local rehearsal_route_fee_signoff_capture_path=""
+  rehearsal_go_nogo_capture_path="$(extract_field_value "$bundle_output" "artifact_go_nogo_nested_capture")"
+  rehearsal_windowed_signoff_capture_path="$(extract_field_value "$bundle_output" "artifact_windowed_signoff_nested_capture")"
+  rehearsal_route_fee_signoff_capture_path="$(extract_field_value "$bundle_output" "artifact_route_fee_signoff_nested_capture")"
+  if [[ -z "$rehearsal_go_nogo_capture_path" || ! -f "$rehearsal_go_nogo_capture_path" ]]; then
+    echo "expected devnet rehearsal nested go/no-go capture artifact at $rehearsal_go_nogo_capture_path" >&2
+    exit 1
+  fi
+  if [[ -z "$rehearsal_windowed_signoff_capture_path" || ! -f "$rehearsal_windowed_signoff_capture_path" ]]; then
+    echo "expected devnet rehearsal nested windowed signoff capture artifact at $rehearsal_windowed_signoff_capture_path" >&2
+    exit 1
+  fi
+  if [[ -z "$rehearsal_route_fee_signoff_capture_path" || ! -f "$rehearsal_route_fee_signoff_capture_path" ]]; then
+    echo "expected devnet rehearsal nested route/fee signoff capture artifact at $rehearsal_route_fee_signoff_capture_path" >&2
+    exit 1
+  fi
+  local rehearsal_go_nogo_capture_text=""
+  local rehearsal_windowed_signoff_capture_text=""
+  local rehearsal_route_fee_signoff_capture_text=""
+  rehearsal_go_nogo_capture_text="$(cat "$rehearsal_go_nogo_capture_path")"
+  rehearsal_windowed_signoff_capture_text="$(cat "$rehearsal_windowed_signoff_capture_path")"
+  rehearsal_route_fee_signoff_capture_text="$(cat "$rehearsal_route_fee_signoff_capture_path")"
+  assert_contains "$rehearsal_go_nogo_capture_text" "package_bundle_enabled: false"
+  assert_contains "$rehearsal_windowed_signoff_capture_text" "package_bundle_enabled: false"
+  assert_contains "$rehearsal_route_fee_signoff_capture_text" "package_bundle_enabled: false"
 
   local missing_output_dir_output=""
   if missing_output_dir_output="$(
@@ -3445,6 +3481,15 @@ run_executor_rollout_evidence_case() {
     exit 1
   fi
   assert_bundled_summary_manifest_package_status_parity "$rollout_bundle_output"
+  local executor_rollout_rehearsal_capture_path
+  executor_rollout_rehearsal_capture_path="$(extract_field_value "$rollout_bundle_output" "artifact_rehearsal_capture")"
+  if [[ -z "$executor_rollout_rehearsal_capture_path" || ! -f "$executor_rollout_rehearsal_capture_path" ]]; then
+    echo "expected executor rollout nested rehearsal capture artifact at $executor_rollout_rehearsal_capture_path" >&2
+    exit 1
+  fi
+  local executor_rollout_rehearsal_capture_text
+  executor_rollout_rehearsal_capture_text="$(cat "$executor_rollout_rehearsal_capture_path")"
+  assert_contains "$executor_rollout_rehearsal_capture_text" "package_bundle_enabled: false"
 
   local invalid_bool_output=""
   if invalid_bool_output="$(
@@ -4076,6 +4121,24 @@ run_adapter_rollout_evidence_case() {
     exit 1
   fi
   assert_bundled_summary_manifest_package_status_parity "$rollout_bundle_output"
+  local adapter_rollout_rehearsal_capture_path=""
+  local adapter_rollout_route_fee_capture_path=""
+  adapter_rollout_rehearsal_capture_path="$(extract_field_value "$rollout_bundle_output" "artifact_rehearsal_capture")"
+  adapter_rollout_route_fee_capture_path="$(extract_field_value "$rollout_bundle_output" "artifact_route_fee_signoff_capture")"
+  if [[ -z "$adapter_rollout_rehearsal_capture_path" || ! -f "$adapter_rollout_rehearsal_capture_path" ]]; then
+    echo "expected adapter rollout nested rehearsal capture artifact at $adapter_rollout_rehearsal_capture_path" >&2
+    exit 1
+  fi
+  if [[ -z "$adapter_rollout_route_fee_capture_path" || ! -f "$adapter_rollout_route_fee_capture_path" ]]; then
+    echo "expected adapter rollout nested route/fee signoff capture artifact at $adapter_rollout_route_fee_capture_path" >&2
+    exit 1
+  fi
+  local adapter_rollout_rehearsal_capture_text=""
+  local adapter_rollout_route_fee_capture_text=""
+  adapter_rollout_rehearsal_capture_text="$(cat "$adapter_rollout_rehearsal_capture_path")"
+  adapter_rollout_route_fee_capture_text="$(cat "$adapter_rollout_route_fee_capture_path")"
+  assert_contains "$adapter_rollout_rehearsal_capture_text" "package_bundle_enabled: false"
+  assert_contains "$adapter_rollout_route_fee_capture_text" "package_bundle_enabled: false"
 
   local invalid_bool_output=""
   if invalid_bool_output="$(

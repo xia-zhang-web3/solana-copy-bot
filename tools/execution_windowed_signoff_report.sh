@@ -171,6 +171,7 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+      PACKAGE_BUNDLE_ENABLED="false" \
       OUTPUT_DIR="$go_nogo_output_dir" \
       bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" "$window_hours" "$RISK_EVENTS_MINUTES" 2>&1
     )"; then

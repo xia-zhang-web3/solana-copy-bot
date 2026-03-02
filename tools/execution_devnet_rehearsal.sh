@@ -236,6 +236,7 @@ if go_nogo_output="$(
   GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
   GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
+  PACKAGE_BUNDLE_ENABLED="false" \
   OUTPUT_DIR="$go_nogo_output_dir" \
   bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
 )"; then
@@ -267,6 +268,7 @@ if windowed_signoff_output="$(
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
   WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
   WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
+  PACKAGE_BUNDLE_ENABLED="false" \
   OUTPUT_DIR="$windowed_signoff_output_dir" \
   bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" "$WINDOWED_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
 )"; then
@@ -297,6 +299,7 @@ if route_fee_signoff_output="$(
   GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode_norm" \
   GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_fee_override" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_route_override" \
+  PACKAGE_BUNDLE_ENABLED="false" \
   OUTPUT_DIR="$route_fee_signoff_output_dir" \
   bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
 )"; then
