@@ -195,6 +195,7 @@ rehearsal_preflight_sha256=""
 rehearsal_go_nogo_sha256=""
 rehearsal_tests_sha256=""
 rehearsal_artifacts_written="false"
+rehearsal_nested_package_bundle_enabled="unknown"
 tests_run=""
 tests_failed=""
 if ((${#input_errors[@]} > 0)); then
@@ -261,6 +262,13 @@ else
   rehearsal_go_nogo_sha256="$(trim_string "$(extract_field "go_nogo_sha256" "$rehearsal_output")")"
   rehearsal_tests_sha256="$(trim_string "$(extract_field "tests_sha256" "$rehearsal_output")")"
   rehearsal_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rehearsal_output")")"
+  rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
+  if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal package_bundle_enabled must be boolean token, got: ${rehearsal_nested_package_bundle_enabled_raw:-<empty>}")
+    rehearsal_nested_package_bundle_enabled="unknown"
+  elif [[ "$rehearsal_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested devnet rehearsal helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
 
@@ -388,6 +396,7 @@ rehearsal_preflight_sha256: ${rehearsal_preflight_sha256:-n/a}
 rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
 rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
 rehearsal_artifacts_written: $rehearsal_artifacts_written
+rehearsal_nested_package_bundle_enabled: ${rehearsal_nested_package_bundle_enabled:-unknown}
 package_bundle_enabled: $package_bundle_enabled_norm
 package_bundle_label: $PACKAGE_BUNDLE_LABEL
 package_bundle_output_dir: ${PACKAGE_BUNDLE_OUTPUT_DIR:-n/a}

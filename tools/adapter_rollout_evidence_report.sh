@@ -198,6 +198,7 @@ rehearsal_preflight_sha256=""
 rehearsal_go_nogo_sha256=""
 rehearsal_tests_sha256=""
 rehearsal_artifacts_written="false"
+rehearsal_nested_package_bundle_enabled="unknown"
 windowed_signoff_artifact_manifest=""
 windowed_signoff_summary_sha256=""
 windowed_signoff_artifacts_written="false"
@@ -320,6 +321,13 @@ else
   rehearsal_go_nogo_sha256="$(trim_string "$(extract_field "go_nogo_sha256" "$rehearsal_output")")"
   rehearsal_tests_sha256="$(trim_string "$(extract_field "tests_sha256" "$rehearsal_output")")"
   rehearsal_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$rehearsal_output")")"
+  rehearsal_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$rehearsal_output")")"
+  if ! rehearsal_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal package_bundle_enabled must be boolean token, got: ${rehearsal_nested_package_bundle_enabled_raw:-<empty>}")
+    rehearsal_nested_package_bundle_enabled="unknown"
+  elif [[ "$rehearsal_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested devnet rehearsal helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
   windowed_signoff_artifact_manifest="$(trim_string "$(extract_field "windowed_signoff_artifact_manifest" "$rehearsal_output")")"
   windowed_signoff_summary_sha256="$(trim_string "$(extract_field "windowed_signoff_summary_sha256" "$rehearsal_output")")"
   windowed_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "windowed_signoff_artifacts_written" "$rehearsal_output")")"
@@ -362,6 +370,7 @@ route_fee_signoff_windows_csv=""
 route_fee_signoff_artifact_manifest=""
 route_fee_signoff_summary_sha256=""
 route_fee_signoff_artifacts_written="false"
+route_fee_signoff_nested_package_bundle_enabled="unknown"
 route_fee_primary_route_stable=""
 route_fee_stable_primary_route=""
 route_fee_fallback_route_stable=""
@@ -411,6 +420,13 @@ else
   route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
   route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
   route_fee_signoff_artifacts_written="$(normalize_bool_token "$(extract_field "artifacts_written" "$route_fee_signoff_output")")"
+  route_fee_signoff_nested_package_bundle_enabled_raw="$(trim_string "$(extract_field "package_bundle_enabled" "$route_fee_signoff_output")")"
+  if ! route_fee_signoff_nested_package_bundle_enabled="$(extract_bool_field_strict "package_bundle_enabled" "$route_fee_signoff_output")"; then
+    input_errors+=("nested route/fee signoff package_bundle_enabled must be boolean token, got: ${route_fee_signoff_nested_package_bundle_enabled_raw:-<empty>}")
+    route_fee_signoff_nested_package_bundle_enabled="unknown"
+  elif [[ "$route_fee_signoff_nested_package_bundle_enabled" != "false" ]]; then
+    input_errors+=("nested route/fee signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
   route_fee_primary_route_stable="$(normalize_bool_token "$(extract_field "primary_route_stable" "$route_fee_signoff_output")")"
   route_fee_stable_primary_route="$(trim_string "$(extract_field "stable_primary_route" "$route_fee_signoff_output")")"
   route_fee_fallback_route_stable="$(normalize_bool_token "$(extract_field "fallback_route_stable" "$route_fee_signoff_output")")"
@@ -546,6 +562,7 @@ route_fee_signoff_windows_csv: ${route_fee_signoff_windows_csv:-n/a}
 route_fee_signoff_artifact_manifest: ${route_fee_signoff_artifact_manifest:-n/a}
 route_fee_signoff_summary_sha256: ${route_fee_signoff_summary_sha256:-n/a}
 route_fee_signoff_artifacts_written: $route_fee_signoff_artifacts_written
+route_fee_signoff_nested_package_bundle_enabled: ${route_fee_signoff_nested_package_bundle_enabled:-unknown}
 route_fee_primary_route_stable: ${route_fee_primary_route_stable:-false}
 route_fee_stable_primary_route: ${route_fee_stable_primary_route:-n/a}
 route_fee_fallback_route_stable: ${route_fee_fallback_route_stable:-false}
@@ -594,6 +611,7 @@ rehearsal_preflight_sha256: ${rehearsal_preflight_sha256:-n/a}
 rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
 rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
 rehearsal_artifacts_written: $rehearsal_artifacts_written
+rehearsal_nested_package_bundle_enabled: ${rehearsal_nested_package_bundle_enabled:-unknown}
 windowed_signoff_artifact_manifest: ${windowed_signoff_artifact_manifest:-n/a}
 windowed_signoff_summary_sha256: ${windowed_signoff_summary_sha256:-n/a}
 windowed_signoff_artifacts_written: $windowed_signoff_artifacts_written
