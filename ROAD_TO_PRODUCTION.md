@@ -988,6 +988,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 460. executor preflight secret-source parent-scope hardening: `tools/executor_preflight.sh` now routes all critical `read_secret_from_source` call sites through parent-scope output variables (no command-substitution subshell), eliminating silent error-loss for secret-source conflicts/file-read failures across executor and adapter secret defaults and route-level auth chains; smoke now pins global adapter send-rpc auth/fallback inline+file conflicts to prove fail-closed capture in preflight `errors[]`.
 461. executor preflight adapter send-rpc file-source fail-closed smoke parity: `run_executor_preflight_case` now pins global adapter send-rpc auth and send-rpc fallback auth missing-file scenarios (`COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE`, `COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE`) to ensure `read_secret_from_source` file-not-found diagnostics are surfaced as deterministic `preflight_verdict: FAIL` in targeted preflight loops.
 462. adapter HMAC raw-body signature strictness: `AuthVerifier::verify` in `crates/adapter/src/main.rs` now computes HMAC payload over exact raw request bytes (prefix `timestamp/ttl/nonce` + body bytes) instead of `String::from_utf8_lossy(raw_body)`, removing lossy UTF-8 canonicalization drift in request-auth verification; added unit coverage for non-UTF8 raw-body pass path and lossy-body signature mismatch fail path.
+463. post-bring-up hardening batch closure: adapter server now runs with signal-aware graceful shutdown (`with_graceful_shutdown`, `Ctrl+C`/`SIGTERM`), execution submitter error details now emit redacted endpoint labels (`scheme://host[:port]`, no path/query), and app-side `sanitize_json_value` now escapes full JSON control-character set via `serde_json::to_string`-based sanitization; added targeted coverage for submitter endpoint-redaction and `sanitize_json_value` control-character escaping.
 
 Остается в next-code-queue:
 
@@ -1044,8 +1045,8 @@ Server evidence:
 
 Ключевые незакрытые причины `NO_GO` на сервере:
 
-1. unresolved executor upstream contract для текущего provider setup (`copybot-executor` ожидает contract-compatible `/submit` + `/simulate`);
-2. временные `COPYBOT_EXECUTOR_UPSTREAM_*` endpoint-ы;
+1. для non-live контура используется локальный mock upstream (`127.0.0.1:18080`), но production-grade upstream path для реального submit/simulate все еще не закрыт;
+2. unresolved executor upstream contract для текущего provider setup (QuickNode RPC endpoint сам по себе не является execution backend `/submit` + `/simulate`);
 3. временный bootstrap signer;
 4. нулевая execution выборка (`confirmed_orders_total=0`), из-за чего readiness gates (`fee_decomposition`, `route_profile`) не закрываются.
 
@@ -1054,14 +1055,13 @@ Server evidence:
 1. `bash tools/audit_quick.sh` — `PASS`.
 2. `bash tools/audit_full.sh` — `PASS` (после увеличения default ops-smoke timeout до `1200s`).
 3. `CONFIG_PATH=configs/live.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/execution_adapter_preflight.sh` — `FAIL`:
-   1. `execution.execution_signer_pubkey` пустой,
-   2. `execution.submit_adapter_http_url` содержит placeholder (`REPLACE_ME`).
+   1. локально отсутствует `execution.submit_adapter_auth_token_file` (`/etc/solana-copy-bot/secrets/adapter_bearer.token`).
 4. `CONFIG_PATH=configs/live.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/executor_preflight.sh` — `FAIL`:
    1. отсутствуют `/etc/solana-copy-bot/executor.env` и `/etc/solana-copy-bot/adapter.env`,
    2. не заданы executor/adapter upstream endpoints + ingress auth tokens,
    3. route allowlist drift (`adapter` включает `fastlane`, `executor` нет),
    4. нет доступного `healthz`/auth probe.
-5. `cargo run -p copybot-app -- --config configs/live.toml` с `SOLANA_COPY_BOT_EXECUTION_ENABLED=true` — `FAIL` (runtime contract: пустой `execution.execution_signer_pubkey`).
+5. `cargo run -p copybot-app -- --config configs/live.toml` с `SOLANA_COPY_BOT_EXECUTION_ENABLED=true` — `FAIL` (runtime contract: missing `/etc/solana-copy-bot/secrets/adapter_bearer.token`).
 6. Обнаружен активный ingestion override-файл `state/ingestion_source_override.env`, который принудительно переключает source на `helius_ws`; перед rollout обязателен явный reset/подтверждение override.
 
 Сверка внешнего аудита (только подтвержденные фактом пункты):
@@ -1112,7 +1112,7 @@ Server evidence:
 Обязательные pre-run проверки на сервере (в этом порядке, без `SKIP`):
 
 1. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/execution_adapter_preflight.sh`
-2. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/executor_preflight.sh`
+2. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/executor_preflight.sh`
 3. `curl -sS http://127.0.0.1:<executor_port>/healthz`
 4. `bash tools/adapter_rollout_evidence_report.sh 24 60` (с `OUTPUT_DIR`)
 5. `bash tools/execution_go_nogo_report.sh 24 60` (с `OUTPUT_DIR`)
@@ -1130,10 +1130,10 @@ Gate после server bring-up (обязателен до tiny-live/production,
 
 1. [x] strict UTF-8 body validation в adapter HMAC verify path (без `from_utf8_lossy`).
 2. [ ] корректный источник метрики holders (не `getTokenSupply`).
-3. [ ] graceful shutdown для adapter service.
-4. [ ] безопасная JSON-экранизация control characters в `sanitize_json_value`.
+3. [x] graceful shutdown для adapter service.
+4. [x] безопасная JSON-экранизация control characters в `sanitize_json_value`.
 5. [ ] mutex poison handling в discovery без panic-path.
-6. [ ] redacted endpoint labels в `crates/execution/src/submitter.rs` error details.
+6. [x] redacted endpoint labels в `crates/execution/src/submitter.rs` error details.
 
 NO-GO для server rollout (остаемся на текущем этапе, запуск не продолжаем):
 

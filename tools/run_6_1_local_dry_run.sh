@@ -168,8 +168,9 @@ chmod 600 "$SIGNER_KEYPAIR_FILE"
 
 cp "$ROOT_DIR/configs/live.toml" "$CONFIG_PATH_LOCAL"
 perl -0pi -e 's/enabled = false/enabled = true/' "$CONFIG_PATH_LOCAL"
-perl -0pi -e 's|submit_adapter_http_url = "https://REPLACE_ME"|submit_adapter_http_url = "http://127.0.0.1:8080/submit"|' "$CONFIG_PATH_LOCAL"
-perl -0pi -e 's/execution_signer_pubkey = ""/execution_signer_pubkey = "11111111111111111111111111111111"/' "$CONFIG_PATH_LOCAL"
+perl -0pi -e 's|submit_adapter_http_url = ".*"|submit_adapter_http_url = "http://127.0.0.1:8080/submit"|' "$CONFIG_PATH_LOCAL"
+perl -0pi -e "s|submit_adapter_auth_token_file = \".*\"|submit_adapter_auth_token_file = \"$ADAPTER_BEARER_TOKEN_FILE\"|" "$CONFIG_PATH_LOCAL"
+perl -0pi -e 's|execution_signer_pubkey = ".*"|execution_signer_pubkey = "11111111111111111111111111111111"|' "$CONFIG_PATH_LOCAL"
 
 cat >"$EXECUTOR_ENV_PATH" <<EOF_ENV
 COPYBOT_EXECUTOR_BIND_ADDR=127.0.0.1:8090
@@ -181,8 +182,8 @@ COPYBOT_EXECUTOR_SIGNER_SOURCE=file
 COPYBOT_EXECUTOR_SIGNER_PUBKEY=$PUBKEY
 COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE=$SIGNER_KEYPAIR_FILE
 COPYBOT_EXECUTOR_BEARER_TOKEN_FILE=$BEARER_TOKEN_FILE
-COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=https://example.com/submit
-COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=https://example.com/simulate
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
 EOF_ENV
 
 cat >"$ADAPTER_ENV_PATH" <<EOF_ENV

@@ -2,7 +2,7 @@
 
 Purpose: single source of truth for section `6.1` (`ROAD_TO_PRODUCTION.md`) to track exact readiness state for first test-server bring-up.
 
-Last update: 2026-03-03 (server run on `52.28.0.218`, LaserStream switch applied)
+Last update: 2026-03-03 (server run on `52.28.0.218`, LaserStream + mock-upstream contour applied)
 Overall status: `NO_GO` (bring-up is `DONE`, execution evidence gate is `NO_GO`)
 
 ## 0) Critical status (explicit)
@@ -20,12 +20,13 @@ Overall status: `NO_GO` (bring-up is `DONE`, execution evidence gate is `NO_GO`)
 
 | File | Purpose | Source in repo | Status | Evidence |
 |---|---|---|---|---|
-| `/etc/solana-copy-bot/live.server.toml` | Runtime config for app launch + preflight checks | `configs/live.toml` | DONE | created and validated by `execution_adapter_preflight` PASS |
-| `/etc/solana-copy-bot/executor.env` | Executor env contract | `ops/executor_backend_runbook.md` (env contract section) | DONE | validated by `executor_preflight` PASS |
-| `/etc/solana-copy-bot/adapter.env` | Adapter env contract | `adapter.env`, `ops/adapter_backend_runbook.md` | DONE | validated by `executor_preflight` PASS |
-| `/etc/systemd/system/copybot-executor.service` | Executor systemd unit | `ops/executor_backend_runbook.md` (systemd example) | DONE | active via `systemctl status` |
-| `/etc/systemd/system/copybot-adapter.service` | Adapter systemd unit | `ops/adapter_backend_runbook.md` (systemd example) | DONE | active via `systemctl status` |
-| `/etc/systemd/system/solana-copy-bot.service` | Main app service (depends on adapter/executor chain) | server-specific | DONE | active via `systemctl status` |
+| `/etc/solana-copy-bot/live.server.toml` | Runtime config for app launch + preflight checks | `ops/server_templates/live.server.toml.example` | DONE | created and validated by `execution_adapter_preflight` PASS |
+| `/etc/solana-copy-bot/executor.env` | Executor env contract | `ops/server_templates/executor.env.example` | DONE | validated by `executor_preflight` PASS |
+| `/etc/solana-copy-bot/adapter.env` | Adapter env contract | `ops/server_templates/adapter.env.example` | DONE | validated by `executor_preflight` PASS |
+| `/etc/systemd/system/copybot-executor.service` | Executor systemd unit | `ops/server_templates/copybot-executor.service` | DONE | active via `systemctl status` |
+| `/etc/systemd/system/copybot-adapter.service` | Adapter systemd unit | `ops/server_templates/copybot-adapter.service` | DONE | active via `systemctl status` |
+| `/etc/systemd/system/copybot-execution-mock-upstream.service` | Mock upstream unit for safe non-live execution contour | `ops/server_templates/copybot-execution-mock-upstream.service` | DONE | active via `systemctl status` |
+| `/etc/systemd/system/solana-copy-bot.service` | Main app service (depends on adapter/executor chain) | `ops/server_templates/solana-copy-bot.service` | DONE | active via `systemctl status` |
 | `/etc/solana-copy-bot/secrets/*` | signer/auth/hmac/upstream secret files | server-specific | DONE | secret files exist, owner-only permissions enforced |
 | `ops/server_templates/*` | Repo-side template bundle for all required server files | `ops/server_templates/README.md` | DONE | templates created in repo |
 
@@ -46,10 +47,10 @@ Status legend: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`.
 
 ## 3) Current blockers (confirmed on server after bring-up)
 
-1. Executor upstream contract is unresolved for current provider setup:
-   1. `copybot-executor` submit/simulate path expects contract-compatible upstream (`/submit`, `/simulate` JSON contract),
-   2. current QuickNode RPC endpoints are not that upstream contract by default.
-2. Executor upstream endpoints are temporary (`https://example.com/submit`, `https://example.com/simulate`) and must be replaced.
+1. Current upstream contract path is validated only in non-live mode:
+   1. `copybot-executor` uses local contract-compatible mock (`http://127.0.0.1:18080/{submit,simulate}`),
+   2. this is enough for contour validation but not for real execution readiness.
+2. A production-grade upstream backend path for real submit/simulate is still unresolved for current provider setup.
 3. Signer is a temporary bootstrap signer (`11111111111111111111111111111111` + zeroed keypair) and must be replaced before real execution tests.
 4. Evidence gates remain `NO_GO` due lack of execution sample:
    1. `fee_decomposition_verdict=NO_DATA`,
@@ -99,7 +100,7 @@ Server: `ubuntu@52.28.0.218`, repo root `/var/www/solana-copy-bot`.
 
 Results:
 
-1. `systemctl is-active copybot-executor copybot-adapter solana-copy-bot` -> all `active`.
+1. `systemctl is-active copybot-execution-mock-upstream copybot-executor copybot-adapter solana-copy-bot` -> all `active`.
 2. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/execution_adapter_preflight.sh` -> `PASS`.
 3. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/executor_preflight.sh` -> `PASS`.
 4. `curl -sS http://127.0.0.1:8090/healthz` -> `status=ok`, routes `["jito","rpc"]`.
@@ -138,7 +139,7 @@ NO_GO reason after evidence run: readiness gates do not have enough live executi
 3. Fill env + secrets without placeholders.
 4. Run in order (no `SKIP`):
    1. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/execution_adapter_preflight.sh`
-   2. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/executor_preflight.sh`
+   2. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml EXECUTOR_ENV_PATH=/etc/solana-copy-bot/executor.env ADAPTER_ENV_PATH=/etc/solana-copy-bot/adapter.env SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/executor_preflight.sh`
    3. `curl -sS http://127.0.0.1:<executor_port>/healthz`
 5. If any command above is not PASS/healthy: status stays `NO_GO` and fix before continuing.
 6. If all PASS: run evidence helpers (`adapter_rollout_evidence`, `execution_go_nogo_report`, `execution_fee_calibration_report`, `execution_devnet_rehearsal`) and archive outputs.
