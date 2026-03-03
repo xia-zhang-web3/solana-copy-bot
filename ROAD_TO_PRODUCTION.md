@@ -1002,6 +1002,55 @@ Execution governance gate for all next executor slices:
 4. execute Stage C.5 devnet rehearsal with `tools/execution_devnet_rehearsal.sh`, attach artifact bundle, and close residual P0/P1 before moving to Stage D.
 5. implement and close executor upstream backend per phased plan `ops/executor_backend_master_plan_2026-02-24.md` (contract freeze -> route adapters -> adapter integration -> rehearsal evidence).
 
+## 6.1) Что осталось до выкатки на test server (обязательный checklist)
+
+Этот блок фиксирует только практические блокеры server rollout, чтобы не собирать их по разным секциям.
+
+Критичные блокеры (должны быть закрыты все):
+
+1. `systemd` wiring для executor/adapter:
+   1. в репозитории нет готового `copybot-executor.service`; unit + restart-policy + logs routing должны быть заданы на сервере явно,
+   2. `copybot-adapter.service` и `solana-copy-bot.service` должны быть согласованы по env/ports/dependencies.
+2. Server env-файлы:
+   1. `/etc/solana-copy-bot/executor.env`,
+   2. `/etc/solana-copy-bot/adapter.env`,
+   3. без placeholder-значений (`REPLACE_ME`) в URL/token полях.
+3. Secret provisioning и права:
+   1. signer source для executor (`COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE` или `COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID`),
+   2. file secrets для Bearer/HMAC/upstream auth при использовании `*_FILE`,
+   3. owner-only permissions для secret файлов (0600/0400).
+4. Upstream endpoints:
+   1. валидные submit/simulate/send-rpc endpoints (минимум devnet-compatible для rehearsal),
+   2. корректные fallback endpoints (не совпадают с primary, где требуется distinct endpoint).
+5. Auth boundary alignment:
+   1. ingress auth executor (`COPYBOT_EXECUTOR_BEARER_TOKEN*`/HMAC policy) согласован с adapter forwarding,
+   2. route/global auth topology не содержит конфликтов inline+file и orphan tokens без endpoint.
+
+Обязательные pre-run проверки на сервере (в этом порядке):
+
+1. `bash tools/execution_adapter_preflight.sh`
+2. `bash tools/executor_preflight.sh`
+3. `curl -sS http://127.0.0.1:<executor_port>/healthz`
+4. `bash tools/adapter_rollout_evidence_report.sh 24 60` (с `OUTPUT_DIR`)
+5. `bash tools/execution_go_nogo_report.sh 24 60` (с `OUTPUT_DIR`)
+6. `bash tools/execution_fee_calibration_report.sh 24` (с capture артефактами)
+7. `bash tools/execution_devnet_rehearsal.sh 24 60` (Stage C.5 evidence run)
+
+Конфиг-режимы для server rollout (поэтапно):
+
+1. Shadow warm-up: `execution.enabled=false`.
+2. Execution test path (без tiny-live): `execution.enabled=true`, `execution.mode=paper`.
+3. Stage C.5 rehearsal: `execution.enabled=true`, `execution.mode=adapter_submit_confirm`, валидный `execution.rpc_devnet_http_url`.
+4. Tiny-live допускается только после закрытия Stage C.5 и checklist из раздела 10.
+
+NO-GO для server rollout (остаемся на текущем этапе, запуск не продолжаем):
+
+1. любой `*_preflight` вернул `FAIL`/`UNKNOWN`,
+2. в env/config найден `REPLACE_ME`,
+3. signer/secret file отсутствует или нарушены права,
+4. healthz topology/identity drift или auth parity mismatch,
+5. Stage C.5 rehearsal вернул `NO_GO` или не собрал обязательный evidence bundle.
+
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 
 Это не full production и не "законченный проект"; это аварийный режим минимального live.
