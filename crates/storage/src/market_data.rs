@@ -400,10 +400,11 @@ fn fetch_token_holders(client: &Client, helius_http_url: &str, mint: &str) -> Re
 }
 
 fn parse_token_holders_from_program_accounts_response(response: &Value) -> Result<u64> {
-    let accounts = rpc_result(response)
-        .get("value")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("missing token accounts array in helius response"))?;
+    let rpc_result = rpc_result(response);
+    let accounts = rpc_result
+        .as_array()
+        .or_else(|| rpc_result.get("value").and_then(Value::as_array))
+        .ok_or_else(|| anyhow!("missing token accounts array in rpc response"))?;
     let mut unique_owners = HashSet::new();
     for (index, account) in accounts.iter().enumerate() {
         let info = account
@@ -500,6 +501,66 @@ mod tests {
     ) -> Result<()> {
         let response = json!({
             "jsonrpc": "2.0",
+            "result": [
+                {
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "owner": "OwnerA",
+                                    "tokenAmount": { "amount": "10" }
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "owner": "OwnerA",
+                                    "tokenAmount": { "amount": "5" }
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "owner": "OwnerB",
+                                    "tokenAmount": { "amount": "0" }
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "owner": "OwnerC",
+                                    "tokenAmount": { "amount": "42" }
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+        let holders = parse_token_holders_from_program_accounts_response(&response)?;
+        assert_eq!(holders, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_token_holders_from_program_accounts_response_accepts_wrapped_value_array() -> Result<()> {
+        let response = json!({
+            "jsonrpc": "2.0",
             "result": {
                 "value": [
                     {
@@ -507,44 +568,8 @@ mod tests {
                             "data": {
                                 "parsed": {
                                     "info": {
-                                        "owner": "OwnerA",
-                                        "tokenAmount": { "amount": "10" }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "account": {
-                            "data": {
-                                "parsed": {
-                                    "info": {
-                                        "owner": "OwnerA",
-                                        "tokenAmount": { "amount": "5" }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "account": {
-                            "data": {
-                                "parsed": {
-                                    "info": {
-                                        "owner": "OwnerB",
-                                        "tokenAmount": { "amount": "0" }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "account": {
-                            "data": {
-                                "parsed": {
-                                    "info": {
-                                        "owner": "OwnerC",
-                                        "tokenAmount": { "amount": "42" }
+                                        "owner": "OwnerX",
+                                        "tokenAmount": { "amount": "1" }
                                     }
                                 }
                             }
@@ -554,7 +579,7 @@ mod tests {
             }
         });
         let holders = parse_token_holders_from_program_accounts_response(&response)?;
-        assert_eq!(holders, 2);
+        assert_eq!(holders, 1);
         Ok(())
     }
 
