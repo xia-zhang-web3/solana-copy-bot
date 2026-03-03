@@ -1,8 +1,4 @@
-use axum::{
-    extract::State,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, response::IntoResponse, Json};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -22,6 +18,7 @@ pub(crate) async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResp
     };
     Json(build_healthz_payload(HealthzPayloadInputs {
         contract_version: state.config.contract_version.as_str(),
+        backend_mode: state.config.backend_mode.as_str(),
         enabled_routes: &state.config.route_allowlist,
         route_backends: &state.config.route_backends,
         signer_source: state.config.signer_source.as_str(),

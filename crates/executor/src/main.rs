@@ -23,6 +23,7 @@ use tracing_subscriber::EnvFilter;
 mod auth_crypto;
 mod auth_mode;
 mod auth_verifier;
+mod backend_mode;
 mod common_contract;
 mod contract_version;
 mod executor_config_env;
@@ -70,6 +71,7 @@ mod upstream_forward;
 mod upstream_outcome;
 
 use crate::auth_verifier::AuthVerifier;
+use crate::backend_mode::ExecutorBackendMode;
 #[cfg(test)]
 use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
 use crate::env_parsing::parse_bool_env;
@@ -167,6 +169,7 @@ struct AppState {
 #[derive(Clone)]
 struct ExecutorConfig {
     bind_addr: SocketAddr,
+    backend_mode: ExecutorBackendMode,
     contract_version: String,
     signer_pubkey: String,
     signer_source: SignerSource,
@@ -254,6 +257,7 @@ async fn main() -> Result<()> {
 
     info!(
         bind_addr = %state.config.bind_addr,
+        backend_mode = %state.config.backend_mode.as_str(),
         signer_pubkey = %state.config.signer_pubkey,
         signer_source = %state.config.signer_source.as_str(),
         signer_kms_key_id_configured = state.config.signer_kms_key_id.is_some(),
@@ -5544,6 +5548,117 @@ mod tests {
         .expect_err("non-allowlisted submit route must reject before action/context checks");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "route_not_allowed");
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_uses_embedded_mock_backend_for_simulate() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.backend_mode = ExecutorBackendMode::Mock;
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-simulate-mock-backend-1",
+            "signal_id": "signal-simulate-mock-backend-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc",
+            "dry_run": true
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let response = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-simulate-mock-backend-1"),
+                signal_id: Some("signal-simulate-mock-backend-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect("simulate should use embedded mock backend");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(response.get("route").and_then(Value::as_str), Some("rpc"));
+        assert_eq!(
+            response.get("detail").and_then(Value::as_str),
+            Some("executor_mock_simulation_ok")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_uses_embedded_mock_backend_for_submit() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.backend_mode = ExecutorBackendMode::Mock;
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-submit-mock-backend-1",
+            "signal_id": "signal-submit-mock-backend-1",
+            "client_order_id": "client-order-submit-mock-backend-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "rpc",
+            "tip_lamports": 0,
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let response = execute_route_action(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-submit-mock-backend-1"),
+                signal_id: Some("signal-submit-mock-backend-1"),
+                client_order_id: Some("client-order-submit-mock-backend-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .await
+        .expect("submit should use embedded mock backend");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(response.get("route").and_then(Value::as_str), Some("rpc"));
+        assert_eq!(
+            response.get("detail").and_then(Value::as_str),
+            Some("executor_mock_submit_ok")
+        );
+        assert!(response.get("tx_signature").and_then(Value::as_str).is_some());
     }
 
     #[tokio::test]
@@ -11464,6 +11579,7 @@ mod tests {
         );
         let config = ExecutorConfig {
             bind_addr: "127.0.0.1:8080".parse().expect("valid bind"),
+            backend_mode: ExecutorBackendMode::Upstream,
             contract_version: "v1".to_string(),
             signer_pubkey: "11111111111111111111111111111111".to_string(),
             signer_source: SignerSource::File,

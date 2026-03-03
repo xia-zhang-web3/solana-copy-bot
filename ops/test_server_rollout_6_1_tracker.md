@@ -48,7 +48,7 @@ Status legend: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`.
 ## 3) Current blockers (confirmed on server after bring-up)
 
 1. Current upstream contract path is validated only in non-live mode:
-   1. `copybot-executor` uses local contract-compatible mock (`http://127.0.0.1:18080/{submit,simulate}`),
+   1. either external local mock (`http://127.0.0.1:18080/{submit,simulate}`) or embedded executor mock mode (`COPYBOT_EXECUTOR_BACKEND_MODE=mock`) can be used for contour validation,
    2. this is enough for contour validation but not for real execution readiness.
 2. A production-grade upstream backend path for real submit/simulate is still unresolved for current provider setup.
 3. Signer is a temporary bootstrap signer (`11111111111111111111111111111111` + zeroed keypair) and must be replaced before real execution tests.
@@ -65,9 +65,10 @@ Status legend: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`.
 1. Choose one execution path:
    1. implement QuickNode-native executor submit/simulate/send flow, or
    2. deploy a contract-compatible upstream backend and point `COPYBOT_EXECUTOR_UPSTREAM_*` to it.
-2. Replace temporary signer with a real test signer (file or KMS), keep strict permissions.
-3. Run execution window long enough to collect non-zero confirmed orders and close readiness gates.
-4. Re-run evidence helpers until:
+2. For non-live contour only (already available): use `COPYBOT_EXECUTOR_BACKEND_MODE=mock` to run adapter->executor e2e without external mock-upstream process.
+3. Replace temporary signer with a real test signer (file or KMS), keep strict permissions.
+4. Run execution window long enough to collect non-zero confirmed orders and close readiness gates.
+5. Re-run evidence helpers until:
    1. `fee_decomposition_verdict=PASS`,
    2. `route_profile_verdict=PASS`,
    3. `overall_go_nogo_verdict=GO` for the target stage.

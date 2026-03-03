@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use std::{collections::{HashMap, HashSet}, env};
 
 use crate::auth_mode::{require_authenticated_mode, validate_hmac_auth_config};
+use crate::backend_mode::ExecutorBackendMode;
 use crate::contract_version::parse_contract_version;
 use crate::env_parsing::{
     non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_socket_addr_str,
@@ -44,6 +45,7 @@ const KNOWN_NON_ROUTE_EXECUTOR_ENV_KEYS: &[&str] = &[
     "COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED",
     "COPYBOT_EXECUTOR_BEARER_TOKEN",
     "COPYBOT_EXECUTOR_BEARER_TOKEN_FILE",
+    "COPYBOT_EXECUTOR_BACKEND_MODE",
     "COPYBOT_EXECUTOR_BIND_ADDR",
     "COPYBOT_EXECUTOR_CONTRACT_VERSION",
     "COPYBOT_EXECUTOR_HMAC_KEY_ID",
@@ -138,6 +140,11 @@ impl ExecutorConfig {
             optional_non_empty_env("COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID")?.as_deref(),
             signer_pubkey.as_str(),
         )?;
+        let backend_mode = match optional_non_empty_env("COPYBOT_EXECUTOR_BACKEND_MODE")? {
+            Some(raw) => ExecutorBackendMode::parse_env(raw.as_str())
+                .map_err(|error| anyhow!("COPYBOT_EXECUTOR_BACKEND_MODE {}", error))?,
+            None => ExecutorBackendMode::Upstream,
+        };
         let submit_fastlane_enabled =
             parse_bool_env("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED", false)?;
 
@@ -236,6 +243,13 @@ impl ExecutorConfig {
 
             let submit_url = optional_non_empty_env(submit_key.as_str())?
                 .or_else(|| default_submit.clone())
+                .or_else(|| {
+                    if backend_mode == ExecutorBackendMode::Mock {
+                        Some(format!("https://executor.mock.local/{}/submit", route))
+                    } else {
+                        None
+                    }
+                })
                 .ok_or_else(|| {
                     anyhow!(
                         "missing submit backend URL for route={} (set {} or COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL)",
@@ -245,6 +259,13 @@ impl ExecutorConfig {
                 })?;
             let simulate_url = optional_non_empty_env(simulate_key.as_str())?
                 .or_else(|| default_simulate.clone())
+                .or_else(|| {
+                    if backend_mode == ExecutorBackendMode::Mock {
+                        Some(format!("https://executor.mock.local/{}/simulate", route))
+                    } else {
+                        None
+                    }
+                })
                 .ok_or_else(|| {
                     anyhow!(
                         "missing simulate backend URL for route={} (set {} or COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL)",
@@ -576,6 +597,7 @@ impl ExecutorConfig {
 
         Ok(Self {
             bind_addr,
+            backend_mode,
             contract_version,
             signer_pubkey,
             signer_source,
@@ -997,6 +1019,7 @@ mod tests {
         validate_response_retention_cutoff,
     };
     use crate::idempotency_cleanup_worker::response_cleanup_worker_tick_sec;
+    use crate::backend_mode::ExecutorBackendMode;
     use crate::route_backend::RouteBackend;
     use crate::secret_value::SecretValue;
 
@@ -1424,6 +1447,66 @@ mod tests {
                     config.idempotency_response_cleanup_worker_tick_sec,
                     response_cleanup_worker_tick_sec(config.idempotency_response_retention_sec),
                     "explicit tick override must take precedence over retention-derived default"
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_defaults_backend_mode_to_upstream() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+
+                let config =
+                    crate::ExecutorConfig::from_env().expect("config should parse from env");
+                assert_eq!(config.backend_mode, ExecutorBackendMode::Upstream);
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_invalid_backend_mode_token() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_BACKEND_MODE", "invalid");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("invalid backend mode must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_BACKEND_MODE must be one of: upstream,mock"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_accepts_mock_mode_without_upstream_submit_or_simulate_urls() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_BACKEND_MODE", "mock");
+                env::remove_var("COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL");
+                env::remove_var("COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL");
+
+                let config =
+                    crate::ExecutorConfig::from_env().expect("config should parse from env");
+                let backend = config
+                    .route_backends
+                    .get("rpc")
+                    .expect("rpc backend must be configured");
+                assert_eq!(config.backend_mode, ExecutorBackendMode::Mock);
+                assert_eq!(backend.submit_url, "https://executor.mock.local/rpc/submit");
+                assert_eq!(
+                    backend.simulate_url,
+                    "https://executor.mock.local/rpc/simulate"
                 );
             });
         });

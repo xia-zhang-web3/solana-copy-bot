@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{json, Value};
 use crate::route_allowlist::sorted_routes;
 use crate::route_backend::RouteBackend;
+use serde_json::{json, Value};
 
 #[derive(Clone, Debug)]
 pub(crate) struct HealthzPayloadInputs<'a> {
     pub(crate) contract_version: &'a str,
+    pub(crate) backend_mode: &'a str,
     pub(crate) enabled_routes: &'a HashSet<String>,
     pub(crate) route_backends: &'a HashMap<String, RouteBackend>,
     pub(crate) signer_source: &'a str,
@@ -38,14 +39,16 @@ fn sorted_send_rpc_routes(
 
 pub(crate) fn build_healthz_payload(inputs: HealthzPayloadInputs<'_>) -> Value {
     let enabled_routes_sorted = sorted_routes(inputs.enabled_routes);
-    let send_rpc_enabled_routes =
-        sorted_send_rpc_routes(inputs.route_backends, |backend| backend.send_rpc_url.is_some());
+    let send_rpc_enabled_routes = sorted_send_rpc_routes(inputs.route_backends, |backend| {
+        backend.send_rpc_url.is_some()
+    });
     let send_rpc_fallback_routes = sorted_send_rpc_routes(inputs.route_backends, |backend| {
         backend.send_rpc_fallback_url.is_some()
     });
     json!({
         "status": top_level_healthz_status(inputs.idempotency_store_status),
         "contract_version": inputs.contract_version,
+        "backend_mode": inputs.backend_mode,
         "enabled_routes": enabled_routes_sorted,
         "signer_source": inputs.signer_source,
         "signer_kms_key_id_configured": inputs.signer_kms_key_id_configured,
@@ -71,8 +74,8 @@ mod tests {
 
     use serde_json::Value;
 
-    use crate::route_backend::RouteBackend;
     use super::{build_healthz_payload, top_level_healthz_status, HealthzPayloadInputs};
+    use crate::route_backend::RouteBackend;
 
     fn routes(values: &[&str]) -> HashSet<String> {
         values.iter().map(|value| value.to_string()).collect()
@@ -127,6 +130,7 @@ mod tests {
         let route_backends = route_backends_fixture();
         let payload = build_healthz_payload(HealthzPayloadInputs {
             contract_version: "v1",
+            backend_mode: "upstream",
             enabled_routes: &route_allowlist,
             route_backends: &route_backends,
             signer_source: "file",
@@ -142,7 +146,13 @@ mod tests {
             Some("v1")
         );
         assert_eq!(
-            payload.get("idempotency_store_status").and_then(Value::as_str),
+            payload.get("backend_mode").and_then(Value::as_str),
+            Some("upstream")
+        );
+        assert_eq!(
+            payload
+                .get("idempotency_store_status")
+                .and_then(Value::as_str),
             Some("ok")
         );
     }
@@ -153,6 +163,7 @@ mod tests {
         let route_backends = route_backends_fixture();
         let payload = build_healthz_payload(HealthzPayloadInputs {
             contract_version: "v1",
+            backend_mode: "upstream",
             enabled_routes: &route_allowlist,
             route_backends: &route_backends,
             signer_source: "file",
@@ -187,6 +198,7 @@ mod tests {
         let route_backends = route_backends_fixture();
         let payload = build_healthz_payload(HealthzPayloadInputs {
             contract_version: "v1",
+            backend_mode: "upstream",
             enabled_routes: &route_allowlist,
             route_backends: &route_backends,
             signer_source: "file",
@@ -222,6 +234,7 @@ mod tests {
         let route_backends = route_backends_fixture();
         let payload = build_healthz_payload(HealthzPayloadInputs {
             contract_version: "v1",
+            backend_mode: "upstream",
             enabled_routes: &route_allowlist,
             route_backends: &route_backends,
             signer_source: "file",

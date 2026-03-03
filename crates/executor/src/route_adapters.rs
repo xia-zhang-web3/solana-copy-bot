@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 use tracing::debug;
 #[cfg(test)]
 use std::{
@@ -6,6 +6,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+use crate::backend_mode::ExecutorBackendMode;
 use crate::route_backend::UpstreamAction;
 use crate::route_executor::{
     RouteActionPayloadExpectations, RouteExecutorKind, RouteSubmitExecutionContext,
@@ -127,6 +128,12 @@ impl RouteAdapter {
             payload_expectations.side,
             payload_expectations.token,
         )?;
+        if state.config.backend_mode == ExecutorBackendMode::Mock {
+            return Ok(build_mock_simulate_backend_response(
+                route,
+                state.config.contract_version.as_str(),
+            ));
+        }
         forward_to_upstream(
             state,
             route,
@@ -207,6 +214,13 @@ impl RouteAdapter {
             tip_instruction_lamports = ?plan.tip_instruction_lamports,
             "route adapter received submit instruction plan"
         );
+        if state.config.backend_mode == ExecutorBackendMode::Mock {
+            return Ok(build_mock_submit_backend_response(
+                route,
+                state.config.contract_version.as_str(),
+                payload_expectations,
+            ));
+        }
         forward_to_upstream(
             state,
             route,
@@ -216,6 +230,44 @@ impl RouteAdapter {
         )
         .await
     }
+}
+
+fn mock_submit_signature() -> String {
+    bs58::encode([7u8; 64]).into_string()
+}
+
+fn build_mock_simulate_backend_response(route: &str, contract_version: &str) -> Value {
+    json!({
+        "status": "ok",
+        "ok": true,
+        "accepted": true,
+        "route": route,
+        "contract_version": contract_version,
+        "detail": "executor_mock_simulation_ok"
+    })
+}
+
+fn build_mock_submit_backend_response(
+    route: &str,
+    contract_version: &str,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
+) -> Value {
+    let mut payload = json!({
+        "status": "ok",
+        "ok": true,
+        "accepted": true,
+        "route": route,
+        "contract_version": contract_version,
+        "detail": "executor_mock_submit_ok",
+        "tx_signature": mock_submit_signature(),
+    });
+    if let Some(request_id) = payload_expectations.request_id {
+        payload["request_id"] = Value::String(request_id.to_string());
+    }
+    if let Some(client_order_id) = payload_expectations.client_order_id {
+        payload["client_order_id"] = Value::String(client_order_id.to_string());
+    }
+    payload
 }
 
 fn parse_payload_object_for_action(
@@ -773,7 +825,7 @@ mod tests {
         RouteAdapter,
     };
     use crate::Reject;
-    use crate::route_executor::RouteExecutorKind;
+    use crate::route_executor::{RouteActionPayloadExpectations, RouteExecutorKind};
     use crate::tx_build::SubmitInstructionPlan;
     use serde_json::Map;
     use serde_json::Value;
@@ -883,6 +935,51 @@ mod tests {
         assert!(!RouteAdapter::Paper.requires_rpc_submit_tip_guard());
         assert!(!RouteAdapter::Jito.requires_rpc_submit_tip_guard());
         assert!(!RouteAdapter::Fastlane.requires_rpc_submit_tip_guard());
+    }
+
+    #[test]
+    fn build_mock_simulate_backend_response_includes_contract_fields() {
+        let payload = super::build_mock_simulate_backend_response("rpc", "v1");
+        assert_eq!(payload.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(payload.get("route").and_then(Value::as_str), Some("rpc"));
+        assert_eq!(
+            payload.get("contract_version").and_then(Value::as_str),
+            Some("v1")
+        );
+        assert_eq!(
+            payload.get("detail").and_then(Value::as_str),
+            Some("executor_mock_simulation_ok")
+        );
+    }
+
+    #[test]
+    fn build_mock_submit_backend_response_includes_signature_and_identity() {
+        let payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        assert_eq!(payload.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(
+            payload.get("request_id").and_then(Value::as_str),
+            Some("request-1")
+        );
+        assert_eq!(
+            payload.get("client_order_id").and_then(Value::as_str),
+            Some("client-order-1")
+        );
+        let signature = payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("tx_signature should be present");
+        assert!(signature.len() > 40, "signature should look like base58");
     }
 
     #[test]

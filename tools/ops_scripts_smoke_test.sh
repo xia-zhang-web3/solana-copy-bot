@@ -628,11 +628,13 @@ health_routes_alias_json_raw="${FAKE_EXECUTOR_HEALTH_ROUTES_JSON:-}"
 health_send_rpc_enabled_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_JSON:-}"
 health_send_rpc_fallback_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_FALLBACK_ROUTES_JSON:-}"
 health_send_rpc_alias_routes_json_raw="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ROUTES_JSON:-}"
+health_backend_mode="${FAKE_EXECUTOR_HEALTH_BACKEND_MODE:-upstream}"
 health_signer_source="${FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE:-kms}"
 health_signer_pubkey="${FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY:-11111111111111111111111111111111}"
 health_submit_fastlane_enabled="${FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED:-false}"
 health_status_json_raw="${FAKE_EXECUTOR_HEALTH_STATUS_JSON:-}"
 health_contract_version_json_raw="${FAKE_EXECUTOR_HEALTH_CONTRACT_VERSION_JSON:-}"
+health_backend_mode_json_raw="${FAKE_EXECUTOR_HEALTH_BACKEND_MODE_JSON:-}"
 health_signer_source_json_raw="${FAKE_EXECUTOR_HEALTH_SIGNER_SOURCE_JSON:-}"
 health_signer_pubkey_json_raw="${FAKE_EXECUTOR_HEALTH_SIGNER_PUBKEY_JSON:-}"
 health_submit_fastlane_enabled_json_raw="${FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_ENABLED_JSON:-}"
@@ -735,6 +737,11 @@ if [[ "$url" == *"/healthz" ]]; then
   else
     health_contract_version_json="\"v1\""
   fi
+  if [[ -n "$health_backend_mode_json_raw" ]]; then
+    health_backend_mode_json="$health_backend_mode_json_raw"
+  else
+    health_backend_mode_json="\"${health_backend_mode}\""
+  fi
   if [[ -n "$health_signer_source_json_raw" ]]; then
     health_signer_source_json="$health_signer_source_json_raw"
   else
@@ -755,7 +762,7 @@ if [[ "$url" == *"/healthz" ]]; then
   else
     health_idempotency_store_status_json="\"ok\""
   fi
-  body="{\"status\":${health_status_json},\"contract_version\":${health_contract_version_json},\"enabled_routes\":${health_enabled_routes_json},\"routes\":${health_routes_alias_json},\"signer_source\":${health_signer_source_json},\"submit_fastlane_enabled\":${health_submit_fastlane_enabled_json},\"signer_pubkey\":${health_signer_pubkey_json},\"idempotency_store_status\":${health_idempotency_store_status_json},\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_alias_routes_json}}"
+  body="{\"status\":${health_status_json},\"contract_version\":${health_contract_version_json},\"backend_mode\":${health_backend_mode_json},\"enabled_routes\":${health_enabled_routes_json},\"routes\":${health_routes_alias_json},\"signer_source\":${health_signer_source_json},\"submit_fastlane_enabled\":${health_submit_fastlane_enabled_json},\"signer_pubkey\":${health_signer_pubkey_json},\"idempotency_store_status\":${health_idempotency_store_status_json},\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_alias_routes_json}}"
   status_code="200"
 elif [[ "$url" == *"/simulate" ]]; then
   if [[ -z "$auth_header" ]]; then
@@ -2643,6 +2650,9 @@ run_executor_preflight_case() {
   assert_field_equals "$pass_output" "executor_signer_pubkey_expected" "11111111111111111111111111111111"
   assert_field_equals "$pass_output" "health_status_field_kind" "string"
   assert_field_equals "$pass_output" "health_contract_version_field_kind" "string"
+  assert_field_equals "$pass_output" "executor_backend_mode" "upstream"
+  assert_field_equals "$pass_output" "health_backend_mode" "upstream"
+  assert_field_equals "$pass_output" "health_backend_mode_field_kind" "string"
   assert_field_equals "$pass_output" "health_signer_source" "kms"
   assert_field_equals "$pass_output" "health_signer_source_field_kind" "string"
   assert_field_equals "$pass_output" "health_signer_pubkey" "11111111111111111111111111111111"
@@ -2675,6 +2685,62 @@ run_executor_preflight_case() {
     echo "expected executor preflight manifest artifact file to be written" >&2
     exit 1
   fi
+
+  local invalid_backend_mode_output
+  if invalid_backend_mode_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_BACKEND_MODE="invalid" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for invalid COPYBOT_EXECUTOR_BACKEND_MODE token" >&2
+    exit 1
+  fi
+  assert_contains "$invalid_backend_mode_output" "preflight_verdict: FAIL"
+  assert_field_equals "$invalid_backend_mode_output" "preflight_reason_code" "contract_checks_failed"
+  assert_contains "$invalid_backend_mode_output" "COPYBOT_EXECUTOR_BACKEND_MODE must be one of: upstream,mock"
+
+  local executor_env_mock_mode_path="$TMP_DIR/executor-preflight-mock-mode.env"
+  awk '
+    $0 ~ /^COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL=/ { next }
+    $0 ~ /^COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL=/ { next }
+    { print }
+  ' "$executor_env_path" >"$executor_env_mock_mode_path"
+  local mock_mode_pass_output
+  mock_mode_pass_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_mock_mode_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_BACKEND_MODE="mock" \
+      FAKE_EXECUTOR_HEALTH_BACKEND_MODE="mock" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh"
+  )"
+  assert_contains "$mock_mode_pass_output" "preflight_verdict: PASS"
+  assert_field_equals "$mock_mode_pass_output" "executor_backend_mode" "mock"
+  assert_field_equals "$mock_mode_pass_output" "health_backend_mode" "mock"
+  assert_field_equals "$mock_mode_pass_output" "health_backend_mode_field_kind" "string"
+
+  local backend_mode_mismatch_output
+  if backend_mode_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_mock_mode_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_BACKEND_MODE="mock" \
+      FAKE_EXECUTOR_HEALTH_BACKEND_MODE="upstream" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for backend_mode mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$backend_mode_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$backend_mode_mismatch_output" "executor backend_mode mismatch: health=upstream expected=mock"
 
   local invalid_enabled_output
   if invalid_enabled_output="$(

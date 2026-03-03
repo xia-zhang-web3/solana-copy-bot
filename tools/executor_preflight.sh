@@ -67,6 +67,12 @@ parse_bool_token() {
   esac
 }
 
+default_executor_mock_backend_url() {
+  local route="$1"
+  local action="$2"
+  printf 'https://executor.mock.local/%s/%s' "$route" "$action"
+}
+
 cfg_or_env_bool_into() {
   local section="$1"
   local key="$2"
@@ -769,6 +775,8 @@ fi
 
 executor_bind_addr="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BIND_ADDR)" "127.0.0.1:8090")"
 executor_contract_version_expected="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_CONTRACT_VERSION)" "v1")"
+executor_backend_mode_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BACKEND_MODE)" "upstream")"
+executor_backend_mode="$(printf '%s' "$executor_backend_mode_raw" | tr '[:upper:]' '[:lower:]')"
 executor_route_allowlist_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_ROUTE_ALLOWLIST)" "paper,rpc,jito")"
 executor_route_allowlist_csv=""
 executor_submit_fastlane_enabled_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED)" "false")"
@@ -793,6 +801,15 @@ expected_send_rpc_fallback_routes_csv=""
 executor_signer_source_expected_valid="true"
 
 parse_route_allowlist_csv_strict_into "$executor_route_allowlist_raw" "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST" executor_route_allowlist_csv
+
+case "$executor_backend_mode" in
+  upstream|mock)
+    ;;
+  *)
+    errors+=("COPYBOT_EXECUTOR_BACKEND_MODE must be one of: upstream,mock")
+    executor_backend_mode="upstream"
+    ;;
+esac
 
 executor_submit_fastlane_enabled="$(parse_bool_token "$executor_submit_fastlane_enabled_raw")"
 if [[ -z "$executor_submit_fastlane_enabled" ]]; then
@@ -851,6 +868,12 @@ while IFS= read -r route; do
   route_send_rpc_fallback="$(first_non_empty \
     "$(env_or_file_value "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_FALLBACK_URL")" \
     "$executor_send_rpc_fallback_default")"
+  if [[ -z "$route_submit" && "$executor_backend_mode" == "mock" ]]; then
+    route_submit="$(default_executor_mock_backend_url "$route" "submit")"
+  fi
+  if [[ -z "$route_simulate" && "$executor_backend_mode" == "mock" ]]; then
+    route_simulate="$(default_executor_mock_backend_url "$route" "simulate")"
+  fi
   if [[ -z "$route_submit" ]]; then
     errors+=("missing submit backend URL for executor route=$route (set COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_URL or COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL)")
   fi
@@ -1171,8 +1194,10 @@ done < <(normalized_routes_lines "$adapter_route_allowlist_csv")
 health_http_status="n/a"
 health_status_field="n/a"
 health_contract_version="n/a"
+health_backend_mode="n/a"
 health_status_field_kind="n/a"
 health_contract_version_field_kind="n/a"
+health_backend_mode_field_kind="n/a"
 health_routes_csv="n/a"
 health_routes_alias_csv="n/a"
 health_routes_field_kind="n/a"
@@ -1202,6 +1227,7 @@ if command -v curl >/dev/null 2>&1; then
       health_body="$(cat "$health_body_file")"
       health_status_field="$(json_string_field "$health_body" "status")"
       health_contract_version="$(json_string_field "$health_body" "contract_version")"
+      health_backend_mode="$(printf '%s' "$(json_string_field "$health_body" "backend_mode")" | tr '[:upper:]' '[:lower:]')"
       health_signer_source="$(printf '%s' "$(json_string_field "$health_body" "signer_source")" | tr '[:upper:]' '[:lower:]')"
       health_signer_pubkey="$(json_string_field "$health_body" "signer_pubkey")"
       health_submit_fastlane_enabled_raw="$(json_string_field "$health_body" "submit_fastlane_enabled")"
@@ -1209,6 +1235,7 @@ if command -v curl >/dev/null 2>&1; then
       idempotency_store_status="$(json_string_field "$health_body" "idempotency_store_status")"
       health_status_field_kind="$(json_field_kind "$health_body" "status")"
       health_contract_version_field_kind="$(json_field_kind "$health_body" "contract_version")"
+      health_backend_mode_field_kind="$(json_field_kind "$health_body" "backend_mode")"
       health_signer_source_field_kind="$(json_field_kind "$health_body" "signer_source")"
       health_signer_pubkey_field_kind="$(json_field_kind "$health_body" "signer_pubkey")"
       health_submit_fastlane_enabled_field_kind="$(json_field_kind "$health_body" "submit_fastlane_enabled")"
@@ -1241,11 +1268,17 @@ if command -v curl >/dev/null 2>&1; then
       if [[ "$health_contract_version" != "$executor_contract_version_expected" ]]; then
         errors+=("executor contract_version mismatch: health=$health_contract_version expected=$executor_contract_version_expected")
       fi
+      if [[ -n "$health_backend_mode" && "$health_backend_mode" != "$executor_backend_mode" ]]; then
+        errors+=("executor backend_mode mismatch: health=$health_backend_mode expected=$executor_backend_mode")
+      fi
       if [[ "$health_status_field_kind" != "missing" && "$health_status_field_kind" != "string" ]]; then
         errors+=("executor health status must be string when present, got: $health_status_field_kind")
       fi
       if [[ "$health_contract_version_field_kind" != "missing" && "$health_contract_version_field_kind" != "string" ]]; then
         errors+=("executor health contract_version must be string when present, got: $health_contract_version_field_kind")
+      fi
+      if [[ "$health_backend_mode_field_kind" != "missing" && "$health_backend_mode_field_kind" != "string" ]]; then
+        errors+=("executor health backend_mode must be string when present, got: $health_backend_mode_field_kind")
       fi
       if [[ "$health_signer_source_field_kind" != "missing" && "$health_signer_source_field_kind" != "string" ]]; then
         errors+=("executor health signer_source must be string when present, got: $health_signer_source_field_kind")
@@ -1456,6 +1489,7 @@ summary="$({
   echo "executor_health_url: $EXECUTOR_HEALTH_URL"
   echo "executor_expected_submit_url: $EXECUTOR_EXPECT_SUBMIT_URL"
   echo "executor_expected_simulate_url: $EXECUTOR_EXPECT_SIMULATE_URL"
+  echo "executor_backend_mode: $executor_backend_mode"
   echo "executor_contract_version_expected: $executor_contract_version_expected"
   echo "executor_route_allowlist_raw: $executor_route_allowlist_raw"
   echo "executor_route_allowlist_csv: $executor_route_allowlist_csv"
@@ -1479,6 +1513,8 @@ summary="$({
   echo "health_status_field_kind: $health_status_field_kind"
   echo "health_contract_version: $health_contract_version"
   echo "health_contract_version_field_kind: $health_contract_version_field_kind"
+  echo "health_backend_mode: $health_backend_mode"
+  echo "health_backend_mode_field_kind: $health_backend_mode_field_kind"
   echo "health_signer_source: $health_signer_source"
   echo "health_signer_source_field_kind: $health_signer_source_field_kind"
   echo "health_signer_pubkey: $health_signer_pubkey"
