@@ -22,6 +22,9 @@ require_bin bash
 
 FAKE_BIN_DIR="$TMP_DIR/fake-bin"
 mkdir -p "$FAKE_BIN_DIR"
+DEFAULT_EXECUTOR_ENV_PATH="$TMP_DIR/default-executor.env"
+printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$DEFAULT_EXECUTOR_ENV_PATH"
+export EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-$DEFAULT_EXECUTOR_ENV_PATH}"
 
 write_fake_journalctl() {
   local script_path="$FAKE_BIN_DIR/journalctl"
@@ -1178,10 +1181,10 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$go_nogo_output" "dynamic_tip_policy_config_enabled: false"
   assert_contains "$go_nogo_output" "dynamic_tip_policy_verdict: SKIP"
-  assert_contains "$go_nogo_output" "go_nogo_require_executor_upstream: false"
+  assert_contains "$go_nogo_output" "go_nogo_require_executor_upstream: true"
   assert_contains "$go_nogo_output" "executor_backend_mode: upstream"
-  assert_contains "$go_nogo_output" "executor_backend_mode_guard_verdict: SKIP"
-  assert_field_equals "$go_nogo_output" "executor_backend_mode_guard_reason_code" "gate_disabled"
+  assert_contains "$go_nogo_output" "executor_backend_mode_guard_verdict: PASS"
+  assert_field_equals "$go_nogo_output" "executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_contains "$go_nogo_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$go_nogo_output" "jito_rpc_policy_verdict: SKIP"
   assert_field_equals "$go_nogo_output" "jito_rpc_policy_reason_code" "gate_disabled"

@@ -7,6 +7,7 @@ FAKE_BIN_DIR="$OUT_DIR/fake-bin"
 DB_PATH="$OUT_DIR/legacy.db"
 CONFIG_PATH="$OUT_DIR/devnet_rehearsal.toml"
 ADAPTER_ENV_PATH="$OUT_DIR/adapter.env"
+EXECUTOR_ENV_PATH="$OUT_DIR/executor.env"
 
 require_bin() {
   local bin="$1"
@@ -20,7 +21,7 @@ require_bin sqlite3
 require_bin python3
 
 mkdir -p "$OUT_DIR" "$SECRETS_DIR" "$FAKE_BIN_DIR"
-rm -f "$DB_PATH" "$CONFIG_PATH" "$ADAPTER_ENV_PATH"
+rm -f "$DB_PATH" "$CONFIG_PATH" "$ADAPTER_ENV_PATH" "$EXECUTOR_ENV_PATH"
 rm -f "$SECRETS_DIR"/*.token "$SECRETS_DIR"/*.secret 2>/dev/null || true
 
 cat >"$FAKE_BIN_DIR/journalctl" <<'JEOF'
@@ -79,6 +80,10 @@ COPYBOT_ADAPTER_ROUTE_RPC_AUTH_TOKEN_FILE="secrets/route_rpc_auth.token"
 COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_AUTH_TOKEN_FILE="secrets/route_rpc_send_rpc_auth.token"
 COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=false
 EOF_ENV
+
+cat >"$EXECUTOR_ENV_PATH" <<'EOF_EXECUTOR_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+EOF_EXECUTOR_ENV
 
 printf '%s\n' "adapter-bearer" >"$SECRETS_DIR/adapter_bearer.token"
 printf '%s\n' "adapter-hmac-secret" >"$SECRETS_DIR/adapter_hmac.secret"
@@ -173,5 +178,6 @@ SQL
 echo "prepared_refactor_baseline_dir: $OUT_DIR"
 echo "config_path: $CONFIG_PATH"
 echo "adapter_env_path: $ADAPTER_ENV_PATH"
+echo "executor_env_path: $EXECUTOR_ENV_PATH"
 echo "db_path: $DB_PATH"
 echo "fake_journalctl_dir: $FAKE_BIN_DIR"

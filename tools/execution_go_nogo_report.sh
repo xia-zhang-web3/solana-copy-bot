@@ -33,7 +33,7 @@ fi
 
 go_nogo_require_jito_rpc_policy_raw="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
-go_nogo_require_executor_upstream_raw="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-false}"
+go_nogo_require_executor_upstream_raw="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
 if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
   echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2

@@ -71,12 +71,15 @@ bash "$ROOT_DIR/tools/refactor_baseline_prepare.sh" "$fixture_dir" >"$raw_dir/pr
 
 config_path="$fixture_dir/devnet_rehearsal.toml"
 adapter_env_path="$fixture_dir/adapter.env"
+executor_env_path="$fixture_dir/executor.env"
 fake_bin_dir="$fixture_dir/fake-bin"
 
 PATH="$fake_bin_dir:$PATH" \
 GO_NOGO_TEST_MODE=true \
 GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
+GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true \
+EXECUTOR_ENV_PATH="$executor_env_path" \
 CONFIG_PATH="$config_path" \
 OUTPUT_DIR="$raw_dir/go_nogo_artifacts" \
 bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 >"$raw_dir/go_nogo_stdout.txt"
@@ -87,6 +90,8 @@ DEVNET_REHEARSAL_TEST_MODE=true \
 GO_NOGO_TEST_MODE=true \
 GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
+GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true \
+EXECUTOR_ENV_PATH="$executor_env_path" \
 CONFIG_PATH="$config_path" \
 OUTPUT_DIR="$raw_dir/rehearsal_artifacts" \
 bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60 >"$raw_dir/rehearsal_stdout.txt"
@@ -98,6 +103,8 @@ DEVNET_REHEARSAL_TEST_MODE=true \
 GO_NOGO_TEST_MODE=true \
 GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
+GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true \
+EXECUTOR_ENV_PATH="$executor_env_path" \
 CONFIG_PATH="$config_path" \
 OUTPUT_DIR="$raw_dir/rollout_artifacts" \
 bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60 >"$raw_dir/rollout_stdout.txt"
