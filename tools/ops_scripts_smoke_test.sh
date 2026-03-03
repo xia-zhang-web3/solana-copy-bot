@@ -1740,6 +1740,10 @@ run_windowed_signoff_report_case() {
   local db_path="$1"
   local paper_cfg="$2"
   local adapter_cfg="$3"
+  local executor_env_path="$TMP_DIR/windowed-signoff-executor.env"
+  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  local EXECUTOR_ENV_PATH="$executor_env_path"
+  export EXECUTOR_ENV_PATH
 
   local hold_output=""
   if hold_output="$(
@@ -2083,6 +2087,10 @@ run_execution_route_fee_signoff_case() {
   local db_path="$1"
   local config_path="$2"
   local strict_config_path="$3"
+  local executor_env_path="$TMP_DIR/route-fee-signoff-executor.env"
+  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  local EXECUTOR_ENV_PATH="$executor_env_path"
+  export EXECUTOR_ENV_PATH
   local hold_output
   if hold_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -4245,6 +4253,10 @@ EOF
 run_devnet_rehearsal_case() {
   local db_path="$1"
   local config_path="$2"
+  local executor_env_path="$TMP_DIR/devnet-rehearsal-executor.env"
+  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  local EXECUTOR_ENV_PATH="$executor_env_path"
+  export EXECUTOR_ENV_PATH
   local artifacts_dir="$TMP_DIR/devnet-rehearsal-artifacts"
   local output
   output="$(
@@ -5801,6 +5813,10 @@ run_execution_server_rollout_report_case() {
 run_adapter_rollout_evidence_case() {
   local db_path="$1"
   local config_path="$2"
+  local executor_env_path="$TMP_DIR/adapter-rollout-executor.env"
+  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  local EXECUTOR_ENV_PATH="$executor_env_path"
+  export EXECUTOR_ENV_PATH
   local env_path="$TMP_DIR/adapter-rollout.env"
   local secrets_dir="$TMP_DIR/secrets"
   local artifacts_dir="$TMP_DIR/adapter-rollout-artifacts"
