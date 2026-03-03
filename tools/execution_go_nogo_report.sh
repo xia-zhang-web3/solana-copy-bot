@@ -10,6 +10,7 @@ WINDOW_HOURS="${1:-24}"
 RISK_EVENTS_MINUTES="${2:-60}"
 SERVICE="${SERVICE:-solana-copy-bot}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
+EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_go_nogo}"
@@ -32,6 +33,7 @@ fi
 
 go_nogo_require_jito_rpc_policy_raw="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+go_nogo_require_executor_upstream_raw="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-false}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
 if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
   echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2
@@ -39,6 +41,10 @@ if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_requir
 fi
 if ! go_nogo_require_fastlane_disabled="$(parse_bool_token_strict "$go_nogo_require_fastlane_disabled_raw")"; then
   echo "GO_NOGO_REQUIRE_FASTLANE_DISABLED must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_fastlane_disabled_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_require_executor_upstream="$(parse_bool_token_strict "$go_nogo_require_executor_upstream_raw")"; then
+  echo "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_executor_upstream_raw}" >&2
   exit 1
 fi
 if ! go_nogo_test_mode="$(parse_bool_token_strict "$go_nogo_test_mode_raw")"; then
@@ -122,6 +128,39 @@ cfg_or_env_string() {
     raw="$fallback"
   fi
   printf '%s' "$raw"
+}
+
+read_env_file_key() {
+  local env_path="$1"
+  local key="$2"
+  if [[ ! -f "$env_path" ]]; then
+    return 0
+  fi
+  awk -F'=' -v key="$key" '
+    {
+      line = $0
+      sub(/#.*/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      if (line == "") {
+        next
+      }
+      if (index(line, "=") == 0) {
+        next
+      }
+      lhs = line
+      sub(/=.*/, "", lhs)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", lhs)
+      if (lhs != key) {
+        next
+      }
+      rhs = line
+      sub(/^[^=]*=/, "", rhs)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", rhs)
+      gsub(/^"|"$/, "", rhs)
+      print rhs
+      exit
+    }
+  ' "$env_path"
 }
 
 sum_route_map_values() {
@@ -218,6 +257,46 @@ elif [[ "$preflight_verdict" == "UNKNOWN" && "$preflight_exit_code" -ne 0 ]]; th
 elif [[ -z "${preflight_reason:-}" ]]; then
   preflight_reason="n/a"
 fi
+
+executor_backend_mode_raw="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_BACKEND_MODE")")"
+executor_backend_mode="upstream"
+executor_backend_mode_parse_error=""
+if [[ -n "$executor_backend_mode_raw" ]]; then
+  executor_backend_mode="$(printf '%s' "$executor_backend_mode_raw" | tr '[:upper:]' '[:lower:]')"
+  case "$executor_backend_mode" in
+    upstream|mock)
+      ;;
+    *)
+      executor_backend_mode_parse_error="COPYBOT_EXECUTOR_BACKEND_MODE must be one of: upstream,mock (got: ${executor_backend_mode_raw})"
+      executor_backend_mode="unknown"
+      ;;
+  esac
+fi
+
+executor_backend_mode_guard_verdict="SKIP"
+executor_backend_mode_guard_reason="strict executor upstream backend-mode gate disabled"
+executor_backend_mode_guard_reason_code="gate_disabled"
+if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
+  if [[ ! -f "$EXECUTOR_ENV_PATH" ]]; then
+    executor_backend_mode="unknown"
+    executor_backend_mode_guard_verdict="UNKNOWN"
+    executor_backend_mode_guard_reason="executor env file not found: $EXECUTOR_ENV_PATH"
+    executor_backend_mode_guard_reason_code="executor_env_missing"
+  elif [[ -n "$executor_backend_mode_parse_error" ]]; then
+    executor_backend_mode_guard_verdict="UNKNOWN"
+    executor_backend_mode_guard_reason="$executor_backend_mode_parse_error"
+    executor_backend_mode_guard_reason_code="backend_mode_invalid"
+  elif [[ "$executor_backend_mode" != "upstream" ]]; then
+    executor_backend_mode_guard_verdict="WARN"
+    executor_backend_mode_guard_reason="executor backend_mode=$executor_backend_mode is not upstream"
+    executor_backend_mode_guard_reason_code="backend_mode_not_upstream"
+  else
+    executor_backend_mode_guard_verdict="PASS"
+    executor_backend_mode_guard_reason="executor backend_mode=upstream"
+    executor_backend_mode_guard_reason_code="backend_mode_upstream"
+  fi
+fi
+
 fee_decomposition_verdict="$(normalize_gate_verdict "$(extract_field "fee_decomposition_verdict" "$calibration_output")")"
 fee_decomposition_reason="$(extract_field "fee_decomposition_reason" "$calibration_output")"
 route_profile_verdict="$(normalize_gate_verdict "$(extract_field "route_profile_verdict" "$calibration_output")")"
@@ -436,6 +515,14 @@ elif [[ "$preflight_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify adapter preflight verdict; fail-closed"
   overall_go_nogo_reason_code="preflight_unknown"
+elif [[ "$go_nogo_require_executor_upstream" == "true" && "$executor_backend_mode_guard_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict executor upstream backend-mode gate: ${executor_backend_mode_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="executor_backend_mode_unknown"
+elif [[ "$go_nogo_require_executor_upstream" == "true" && "$executor_backend_mode_guard_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict executor upstream backend-mode gate not PASS: ${executor_backend_mode_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="executor_backend_mode_not_upstream"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
@@ -444,7 +531,7 @@ elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_fla
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
   overall_go_nogo_reason_code="fastlane_policy_unknown"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
   overall_go_nogo_reason_code="all_required_gates_pass"
@@ -570,6 +657,12 @@ dynamic_tip_applied_total: ${submit_dynamic_tip_applied_total:-0}
 dynamic_tip_static_floor_total: ${submit_dynamic_tip_static_floor_total:-0}
 dynamic_tip_policy_verdict: $dynamic_tip_policy_verdict
 dynamic_tip_policy_reason: $dynamic_tip_policy_reason
+go_nogo_require_executor_upstream: $go_nogo_require_executor_upstream
+executor_env_path: $EXECUTOR_ENV_PATH
+executor_backend_mode: ${executor_backend_mode:-unknown}
+executor_backend_mode_guard_verdict: $executor_backend_mode_guard_verdict
+executor_backend_mode_guard_reason: $executor_backend_mode_guard_reason
+executor_backend_mode_guard_reason_code: $executor_backend_mode_guard_reason_code
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 jito_rpc_policy_verdict: $jito_rpc_policy_verdict
 jito_rpc_policy_reason: $jito_rpc_policy_reason

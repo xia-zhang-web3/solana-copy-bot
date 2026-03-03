@@ -59,7 +59,10 @@ Status legend: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`.
 5. Rollout safety guard is now explicit in orchestration:
    1. `tools/execution_server_rollout_report.sh` defaults `SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true`,
    2. `COPYBOT_EXECUTOR_BACKEND_MODE=mock` now fail-closes server-rollout as `input_error` unless explicitly overridden for non-live contour (`SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=false`).
-6. Historical note (resolved on `2026-03-03`):
+6. Go/No-Go strict backend-mode guard is available for evidence chain:
+   1. `tools/execution_go_nogo_report.sh` supports `GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true` (reads `COPYBOT_EXECUTOR_BACKEND_MODE` from `EXECUTOR_ENV_PATH`),
+   2. strict mode classifies `overall_go_nogo_verdict=NO_GO` on `mock`/unknown backend mode and emits `executor_backend_mode_guard_*` diagnostics.
+7. Historical note (resolved on `2026-03-03`):
    1. before Yellowstone switch, WS+HTTP polling path produced frequent `getTransaction 429`,
    2. after switch to `yellowstone_grpc`, `grpc_transaction_updates_total` grows and `rpc_429` is stable at `0` in post-switch validation window.
 

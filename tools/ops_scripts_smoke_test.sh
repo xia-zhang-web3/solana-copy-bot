@@ -1178,6 +1178,10 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$go_nogo_output" "dynamic_tip_policy_config_enabled: false"
   assert_contains "$go_nogo_output" "dynamic_tip_policy_verdict: SKIP"
+  assert_contains "$go_nogo_output" "go_nogo_require_executor_upstream: false"
+  assert_contains "$go_nogo_output" "executor_backend_mode: upstream"
+  assert_contains "$go_nogo_output" "executor_backend_mode_guard_verdict: SKIP"
+  assert_field_equals "$go_nogo_output" "executor_backend_mode_guard_reason_code" "gate_disabled"
   assert_contains "$go_nogo_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$go_nogo_output" "jito_rpc_policy_verdict: SKIP"
   assert_field_equals "$go_nogo_output" "jito_rpc_policy_reason_code" "gate_disabled"
@@ -1603,6 +1607,133 @@ run_go_nogo_fastlane_disabled_gate_case() {
   assert_contains "$invalid_execution_fastlane_output" "invalid boolean setting for env SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED"
   assert_contains "$invalid_execution_fastlane_output" "got: maybe"
   echo "[ok] go-no-go strict fastlane-disabled gate"
+}
+
+run_go_nogo_executor_backend_mode_guard_case() {
+  local db_path="$1"
+  local config_path="$2"
+  local executor_env_mock="$TMP_DIR/go-nogo-executor-mock.env"
+  local executor_env_upstream="$TMP_DIR/go-nogo-executor-upstream.env"
+  local executor_env_invalid="$TMP_DIR/go-nogo-executor-invalid.env"
+
+  cat >"$executor_env_mock" <<'EOF_EXECUTOR_MOCK'
+COPYBOT_EXECUTOR_BACKEND_MODE=mock
+EOF_EXECUTOR_MOCK
+  cat >"$executor_env_upstream" <<'EOF_EXECUTOR_UPSTREAM'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+EOF_EXECUTOR_UPSTREAM
+  cat >"$executor_env_invalid" <<'EOF_EXECUTOR_INVALID'
+COPYBOT_EXECUTOR_BACKEND_MODE=bogus_mode
+EOF_EXECUTOR_INVALID
+
+  local blocked_output
+  blocked_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_mock" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$blocked_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$blocked_output" "executor_backend_mode" "mock"
+  assert_field_equals "$blocked_output" "executor_backend_mode_guard_verdict" "WARN"
+  assert_field_equals "$blocked_output" "executor_backend_mode_guard_reason_code" "backend_mode_not_upstream"
+  assert_field_equals "$blocked_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$blocked_output" "overall_go_nogo_reason_code" "executor_backend_mode_not_upstream"
+
+  local upstream_output
+  upstream_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$upstream_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$upstream_output" "executor_backend_mode" "upstream"
+  assert_field_equals "$upstream_output" "executor_backend_mode_guard_verdict" "PASS"
+  assert_field_equals "$upstream_output" "executor_backend_mode_guard_reason_code" "backend_mode_upstream"
+  assert_field_equals "$upstream_output" "overall_go_nogo_verdict" "GO"
+  assert_field_equals "$upstream_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local missing_env_output
+  missing_env_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$TMP_DIR/go-nogo-executor-missing.env" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$missing_env_output" "executor_backend_mode" "unknown"
+  assert_field_equals "$missing_env_output" "executor_backend_mode_guard_verdict" "UNKNOWN"
+  assert_field_equals "$missing_env_output" "executor_backend_mode_guard_reason_code" "executor_env_missing"
+  assert_field_equals "$missing_env_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$missing_env_output" "overall_go_nogo_reason_code" "executor_backend_mode_unknown"
+
+  local invalid_mode_output
+  invalid_mode_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_invalid" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$invalid_mode_output" "executor_backend_mode" "unknown"
+  assert_field_equals "$invalid_mode_output" "executor_backend_mode_guard_verdict" "UNKNOWN"
+  assert_field_equals "$invalid_mode_output" "executor_backend_mode_guard_reason_code" "backend_mode_invalid"
+  assert_field_equals "$invalid_mode_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$invalid_mode_output" "overall_go_nogo_reason_code" "executor_backend_mode_unknown"
+
+  local invalid_bool_output=""
+  if invalid_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="sometimes" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM token" >&2
+    exit 1
+  else
+    local invalid_bool_exit_code=$?
+    if [[ "$invalid_bool_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM token, got $invalid_bool_exit_code" >&2
+      echo "$invalid_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_bool_output" "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token"
+  assert_contains "$invalid_bool_output" "got: sometimes"
+  echo "[ok] go-no-go strict executor backend-mode gate"
 }
 
 run_windowed_signoff_report_case() {
@@ -8150,7 +8281,7 @@ run_targeted_smoke_cases() {
       run_evidence_bundle_pack_case
       executed_cases=$((executed_cases + 1))
       ;;
-    executor_preflight | run_executor_preflight_case | windowed_signoff | run_windowed_signoff_report_case | route_fee_signoff | run_execution_route_fee_signoff_case | devnet_rehearsal | run_devnet_rehearsal_case | executor_rollout_evidence | run_executor_rollout_evidence_case | adapter_rollout_evidence | run_adapter_rollout_evidence_case | execution_server_rollout | run_execution_server_rollout_report_case | execution_runtime_readiness | run_execution_runtime_readiness_report_case)
+    executor_preflight | run_executor_preflight_case | windowed_signoff | run_windowed_signoff_report_case | route_fee_signoff | run_execution_route_fee_signoff_case | devnet_rehearsal | run_devnet_rehearsal_case | executor_rollout_evidence | run_executor_rollout_evidence_case | adapter_rollout_evidence | run_adapter_rollout_evidence_case | execution_server_rollout | run_execution_server_rollout_report_case | execution_runtime_readiness | run_execution_runtime_readiness_report_case | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
       if [[ "$fixtures_ready" != "true" ]]; then
         create_legacy_db "$legacy_db"
         write_config "$legacy_cfg" "$legacy_db"
@@ -8190,11 +8321,15 @@ run_targeted_smoke_cases() {
         run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg"
         executed_cases=$((executed_cases + 1))
         ;;
+      go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
+        run_go_nogo_executor_backend_mode_guard_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
       esac
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness" >&2
+      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness, go_nogo_executor_backend_mode_guard" >&2
       exit 1
       ;;
     esac
@@ -8275,6 +8410,7 @@ main() {
   run_go_nogo_dynamic_hint_source_gate_case "$legacy_db" "$legacy_cfg"
   local devnet_rehearsal_cfg="$TMP_DIR/devnet-rehearsal.toml"
   write_config_devnet_rehearsal "$devnet_rehearsal_cfg" "$legacy_db"
+  run_go_nogo_executor_backend_mode_guard_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_go_nogo_jito_rpc_policy_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_go_nogo_fastlane_disabled_gate_case "$legacy_db" "$devnet_rehearsal_cfg"
   run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"

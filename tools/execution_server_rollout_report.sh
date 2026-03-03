@@ -263,8 +263,10 @@ if ((${#input_errors[@]} == 0)); then
     if go_nogo_output="$(
       DB_PATH="${DB_PATH:-}" \
         CONFIG_PATH="$CONFIG_PATH" \
+        EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
         SERVICE="$SERVICE" \
         OUTPUT_DIR="$go_nogo_output_dir" \
+        GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$server_rollout_require_executor_upstream_norm" \
         GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
         GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
         GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
@@ -315,10 +317,12 @@ package_bundle_enabled: false"
     if rehearsal_output="$(
       DB_PATH="${DB_PATH:-}" \
         CONFIG_PATH="$CONFIG_PATH" \
+        EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
         SERVICE="$SERVICE" \
         OUTPUT_DIR="$rehearsal_output_dir" \
         RUN_TESTS="$run_tests_norm" \
         DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
+        GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$server_rollout_require_executor_upstream_norm" \
         GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
         GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
         GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
@@ -384,6 +388,7 @@ package_bundle_enabled: false"
       OUTPUT_ROOT="$executor_final_output_dir" \
       RUN_TESTS="$run_tests_norm" \
       DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$server_rollout_require_executor_upstream_norm" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
@@ -435,6 +440,8 @@ package_bundle_enabled: false"
       OUTPUT_ROOT="$adapter_final_output_dir" \
       RUN_TESTS="$run_tests_norm" \
       DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
+      EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$server_rollout_require_executor_upstream_norm" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
