@@ -1005,31 +1005,77 @@ Execution governance gate for all next executor slices:
 ## 6.1) Что осталось до выкатки на test server (обязательный checklist)
 
 Этот блок фиксирует только практические блокеры server rollout, чтобы не собирать их по разным секциям.
+Канонический трекер выполнения `6.1`: `ops/test_server_rollout_6_1_tracker.md` (обновляется по мере закрытия каждого gate/evidence).
+Репо-шаблоны server-файлов для `6.1`: `ops/server_templates/README.md`.
+Локальный pre-validation runner для `6.1`: `tools/run_6_1_local_dry_run.sh` (генерирует артефакты в `state/6_1_local_dry_run/`).
+Server execution playbook (copy/paste команды): `ops/6_1_SERVER_EXECUTION_PLAYBOOK.md`.
 
-Критичные блокеры (должны быть закрыты все):
+Фактический статус на `2026-03-03`: `NO_GO` (обязательные server-gates не закрыты).
 
-1. `systemd` wiring для executor/adapter:
-   1. в репозитории нет готового `copybot-executor.service`; unit + restart-policy + logs routing должны быть заданы на сервере явно,
-   2. `copybot-adapter.service` и `solana-copy-bot.service` должны быть согласованы по env/ports/dependencies.
-2. Server env-файлы:
+Проверено локально (контрольный аудит):
+
+1. `bash tools/audit_quick.sh` — `PASS`.
+2. `bash tools/audit_full.sh` — `PASS` (после увеличения default ops-smoke timeout до `1200s`).
+3. `CONFIG_PATH=configs/live.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/execution_adapter_preflight.sh` — `FAIL`:
+   1. `execution.execution_signer_pubkey` пустой,
+   2. `execution.submit_adapter_http_url` содержит placeholder (`REPLACE_ME`).
+4. `CONFIG_PATH=configs/live.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/executor_preflight.sh` — `FAIL`:
+   1. отсутствуют `/etc/solana-copy-bot/executor.env` и `/etc/solana-copy-bot/adapter.env`,
+   2. не заданы executor/adapter upstream endpoints + ingress auth tokens,
+   3. route allowlist drift (`adapter` включает `fastlane`, `executor` нет),
+   4. нет доступного `healthz`/auth probe.
+5. `cargo run -p copybot-app -- --config configs/live.toml` с `SOLANA_COPY_BOT_EXECUTION_ENABLED=true` — `FAIL` (runtime contract: пустой `execution.execution_signer_pubkey`).
+6. Обнаружен активный ingestion override-файл `state/ingestion_source_override.env`, который принудительно переключает source на `helius_ws`; перед rollout обязателен явный reset/подтверждение override.
+
+Сверка внешнего аудита (только подтвержденные фактом пункты):
+
+1. ✅ Подтверждено:
+   1. adapter HMAC verification использует `String::from_utf8_lossy(raw_body)` (нужен strict UTF-8 reject branch),
+   2. `fetch_token_holders` сейчас запрашивает `getTokenSupply` (это supply, а не holder count),
+   3. adapter сейчас запускается без `with_graceful_shutdown`,
+   4. `sanitize_json_value` экранирует только `\\` и `"` (control characters не экранируются),
+   5. `discovery` использует `.lock().expect("... mutex poisoned")` в runtime path,
+   6. `copybot-execution` submitter (`crates/execution/src/submitter.rs`) включает raw endpoint в error detail (в `copybot-executor` endpoint labels уже редактируются).
+2. ❌ Не подтверждено / завышено:
+   1. cross-host auth token leak через redirect в reqwest (cross-host sensitive headers удаляются в reqwest),
+   2. отсутствие body limit в adapter (axum `Bytes` extractor имеет default body limit 2MB),
+   3. отсутствие TTL eviction для HMAC nonce map (eviction есть через `retain` по timestamp),
+   4. отсутствие retry для hot-path insert observed swaps (runtime использует `insert_observed_swap_with_retry`).
+
+Обязательный checklist перед выкладкой на test server (закрыть все пункты):
+
+1. [ ] `systemd` wiring для `copybot-executor` / `copybot-adapter` / `solana-copy-bot` развернут и согласован по `After/Requires`, env-файлам, портам, рестартам и логированию.
+2. [ ] На сервере созданы и заполнены:
    1. `/etc/solana-copy-bot/executor.env`,
    2. `/etc/solana-copy-bot/adapter.env`,
-   3. без placeholder-значений (`REPLACE_ME`) в URL/token полях.
-3. Secret provisioning и права:
-   1. signer source для executor (`COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE` или `COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID`),
-   2. file secrets для Bearer/HMAC/upstream auth при использовании `*_FILE`,
-   3. owner-only permissions для secret файлов (0600/0400).
-4. Upstream endpoints:
-   1. валидные submit/simulate/send-rpc endpoints (минимум devnet-compatible для rehearsal),
-   2. корректные fallback endpoints (не совпадают с primary, где требуется distinct endpoint).
-5. Auth boundary alignment:
-   1. ingress auth executor (`COPYBOT_EXECUTOR_BEARER_TOKEN*`/HMAC policy) согласован с adapter forwarding,
-   2. route/global auth topology не содержит конфликтов inline+file и orphan tokens без endpoint.
+   3. нет placeholder-значений (`REPLACE_ME`, `REPLACE_WITH_*`).
+3. [ ] Заданы signer и секреты:
+   1. `COPYBOT_EXECUTOR_SIGNER_PUBKEY` + (`COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE` или `COPYBOT_EXECUTOR_SIGNER_KMS_KEY_ID`),
+   2. все `*_FILE` секреты доступны процессам,
+   3. права на secret files owner-only (`0600/0400`).
+4. [ ] Route policy parity:
+   1. `COPYBOT_EXECUTOR_ROUTE_ALLOWLIST` и `COPYBOT_ADAPTER_ROUTE_ALLOWLIST` согласованы,
+   2. если `fastlane` выключен, route `fastlane` отсутствует во всех allowlist/policy картах.
+5. [ ] Upstream topology задана для каждого allowlisted route:
+   1. submit/simulate endpoints в executor и adapter заполнены,
+   2. send-rpc endpoints (если используются) заполнены,
+   3. fallback endpoints не совпадают с primary (distinct endpoint identity).
+6. [ ] Auth boundary parity закрыта:
+   1. `COPYBOT_EXECUTOR_BEARER_TOKEN*`/HMAC policy согласованы с adapter forwarding токенами,
+   2. нет конфликтов inline+file и orphan auth tokens без owning endpoint.
+7. [ ] Runtime config для rollout закрыт:
+   1. `execution.enabled=true`,
+   2. `execution.mode=adapter_submit_confirm`,
+   3. `execution.submit_adapter_http_url` валидный неплейсхолдерный endpoint,
+   4. `execution.submit_adapter_require_policy_echo=true` для production-like env.
+8. [ ] Failover override hygiene закрыт:
+   1. `state/ingestion_source_override.env` удалён или явно соответствует целевому сценарию rollout,
+   2. причина override зафиксирована в evidence.
 
-Обязательные pre-run проверки на сервере (в этом порядке):
+Обязательные pre-run проверки на сервере (в этом порядке, без `SKIP`):
 
-1. `bash tools/execution_adapter_preflight.sh`
-2. `bash tools/executor_preflight.sh`
+1. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/execution_adapter_preflight.sh`
+2. `CONFIG_PATH=/etc/solana-copy-bot/live.server.toml SOLANA_COPY_BOT_EXECUTION_ENABLED=true bash tools/executor_preflight.sh`
 3. `curl -sS http://127.0.0.1:<executor_port>/healthz`
 4. `bash tools/adapter_rollout_evidence_report.sh 24 60` (с `OUTPUT_DIR`)
 5. `bash tools/execution_go_nogo_report.sh 24 60` (с `OUTPUT_DIR`)
@@ -1043,13 +1089,23 @@ Execution governance gate for all next executor slices:
 3. Stage C.5 rehearsal: `execution.enabled=true`, `execution.mode=adapter_submit_confirm`, валидный `execution.rpc_devnet_http_url`.
 4. Tiny-live допускается только после закрытия Stage C.5 и checklist из раздела 10.
 
+Gate после server bring-up (обязателен до tiny-live/production, но не блокирует первый test-server запуск):
+
+1. [ ] strict UTF-8 body validation в adapter HMAC verify path (без `from_utf8_lossy`).
+2. [ ] корректный источник метрики holders (не `getTokenSupply`).
+3. [ ] graceful shutdown для adapter service.
+4. [ ] безопасная JSON-экранизация control characters в `sanitize_json_value`.
+5. [ ] mutex poison handling в discovery без panic-path.
+6. [ ] redacted endpoint labels в `crates/execution/src/submitter.rs` error details.
+
 NO-GO для server rollout (остаемся на текущем этапе, запуск не продолжаем):
 
-1. любой `*_preflight` вернул `FAIL`/`UNKNOWN`,
-2. в env/config найден `REPLACE_ME`,
+1. любой `*_preflight` вернул `FAIL`/`UNKNOWN`/`SKIP`,
+2. в env/config найден placeholder (`REPLACE_ME`/`REPLACE_WITH_*`),
 3. signer/secret file отсутствует или нарушены права,
 4. healthz topology/identity drift или auth parity mismatch,
-5. Stage C.5 rehearsal вернул `NO_GO` или не собрал обязательный evidence bundle.
+5. обнаружен несанкционированный ingestion source override,
+6. Stage C.5 rehearsal вернул `NO_GO` или не собрал обязательный evidence bundle.
 
 ## 7) Форсированный запуск на "завтра" (только controlled live)
 

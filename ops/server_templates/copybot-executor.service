@@ -1,0 +1,18 @@
+[Unit]
+Description=CopyBot Executor Backend
+After=network-online.target
+Wants=network-online.target
+Before=copybot-adapter.service
+
+[Service]
+Type=simple
+User=copybot
+WorkingDirectory=/var/www/solana-copy-bot
+EnvironmentFile=/etc/solana-copy-bot/executor.env
+ExecStart=/var/www/solana-copy-bot/target/release/copybot-executor
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

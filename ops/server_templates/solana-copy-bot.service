@@ -1,0 +1,18 @@
+[Unit]
+Description=Solana Copy Bot Application
+After=network-online.target copybot-adapter.service
+Wants=network-online.target
+Requires=copybot-adapter.service
+
+[Service]
+Type=simple
+User=copybot
+WorkingDirectory=/var/www/solana-copy-bot
+EnvironmentFile=/etc/solana-copy-bot/app.env
+ExecStart=/var/www/solana-copy-bot/target/release/copybot-app --config /etc/solana-copy-bot/live.server.toml
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
