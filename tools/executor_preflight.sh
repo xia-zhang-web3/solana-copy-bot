@@ -1004,6 +1004,8 @@ adapter_submit_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_
 adapter_submit_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL)"
 adapter_simulate_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL)"
 adapter_simulate_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL)"
+adapter_send_rpc_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_URL)"
+adapter_send_rpc_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_FALLBACK_URL)"
 adapter_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE "adapter upstream auth")"
 adapter_fallback_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "adapter upstream fallback auth")"
 
@@ -1044,6 +1046,12 @@ while IFS= read -r route; do
   adapter_route_simulate_fallback="$(first_non_empty \
     "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SIMULATE_FALLBACK_URL")" \
     "$adapter_simulate_fallback_default")"
+  adapter_route_send_rpc="$(first_non_empty \
+    "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_URL")" \
+    "$adapter_send_rpc_default")"
+  adapter_route_send_rpc_fallback="$(first_non_empty \
+    "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_FALLBACK_URL")" \
+    "$adapter_send_rpc_fallback_default")"
 
   if [[ -z "$adapter_route_submit" ]]; then
     errors+=("missing adapter submit upstream URL for route=$route (set COPYBOT_ADAPTER_ROUTE_${route_upper}_SUBMIT_URL or COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL)")
@@ -1083,6 +1091,23 @@ while IFS= read -r route; do
     validate_endpoint_identity_into "$adapter_route_simulate_fallback" "invalid adapter simulate fallback URL for route=$route" simulate_fallback_identity || true
     if [[ -n "$simulate_identity" && -n "$simulate_fallback_identity" && "$simulate_identity" == "$simulate_fallback_identity" ]]; then
       errors+=("adapter simulate fallback URL for route=$route must resolve to distinct endpoint")
+    fi
+  fi
+
+  if [[ -n "$adapter_route_send_rpc_fallback" && -z "$adapter_route_send_rpc" ]]; then
+    errors+=("missing adapter send-rpc upstream URL for route=$route while send-rpc fallback is configured")
+  fi
+  if [[ -n "$adapter_route_send_rpc" ]]; then
+    send_rpc_identity=""
+    validate_endpoint_identity_into "$adapter_route_send_rpc" "invalid adapter send-rpc URL for route=$route" send_rpc_identity || true
+  else
+    send_rpc_identity=""
+  fi
+  if [[ -n "$adapter_route_send_rpc_fallback" ]]; then
+    send_rpc_fallback_identity=""
+    validate_endpoint_identity_into "$adapter_route_send_rpc_fallback" "invalid adapter send-rpc fallback URL for route=$route" send_rpc_fallback_identity || true
+    if [[ -n "$send_rpc_identity" && -n "$send_rpc_fallback_identity" && "$send_rpc_identity" == "$send_rpc_fallback_identity" ]]; then
+      errors+=("adapter send-rpc fallback URL for route=$route must resolve to distinct endpoint")
     fi
   fi
 
