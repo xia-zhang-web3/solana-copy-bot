@@ -1337,7 +1337,21 @@ impl ShadowRiskGuard {
 }
 
 fn sanitize_json_value(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0C}' => escaped.push_str("\\f"),
+            ch if ch <= '\u{1F}' => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 async fn run_app_loop(
@@ -2009,6 +2023,15 @@ mod app_tests {
         error
             .chain()
             .any(|cause| cause.to_string().contains(needle))
+    }
+
+    #[test]
+    fn sanitize_json_value_escapes_control_characters() {
+        let raw = "line1\nline2\rline3\t\"\\\u{0000}";
+        assert_eq!(
+            sanitize_json_value(raw),
+            "line1\\nline2\\rline3\\t\\\"\\\\\\u0000"
+        );
     }
 
     #[test]

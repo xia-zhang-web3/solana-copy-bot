@@ -16,6 +16,7 @@ use sha2::Sha256;
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
+    future,
     net::SocketAddr,
     sync::Arc,
     time::Duration,
@@ -662,8 +663,44 @@ async fn main() -> Result<()> {
         .await
         .context("failed binding adapter listener")?;
     axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .context("adapter server crashed")
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {}
+            Err(error) => {
+                warn!(error = %error, "failed to install Ctrl+C signal handler");
+                future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to install SIGTERM signal handler");
+                future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("shutdown signal received, terminating adapter server");
 }
 
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {

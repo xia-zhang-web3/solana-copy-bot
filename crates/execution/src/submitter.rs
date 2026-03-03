@@ -655,6 +655,7 @@ impl AdapterOrderSubmitter {
         expected_cu_limit: u32,
         expected_cu_price_micro_lamports: u64,
     ) -> std::result::Result<SubmitResult, SubmitError> {
+        let endpoint_label = redacted_endpoint_label(endpoint);
         let payload_json = serde_json::to_string(payload).map_err(|error| {
             SubmitError::terminal(
                 "submit_adapter_payload_serialize_failed",
@@ -699,7 +700,7 @@ impl AdapterOrderSubmitter {
         let response = request.send().map_err(|error| {
             SubmitError::retryable(
                 "submit_adapter_unavailable",
-                format!("endpoint={} request_error={}", endpoint, error),
+                format!("endpoint={} request_error={}", endpoint_label, error),
             )
         })?;
         let status = response.status();
@@ -708,7 +709,7 @@ impl AdapterOrderSubmitter {
             let body_text = response.text().unwrap_or_default();
             let detail = format!(
                 "endpoint={} http_status={} body={}",
-                endpoint, status_code, body_text
+                endpoint_label, status_code, body_text
             );
             if status_code == 429 || status.is_server_error() {
                 return Err(SubmitError::retryable(
@@ -724,7 +725,7 @@ impl AdapterOrderSubmitter {
         let body: Value = response.json().map_err(|error| {
             SubmitError::retryable(
                 "submit_adapter_invalid_json",
-                format!("endpoint={} parse_error={}", endpoint, error),
+                format!("endpoint={} parse_error={}", endpoint_label, error),
             )
         })?;
         parse_adapter_submit_response(
@@ -742,12 +743,12 @@ impl AdapterOrderSubmitter {
             if matches!(error.kind, SubmitErrorKind::Retryable) {
                 SubmitError::retryable(
                     error.code,
-                    format!("endpoint={} {}", endpoint, error.detail),
+                    format!("endpoint={} {}", endpoint_label, error.detail),
                 )
             } else {
                 SubmitError::terminal(
                     error.code,
-                    format!("endpoint={} {}", endpoint, error.detail),
+                    format!("endpoint={} {}", endpoint_label, error.detail),
                 )
             }
         })
@@ -928,6 +929,23 @@ fn normalize_route_slippage_caps(route_caps: &BTreeMap<String, f64>) -> HashMap<
             Some((route, *cap))
         })
         .collect()
+}
+
+fn redacted_endpoint_label(endpoint: &str) -> String {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return "unknown".to_string();
+    }
+    match reqwest::Url::parse(endpoint) {
+        Ok(url) => {
+            let host = url.host_str().unwrap_or("unknown");
+            match url.port() {
+                Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+                None => format!("{}://{}", url.scheme(), host),
+            }
+        }
+        Err(_) => "invalid_endpoint".to_string(),
+    }
 }
 
 fn normalize_route_tip_lamports(route_tips: &BTreeMap<String, u64>) -> HashMap<String, u64> {
@@ -2412,6 +2430,66 @@ mod tests {
                 .unwrap_or_default(),
             1_500
         );
+    }
+
+    #[test]
+    fn redacted_endpoint_label_drops_path_and_query() {
+        let label = redacted_endpoint_label("https://adapter.example.org/submit?token=secret");
+        assert_eq!(label, "https://adapter.example.org");
+    }
+
+    #[test]
+    fn adapter_submitter_redacts_endpoint_on_http_rejected() {
+        let response = json!({
+            "status": "reject",
+            "code": "submit_rejected",
+            "detail": "mock reject"
+        });
+        let Some((base_endpoint, handle)) = spawn_one_shot_adapter(400, response) else {
+            return;
+        };
+        let endpoint = format!("{}?api-key=secret", base_endpoint);
+        let submitter = AdapterOrderSubmitter::new(
+            &endpoint,
+            "",
+            "",
+            "",
+            "",
+            30,
+            "v1",
+            true,
+            &["rpc".to_string()],
+            &make_route_caps("rpc", 45.0),
+            &make_route_tips("rpc", 777),
+            &make_route_cu_limits("rpc", 300_000),
+            &make_route_cu_prices("rpc", 1_500),
+            2_000,
+            50.0,
+        )
+        .expect("submitter should initialize");
+
+        let error = submitter
+            .submit(&make_intent(), "cid-endpoint-redaction", "rpc")
+            .expect_err("http 400 must fail");
+        assert_eq!(error.kind, SubmitErrorKind::Terminal);
+        assert_eq!(error.code, "submit_adapter_http_rejected");
+        assert!(
+            !error.detail.contains("/submit"),
+            "raw endpoint path must be redacted, detail={}",
+            error.detail
+        );
+        assert!(
+            !error.detail.contains("api-key=secret"),
+            "endpoint query must be redacted, detail={}",
+            error.detail
+        );
+        assert!(
+            error.detail.contains("endpoint=http://127.0.0.1:"),
+            "redacted endpoint label must include host+port only, detail={}",
+            error.detail
+        );
+
+        let _ = handle.join().expect("join adapter server thread");
     }
 
     #[test]
