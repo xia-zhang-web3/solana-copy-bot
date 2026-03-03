@@ -779,10 +779,10 @@ executor_upstream_simulate_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COP
 executor_upstream_simulate_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_FALLBACK_URL)"
 executor_send_rpc_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_URL)"
 executor_send_rpc_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL)"
-executor_upstream_auth_default="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN_FILE "executor upstream auth")"
-executor_upstream_fallback_auth_default="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "executor upstream fallback auth")"
-executor_send_rpc_auth_default="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE "executor send-rpc auth")"
-executor_send_rpc_fallback_auth_default="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE "executor send-rpc fallback auth")"
+read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN_FILE "executor upstream auth" executor_upstream_auth_default
+read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "executor upstream fallback auth" executor_upstream_fallback_auth_default
+read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE "executor send-rpc auth" executor_send_rpc_auth_default
+read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE "executor send-rpc fallback auth" executor_send_rpc_fallback_auth_default
 executor_signer_source_expected_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_SOURCE)" "file")"
 executor_signer_source_expected="$(printf '%s' "$executor_signer_source_expected_raw" | tr '[:upper:]' '[:lower:]')"
 executor_signer_pubkey="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SIGNER_PUBKEY)"
@@ -884,17 +884,17 @@ while IFS= read -r route; do
   route_send_rpc_fallback_auth_key="COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN"
   route_send_rpc_fallback_auth_file_key="COPYBOT_EXECUTOR_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE"
 
-  route_specific_fallback_auth_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_fallback_auth_key" "$route_fallback_auth_file_key" "executor route upstream fallback auth ($route)")"
+  read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_fallback_auth_key" "$route_fallback_auth_file_key" "executor route upstream fallback auth ($route)" route_specific_fallback_auth_token
   if [[ -n "$route_specific_fallback_auth_token" && "$has_upstream_fallback_endpoint" != "true" ]]; then
     errors+=("${route_fallback_auth_key} or ${route_fallback_auth_file_key} requires route=${route} submit/simulate fallback endpoint")
   fi
 
-  route_specific_send_rpc_primary_auth_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_send_rpc_auth_key" "$route_send_rpc_auth_file_key" "executor route send-rpc auth ($route)")"
+  read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_send_rpc_auth_key" "$route_send_rpc_auth_file_key" "executor route send-rpc auth ($route)" route_specific_send_rpc_primary_auth_token
   if [[ -n "$route_specific_send_rpc_primary_auth_token" && "$has_send_rpc_primary_endpoint" != "true" ]]; then
     errors+=("${route_send_rpc_auth_key} or ${route_send_rpc_auth_file_key} requires route=${route} send-rpc endpoint")
   fi
 
-  route_specific_send_rpc_fallback_auth_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_send_rpc_fallback_auth_key" "$route_send_rpc_fallback_auth_file_key" "executor route send-rpc fallback auth ($route)")"
+  read_secret_from_source "$EXECUTOR_ENV_PATH" "$route_send_rpc_fallback_auth_key" "$route_send_rpc_fallback_auth_file_key" "executor route send-rpc fallback auth ($route)" route_specific_send_rpc_fallback_auth_token
   if [[ -n "$route_specific_send_rpc_fallback_auth_token" && "$has_send_rpc_fallback_endpoint" != "true" ]]; then
     errors+=("${route_send_rpc_fallback_auth_key} or ${route_send_rpc_fallback_auth_file_key} requires route=${route} send-rpc fallback endpoint")
   fi
@@ -956,9 +956,9 @@ if [[ -n "$executor_send_rpc_fallback_auth_default" && "$any_send_rpc_fallback_e
   errors+=("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE requires at least one send-rpc fallback endpoint")
 fi
 
-executor_bearer_token="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BEARER_TOKEN COPYBOT_EXECUTOR_BEARER_TOKEN_FILE "executor ingress auth")"
+read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BEARER_TOKEN COPYBOT_EXECUTOR_BEARER_TOKEN_FILE "executor ingress auth" executor_bearer_token
 executor_hmac_key_id="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_KEY_ID)"
-executor_hmac_secret="$(read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_SECRET COPYBOT_EXECUTOR_HMAC_SECRET_FILE "executor hmac")"
+read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_SECRET COPYBOT_EXECUTOR_HMAC_SECRET_FILE "executor hmac" executor_hmac_secret
 executor_hmac_ttl_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_TTL_SEC)" "30")"
 
 if [[ -n "$executor_hmac_key_id" && -z "$executor_hmac_secret" ]]; then
@@ -1011,10 +1011,10 @@ adapter_simulate_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTE
 adapter_simulate_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL)"
 adapter_send_rpc_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_URL)"
 adapter_send_rpc_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_FALLBACK_URL)"
-adapter_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE "adapter upstream auth")"
-adapter_fallback_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "adapter upstream fallback auth")"
-adapter_send_rpc_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE "adapter send-rpc auth")"
-adapter_send_rpc_fallback_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE "adapter send-rpc fallback auth")"
+read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE "adapter upstream auth" adapter_auth_default
+read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "adapter upstream fallback auth" adapter_fallback_auth_default
+read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE "adapter send-rpc auth" adapter_send_rpc_auth_default
+read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE "adapter send-rpc fallback auth" adapter_send_rpc_fallback_auth_default
 
 parse_route_allowlist_csv_strict_into "$adapter_route_allowlist_raw" "COPYBOT_ADAPTER_ROUTE_ALLOWLIST" adapter_route_allowlist_csv
 
@@ -1121,8 +1121,9 @@ while IFS= read -r route; do
   fi
 
   if [[ "$executor_bearer_required" == "true" ]]; then
+    read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_AUTH_TOKEN_FILE" "adapter route auth ($route)" route_auth_source
     route_auth_token="$(first_non_empty \
-      "$(read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_AUTH_TOKEN_FILE" "adapter route auth ($route)")" \
+      "$route_auth_source" \
       "$adapter_auth_default")"
     if [[ -z "$route_auth_token" ]]; then
       errors+=("adapter auth token missing for route=$route while executor bearer auth is required")
@@ -1131,8 +1132,9 @@ while IFS= read -r route; do
     fi
 
     if [[ -n "$adapter_route_submit_fallback" || -n "$adapter_route_simulate_fallback" ]]; then
+      read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_FALLBACK_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_FALLBACK_AUTH_TOKEN_FILE" "adapter route fallback auth ($route)" route_fallback_auth_source
       route_fallback_auth_token="$(first_non_empty \
-        "$(read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_FALLBACK_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_FALLBACK_AUTH_TOKEN_FILE" "adapter route fallback auth ($route)")" \
+        "$route_fallback_auth_source" \
         "$(first_non_empty "$adapter_fallback_auth_default" "$route_auth_token")")"
       if [[ -z "$route_fallback_auth_token" ]]; then
         errors+=("adapter fallback auth token missing for route=$route while executor bearer auth is required and adapter fallback endpoint is configured")

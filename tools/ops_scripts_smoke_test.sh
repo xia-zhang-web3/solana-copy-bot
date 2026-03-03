@@ -3352,6 +3352,23 @@ run_executor_preflight_case() {
   assert_contains "$adapter_send_rpc_auth_missing_output" "preflight_verdict: FAIL"
   assert_contains "$adapter_send_rpc_auth_missing_output" "adapter send-rpc auth token missing for route=rpc while executor bearer auth is required and adapter send-rpc endpoint is configured"
 
+  local adapter_global_send_rpc_auth_inline_file_conflict_output
+  if adapter_global_send_rpc_auth_inline_file_conflict_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN="inline-global-send-rpc-conflict-token" \
+      COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE="$auth_topology_secret_file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for global adapter send-rpc auth inline/file conflict" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_global_send_rpc_auth_inline_file_conflict_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_global_send_rpc_auth_inline_file_conflict_output" "adapter send-rpc auth: COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN and COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE cannot both be set"
+
   local adapter_send_rpc_auth_inline_file_conflict_without_endpoint_output
   if adapter_send_rpc_auth_inline_file_conflict_without_endpoint_output="$(
     PATH="$fake_curl_bin:$PATH" \
@@ -3421,6 +3438,23 @@ run_executor_preflight_case() {
   fi
   assert_contains "$adapter_send_rpc_fallback_auth_mismatch_output" "preflight_verdict: FAIL"
   assert_contains "$adapter_send_rpc_fallback_auth_mismatch_output" "adapter send-rpc fallback auth token mismatch for route=rpc vs executor bearer token"
+
+  local adapter_global_send_rpc_fallback_auth_inline_file_conflict_output
+  if adapter_global_send_rpc_fallback_auth_inline_file_conflict_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN="inline-global-send-rpc-fallback-conflict-token" \
+      COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE="$auth_topology_secret_file" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for global adapter send-rpc fallback auth inline/file conflict" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_global_send_rpc_fallback_auth_inline_file_conflict_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_global_send_rpc_fallback_auth_inline_file_conflict_output" "adapter send-rpc fallback auth: COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN and COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE cannot both be set"
 
   local adapter_send_rpc_fallback_auth_inline_file_conflict_without_endpoint_output
   if adapter_send_rpc_fallback_auth_inline_file_conflict_without_endpoint_output="$(
