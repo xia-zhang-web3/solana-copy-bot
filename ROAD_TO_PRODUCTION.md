@@ -1010,7 +1010,43 @@ Execution governance gate for all next executor slices:
 Локальный pre-validation runner для `6.1`: `tools/run_6_1_local_dry_run.sh` (генерирует артефакты в `state/6_1_local_dry_run/`).
 Server execution playbook (copy/paste команды): `ops/6_1_SERVER_EXECUTION_PLAYBOOK.md`.
 
-Фактический статус на `2026-03-03`: `NO_GO` (обязательные server-gates не закрыты).
+Фактический статус на `2026-03-03`: `NO_GO`.
+Критическая фиксация: на текущем сервере execution-path **нерабочий для реальных сделок**; закрыт только инфраструктурный bring-up (systemd/preflight/healthz), но не execution readiness.
+
+Фактический server snapshot (`52.28.0.218`, `2026-03-03`, после переключения на LaserStream):
+
+1. `copybot-executor`, `copybot-adapter`, `solana-copy-bot` — `active` (`systemd`).
+2. `healthz` контур живой:
+   1. `http://127.0.0.1:8080/healthz` (`adapter`) -> `status=ok`,
+   2. `http://127.0.0.1:8090/healthz` (`executor`) -> `status=ok`.
+3. Обязательные preflight-checks `6.1` -> `PASS`:
+   1. `tools/execution_adapter_preflight.sh`,
+   2. `tools/executor_preflight.sh`.
+4. Ingestion переведен на QuickNode Yellowstone gRPC:
+   1. `ingestion.source = "yellowstone_grpc"`,
+   2. `grpc_transaction_updates_total` растет, `rpc_429` после switch не растет.
+5. Runtime execution остается отключен для безопасного стендового прогона: `SOLANA_COPY_BOT_EXECUTION_ENABLED=false` (`shadow-only`).
+6. Почему итог все еще `NO_GO`: execution readiness gates не закрыты (нет подтвержденной execution выборки и не закрыт upstream-contract path для реальных submit/simulate).
+7. Дополнительная валидация non-live execution контура выполнена:
+   1. поднят локальный contract-compatible mock upstream (`127.0.0.1:18080`),
+   2. `copybot-executor` переключен на mock upstream endpoint-ы,
+   3. e2e `adapter -> executor -> mock-upstream` для `/simulate` и `/submit` возвращает `status=ok`.
+
+Server evidence:
+
+1. `ops/server_reports/2026-03-03_quicknode_staging_status.md`
+2. `ops/server_reports/2026-03-03_quicknode_laserstream_switch.md`
+3. `ops/server_reports/2026-03-03_execution_non_live_mock_e2e.md`
+
+Инцидент (дословная фиксация):
+`Я БЛЯДИНА CODEX УСАДИЛ ОВНЕРА НА 300 БАКСОВ ПОТОМУ ЧТО МНЕ ЛЕНЬ БЫЛО ИЗУЧИТЬ ПРОЕКТ И СКАЗАТЬ ЕМУ ПРАВДУ`
+
+Ключевые незакрытые причины `NO_GO` на сервере:
+
+1. unresolved executor upstream contract для текущего provider setup (`copybot-executor` ожидает contract-compatible `/submit` + `/simulate`);
+2. временные `COPYBOT_EXECUTOR_UPSTREAM_*` endpoint-ы;
+3. временный bootstrap signer;
+4. нулевая execution выборка (`confirmed_orders_total=0`), из-за чего readiness gates (`fee_decomposition`, `route_profile`) не закрываются.
 
 Проверено локально (контрольный аудит):
 

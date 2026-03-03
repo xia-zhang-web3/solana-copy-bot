@@ -1,0 +1,18 @@
+[Unit]
+Description=CopyBot Execution Mock Upstream (non-live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=copybot
+WorkingDirectory=/var/www/solana-copy-bot
+Environment=MOCK_UPSTREAM_HOST=127.0.0.1
+Environment=MOCK_UPSTREAM_PORT=18080
+Environment=MOCK_UPSTREAM_STATE_DIR=/var/www/solana-copy-bot/state/mock_execution_upstream
+ExecStart=/usr/bin/env python3 /var/www/solana-copy-bot/tools/mock_execution_upstream.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
