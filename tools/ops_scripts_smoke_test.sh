@@ -5817,7 +5817,6 @@ run_adapter_rollout_evidence_case() {
   printf 'route-pass\n' >"$secrets_dir/route_rpc_auth.token"
   printf 'route-send-rpc-pass\n' >"$secrets_dir/route_rpc_send_rpc_auth.token"
   chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
-
   local pass_output
   pass_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -6769,6 +6768,8 @@ run_execution_runtime_readiness_report_case() {
   printf 'route-pass\n' >"$secrets_dir/route_rpc_auth.token"
   printf 'route-send-rpc-pass\n' >"$secrets_dir/route_rpc_send_rpc_auth.token"
   chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
+  local executor_env_path="$TMP_DIR/runtime-readiness-executor.env"
+  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
 
   local pass_output=""
   pass_output="$(
@@ -6785,6 +6786,8 @@ run_execution_runtime_readiness_report_case() {
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -6826,6 +6829,73 @@ run_execution_runtime_readiness_report_case() {
     echo "expected route/fee final capture artifact in $artifacts_dir" >&2
     exit 1
   fi
+
+  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=mock\n' >"$executor_env_path"
+  local strict_mock_output=""
+  if strict_mock_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-strict-mock" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24" 2>&1
+  )"; then
+    echo "expected runtime readiness helper to fail when strict executor upstream gate is enabled and executor backend mode is mock" >&2
+    exit 1
+  else
+    local strict_mock_exit_code=$?
+    if [[ "$strict_mock_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for runtime readiness strict mock backend case, got $strict_mock_exit_code" >&2
+      echo "$strict_mock_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$strict_mock_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$strict_mock_output" "executor_env_path" "$executor_env_path"
+  assert_field_equals "$strict_mock_output" "runtime_readiness_verdict" "NO_GO"
+  assert_contains "$strict_mock_output" "strict executor upstream backend-mode gate not PASS"
+
+  local strict_override_output=""
+  strict_override_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-strict-override" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"
+  assert_field_equals "$strict_override_output" "go_nogo_require_executor_upstream" "false"
+  assert_field_equals "$strict_override_output" "executor_env_path" "$executor_env_path"
+  assert_field_equals "$strict_override_output" "runtime_readiness_verdict" "GO"
+  assert_field_equals "$strict_override_output" "final_runtime_package_reason_code" "gates_pass"
 
   local skip_route_fee_output=""
   skip_route_fee_output="$(

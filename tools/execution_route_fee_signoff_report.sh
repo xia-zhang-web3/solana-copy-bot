@@ -13,6 +13,8 @@ CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/paper.toml}}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-false}"
+EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
 GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}"
 ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
@@ -40,6 +42,7 @@ parse_signoff_bool_setting_into() {
 
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled
+parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream
 parse_signoff_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
 parse_signoff_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
 
@@ -191,6 +194,8 @@ if ((${#input_errors[@]} == 0)); then
       SERVICE="$SERVICE" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream" \
+      EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
@@ -454,6 +459,8 @@ windows_csv: $WINDOWS_CSV
 risk_events_minutes: $RISK_EVENTS_MINUTES
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
+go_nogo_require_executor_upstream: $go_nogo_require_executor_upstream
+executor_env_path: $EXECUTOR_ENV_PATH
 go_nogo_test_mode: $go_nogo_test_mode_norm
 route_fee_signoff_test_verdict_override: ${route_fee_signoff_test_verdict_override_raw:-n/a}
 package_bundle_enabled: $package_bundle_enabled_norm
