@@ -56,7 +56,10 @@ Status legend: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`.
    1. `fee_decomposition_verdict=NO_DATA`,
    2. `route_profile_verdict=WARN`,
    3. `confirmed_orders_total=0`.
-5. Historical note (resolved on `2026-03-03`):
+5. Rollout safety guard is now explicit in orchestration:
+   1. `tools/execution_server_rollout_report.sh` defaults `SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true`,
+   2. `COPYBOT_EXECUTOR_BACKEND_MODE=mock` now fail-closes server-rollout as `input_error` unless explicitly overridden for non-live contour (`SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=false`).
+6. Historical note (resolved on `2026-03-03`):
    1. before Yellowstone switch, WS+HTTP polling path produced frequent `getTransaction 429`,
    2. after switch to `yellowstone_grpc`, `grpc_transaction_updates_total` grows and `rpc_429` is stable at `0` in post-switch validation window.
 

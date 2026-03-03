@@ -18,6 +18,7 @@ PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_server_rollout}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_ROOT}"
 SERVER_ROLLOUT_PROFILE="${SERVER_ROLLOUT_PROFILE:-full}"
+SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM="${SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 
 RUN_TESTS="${RUN_TESTS:-true}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
@@ -101,6 +102,39 @@ parse_bool_setting_into() {
   printf -v "$output_var" '%s' "$parsed_value"
 }
 
+read_env_file_key() {
+  local env_path="$1"
+  local key="$2"
+  if [[ ! -f "$env_path" ]]; then
+    return 0
+  fi
+  awk -F'=' -v key="$key" '
+    {
+      line = $0
+      sub(/#.*/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      if (line == "") {
+        next
+      }
+      if (index(line, "=") == 0) {
+        next
+      }
+      lhs = line
+      sub(/=.*/, "", lhs)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", lhs)
+      if (lhs != key) {
+        next
+      }
+      rhs = line
+      sub(/^[^=]*=/, "", rhs)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", rhs)
+      gsub(/^"|"$/, "", rhs)
+      print rhs
+      exit
+    }
+  ' "$env_path"
+}
+
 parse_bool_setting_into "RUN_TESTS" "$RUN_TESTS" run_tests_norm
 parse_bool_setting_into "DEVNET_REHEARSAL_TEST_MODE" "$DEVNET_REHEARSAL_TEST_MODE" devnet_rehearsal_test_mode_norm
 parse_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
@@ -116,6 +150,24 @@ parse_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$REHEAR
 parse_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
 parse_bool_setting_into "SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT" "$server_rollout_run_go_nogo_direct_raw" server_rollout_run_go_nogo_direct_norm
 parse_bool_setting_into "SERVER_ROLLOUT_RUN_REHEARSAL_DIRECT" "$server_rollout_run_rehearsal_direct_raw" server_rollout_run_rehearsal_direct_norm
+parse_bool_setting_into "SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM" "$SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM" server_rollout_require_executor_upstream_norm
+
+executor_backend_mode_raw="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_BACKEND_MODE")")"
+executor_backend_mode="upstream"
+if [[ -n "$executor_backend_mode_raw" ]]; then
+  executor_backend_mode="$(printf '%s' "$executor_backend_mode_raw" | tr '[:upper:]' '[:lower:]')"
+fi
+case "$executor_backend_mode" in
+upstream|mock)
+  ;;
+*)
+  input_errors+=("COPYBOT_EXECUTOR_BACKEND_MODE in $EXECUTOR_ENV_PATH must be one of: upstream,mock (got: ${executor_backend_mode_raw:-<empty>})")
+  executor_backend_mode="upstream"
+  ;;
+esac
+if [[ "$server_rollout_require_executor_upstream_norm" == "true" && "$executor_backend_mode" != "upstream" ]]; then
+  input_errors+=("SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true requires COPYBOT_EXECUTOR_BACKEND_MODE=upstream in $EXECUTOR_ENV_PATH (got: $executor_backend_mode)")
+fi
 
 mkdir -p "$OUTPUT_ROOT"
 step_root="$OUTPUT_ROOT/steps"
@@ -533,6 +585,8 @@ rehearsal_route_fee_signoff_windows_csv: $REHEARSAL_ROUTE_FEE_SIGNOFF_WINDOWS_CS
 server_rollout_profile: $SERVER_ROLLOUT_PROFILE
 server_rollout_run_go_nogo_direct: $server_rollout_run_go_nogo_direct_norm
 server_rollout_run_rehearsal_direct: $server_rollout_run_rehearsal_direct_norm
+server_rollout_require_executor_upstream: $server_rollout_require_executor_upstream_norm
+executor_backend_mode: $executor_backend_mode
 package_bundle_enabled: $package_bundle_enabled_norm
 package_bundle_label: $PACKAGE_BUNDLE_LABEL
 package_bundle_output_dir: $PACKAGE_BUNDLE_OUTPUT_DIR

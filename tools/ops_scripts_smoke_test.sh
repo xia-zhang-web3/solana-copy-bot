@@ -5374,6 +5374,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "adapter_final_artifacts_written" "true"
   assert_field_equals "$output" "server_rollout_verdict" "HOLD"
   assert_field_equals "$output" "server_rollout_reason_code" "calibration_fee_not_pass"
+  assert_field_equals "$output" "server_rollout_require_executor_upstream" "true"
+  assert_field_equals "$output" "executor_backend_mode" "upstream"
   assert_contains "$output" "artifacts_written: true"
   assert_sha256_field "$output" "summary_sha256"
   assert_sha256_field "$output" "manifest_sha256"
@@ -5430,6 +5432,8 @@ run_execution_server_rollout_report_case() {
   fi
   assert_field_equals "$skip_direct_output" "server_rollout_run_go_nogo_direct" "false"
   assert_field_equals "$skip_direct_output" "server_rollout_run_rehearsal_direct" "false"
+  assert_field_equals "$skip_direct_output" "server_rollout_require_executor_upstream" "true"
+  assert_field_equals "$skip_direct_output" "executor_backend_mode" "upstream"
   assert_field_equals "$skip_direct_output" "go_nogo_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "rehearsal_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "go_nogo_reason_code" "stage_disabled"
@@ -5475,6 +5479,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "server_rollout_profile" "finals_only"
   assert_field_equals "$profile_skip_output" "server_rollout_run_go_nogo_direct" "false"
   assert_field_equals "$profile_skip_output" "server_rollout_run_rehearsal_direct" "false"
+  assert_field_equals "$profile_skip_output" "server_rollout_require_executor_upstream" "true"
+  assert_field_equals "$profile_skip_output" "executor_backend_mode" "upstream"
   assert_field_equals "$profile_skip_output" "go_nogo_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "rehearsal_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "go_nogo_reason_code" "stage_disabled"
@@ -5516,6 +5522,8 @@ run_execution_server_rollout_report_case() {
   fi
   assert_field_equals "$bundle_output" "server_rollout_verdict" "HOLD"
   assert_field_equals "$bundle_output" "server_rollout_reason_code" "calibration_fee_not_pass"
+  assert_field_equals "$bundle_output" "server_rollout_require_executor_upstream" "true"
+  assert_field_equals "$bundle_output" "executor_backend_mode" "upstream"
   assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
   assert_field_equals "$bundle_output" "go_nogo_artifacts_written" "true"
@@ -5589,6 +5597,73 @@ run_execution_server_rollout_report_case() {
   fi
   assert_contains "$invalid_profile_output" "SERVER_ROLLOUT_PROFILE must be one of: full,finals_only"
   assert_field_equals "$invalid_profile_output" "server_rollout_reason_code" "input_error"
+
+  local mock_backend_env_path="$TMP_DIR/server-rollout-executor-mock.env"
+  cp "$executor_env_path" "$mock_backend_env_path"
+  echo "COPYBOT_EXECUTOR_BACKEND_MODE=mock" >>"$mock_backend_env_path"
+
+  local mock_backend_output=""
+  if mock_backend_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$mock_backend_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail when executor backend mode is mock and SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true" >&2
+    exit 1
+  else
+    local mock_backend_exit_code=$?
+    if [[ "$mock_backend_exit_code" -ne 3 ]]; then
+      echo "expected server rollout mock backend guard exit code 3, got $mock_backend_exit_code" >&2
+      echo "$mock_backend_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$mock_backend_output" "server_rollout_reason_code" "input_error"
+  assert_field_equals "$mock_backend_output" "server_rollout_require_executor_upstream" "true"
+  assert_field_equals "$mock_backend_output" "executor_backend_mode" "mock"
+  assert_contains "$mock_backend_output" "SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true requires COPYBOT_EXECUTOR_BACKEND_MODE=upstream"
+
+  local mock_backend_allowed_output=""
+  local mock_backend_allowed_exit_code=0
+  if mock_backend_allowed_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$mock_backend_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-mock-allowed" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      FAKE_EXECUTOR_HEALTH_BACKEND_MODE="mock" \
+      SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM="false" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60
+  )"; then
+    mock_backend_allowed_exit_code=0
+  else
+    mock_backend_allowed_exit_code=$?
+  fi
+  if [[ "$mock_backend_allowed_exit_code" -ne 2 ]]; then
+    echo "expected server rollout mock allowed hold exit code 2, got $mock_backend_allowed_exit_code" >&2
+    echo "$mock_backend_allowed_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$mock_backend_allowed_output" "server_rollout_require_executor_upstream" "false"
+  assert_field_equals "$mock_backend_allowed_output" "executor_backend_mode" "mock"
+  assert_field_equals "$mock_backend_allowed_output" "server_rollout_verdict" "HOLD"
+  assert_field_equals "$mock_backend_allowed_output" "server_rollout_reason_code" "calibration_fee_not_pass"
   echo "[ok] execution server rollout report"
 }
 
