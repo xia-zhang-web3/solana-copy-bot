@@ -987,6 +987,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 459. executor preflight adapter send-rpc secret-source conflict parity closure: `tools/executor_preflight.sh` now resolves route send-rpc secret sources (`ROUTE_*_SEND_RPC_AUTH_TOKEN*`, `ROUTE_*_SEND_RPC_FALLBACK_AUTH_TOKEN*`) unconditionally per route (not only when send-rpc endpoints are enabled), matching runtime `resolve_secret_source` fail-closed behavior so inline+file conflicts and file-read errors are caught even when send-rpc topology is disabled; smoke now pins both conflict paths without endpoint activation.
 460. executor preflight secret-source parent-scope hardening: `tools/executor_preflight.sh` now routes all critical `read_secret_from_source` call sites through parent-scope output variables (no command-substitution subshell), eliminating silent error-loss for secret-source conflicts/file-read failures across executor and adapter secret defaults and route-level auth chains; smoke now pins global adapter send-rpc auth/fallback inline+file conflicts to prove fail-closed capture in preflight `errors[]`.
 461. executor preflight adapter send-rpc file-source fail-closed smoke parity: `run_executor_preflight_case` now pins global adapter send-rpc auth and send-rpc fallback auth missing-file scenarios (`COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE`, `COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE`) to ensure `read_secret_from_source` file-not-found diagnostics are surfaced as deterministic `preflight_verdict: FAIL` in targeted preflight loops.
+462. adapter HMAC raw-body signature strictness: `AuthVerifier::verify` in `crates/adapter/src/main.rs` now computes HMAC payload over exact raw request bytes (prefix `timestamp/ttl/nonce` + body bytes) instead of `String::from_utf8_lossy(raw_body)`, removing lossy UTF-8 canonicalization drift in request-auth verification; added unit coverage for non-UTF8 raw-body pass path and lossy-body signature mismatch fail path.
 
 Остается в next-code-queue:
 
@@ -1127,7 +1128,7 @@ Server evidence:
 
 Gate после server bring-up (обязателен до tiny-live/production, но не блокирует первый test-server запуск):
 
-1. [ ] strict UTF-8 body validation в adapter HMAC verify path (без `from_utf8_lossy`).
+1. [x] strict UTF-8 body validation в adapter HMAC verify path (без `from_utf8_lossy`).
 2. [ ] корректный источник метрики holders (не `getTokenSupply`).
 3. [ ] graceful shutdown для adapter service.
 4. [ ] безопасная JSON-экранизация control characters в `sanitize_json_value`.

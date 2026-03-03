@@ -515,15 +515,10 @@ impl AuthVerifier {
                 seen.insert(nonce_key, now + max_skew);
             }
 
-            let payload = format!(
-                "{}\n{}\n{}\n{}",
-                timestamp,
-                ttl,
-                nonce,
-                String::from_utf8_lossy(raw_body)
-            );
+            let mut payload = format!("{}\n{}\n{}\n", timestamp, ttl, nonce).into_bytes();
+            payload.extend_from_slice(raw_body);
             let expected_signature =
-                compute_hmac_signature_hex(hmac.secret.as_bytes(), payload.as_bytes()).map_err(
+                compute_hmac_signature_hex(hmac.secret.as_bytes(), payload.as_slice()).map_err(
                     |_| Reject::terminal("hmac_invalid", "failed computing HMAC signature"),
                 )?;
             if !constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()) {
@@ -2036,6 +2031,113 @@ mod tests {
             .verify(&headers, b"{\"ping\":true}")
             .await
             .expect("correct bearer token should pass");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_accepts_hmac_signature_over_raw_non_utf8_body() {
+        let verifier = AuthVerifier {
+            bearer_token: None,
+            hmac: Some(HmacConfig {
+                key_id: "kid-1".to_string(),
+                secret: "test-secret".to_string(),
+                ttl_sec: 30,
+            }),
+            nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let timestamp = Utc::now().timestamp();
+        let ttl = 30u64;
+        let nonce = "nonce-raw-bytes";
+        let raw_body = [0xff, 0x00, 0x41, 0x42];
+
+        let mut payload = format!("{}\n{}\n{}\n", timestamp, ttl, nonce).into_bytes();
+        payload.extend_from_slice(&raw_body);
+        let signature = compute_hmac_signature_hex(b"test-secret", payload.as_slice())
+            .expect("hmac signature must compute");
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-copybot-key-id", HeaderValue::from_static("kid-1"));
+        headers.insert(
+            "x-copybot-signature-alg",
+            HeaderValue::from_static("hmac-sha256-v1"),
+        );
+        headers.insert(
+            "x-copybot-timestamp",
+            HeaderValue::from_str(timestamp.to_string().as_str()).expect("timestamp header"),
+        );
+        headers.insert(
+            "x-copybot-auth-ttl-sec",
+            HeaderValue::from_static("30"),
+        );
+        headers.insert(
+            "x-copybot-nonce",
+            HeaderValue::from_static("nonce-raw-bytes"),
+        );
+        headers.insert(
+            "x-copybot-signature",
+            HeaderValue::from_str(signature.as_str()).expect("signature header"),
+        );
+
+        verifier
+            .verify(&headers, &raw_body)
+            .await
+            .expect("raw-byte hmac signature should pass");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_rejects_hmac_signature_computed_over_lossy_body() {
+        let verifier = AuthVerifier {
+            bearer_token: None,
+            hmac: Some(HmacConfig {
+                key_id: "kid-1".to_string(),
+                secret: "test-secret".to_string(),
+                ttl_sec: 30,
+            }),
+            nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let timestamp = Utc::now().timestamp();
+        let ttl = 30u64;
+        let nonce = "nonce-lossy-body";
+        let raw_body = [0xff, 0x00, 0x41, 0x42];
+
+        let lossy_payload = format!(
+            "{}\n{}\n{}\n{}",
+            timestamp,
+            ttl,
+            nonce,
+            String::from_utf8_lossy(&raw_body)
+        );
+        let lossy_signature = compute_hmac_signature_hex(b"test-secret", lossy_payload.as_bytes())
+            .expect("lossy hmac signature must compute");
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-copybot-key-id", HeaderValue::from_static("kid-1"));
+        headers.insert(
+            "x-copybot-signature-alg",
+            HeaderValue::from_static("hmac-sha256-v1"),
+        );
+        headers.insert(
+            "x-copybot-timestamp",
+            HeaderValue::from_str(timestamp.to_string().as_str()).expect("timestamp header"),
+        );
+        headers.insert(
+            "x-copybot-auth-ttl-sec",
+            HeaderValue::from_static("30"),
+        );
+        headers.insert(
+            "x-copybot-nonce",
+            HeaderValue::from_static("nonce-lossy-body"),
+        );
+        headers.insert(
+            "x-copybot-signature",
+            HeaderValue::from_str(lossy_signature.as_str()).expect("signature header"),
+        );
+
+        let reject = verifier
+            .verify(&headers, &raw_body)
+            .await
+            .expect_err("lossy-body signature must fail against raw-byte verifier");
+        assert_eq!(reject.code, "hmac_invalid");
+        assert!(reject.detail.contains("HMAC signature mismatch"));
     }
 
     #[test]
