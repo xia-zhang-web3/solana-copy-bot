@@ -222,36 +222,41 @@ read_secret_from_source() {
   local inline_key="$2"
   local file_key="$3"
   local label="$4"
-  local inline_value file_raw file_resolved file_value
+  local output_var="${5-}"
+  local inline_value file_raw file_resolved file_value secret_value file_read_error
+  secret_value=""
   inline_value="$(env_or_file_value "$env_file" "$inline_key")"
   file_raw="$(env_or_file_value "$env_file" "$file_key")"
   if [[ -n "$inline_value" && -n "$file_raw" ]]; then
     errors+=("$label: $inline_key and $file_key cannot both be set")
-    printf '%s' "$inline_value"
-    return
-  fi
-  if [[ -n "$file_raw" ]]; then
+    secret_value="$inline_value"
+  elif [[ -n "$file_raw" ]]; then
     file_resolved="$(resolve_path_from_env_file "$env_file" "$file_raw")"
     if [[ ! -f "$file_resolved" ]]; then
       errors+=("$label: $file_key file not found: $file_resolved")
-      printf ''
-      return
+    else
+      file_read_error="false"
+      file_value="$(cat "$file_resolved" 2>/dev/null)" || {
+        errors+=("$label: $file_key file unreadable: $file_resolved")
+        file_read_error="true"
+        file_value=""
+      }
+      file_value="$(trim_string "$file_value")"
+      if [[ "$file_read_error" != "true" && -z "$file_value" ]]; then
+        errors+=("$label: $file_key file is empty after trim: $file_resolved")
+      else
+        secret_value="$file_value"
+      fi
     fi
-    file_value="$(cat "$file_resolved" 2>/dev/null)" || {
-      errors+=("$label: $file_key file unreadable: $file_resolved")
-      printf ''
-      return
-    }
-    file_value="$(trim_string "$file_value")"
-    if [[ -z "$file_value" ]]; then
-      errors+=("$label: $file_key file is empty after trim: $file_resolved")
-      printf ''
-      return
-    fi
-    printf '%s' "$file_value"
-    return
+  else
+    secret_value="$inline_value"
   fi
-  printf '%s' "$inline_value"
+
+  if [[ -n "$output_var" ]]; then
+    printf -v "$output_var" '%s' "$secret_value"
+    return 0
+  fi
+  printf '%s' "$secret_value"
 }
 
 normalize_route_token() {
@@ -1054,6 +1059,8 @@ while IFS= read -r route; do
   adapter_route_send_rpc_fallback="$(first_non_empty \
     "$(env_or_file_value "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_FALLBACK_URL")" \
     "$adapter_send_rpc_fallback_default")"
+  read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_AUTH_TOKEN_FILE" "adapter route send-rpc auth ($route)" route_send_rpc_auth_source
+  read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE" "adapter route send-rpc fallback auth ($route)" route_send_rpc_fallback_auth_source
 
   if [[ -z "$adapter_route_submit" ]]; then
     errors+=("missing adapter submit upstream URL for route=$route (set COPYBOT_ADAPTER_ROUTE_${route_upper}_SUBMIT_URL or COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL)")
@@ -1137,7 +1144,7 @@ while IFS= read -r route; do
     route_send_rpc_auth_token=""
     if [[ -n "$adapter_route_send_rpc" ]]; then
       route_send_rpc_auth_token="$(first_non_empty \
-        "$(read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_AUTH_TOKEN_FILE" "adapter route send-rpc auth ($route)")" \
+        "$route_send_rpc_auth_source" \
         "$adapter_send_rpc_auth_default")"
       if [[ -z "$route_send_rpc_auth_token" ]]; then
         errors+=("adapter send-rpc auth token missing for route=$route while executor bearer auth is required and adapter send-rpc endpoint is configured")
@@ -1148,7 +1155,7 @@ while IFS= read -r route; do
 
     if [[ -n "$adapter_route_send_rpc_fallback" ]]; then
       route_send_rpc_fallback_auth_token="$(first_non_empty \
-        "$(read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE" "adapter route send-rpc fallback auth ($route)")" \
+        "$route_send_rpc_fallback_auth_source" \
         "$(first_non_empty "$adapter_send_rpc_fallback_auth_default" "$route_send_rpc_auth_token")")"
       if [[ -z "$route_send_rpc_fallback_auth_token" ]]; then
         errors+=("adapter send-rpc fallback auth token missing for route=$route while executor bearer auth is required and adapter send-rpc fallback endpoint is configured")
