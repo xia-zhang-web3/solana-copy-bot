@@ -1008,6 +1008,8 @@ adapter_send_rpc_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTE
 adapter_send_rpc_fallback_default="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_FALLBACK_URL)"
 adapter_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE "adapter upstream auth")"
 adapter_fallback_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "adapter upstream fallback auth")"
+adapter_send_rpc_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE "adapter send-rpc auth")"
+adapter_send_rpc_fallback_auth_default="$(read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE "adapter send-rpc fallback auth")"
 
 parse_route_allowlist_csv_strict_into "$adapter_route_allowlist_raw" "COPYBOT_ADAPTER_ROUTE_ALLOWLIST" adapter_route_allowlist_csv
 
@@ -1129,6 +1131,29 @@ while IFS= read -r route; do
         errors+=("adapter fallback auth token missing for route=$route while executor bearer auth is required and adapter fallback endpoint is configured")
       elif [[ -n "$executor_bearer_token" && "$route_fallback_auth_token" != "$executor_bearer_token" ]]; then
         errors+=("adapter fallback auth token mismatch for route=$route vs executor bearer token")
+      fi
+    fi
+
+    route_send_rpc_auth_token=""
+    if [[ -n "$adapter_route_send_rpc" ]]; then
+      route_send_rpc_auth_token="$(first_non_empty \
+        "$(read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_AUTH_TOKEN_FILE" "adapter route send-rpc auth ($route)")" \
+        "$adapter_send_rpc_auth_default")"
+      if [[ -z "$route_send_rpc_auth_token" ]]; then
+        errors+=("adapter send-rpc auth token missing for route=$route while executor bearer auth is required and adapter send-rpc endpoint is configured")
+      elif [[ -n "$executor_bearer_token" && "$route_send_rpc_auth_token" != "$executor_bearer_token" ]]; then
+        errors+=("adapter send-rpc auth token mismatch for route=$route vs executor bearer token")
+      fi
+    fi
+
+    if [[ -n "$adapter_route_send_rpc_fallback" ]]; then
+      route_send_rpc_fallback_auth_token="$(first_non_empty \
+        "$(read_secret_from_source "$ADAPTER_ENV_PATH" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN" "COPYBOT_ADAPTER_ROUTE_${route_upper}_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE" "adapter route send-rpc fallback auth ($route)")" \
+        "$(first_non_empty "$adapter_send_rpc_fallback_auth_default" "$route_send_rpc_auth_token")")"
+      if [[ -z "$route_send_rpc_fallback_auth_token" ]]; then
+        errors+=("adapter send-rpc fallback auth token missing for route=$route while executor bearer auth is required and adapter send-rpc fallback endpoint is configured")
+      elif [[ -n "$executor_bearer_token" && "$route_send_rpc_fallback_auth_token" != "$executor_bearer_token" ]]; then
+        errors+=("adapter send-rpc fallback auth token mismatch for route=$route vs executor bearer token")
       fi
     fi
   fi

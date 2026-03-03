@@ -3333,6 +3333,58 @@ run_executor_preflight_case() {
   assert_contains "$adapter_send_rpc_fallback_identity_violation_output" "preflight_verdict: FAIL"
   assert_contains "$adapter_send_rpc_fallback_identity_violation_output" "adapter send-rpc fallback URL for route=rpc must resolve to distinct endpoint"
 
+  local adapter_send_rpc_auth_missing_output
+  if adapter_send_rpc_auth_missing_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_URL="http://127.0.0.1:${port}/rpc" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for missing adapter send-rpc auth token while send-rpc endpoint is configured" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_send_rpc_auth_missing_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_send_rpc_auth_missing_output" "adapter send-rpc auth token missing for route=rpc while executor bearer auth is required and adapter send-rpc endpoint is configured"
+
+  local adapter_send_rpc_auth_mismatch_output
+  if adapter_send_rpc_auth_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_URL="http://127.0.0.1:${port}/rpc" \
+      COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_AUTH_TOKEN="mismatch-token" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter send-rpc auth token mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_send_rpc_auth_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_send_rpc_auth_mismatch_output" "adapter send-rpc auth token mismatch for route=rpc vs executor bearer token"
+
+  local adapter_send_rpc_fallback_auth_mismatch_output
+  if adapter_send_rpc_fallback_auth_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_URL="http://127.0.0.1:${port}/rpc" \
+      COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_FALLBACK_URL="http://127.0.0.1:${port}/rpc-fallback" \
+      COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_AUTH_TOKEN="$auth_token" \
+      COPYBOT_ADAPTER_ROUTE_RPC_SEND_RPC_FALLBACK_AUTH_TOKEN="mismatch-token" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter send-rpc fallback auth token mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_send_rpc_fallback_auth_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_send_rpc_fallback_auth_mismatch_output" "adapter send-rpc fallback auth token mismatch for route=rpc vs executor bearer token"
+
   local submit_fallback_identity_violation_output
   if submit_fallback_identity_violation_output="$(
     PATH="$fake_curl_bin:$PATH" \
