@@ -6786,7 +6786,6 @@ run_execution_runtime_readiness_report_case() {
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
-      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="false" \
       EXECUTOR_ENV_PATH="$executor_env_path" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -6798,6 +6797,8 @@ run_execution_runtime_readiness_report_case() {
   assert_field_equals "$pass_output" "adapter_final_verdict" "GO"
   assert_field_equals "$pass_output" "route_fee_final_verdict" "GO"
   assert_field_equals "$pass_output" "runtime_readiness_verdict" "GO"
+  assert_field_equals "$pass_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "final_runtime_package_verdict" "GO"
   assert_field_equals "$pass_output" "final_runtime_package_reason_code" "gates_pass"
   assert_field_equals "$pass_output" "adapter_final_artifacts_written" "true"
@@ -6897,6 +6898,7 @@ run_execution_runtime_readiness_report_case() {
   assert_field_equals "$strict_override_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$strict_override_output" "final_runtime_package_reason_code" "gates_pass"
 
+  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
   local skip_route_fee_output=""
   skip_route_fee_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -6912,6 +6914,7 @@ run_execution_runtime_readiness_report_case() {
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -6943,6 +6946,7 @@ run_execution_runtime_readiness_report_case() {
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -6972,6 +6976,7 @@ run_execution_runtime_readiness_report_case() {
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -7001,6 +7006,7 @@ run_execution_runtime_readiness_report_case() {
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -7070,6 +7076,7 @@ run_execution_runtime_readiness_report_case() {
       DB_PATH="$db_path" \
       ADAPTER_ENV_PATH="$env_path" \
       CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
       RUNTIME_READINESS_RUN_ADAPTER_FINAL="false" \
       RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL="false" \
       bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24" 2>&1
@@ -7093,6 +7100,7 @@ run_execution_runtime_readiness_report_case() {
       DB_PATH="$db_path" \
       ADAPTER_ENV_PATH="$env_path" \
       CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
       RUNTIME_READINESS_PROFILE="bogus_profile" \
       bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24" 2>&1
   )"; then
