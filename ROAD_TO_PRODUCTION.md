@@ -988,7 +988,8 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 460. executor preflight secret-source parent-scope hardening: `tools/executor_preflight.sh` now routes all critical `read_secret_from_source` call sites through parent-scope output variables (no command-substitution subshell), eliminating silent error-loss for secret-source conflicts/file-read failures across executor and adapter secret defaults and route-level auth chains; smoke now pins global adapter send-rpc auth/fallback inline+file conflicts to prove fail-closed capture in preflight `errors[]`.
 461. executor preflight adapter send-rpc file-source fail-closed smoke parity: `run_executor_preflight_case` now pins global adapter send-rpc auth and send-rpc fallback auth missing-file scenarios (`COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE`, `COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE`) to ensure `read_secret_from_source` file-not-found diagnostics are surfaced as deterministic `preflight_verdict: FAIL` in targeted preflight loops.
 462. adapter HMAC raw-body signature strictness: `AuthVerifier::verify` in `crates/adapter/src/main.rs` now computes HMAC payload over exact raw request bytes (prefix `timestamp/ttl/nonce` + body bytes) instead of `String::from_utf8_lossy(raw_body)`, removing lossy UTF-8 canonicalization drift in request-auth verification; added unit coverage for non-UTF8 raw-body pass path and lossy-body signature mismatch fail path.
-463. post-bring-up hardening batch closure: adapter server now runs with signal-aware graceful shutdown (`with_graceful_shutdown`, `Ctrl+C`/`SIGTERM`), execution submitter error details now emit redacted endpoint labels (`scheme://host[:port]`, no path/query), and app-side `sanitize_json_value` now escapes full JSON control-character set via `serde_json::to_string`-based sanitization; added targeted coverage for submitter endpoint-redaction and `sanitize_json_value` control-character escaping.
+463. post-bring-up hardening batch closure: adapter server now runs with signal-aware graceful shutdown (`with_graceful_shutdown`, `Ctrl+C`/`SIGTERM`), execution submitter error details now emit redacted endpoint labels (`scheme://host[:port]`, no path/query), and app-side `sanitize_json_value` now escapes full JSON control-character set (`\n`, `\r`, `\t`, `\b`, `\f`, `\u00XX` for remaining control bytes); added targeted coverage for submitter endpoint-redaction and `sanitize_json_value` control-character escaping.
+464. post-bring-up closure for market/discovery runtime contracts: token holders metric source is now derived from token-account owner set (`getTokenAccountsByMint` with `jsonParsed`, counting unique owners with non-zero balances) instead of `getTokenSupply`, and discovery runtime loop no longer panics on poisoned window mutex (`.lock().expect(...)` removed in favor of fail-safe recover path with warning + `into_inner()`); added targeted tests for holder-response parsing and poisoned-mutex recovery path.
 
 Остается в next-code-queue:
 
@@ -1129,10 +1130,10 @@ Server evidence:
 Gate после server bring-up (обязателен до tiny-live/production, но не блокирует первый test-server запуск):
 
 1. [x] strict UTF-8 body validation в adapter HMAC verify path (без `from_utf8_lossy`).
-2. [ ] корректный источник метрики holders (не `getTokenSupply`).
+2. [x] корректный источник метрики holders (не `getTokenSupply`).
 3. [x] graceful shutdown для adapter service.
 4. [x] безопасная JSON-экранизация control characters в `sanitize_json_value`.
-5. [ ] mutex poison handling в discovery без panic-path.
+5. [x] mutex poison handling в discovery без panic-path.
 6. [x] redacted endpoint labels в `crates/execution/src/submitter.rs` error details.
 
 NO-GO для server rollout (остаемся на текущем этапе, запуск не продолжаем):

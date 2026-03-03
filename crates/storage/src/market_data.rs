@@ -380,16 +380,48 @@ fn fetch_token_holders(client: &Client, helius_http_url: &str, mint: &str) -> Re
     let payload = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "getTokenSupply",
-        "params": [mint],
+        "method": "getTokenAccountsByMint",
+        "params": [
+            mint,
+            {
+                "encoding": "jsonParsed"
+            }
+        ],
     });
     let response = post_helius_json(client, helius_http_url, &payload)?;
-    rpc_result(&response)
+    parse_token_holders_from_accounts_response(&response)
+}
+
+fn parse_token_holders_from_accounts_response(response: &Value) -> Result<u64> {
+    let accounts = rpc_result(response)
         .get("value")
-        .and_then(|value| value.get("amount"))
-        .and_then(Value::as_str)
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .ok_or_else(|| anyhow!("missing token supply amount in helius response"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing token accounts array in helius response"))?;
+    let mut unique_owners = HashSet::new();
+    for (index, account) in accounts.iter().enumerate() {
+        let info = account
+            .get("account")
+            .and_then(|value| value.get("data"))
+            .and_then(|value| value.get("parsed"))
+            .and_then(|value| value.get("info"))
+            .ok_or_else(|| anyhow!("missing parsed token account info at index={index}"))?;
+        let owner = info
+            .get("owner")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing token account owner at index={index}"))?;
+        let amount_raw = info
+            .get("tokenAmount")
+            .and_then(|value| value.get("amount"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing token amount at index={index}"))?;
+        let amount = amount_raw
+            .parse::<u64>()
+            .with_context(|| format!("invalid token amount at index={index}: {amount_raw}"))?;
+        if amount > 0 {
+            unique_owners.insert(owner.to_string());
+        }
+    }
+    Ok(unique_owners.len() as u64)
 }
 
 fn fetch_token_age_seconds(
@@ -450,4 +482,89 @@ fn fetch_token_age_seconds(
     }
 
     Ok(Some((now_ts - oldest) as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_token_holders_from_accounts_response_counts_unique_nonzero_owners() -> Result<()> {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "value": [
+                    {
+                        "account": {
+                            "data": {
+                                "parsed": {
+                                    "info": {
+                                        "owner": "OwnerA",
+                                        "tokenAmount": { "amount": "10" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "account": {
+                            "data": {
+                                "parsed": {
+                                    "info": {
+                                        "owner": "OwnerA",
+                                        "tokenAmount": { "amount": "5" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "account": {
+                            "data": {
+                                "parsed": {
+                                    "info": {
+                                        "owner": "OwnerB",
+                                        "tokenAmount": { "amount": "0" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "account": {
+                            "data": {
+                                "parsed": {
+                                    "info": {
+                                        "owner": "OwnerC",
+                                        "tokenAmount": { "amount": "42" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        });
+        let holders = parse_token_holders_from_accounts_response(&response)?;
+        assert_eq!(holders, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_token_holders_from_accounts_response_rejects_invalid_shape() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "value": {
+                    "owner": "not-an-array"
+                }
+            }
+        });
+        let error = parse_token_holders_from_accounts_response(&response)
+            .expect_err("invalid response shape must fail");
+        assert!(
+            error.to_string().contains("missing token accounts array"),
+            "unexpected error: {error}"
+        );
+    }
 }

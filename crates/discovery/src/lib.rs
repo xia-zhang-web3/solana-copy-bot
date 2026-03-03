@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 mod followlist;
 mod quality_cache;
@@ -138,10 +138,13 @@ impl DiscoveryService {
         let window_start = now - Duration::days(window_days as i64);
         let mut delta_fetched = 0usize;
         let (snapshots, swaps_window) = {
-            let mut state = self
-                .window_state
-                .lock()
-                .expect("discovery window mutex poisoned");
+            let mut state = match self.window_state.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    warn!("discovery window mutex poisoned; continuing with recovered state");
+                    poisoned.into_inner()
+                }
+            };
             state.evict_before(window_start);
 
             let fetch_start = state
@@ -691,6 +694,31 @@ mod tests {
         let active = store.list_active_follow_wallets()?;
         assert!(active.contains("wallet_a"));
         assert!(!active.contains("wallet_b"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_recovers_from_poisoned_window_mutex() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-poison.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+
+        let state = discovery.window_state.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = state.lock().expect("lock must succeed");
+            panic!("poison discovery window state");
+        });
+
+        let now = Utc::now();
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.wallets_seen, 0);
+        assert_eq!(summary.metrics_written, 0);
         Ok(())
     }
 
