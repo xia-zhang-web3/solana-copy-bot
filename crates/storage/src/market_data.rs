@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
 
+const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
 impl SqliteStore {
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
         let written = self
@@ -380,19 +382,24 @@ fn fetch_token_holders(client: &Client, helius_http_url: &str, mint: &str) -> Re
     let payload = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "getTokenAccountsByMint",
+        "method": "getProgramAccounts",
         "params": [
-            mint,
+            TOKEN_PROGRAM_ID,
             {
                 "encoding": "jsonParsed"
-            }
+                ,
+                "filters": [
+                    { "dataSize": 165 },
+                    { "memcmp": { "offset": 0, "bytes": mint } }
+                ]
+            },
         ],
     });
     let response = post_helius_json(client, helius_http_url, &payload)?;
-    parse_token_holders_from_accounts_response(&response)
+    parse_token_holders_from_program_accounts_response(&response)
 }
 
-fn parse_token_holders_from_accounts_response(response: &Value) -> Result<u64> {
+fn parse_token_holders_from_program_accounts_response(response: &Value) -> Result<u64> {
     let accounts = rpc_result(response)
         .get("value")
         .and_then(Value::as_array)
@@ -489,7 +496,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_token_holders_from_accounts_response_counts_unique_nonzero_owners() -> Result<()> {
+    fn parse_token_holders_from_program_accounts_response_counts_unique_nonzero_owners(
+    ) -> Result<()> {
         let response = json!({
             "jsonrpc": "2.0",
             "result": {
@@ -545,13 +553,13 @@ mod tests {
                 ]
             }
         });
-        let holders = parse_token_holders_from_accounts_response(&response)?;
+        let holders = parse_token_holders_from_program_accounts_response(&response)?;
         assert_eq!(holders, 2);
         Ok(())
     }
 
     #[test]
-    fn parse_token_holders_from_accounts_response_rejects_invalid_shape() {
+    fn parse_token_holders_from_program_accounts_response_rejects_invalid_shape() {
         let response = json!({
             "jsonrpc": "2.0",
             "result": {
@@ -560,7 +568,7 @@ mod tests {
                 }
             }
         });
-        let error = parse_token_holders_from_accounts_response(&response)
+        let error = parse_token_holders_from_program_accounts_response(&response)
             .expect_err("invalid response shape must fail");
         assert!(
             error.to_string().contains("missing token accounts array"),
