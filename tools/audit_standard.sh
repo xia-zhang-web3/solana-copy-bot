@@ -118,11 +118,11 @@ if [[ "$ops_smoke_mode" == "targeted" ]]; then
 fi
 OPS_SMOKE_PROFILE_RAW="${AUDIT_OPS_SMOKE_PROFILE:-$ops_smoke_profile_default}"
 case "$OPS_SMOKE_PROFILE_RAW" in
-full | fast)
+full | fast | auto)
   ops_smoke_profile="$OPS_SMOKE_PROFILE_RAW"
   ;;
 *)
-  echo "AUDIT_OPS_SMOKE_PROFILE must be one of: full,fast (got: $OPS_SMOKE_PROFILE_RAW)" >&2
+  echo "AUDIT_OPS_SMOKE_PROFILE must be one of: full,fast,auto (got: $OPS_SMOKE_PROFILE_RAW)" >&2
   exit 1
   ;;
 esac

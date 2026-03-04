@@ -9038,7 +9038,7 @@ run_audit_ops_smoke_mode_guard_case() {
       exit 1
     fi
   fi
-  assert_contains "$invalid_profile_output" "AUDIT_OPS_SMOKE_PROFILE must be one of: full,fast"
+  assert_contains "$invalid_profile_output" "AUDIT_OPS_SMOKE_PROFILE must be one of: full,fast,auto"
 
   local full_targeted_output=""
   full_targeted_output="$(
@@ -9084,6 +9084,22 @@ run_audit_ops_smoke_mode_guard_case() {
   assert_contains "$full_targeted_fast_mode_output" "[ok] common timeout parser"
   assert_contains "$full_targeted_fast_mode_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$full_targeted_fast_mode_output" "[audit:full] PASS"
+
+  local full_targeted_auto_profile_output=""
+  full_targeted_auto_profile_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_PROFILE="auto" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="executor_preflight" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_targeted_auto_profile_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=auto, preset=n/a)"
+  assert_contains "$full_targeted_auto_profile_output" "ops smoke targeted profile: fast"
+  assert_contains "$full_targeted_auto_profile_output" "[ok] executor preflight helper (fast)"
+  assert_contains "$full_targeted_auto_profile_output" "[audit:full] PASS"
 
   local full_targeted_preset_output=""
   full_targeted_preset_output="$(
@@ -9374,13 +9390,33 @@ expand_ops_smoke_target_case() {
   esac
 }
 
+is_ops_smoke_heavy_case() {
+  local case_name="$1"
+  case "$case_name" in
+  executor_preflight | executor_preflight_fast | \
+    windowed_signoff | windowed_signoff_fast | \
+    route_fee_signoff | route_fee_signoff_fast | \
+    devnet_rehearsal | devnet_rehearsal_fast | \
+    executor_rollout_evidence | executor_rollout_evidence_fast | \
+    adapter_rollout_evidence | adapter_rollout_evidence_fast | \
+    execution_server_rollout | execution_server_rollout_fast | \
+    execution_runtime_readiness | execution_runtime_readiness_fast)
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
 run_targeted_smoke_cases() {
   local target_cases_raw="$1"
   local targeted_case_profile_raw="${OPS_SMOKE_PROFILE:-full}"
+  local requested_targeted_case_profile
   local targeted_case_profile
-  targeted_case_profile="$(printf '%s' "$(trim_string "$targeted_case_profile_raw")" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$targeted_case_profile" != "full" && "$targeted_case_profile" != "fast" ]]; then
-    echo "OPS_SMOKE_PROFILE must be one of: full,fast (got: ${targeted_case_profile_raw:-<empty>})" >&2
+  requested_targeted_case_profile="$(printf '%s' "$(trim_string "$targeted_case_profile_raw")" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$requested_targeted_case_profile" != "full" && "$requested_targeted_case_profile" != "fast" && "$requested_targeted_case_profile" != "auto" ]]; then
+    echo "OPS_SMOKE_PROFILE must be one of: full,fast,auto (got: ${targeted_case_profile_raw:-<empty>})" >&2
     exit 1
   fi
   local -a raw_target_tokens=()
@@ -9436,6 +9472,19 @@ run_targeted_smoke_cases() {
     fi
   done
   expanded_cases_csv="${target_case_joined:-n/a}"
+
+  if [[ "$requested_targeted_case_profile" == "auto" ]]; then
+    targeted_case_profile="full"
+    local profile_case=""
+    for profile_case in "${target_cases[@]-}"; do
+      if is_ops_smoke_heavy_case "$profile_case"; then
+        targeted_case_profile="fast"
+        break
+      fi
+    done
+  else
+    targeted_case_profile="$requested_targeted_case_profile"
+  fi
 
   write_fake_journalctl
 
@@ -9611,12 +9660,21 @@ run_ops_smoke_targeted_dispatch_case() {
 
   local targeted_fast_profile_output=""
   targeted_fast_profile_output="$(
-    OPS_SMOKE_PROFILE="fast" \
+    OPS_SMOKE_PROFILE="auto" \
       OPS_SMOKE_TARGET_CASES="executor_preflight" \
       bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
   )"
   assert_contains "$targeted_fast_profile_output" "ops smoke targeted profile: fast"
   assert_contains "$targeted_fast_profile_output" "[ok] executor preflight helper (fast)"
+
+  local targeted_auto_non_heavy_output=""
+  targeted_auto_non_heavy_output="$(
+    OPS_SMOKE_PROFILE="auto" \
+      OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
+      bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
+  )"
+  assert_contains "$targeted_auto_non_heavy_output" "ops smoke targeted profile: full"
+  assert_contains "$targeted_auto_non_heavy_output" "[ok] common timeout parser"
 
   local invalid_output_path="$TMP_DIR/ops-smoke-target-invalid.out"
   if OPS_SMOKE_TARGET_CASES="unknown_case" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_output_path" 2>&1; then
@@ -9634,7 +9692,7 @@ run_ops_smoke_targeted_dispatch_case() {
   fi
   local invalid_profile_output=""
   invalid_profile_output="$(cat "$invalid_profile_output_path")"
-  assert_contains "$invalid_profile_output" "OPS_SMOKE_PROFILE must be one of: full,fast"
+  assert_contains "$invalid_profile_output" "OPS_SMOKE_PROFILE must be one of: full,fast,auto"
   echo "[ok] ops smoke targeted dispatcher"
 }
 
