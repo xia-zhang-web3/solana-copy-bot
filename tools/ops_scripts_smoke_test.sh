@@ -7,6 +7,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 source "$ROOT_DIR/tools/lib/common.sh"
 
 OPS_SMOKE_TARGET_CASES="${OPS_SMOKE_TARGET_CASES:-}"
+OPS_SMOKE_PROFILE="${OPS_SMOKE_PROFILE:-full}"
 
 require_bin() {
   local bin="$1"
@@ -9159,6 +9160,13 @@ EOF_POISON_INDEX
 
 run_targeted_smoke_cases() {
   local target_cases_raw="$1"
+  local targeted_case_profile_raw="${OPS_SMOKE_PROFILE:-full}"
+  local targeted_case_profile
+  targeted_case_profile="$(printf '%s' "$(trim_string "$targeted_case_profile_raw")" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$targeted_case_profile" != "full" && "$targeted_case_profile" != "fast" ]]; then
+    echo "OPS_SMOKE_PROFILE must be one of: full,fast (got: ${targeted_case_profile_raw:-<empty>})" >&2
+    exit 1
+  fi
   local -a target_cases=()
   IFS=',' read -r -a target_cases <<<"$target_cases_raw"
   if ((${#target_cases[@]} == 0)); then
@@ -9227,7 +9235,7 @@ run_targeted_smoke_cases() {
       fi
       case "$target_case" in
       executor_preflight | run_executor_preflight_case)
-        run_executor_preflight_case "$legacy_db"
+        run_executor_preflight_case "$legacy_db" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       executor_preflight_fast | run_executor_preflight_case_fast)
@@ -9235,7 +9243,7 @@ run_targeted_smoke_cases() {
         executed_cases=$((executed_cases + 1))
         ;;
       windowed_signoff | run_windowed_signoff_report_case)
-        run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
+        run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       windowed_signoff_fast | run_windowed_signoff_report_case_fast)
@@ -9243,7 +9251,7 @@ run_targeted_smoke_cases() {
         executed_cases=$((executed_cases + 1))
         ;;
       route_fee_signoff | run_execution_route_fee_signoff_case)
-        run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
+        run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast)
@@ -9251,7 +9259,7 @@ run_targeted_smoke_cases() {
         executed_cases=$((executed_cases + 1))
         ;;
       devnet_rehearsal | run_devnet_rehearsal_case)
-        run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
+        run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       devnet_rehearsal_fast | run_devnet_rehearsal_case_fast)
@@ -9259,7 +9267,7 @@ run_targeted_smoke_cases() {
         executed_cases=$((executed_cases + 1))
         ;;
       executor_rollout_evidence | run_executor_rollout_evidence_case)
-        run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
+        run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast)
@@ -9267,7 +9275,7 @@ run_targeted_smoke_cases() {
         executed_cases=$((executed_cases + 1))
         ;;
       adapter_rollout_evidence | run_adapter_rollout_evidence_case)
-        run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
+        run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast)
@@ -9275,7 +9283,7 @@ run_targeted_smoke_cases() {
         executed_cases=$((executed_cases + 1))
         ;;
       execution_server_rollout | run_execution_server_rollout_report_case)
-        run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg"
+        run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       execution_server_rollout_fast | run_execution_server_rollout_report_case_fast)
@@ -9283,7 +9291,7 @@ run_targeted_smoke_cases() {
         executed_cases=$((executed_cases + 1))
         ;;
       execution_runtime_readiness | run_execution_runtime_readiness_report_case)
-        run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg"
+        run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast)
@@ -9309,6 +9317,7 @@ run_targeted_smoke_cases() {
     exit 1
   fi
 
+  echo "ops smoke targeted profile: $targeted_case_profile"
   echo "ops scripts smoke targeted: PASS (cases=$target_cases_raw)"
 }
 
@@ -9320,11 +9329,21 @@ run_ops_smoke_targeted_dispatch_case() {
   )"
   assert_contains "$targeted_output" "[ok] common strict bool parser"
   assert_contains "$targeted_output" "[ok] common timeout parser"
+  assert_contains "$targeted_output" "ops smoke targeted profile: full"
   assert_contains "$targeted_output" "ops scripts smoke targeted: PASS"
   if grep -Fq "[ok] execution runtime readiness report" <<<"$targeted_output"; then
     echo "targeted smoke dispatcher must not execute unrelated heavy cases" >&2
     exit 1
   fi
+
+  local targeted_fast_profile_output=""
+  targeted_fast_profile_output="$(
+    OPS_SMOKE_PROFILE="fast" \
+      OPS_SMOKE_TARGET_CASES="executor_preflight" \
+      bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
+  )"
+  assert_contains "$targeted_fast_profile_output" "ops smoke targeted profile: fast"
+  assert_contains "$targeted_fast_profile_output" "[ok] executor preflight helper (fast)"
 
   local invalid_output_path="$TMP_DIR/ops-smoke-target-invalid.out"
   if OPS_SMOKE_TARGET_CASES="unknown_case" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_output_path" 2>&1; then
@@ -9334,6 +9353,15 @@ run_ops_smoke_targeted_dispatch_case() {
   local invalid_output=""
   invalid_output="$(cat "$invalid_output_path")"
   assert_contains "$invalid_output" "unknown OPS_SMOKE_TARGET_CASES entry: unknown_case"
+
+  local invalid_profile_output_path="$TMP_DIR/ops-smoke-target-invalid-profile.out"
+  if OPS_SMOKE_PROFILE="turbo" OPS_SMOKE_TARGET_CASES="common_timeout_parser" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_profile_output_path" 2>&1; then
+    echo "expected targeted smoke mode to fail on invalid OPS_SMOKE_PROFILE token" >&2
+    exit 1
+  fi
+  local invalid_profile_output=""
+  invalid_profile_output="$(cat "$invalid_profile_output_path")"
+  assert_contains "$invalid_profile_output" "OPS_SMOKE_PROFILE must be one of: full,fast"
   echo "[ok] ops smoke targeted dispatcher"
 }
 
