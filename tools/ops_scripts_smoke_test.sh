@@ -9825,6 +9825,61 @@ EOF_POISON_INDEX
   echo "[ok] evidence bundle pack"
 }
 
+run_refactor_phase_gate_case() {
+  local phase_output_dir="$TMP_DIR/refactor-phase-gate-output"
+  local phase_fixture_dir="$TMP_DIR/refactor-phase-gate-fixture"
+  local phase_output=""
+  phase_output="$(
+    bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir" --fixture-dir "$phase_fixture_dir"
+  )"
+  assert_contains "$phase_output" "phase_gate: baseline"
+  assert_field_equals "$phase_output" "fixture_dir" "$phase_fixture_dir"
+  assert_field_equals "$phase_output" "output_dir" "$phase_output_dir"
+  assert_field_equals "$phase_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$phase_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$phase_output" "ingestion_source" "yellowstone_grpc"
+
+  local raw_checksum_manifest=""
+  local normalized_checksum_manifest=""
+  local normalized_hashes_manifest=""
+  local normalized_go_nogo=""
+  local normalized_rehearsal=""
+  local normalized_rollout=""
+  raw_checksum_manifest="$(extract_field_value "$phase_output" "raw_checksum_manifest")"
+  normalized_checksum_manifest="$(extract_field_value "$phase_output" "normalized_checksum_manifest")"
+  normalized_hashes_manifest="$(extract_field_value "$phase_output" "normalized_hashes_manifest")"
+  normalized_go_nogo="$(extract_field_value "$phase_output" "normalized_go_nogo")"
+  normalized_rehearsal="$(extract_field_value "$phase_output" "normalized_rehearsal")"
+  normalized_rollout="$(extract_field_value "$phase_output" "normalized_rollout")"
+
+  if [[ ! -f "$raw_checksum_manifest" || ! -f "$normalized_checksum_manifest" || ! -f "$normalized_hashes_manifest" ]]; then
+    echo "expected refactor phase gate checksum manifests to exist" >&2
+    exit 1
+  fi
+  if [[ ! -f "$normalized_go_nogo" || ! -f "$normalized_rehearsal" || ! -f "$normalized_rollout" ]]; then
+    echo "expected refactor phase gate normalized outputs to exist" >&2
+    exit 1
+  fi
+
+  local normalized_go_nogo_text=""
+  local normalized_rehearsal_text=""
+  local normalized_rollout_text=""
+  normalized_go_nogo_text="$(cat "$normalized_go_nogo")"
+  normalized_rehearsal_text="$(cat "$normalized_rehearsal")"
+  normalized_rollout_text="$(cat "$normalized_rollout")"
+
+  assert_contains "$normalized_go_nogo_text" "go_nogo_require_ingestion_grpc: true"
+  assert_contains "$normalized_go_nogo_text" "ingestion_grpc_guard_verdict: PASS"
+  assert_contains "$normalized_go_nogo_text" "ingestion_grpc_guard_reason_code: grpc_active_source_yellowstone"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_require_ingestion_grpc: true"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_ingestion_grpc_guard_verdict: PASS"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_ingestion_grpc_guard_reason_code: grpc_active_source_yellowstone"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_go_nogo_require_ingestion_grpc: true"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_verdict: PASS"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_reason_code: grpc_active_source_yellowstone"
+  echo "[ok] refactor phase gate"
+}
+
 expand_ops_smoke_target_case() {
   local token="$1"
   case "$token" in
@@ -10006,6 +10061,10 @@ run_targeted_smoke_cases() {
       run_evidence_bundle_pack_case
       executed_cases=$((executed_cases + 1))
       ;;
+    refactor_phase_gate | run_refactor_phase_gate_case)
+      run_refactor_phase_gate_case
+      executed_cases=$((executed_cases + 1))
+      ;;
     executor_preflight | run_executor_preflight_case | executor_preflight_fast | run_executor_preflight_case_fast | windowed_signoff | run_windowed_signoff_report_case | windowed_signoff_fast | run_windowed_signoff_report_case_fast | route_fee_signoff | run_execution_route_fee_signoff_case | route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast | devnet_rehearsal | run_devnet_rehearsal_case | devnet_rehearsal_fast | run_devnet_rehearsal_case_fast | executor_rollout_evidence | run_executor_rollout_evidence_case | executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast | adapter_rollout_evidence | run_adapter_rollout_evidence_case | adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast | execution_server_rollout | run_execution_server_rollout_report_case | execution_server_rollout_fast | run_execution_server_rollout_report_case_fast | execution_runtime_readiness | run_execution_runtime_readiness_report_case | execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
       if [[ "$fixtures_ready" != "true" ]]; then
         create_legacy_db "$legacy_db"
@@ -10086,7 +10145,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_parsers, audit_guardpack, heavy_runtime_chain, common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
+      echo "known values: common_parsers, audit_guardpack, heavy_runtime_chain, common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, refactor_phase_gate, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
       exit 1
       ;;
     esac
@@ -10195,6 +10254,7 @@ main() {
   run_audit_executor_test_mode_guard_case
   run_audit_ops_smoke_mode_guard_case
   run_evidence_bundle_pack_case
+  run_refactor_phase_gate_case
   run_ops_smoke_targeted_dispatch_case
 
   local legacy_db="$TMP_DIR/legacy.db"

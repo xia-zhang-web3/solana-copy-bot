@@ -79,6 +79,8 @@ GO_NOGO_TEST_MODE=true \
 GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true \
+GO_NOGO_REQUIRE_INGESTION_GRPC=true \
+SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone_grpc \
 EXECUTOR_ENV_PATH="$executor_env_path" \
 CONFIG_PATH="$config_path" \
 OUTPUT_DIR="$raw_dir/go_nogo_artifacts" \
@@ -91,6 +93,8 @@ GO_NOGO_TEST_MODE=true \
 GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true \
+GO_NOGO_REQUIRE_INGESTION_GRPC=true \
+SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone_grpc \
 EXECUTOR_ENV_PATH="$executor_env_path" \
 CONFIG_PATH="$config_path" \
 OUTPUT_DIR="$raw_dir/rehearsal_artifacts" \
@@ -104,6 +108,8 @@ GO_NOGO_TEST_MODE=true \
 GO_NOGO_TEST_FEE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true \
+GO_NOGO_REQUIRE_INGESTION_GRPC=true \
+SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone_grpc \
 EXECUTOR_ENV_PATH="$executor_env_path" \
 CONFIG_PATH="$config_path" \
 OUTPUT_DIR="$raw_dir/rollout_artifacts" \
@@ -132,4 +138,7 @@ normalized_hashes_manifest: $output_dir/orchestrators.normalized.hashes
 normalized_go_nogo: $norm_dir/go_nogo_normalized.txt
 normalized_rehearsal: $norm_dir/rehearsal_normalized.txt
 normalized_rollout: $norm_dir/rollout_normalized.txt
+go_nogo_require_executor_upstream: true
+go_nogo_require_ingestion_grpc: true
+ingestion_source: yellowstone_grpc
 EOF_SUMMARY

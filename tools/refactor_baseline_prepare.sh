@@ -41,6 +41,9 @@ env = "dev"
 [sqlite]
 path = "$DB_PATH"
 
+[ingestion]
+source = "yellowstone_grpc"
+
 [risk]
 max_position_sol = 0.5
 max_total_exposure_sol = 3.0
@@ -83,6 +86,9 @@ EOF_ENV
 
 cat >"$EXECUTOR_ENV_PATH" <<'EOF_EXECUTOR_ENV'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_ROUTE_ALLOWLIST=paper
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
 EOF_EXECUTOR_ENV
 
 printf '%s\n' "adapter-bearer" >"$SECRETS_DIR/adapter_bearer.token"
