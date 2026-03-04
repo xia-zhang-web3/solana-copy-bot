@@ -70,10 +70,33 @@ full | targeted)
   exit 1
   ;;
 esac
-ops_smoke_target_cases="$(trim_string "${AUDIT_OPS_SMOKE_TARGET_CASES:-}")"
-if [[ "$ops_smoke_mode" == "targeted" && -z "$ops_smoke_target_cases" ]]; then
-  echo "AUDIT_OPS_SMOKE_TARGET_CASES must be non-empty when AUDIT_OPS_SMOKE_MODE=targeted" >&2
+OPS_SMOKE_PRESET_RAW="$(trim_string "${AUDIT_OPS_SMOKE_PRESET:-}")"
+case "$OPS_SMOKE_PRESET_RAW" in
+"" | common_parsers | heavy_runtime_chain | audit_guardpack)
+  ops_smoke_preset="$OPS_SMOKE_PRESET_RAW"
+  ;;
+*)
+  echo "AUDIT_OPS_SMOKE_PRESET must be one of: common_parsers,heavy_runtime_chain,audit_guardpack (got: $OPS_SMOKE_PRESET_RAW)" >&2
   exit 1
+  ;;
+esac
+if [[ "$ops_smoke_mode" != "targeted" && -n "$ops_smoke_preset" ]]; then
+  echo "AUDIT_OPS_SMOKE_PRESET can be used only when AUDIT_OPS_SMOKE_MODE=targeted" >&2
+  exit 1
+fi
+ops_smoke_target_cases="$(trim_string "${AUDIT_OPS_SMOKE_TARGET_CASES:-}")"
+if [[ "$ops_smoke_mode" == "targeted" ]]; then
+  if [[ -n "$ops_smoke_target_cases" && -n "$ops_smoke_preset" ]]; then
+    echo "AUDIT_OPS_SMOKE_TARGET_CASES and AUDIT_OPS_SMOKE_PRESET cannot both be set when AUDIT_OPS_SMOKE_MODE=targeted" >&2
+    exit 1
+  fi
+  if [[ -z "$ops_smoke_target_cases" && -n "$ops_smoke_preset" ]]; then
+    ops_smoke_target_cases="$ops_smoke_preset"
+  fi
+  if [[ -z "$ops_smoke_target_cases" ]]; then
+    echo "AUDIT_OPS_SMOKE_TARGET_CASES must be non-empty when AUDIT_OPS_SMOKE_MODE=targeted" >&2
+    exit 1
+  fi
 fi
 OPS_SMOKE_PROFILE_RAW="${AUDIT_OPS_SMOKE_PROFILE:-full}"
 case "$OPS_SMOKE_PROFILE_RAW" in
@@ -109,7 +132,7 @@ fi
 run_ops_smoke() {
   if [[ "$ops_smoke_mode" == "targeted" ]]; then
     OPS_SMOKE_PROFILE="$ops_smoke_profile" \
-    OPS_SMOKE_TARGET_CASES="$ops_smoke_target_cases" \
+      OPS_SMOKE_TARGET_CASES="$ops_smoke_target_cases" \
       run_with_timeout_if_available "$ops_smoke_timeout_sec" \
       bash tools/ops_scripts_smoke_test.sh
     return
@@ -142,7 +165,7 @@ else
 fi
 
 if [[ "$skip_ops_smoke" == "false" ]]; then
-  echo "[audit:full] tools/ops_scripts_smoke_test.sh (mode=${ops_smoke_mode}, profile=${ops_smoke_profile})"
+  echo "[audit:full] tools/ops_scripts_smoke_test.sh (mode=${ops_smoke_mode}, profile=${ops_smoke_profile}, preset=${ops_smoke_preset:-n/a})"
   run_ops_smoke
 else
   echo "[audit:full] AUDIT_SKIP_OPS_SMOKE=true -> skipped tools/ops_scripts_smoke_test.sh"

@@ -8928,6 +8928,73 @@ run_audit_ops_smoke_mode_guard_case() {
   fi
   assert_contains "$empty_targets_output" "AUDIT_OPS_SMOKE_TARGET_CASES must be non-empty when AUDIT_OPS_SMOKE_MODE=targeted"
 
+  local invalid_preset_token_output=""
+  if invalid_preset_token_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_PRESET="turbo_preset" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for invalid AUDIT_OPS_SMOKE_PRESET token" >&2
+    exit 1
+  else
+    local invalid_preset_token_exit_code=$?
+    if [[ "$invalid_preset_token_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh invalid AUDIT_OPS_SMOKE_PRESET exit code 1, got $invalid_preset_token_exit_code" >&2
+      echo "$invalid_preset_token_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_preset_token_output" "AUDIT_OPS_SMOKE_PRESET must be one of: common_parsers,heavy_runtime_chain,audit_guardpack"
+
+  local preset_non_targeted_output=""
+  if preset_non_targeted_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="full" \
+      AUDIT_OPS_SMOKE_PRESET="common_parsers" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail when AUDIT_OPS_SMOKE_PRESET is set in non-targeted mode" >&2
+    exit 1
+  else
+    local preset_non_targeted_exit_code=$?
+    if [[ "$preset_non_targeted_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh non-targeted AUDIT_OPS_SMOKE_PRESET exit code 1, got $preset_non_targeted_exit_code" >&2
+      echo "$preset_non_targeted_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$preset_non_targeted_output" "AUDIT_OPS_SMOKE_PRESET can be used only when AUDIT_OPS_SMOKE_MODE=targeted"
+
+  local target_and_preset_output=""
+  if target_and_preset_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
+      AUDIT_OPS_SMOKE_PRESET="common_parsers" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail when AUDIT_OPS_SMOKE_TARGET_CASES and AUDIT_OPS_SMOKE_PRESET are both set" >&2
+    exit 1
+  else
+    local target_and_preset_exit_code=$?
+    if [[ "$target_and_preset_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh combined target/preset exit code 1, got $target_and_preset_exit_code" >&2
+      echo "$target_and_preset_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$target_and_preset_output" "AUDIT_OPS_SMOKE_TARGET_CASES and AUDIT_OPS_SMOKE_PRESET cannot both be set when AUDIT_OPS_SMOKE_MODE=targeted"
+
   local invalid_profile_output=""
   if invalid_profile_output="$(
     AUDIT_SKIP_OPS_SMOKE="false" \
@@ -8961,10 +9028,27 @@ run_audit_ops_smoke_mode_guard_case() {
       AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
       bash "$ROOT_DIR/tools/audit_full.sh"
   )"
-  assert_contains "$full_targeted_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full)"
+  assert_contains "$full_targeted_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full, preset=n/a)"
   assert_contains "$full_targeted_output" "[ok] common timeout parser"
   assert_contains "$full_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$full_targeted_output" "[audit:full] PASS"
+
+  local full_targeted_preset_output=""
+  full_targeted_preset_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_PRESET="common_parsers" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_targeted_preset_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full, preset=common_parsers)"
+  assert_contains "$full_targeted_preset_output" "ops scripts smoke targeted: PASS (cases=common_parsers)"
+  assert_contains "$full_targeted_preset_output" "[ok] common strict bool parser"
+  assert_contains "$full_targeted_preset_output" "[ok] common bool compat wrapper"
+  assert_contains "$full_targeted_preset_output" "[ok] common timeout parser"
+  assert_contains "$full_targeted_preset_output" "[audit:full] PASS"
 
   local full_targeted_fast_output=""
   full_targeted_fast_output="$(
@@ -8977,7 +9061,7 @@ run_audit_ops_smoke_mode_guard_case() {
       AUDIT_OPS_SMOKE_TARGET_CASES="executor_preflight" \
       bash "$ROOT_DIR/tools/audit_full.sh"
   )"
-  assert_contains "$full_targeted_fast_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast)"
+  assert_contains "$full_targeted_fast_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast, preset=n/a)"
   assert_contains "$full_targeted_fast_output" "ops smoke targeted profile: fast"
   assert_contains "$full_targeted_fast_output" "[ok] executor preflight helper (fast)"
   assert_contains "$full_targeted_fast_output" "[audit:full] PASS"
@@ -9004,7 +9088,7 @@ run_audit_ops_smoke_mode_guard_case() {
     exit 1
   fi
 
-  assert_contains "$standard_targeted_output" "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full)"
+  assert_contains "$standard_targeted_output" "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full, preset=n/a)"
   assert_contains "$standard_targeted_output" "[ok] common timeout parser"
   assert_contains "$standard_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$standard_targeted_output" "[audit:standard] PASS"
@@ -9030,7 +9114,7 @@ run_audit_ops_smoke_mode_guard_case() {
     echo "$standard_targeted_fast_output" >&2
     exit 1
   fi
-  assert_contains "$standard_targeted_fast_output" "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast)"
+  assert_contains "$standard_targeted_fast_output" "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast, preset=n/a)"
   assert_contains "$standard_targeted_fast_output" "ops smoke targeted profile: fast"
   assert_contains "$standard_targeted_fast_output" "[ok] executor preflight helper (fast)"
   assert_contains "$standard_targeted_fast_output" "[audit:standard] PASS"
@@ -9229,6 +9313,18 @@ expand_ops_smoke_target_case() {
   case "$token" in
   common_parsers)
     printf '%s\n' "common_strict_bool_parser" "common_bool_compat_wrapper" "common_timeout_parser"
+    ;;
+  audit_guardpack)
+    printf '%s\n' \
+      "common_strict_bool_parser" \
+      "common_bool_compat_wrapper" \
+      "common_timeout_parser" \
+      "audit_quick_bool_guard" \
+      "audit_standard_bool_guard" \
+      "audit_contract_smoke_mode_guard" \
+      "audit_executor_test_mode_guard" \
+      "audit_ops_smoke_mode_guard" \
+      "evidence_bundle_pack"
     ;;
   heavy_runtime_chain)
     printf '%s\n' \
@@ -9440,7 +9536,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_parsers, heavy_runtime_chain, common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
+      echo "known values: common_parsers, audit_guardpack, heavy_runtime_chain, common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
       exit 1
       ;;
     esac
