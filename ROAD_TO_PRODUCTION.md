@@ -1306,3 +1306,29 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 Проверка:
 
 1. `cargo test -p copybot-config -p copybot-storage -p copybot-discovery` — PASS.
+
+### 2026-03-04 — post-patch follow-up (T+~102m, snapshot 14:08 UTC)
+
+Источник:
+
+1. `ops/server_reports/2026-03-04_post_patch_followup_1407_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-04_post_patch_followup_1407_snapshot/computed_summary.json`
+
+Итог первого окна после патча:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Ingestion gates: PASS (`~353.83 msg/s`, `rpc_429 delta=0`, `rpc_5xx delta=0`).
+3. Discovery liveness: PASS (`completed=35`, `still_running=0`, `duration p50=8431ms`).
+4. Health endpoints: PASS (`8080/8090/18080 status=ok`).
+5. Monitoring attention item:
+   1. `swaps_fetch_limit_reached=true` в `35/35` циклах,
+   2. `swaps_delta_fetched_last=120000`, `swaps_evicted_due_cap_last=120000`,
+   3. `eligible_wallets_last=0`, `active_follow_wallets_last=0` (baseline zero; validate-on-nonzero still pending).
+
+Решение по следующему шагу:
+
+1. Снять второй срез через ~4 часа в том же формате и сравнить динамику:
+   1. restart/OOM counters,
+   2. `swaps_fetch_limit_reached_ratio`,
+   3. `eligible_wallets_last` / `active_follow_wallets_last`,
+   4. memory/cgroup trend.

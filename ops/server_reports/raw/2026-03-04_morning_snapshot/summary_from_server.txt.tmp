@@ -1,0 +1,50 @@
+utc_now=2026-03-04T07:19:07Z
+hostname=ip-172-31-41-166
+git_head=bcfcf68
+git_dirty=1
+[service:solana-copy-bot]
+main_pid=92713
+exec_start=Wed 2026-03-04 07:16:20 UTC
+active_state=active
+sub_state=running
+active_enter=Wed 2026-03-04 07:16:20 UTC
+uptime_seconds=167
+[service:copybot-executor]
+main_pid=82609
+exec_start=Tue 2026-03-03 18:03:16 UTC
+active_state=active
+sub_state=running
+active_enter=Tue 2026-03-03 18:03:16 UTC
+uptime_seconds=47751
+[service:copybot-adapter]
+main_pid=82610
+exec_start=Tue 2026-03-03 18:03:16 UTC
+active_state=active
+sub_state=running
+active_enter=Tue 2026-03-03 18:03:16 UTC
+uptime_seconds=47751
+[service:copybot-execution-mock-upstream]
+main_pid=82478
+exec_start=Tue 2026-03-03 18:02:56 UTC
+active_state=active
+sub_state=running
+active_enter=Tue 2026-03-03 18:02:56 UTC
+uptime_seconds=47771
+[health:8080]
+{"contract_version":"v1","routes":["rpc","jito"],"signer_pubkey":"11111111111111111111111111111111","status":"ok"}[health:8090]
+{"contract_version":"v1","enabled_routes":["jito","rpc"],"idempotency_store_status":"ok","routes":["jito","rpc"],"send_rpc_enabled_routes":[],"send_rpc_fallback_routes":[],"send_rpc_routes":[],"signer_keypair_file_configured":true,"signer_kms_key_id_configured":false,"signer_pubkey":"11111111111111111111111111111111","signer_source":"file","status":"ok","submit_fastlane_enabled":false}[health:18080]
+{"status": "ok", "service": "mock_execution_upstream", "version": "v1", "ts": "2026-03-04T07:19:07Z"}[ps]
+  82478   47770  0.0  0.1 15308 103512 python3 /var/www/solana-copy-bot/tools/mock_execution_upstream.py
+  82609   47750  0.0  0.0  7176 217504 /var/www/solana-copy-bot/target/release/copybot-executor
+  82610   47750  0.0  0.0  5436 145576 /var/www/solana-copy-bot/target/release/copybot-adapter
+  92713     166  9.1 12.9 1030976 1606116 /var/www/solana-copy-bot/target/release/copybot-app --config /etc/solana-copy-bot/live.server.toml
+db_path=/var/www/solana-copy-bot/state/live_copybot.db
+[db_counts]
+observed_swaps_rows=7862824
+wallets_rows=356820
+wallet_metrics_rows=1057737
+followlist_active=0
+copy_signals_rows=0
+orders_rows=0
+shadow_lots_rows=0
+[db_activity]

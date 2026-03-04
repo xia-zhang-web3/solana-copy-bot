@@ -1,0 +1,42 @@
+utc_now=2026-03-04T14:04:35Z
+MainPID=101133
+NRestarts=0
+MemoryCurrent=4424880128
+proc_pid=101133
+VmHWM:	  487564 kB
+VmRSS:	  295148 kB
+Threads:	8
+[memory.stat]
+anon 286298112
+file 4044107776
+kernel 94474240
+pagetables 741376
+shmem 0
+inactive_anon 0
+active_anon 286298112
+inactive_file 4040634368
+active_file 3473408
+slab 93614488
+pgfault 543752
+pgmajfault 0
+utc_now=2026-03-04T14:05:05Z
+MainPID=101133
+NRestarts=0
+MemoryCurrent=4409307136
+proc_pid=101133
+VmHWM:	  487564 kB
+VmRSS:	  267932 kB
+Threads:	7
+[memory.stat]
+anon 258428928
+file 4056272896
+kernel 94703616
+pagetables 684032
+shmem 0
+inactive_anon 0
+active_anon 258428928
+inactive_file 4052799488
+active_file 3473408
+slab 93919048
+pgfault 543761
+pgmajfault 0

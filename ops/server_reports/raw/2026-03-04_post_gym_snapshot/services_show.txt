@@ -1,0 +1,25 @@
+utc_now=2026-03-04T11:24:41Z
+[service:solana-copy-bot]
+MainPID=97982
+ExecMainStartTimestamp=Wed 2026-03-04 11:23:35 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 11:23:35 UTC
+[service:copybot-executor]
+MainPID=82609
+ExecMainStartTimestamp=Tue 2026-03-03 18:03:16 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Tue 2026-03-03 18:03:16 UTC
+[service:copybot-adapter]
+MainPID=82610
+ExecMainStartTimestamp=Tue 2026-03-03 18:03:16 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Tue 2026-03-03 18:03:16 UTC
+[service:copybot-execution-mock-upstream]
+MainPID=82478
+ExecMainStartTimestamp=Tue 2026-03-03 18:02:56 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Tue 2026-03-03 18:02:56 UTC

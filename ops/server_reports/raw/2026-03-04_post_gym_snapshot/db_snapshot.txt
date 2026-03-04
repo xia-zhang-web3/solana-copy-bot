@@ -1,0 +1,8 @@
+observed_swaps_rows = 8551554
+       wallets_rows = 356820
+wallet_metrics_rows = 1057737
+  followlist_active = 0
+  copy_signals_rows = 0
+        orders_rows = 0
+   shadow_lots_rows = 0
+--

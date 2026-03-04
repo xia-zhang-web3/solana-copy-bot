@@ -1,0 +1,43 @@
+utc_now=2026-03-04T07:17:29Z
+hostname=ip-172-31-41-166
+git_head=bcfcf68
+git_dirty=1
+[service:solana-copy-bot]
+active_state=92713
+sub_state=Wed 2026-03-04 07:16:20 UTC
+main_pid=active
+active_enter=running
+exec_start=Wed 2026-03-04 07:16:20 UTC
+uptime_seconds=69
+[service:copybot-executor]
+active_state=82609
+sub_state=Tue 2026-03-03 18:03:16 UTC
+main_pid=active
+active_enter=running
+exec_start=Tue 2026-03-03 18:03:16 UTC
+uptime_seconds=47653
+[service:copybot-adapter]
+active_state=82610
+sub_state=Tue 2026-03-03 18:03:16 UTC
+main_pid=active
+active_enter=running
+exec_start=Tue 2026-03-03 18:03:16 UTC
+uptime_seconds=47653
+[service:copybot-execution-mock-upstream]
+active_state=82478
+sub_state=Tue 2026-03-03 18:02:56 UTC
+main_pid=active
+active_enter=running
+exec_start=Tue 2026-03-03 18:02:56 UTC
+uptime_seconds=47673
+[health:8080]
+{"contract_version":"v1","routes":["rpc","jito"],"signer_pubkey":"11111111111111111111111111111111","status":"ok"}[health:8090]
+{"contract_version":"v1","enabled_routes":["jito","rpc"],"idempotency_store_status":"ok","routes":["jito","rpc"],"send_rpc_enabled_routes":[],"send_rpc_fallback_routes":[],"send_rpc_routes":[],"signer_keypair_file_configured":true,"signer_kms_key_id_configured":false,"signer_pubkey":"11111111111111111111111111111111","signer_source":"file","status":"ok","submit_fastlane_enabled":false}[health:18080]
+{"status": "ok", "service": "mock_execution_upstream", "version": "v1", "ts": "2026-03-04T07:17:32Z"}[ps]
+  82478   47675  0.0  0.1 15308 103512 python3 /var/www/solana-copy-bot/tools/mock_execution_upstream.py
+  82609   47655  0.0  0.0  7168 217504 /var/www/solana-copy-bot/target/release/copybot-executor
+  82610   47655  0.0  0.0  5424 145576 /var/www/solana-copy-bot/target/release/copybot-adapter
+  92713      71  5.1  0.2 19596 163856 /var/www/solana-copy-bot/target/release/copybot-app --config /etc/solana-copy-bot/live.server.toml
+db_missing=1
+[service_window]
+service_start=Wed 2026-03-04 07:16:20 UTC

@@ -1,0 +1,153 @@
+Mar 04 08:44:36 ip-172-31-41-166 kernel: sshd invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 08:44:36 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 08:44:36 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 08:44:36 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 08:44:37 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 08:44:37 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=92713,uid=999
+Mar 04 08:44:37 ip-172-31-41-166 kernel: Out of memory: Killed process 92713 (copybot-app) total-vm:8362284kB, anon-rss:7514284kB, file-rss:2676kB, shmem-rss:0kB, UID:999 pgtables:15208kB oom_score_adj:0
+Mar 04 08:54:59 ip-172-31-41-166 kernel: fail2ban-server invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 08:54:59 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 08:54:59 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 08:54:59 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 08:54:59 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 08:54:59 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=96878,uid=999
+Mar 04 08:54:59 ip-172-31-41-166 kernel: Out of memory: Killed process 96878 (copybot-app) total-vm:8430000kB, anon-rss:7570820kB, file-rss:2792kB, shmem-rss:0kB, UID:999 pgtables:15328kB oom_score_adj:0
+Mar 04 09:02:35 ip-172-31-41-166 kernel: f2b/a.sshd invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 09:02:35 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:02:35 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:02:35 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:02:36 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:02:36 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=96952,uid=999
+Mar 04 09:02:36 ip-172-31-41-166 kernel: Out of memory: Killed process 96952 (copybot-app) total-vm:8426180kB, anon-rss:7560820kB, file-rss:2676kB, shmem-rss:0kB, UID:999 pgtables:15300kB oom_score_adj:0
+Mar 04 09:09:54 ip-172-31-41-166 kernel: copybot-app invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 09:09:55 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:09:55 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:09:55 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:09:55 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:09:55 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=96993,uid=999
+Mar 04 09:09:55 ip-172-31-41-166 kernel: Out of memory: Killed process 96993 (copybot-app) total-vm:8420936kB, anon-rss:7577852kB, file-rss:2688kB, shmem-rss:0kB, UID:999 pgtables:15336kB oom_score_adj:0
+Mar 04 09:17:02 ip-172-31-41-166 kernel: f2b/f.sshd invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 09:17:02 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:17:02 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:17:02 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:17:02 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:17:02 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97044,uid=999
+Mar 04 09:17:02 ip-172-31-41-166 kernel: Out of memory: Killed process 97044 (copybot-app) total-vm:8421016kB, anon-rss:7560468kB, file-rss:2712kB, shmem-rss:0kB, UID:999 pgtables:15284kB oom_score_adj:0
+Mar 04 09:24:06 ip-172-31-41-166 kernel: fail2ban-server invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 09:24:06 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:24:06 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:24:06 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:24:06 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:24:06 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97101,uid=999
+Mar 04 09:24:06 ip-172-31-41-166 kernel: Out of memory: Killed process 97101 (copybot-app) total-vm:8420816kB, anon-rss:7579276kB, file-rss:2772kB, shmem-rss:0kB, UID:999 pgtables:15320kB oom_score_adj:0
+Mar 04 09:31:02 ip-172-31-41-166 kernel: copybot-app invoked oom-killer: gfp_mask=0x141cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP|__GFP_WRITE), order=0, oom_score_adj=0
+Mar 04 09:31:03 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:31:03 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:31:03 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:31:03 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:31:03 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97138,uid=999
+Mar 04 09:31:03 ip-172-31-41-166 kernel: Out of memory: Killed process 97138 (copybot-app) total-vm:8354936kB, anon-rss:7563148kB, file-rss:3312kB, shmem-rss:0kB, UID:999 pgtables:15292kB oom_score_adj:0
+Mar 04 09:37:58 ip-172-31-41-166 kernel: copybot-app invoked oom-killer: gfp_mask=0x141cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP|__GFP_WRITE), order=0, oom_score_adj=0
+Mar 04 09:37:58 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:37:58 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:37:58 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:37:58 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:37:58 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97183,uid=999
+Mar 04 09:37:58 ip-172-31-41-166 kernel: Out of memory: Killed process 97183 (copybot-app) total-vm:8355292kB, anon-rss:7562524kB, file-rss:9128kB, shmem-rss:0kB, UID:999 pgtables:15288kB oom_score_adj:0
+Mar 04 09:44:59 ip-172-31-41-166 kernel: f2b/f.sshd invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 09:44:59 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:44:59 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:44:59 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:44:59 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:44:59 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97228,uid=999
+Mar 04 09:44:59 ip-172-31-41-166 kernel: Out of memory: Killed process 97228 (copybot-app) total-vm:8354804kB, anon-rss:7561628kB, file-rss:2760kB, shmem-rss:0kB, UID:999 pgtables:15268kB oom_score_adj:0
+Mar 04 09:52:05 ip-172-31-41-166 kernel: tokio-runtime-w invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 09:52:05 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:52:05 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:52:05 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:52:05 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:52:05 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97270,uid=999
+Mar 04 09:52:05 ip-172-31-41-166 kernel: Out of memory: Killed process 97270 (copybot-app) total-vm:8355364kB, anon-rss:7577004kB, file-rss:2692kB, shmem-rss:0kB, UID:999 pgtables:15308kB oom_score_adj:0
+Mar 04 09:59:07 ip-172-31-41-166 kernel: tokio-runtime-w invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 09:59:07 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 09:59:07 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 09:59:07 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 09:59:07 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 09:59:07 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97315,uid=999
+Mar 04 09:59:07 ip-172-31-41-166 kernel: Out of memory: Killed process 97315 (copybot-app) total-vm:8355268kB, anon-rss:7563352kB, file-rss:2808kB, shmem-rss:0kB, UID:999 pgtables:15272kB oom_score_adj:0
+Mar 04 10:06:14 ip-172-31-41-166 kernel: f2b/a.sshd invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 10:06:14 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 10:06:14 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 10:06:14 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 10:06:14 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 10:06:14 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97363,uid=999
+Mar 04 10:06:14 ip-172-31-41-166 kernel: Out of memory: Killed process 97363 (copybot-app) total-vm:8422516kB, anon-rss:7573184kB, file-rss:2588kB, shmem-rss:0kB, UID:999 pgtables:15316kB oom_score_adj:0
+Mar 04 10:13:21 ip-172-31-41-166 kernel: tokio-runtime-w invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 10:13:21 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 10:13:21 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 10:13:21 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 10:13:22 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 10:13:22 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97425,uid=999
+Mar 04 10:13:22 ip-172-31-41-166 kernel: Out of memory: Killed process 97425 (copybot-app) total-vm:8425552kB, anon-rss:7561696kB, file-rss:2704kB, shmem-rss:0kB, UID:999 pgtables:15280kB oom_score_adj:0
+Mar 04 10:20:33 ip-172-31-41-166 kernel: copybot-app invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 10:20:33 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 10:20:33 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 10:20:33 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 10:20:33 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 10:20:33 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97470,uid=999
+Mar 04 10:20:33 ip-172-31-41-166 kernel: Out of memory: Killed process 97470 (copybot-app) total-vm:8422932kB, anon-rss:7578428kB, file-rss:2676kB, shmem-rss:0kB, UID:999 pgtables:15304kB oom_score_adj:0
+Mar 04 10:28:01 ip-172-31-41-166 kernel: tokio-runtime-w invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 10:28:01 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 10:28:01 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 10:28:01 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 10:28:01 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 10:28:01 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97519,uid=999
+Mar 04 10:28:01 ip-172-31-41-166 kernel: Out of memory: Killed process 97519 (copybot-app) total-vm:8355492kB, anon-rss:7560820kB, file-rss:2964kB, shmem-rss:0kB, UID:999 pgtables:15260kB oom_score_adj:0
+Mar 04 10:35:24 ip-172-31-41-166 kernel: f2b/a.sshd invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 10:35:24 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 10:35:24 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 10:35:24 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 10:35:25 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 10:35:25 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97566,uid=999
+Mar 04 10:35:25 ip-172-31-41-166 kernel: Out of memory: Killed process 97566 (copybot-app) total-vm:8355480kB, anon-rss:7576880kB, file-rss:2820kB, shmem-rss:0kB, UID:999 pgtables:15296kB oom_score_adj:0
+Mar 04 10:42:36 ip-172-31-41-166 kernel: f2b/a.sshd invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 10:42:36 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 10:42:36 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 10:42:36 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 10:42:36 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 10:42:36 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97608,uid=999
+Mar 04 10:42:36 ip-172-31-41-166 kernel: Out of memory: Killed process 97608 (copybot-app) total-vm:8357352kB, anon-rss:7562184kB, file-rss:2680kB, shmem-rss:0kB, UID:999 pgtables:15260kB oom_score_adj:0
+Mar 04 10:49:44 ip-172-31-41-166 kernel: copybot-app invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 10:49:44 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 10:49:44 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 10:49:44 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 10:49:44 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 10:49:44 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97652,uid=999
+Mar 04 10:49:44 ip-172-31-41-166 kernel: Out of memory: Killed process 97652 (copybot-app) total-vm:8422908kB, anon-rss:7575716kB, file-rss:2840kB, shmem-rss:0kB, UID:999 pgtables:15300kB oom_score_adj:0
+Mar 04 10:57:20 ip-172-31-41-166 kernel: f2b/f.sshd invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 10:57:20 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 10:57:20 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 10:57:20 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 10:57:20 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 10:57:20 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97731,uid=999
+Mar 04 10:57:20 ip-172-31-41-166 kernel: Out of memory: Killed process 97731 (copybot-app) total-vm:8292748kB, anon-rss:7561200kB, file-rss:2740kB, shmem-rss:0kB, UID:999 pgtables:15264kB oom_score_adj:0
+Mar 04 11:04:55 ip-172-31-41-166 kernel: copybot-app invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 11:04:56 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 11:04:56 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 11:04:56 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 11:04:56 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 11:04:56 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97771,uid=999
+Mar 04 11:04:56 ip-172-31-41-166 kernel: Out of memory: Killed process 97771 (copybot-app) total-vm:9602720kB, anon-rss:7571880kB, file-rss:2580kB, shmem-rss:0kB, UID:999 pgtables:15288kB oom_score_adj:0
+Mar 04 11:15:57 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 11:15:57 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 11:15:57 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 11:15:57 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 11:15:57 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97808,uid=999
+Mar 04 11:15:57 ip-172-31-41-166 kernel: Out of memory: Killed process 97808 (copybot-app) total-vm:9599680kB, anon-rss:7562372kB, file-rss:2720kB, shmem-rss:0kB, UID:999 pgtables:15256kB oom_score_adj:0
+Mar 04 11:23:33 ip-172-31-41-166 kernel: copybot-app invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+Mar 04 11:23:33 ip-172-31-41-166 kernel:  oom_kill_process+0x116/0x270
+Mar 04 11:23:33 ip-172-31-41-166 kernel:  ? oom_evaluate_task+0x155/0x1e0
+Mar 04 11:23:33 ip-172-31-41-166 kernel:  __alloc_pages_may_oom+0x10b/0x1d0
+Mar 04 11:23:33 ip-172-31-41-166 kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Mar 04 11:23:33 ip-172-31-41-166 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/system.slice/solana-copy-bot.service,task=copybot-app,pid=97939,uid=999
+Mar 04 11:23:33 ip-172-31-41-166 kernel: Out of memory: Killed process 97939 (copybot-app) total-vm:9603624kB, anon-rss:7567764kB, file-rss:2712kB, shmem-rss:0kB, UID:999 pgtables:15268kB oom_score_adj:0

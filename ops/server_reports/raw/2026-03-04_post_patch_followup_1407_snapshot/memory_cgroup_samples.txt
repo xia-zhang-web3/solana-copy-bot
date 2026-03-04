@@ -1,0 +1,60 @@
+utc_now=2026-03-04T14:07:53Z
+MainPID=101133
+NRestarts=0
+MemoryCurrent=4619730944
+proc_pid=101133
+VmHWM:	  487564 kB
+VmRSS:	  323184 kB
+Threads:	7
+[memory.stat]
+anon 315006976
+file 4208250880
+kernel 96473088
+kernel_stack 98304
+pagetables 786432
+shmem 0
+file_mapped 3502080
+file_dirty 102400
+file_writeback 0
+anon_thp 0
+file_thp 0
+shmem_thp 0
+inactive_anon 0
+active_anon 315006976
+inactive_file 4204777472
+active_file 3473408
+slab_reclaimable 95441864
+slab_unreclaimable 145376
+slab 95587240
+pgfault 579304
+pgmajfault 0
+utc_now=2026-03-04T14:08:23Z
+MainPID=101133
+NRestarts=0
+MemoryCurrent=4638568448
+proc_pid=101133
+VmHWM:	  487564 kB
+VmRSS:	  323184 kB
+Threads:	7
+[memory.stat]
+anon 315006976
+file 4226646016
+kernel 96915456
+kernel_stack 98304
+pagetables 786432
+shmem 0
+file_mapped 3502080
+file_dirty 32768
+file_writeback 0
+anon_thp 0
+file_thp 0
+shmem_thp 0
+inactive_anon 0
+active_anon 315006976
+inactive_file 4223172608
+active_file 3473408
+slab_reclaimable 95878504
+slab_unreclaimable 145376
+slab 96023880
+pgfault 579312
+pgmajfault 0

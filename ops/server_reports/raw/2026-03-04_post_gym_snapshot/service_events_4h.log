@@ -1,0 +1,63 @@
+Mar 04 08:44:38 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 08:44:38 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 08:44:40 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 08:54:59 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 08:54:59 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 08:55:01 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:02:36 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:02:36 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:02:38 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:09:55 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:09:55 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:09:57 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:17:02 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:17:02 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:17:04 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:24:07 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:24:07 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:24:09 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:31:03 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:31:03 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:31:05 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:37:58 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:37:58 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:38:00 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:44:59 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:44:59 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:45:01 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:52:05 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:52:05 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:52:07 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 09:59:08 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 09:59:08 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 09:59:10 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 10:06:14 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 10:06:14 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 10:06:16 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 10:13:22 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 10:13:22 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 10:13:24 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 10:20:33 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 10:20:33 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 10:20:35 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 10:28:01 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 10:28:01 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 10:28:03 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 10:35:25 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 10:35:25 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 10:35:27 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 10:42:36 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 10:42:36 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 10:42:38 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 10:49:45 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 10:49:45 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 10:49:47 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 10:57:20 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 10:57:20 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 10:57:23 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 11:04:56 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 11:04:56 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 11:04:58 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.
+Mar 04 11:23:33 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Main process exited, code=killed, status=9/KILL
+Mar 04 11:23:33 ip-172-31-41-166 systemd[1]: solana-copy-bot.service: Failed with result 'signal'.
+Mar 04 11:23:35 ip-172-31-41-166 systemd[1]: Started solana-copy-bot.service - Solana Copy Bot Application.

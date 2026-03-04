@@ -1,0 +1,6 @@
+observed_swaps_rows=unavailable
+wallets_rows=unavailable
+wallet_metrics_rows=unavailable
+followlist_active=unavailable
+copy_signals_rows=unavailable
+orders_rows=unavailable

@@ -1,0 +1,49 @@
+utc_now=2026-03-04T13:59:01Z
+[service:solana-copy-bot]
+MainPID=101133
+NRestarts=0
+ExecMainStartTimestamp=Wed 2026-03-04 12:25:02 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 12:25:02 UTC
+[service:copybot-executor]
+MainPID=101117
+NRestarts=0
+ExecMainStartTimestamp=Wed 2026-03-04 12:25:02 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 12:25:02 UTC
+[service:copybot-adapter]
+MainPID=101128
+NRestarts=0
+ExecMainStartTimestamp=Wed 2026-03-04 12:25:02 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 12:25:02 UTC
+[service:copybot-execution-mock-upstream]
+MainPID=101110
+NRestarts=0
+ExecMainStartTimestamp=Wed 2026-03-04 12:25:02 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 12:25:02 UTC
+[health:8080]
+{"contract_version":"v1","routes":["rpc","jito"],"signer_pubkey":"11111111111111111111111111111111","status":"ok"}
+[health:8090]
+{"backend_mode":"upstream","contract_version":"v1","enabled_routes":["jito","rpc"],"idempotency_store_status":"ok","routes":["jito","rpc"],"send_rpc_enabled_routes":[],"send_rpc_fallback_routes":[],"send_rpc_routes":[],"signer_keypair_file_configured":true,"signer_kms_key_id_configured":false,"signer_pubkey":"11111111111111111111111111111111","signer_source":"file","status":"ok","submit_fastlane_enabled":false}
+[health:18080]
+{"status": "ok", "service": "mock_execution_upstream", "version": "v1", "ts": "2026-03-04T13:59:01Z"}
+[ps]
+ 101110    5639  0.0  0.2 20148 103516 python3 /var/www/solana-copy-bot/tools/mock_execution_upstream.py
+ 101117    5639  0.0  0.1  9072 217512 /var/www/solana-copy-bot/target/release/copybot-executor
+ 101128    5639  0.0  0.0  6940 145648 /var/www/solana-copy-bot/target/release/copybot-adapter
+ 101133    5639 10.7  3.2 256860 828712 /var/www/solana-copy-bot/target/release/copybot-app --config /etc/solana-copy-bot/live.server.toml
+[proc_status_copybot_app]
+Name:	copybot-app
+VmHWM:	  487564 kB
+VmRSS:	  256860 kB
+Threads:	7
+[memory]
+               total        used        free      shared  buff/cache   available
+Mem:           7.6Gi       843Mi       136Mi       2.9Mi       7.0Gi       6.8Gi
+Swap:             0B          0B          0B

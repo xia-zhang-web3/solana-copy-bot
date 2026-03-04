@@ -1,0 +1,11 @@
+[health:8080]
+{"contract_version":"v1","routes":["rpc","jito"],"signer_pubkey":"11111111111111111111111111111111","status":"ok"}
+[health:8090]
+{"contract_version":"v1","enabled_routes":["jito","rpc"],"idempotency_store_status":"ok","routes":["jito","rpc"],"send_rpc_enabled_routes":[],"send_rpc_fallback_routes":[],"send_rpc_routes":[],"signer_keypair_file_configured":true,"signer_kms_key_id_configured":false,"signer_pubkey":"11111111111111111111111111111111","signer_source":"file","status":"ok","submit_fastlane_enabled":false}
+[health:18080]
+{"status": "ok", "service": "mock_execution_upstream", "version": "v1", "ts": "2026-03-04T11:34:07Z"}
+[ps]
+  82478   63070  0.0  0.1 15196 103512 python3 /var/www/solana-copy-bot/tools/mock_execution_upstream.py
+  82609   63050  0.0  0.0  6760 217504 /var/www/solana-copy-bot/target/release/copybot-executor
+  82610   63050  0.0  0.0  5448 145576 /var/www/solana-copy-bot/target/release/copybot-adapter
+  99453      24  2.3  0.1 11772 155980 /var/www/solana-copy-bot/target/release/copybot-app --config /etc/solana-copy-bot/live.server.toml
