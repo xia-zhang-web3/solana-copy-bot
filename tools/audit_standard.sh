@@ -62,14 +62,19 @@ if [[ "$contract_smoke_mode" == "targeted" && -z "$contract_smoke_target_tests" 
 fi
 OPS_SMOKE_MODE_RAW="${AUDIT_OPS_SMOKE_MODE:-full}"
 case "$OPS_SMOKE_MODE_RAW" in
-full | targeted | auto)
+full | targeted | targeted_fast | auto)
   ops_smoke_mode="$OPS_SMOKE_MODE_RAW"
   ;;
 *)
-  echo "AUDIT_OPS_SMOKE_MODE must be one of: full,targeted,auto (got: $OPS_SMOKE_MODE_RAW)" >&2
+  echo "AUDIT_OPS_SMOKE_MODE must be one of: full,targeted,targeted_fast,auto (got: $OPS_SMOKE_MODE_RAW)" >&2
   exit 1
   ;;
 esac
+ops_smoke_profile_default="full"
+if [[ "$ops_smoke_mode" == "targeted_fast" ]]; then
+  ops_smoke_mode="targeted"
+  ops_smoke_profile_default="fast"
+fi
 OPS_SMOKE_PRESET_RAW="$(trim_string "${AUDIT_OPS_SMOKE_PRESET:-}")"
 case "$OPS_SMOKE_PRESET_RAW" in
 "" | common_parsers | heavy_runtime_chain | audit_guardpack)
@@ -111,7 +116,7 @@ if [[ "$ops_smoke_mode" == "targeted" ]]; then
     exit 1
   fi
 fi
-OPS_SMOKE_PROFILE_RAW="${AUDIT_OPS_SMOKE_PROFILE:-full}"
+OPS_SMOKE_PROFILE_RAW="${AUDIT_OPS_SMOKE_PROFILE:-$ops_smoke_profile_default}"
 case "$OPS_SMOKE_PROFILE_RAW" in
 full | fast)
   ops_smoke_profile="$OPS_SMOKE_PROFILE_RAW"

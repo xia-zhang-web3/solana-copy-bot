@@ -8904,7 +8904,7 @@ run_audit_ops_smoke_mode_guard_case() {
       exit 1
     fi
   fi
-  assert_contains "$invalid_mode_output" "AUDIT_OPS_SMOKE_MODE must be one of: full,targeted,auto"
+  assert_contains "$invalid_mode_output" "AUDIT_OPS_SMOKE_MODE must be one of: full,targeted,targeted_fast,auto"
 
   local empty_targets_output=""
   if empty_targets_output="$(
@@ -9069,6 +9069,21 @@ run_audit_ops_smoke_mode_guard_case() {
   assert_contains "$full_auto_targeted_output" "[ok] common timeout parser"
   assert_contains "$full_auto_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$full_auto_targeted_output" "[audit:full] PASS"
+
+  local full_targeted_fast_mode_output=""
+  full_targeted_fast_mode_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted_fast" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_targeted_fast_mode_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast, preset=n/a)"
+  assert_contains "$full_targeted_fast_mode_output" "[ok] common timeout parser"
+  assert_contains "$full_targeted_fast_mode_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
+  assert_contains "$full_targeted_fast_mode_output" "[audit:full] PASS"
 
   local full_targeted_preset_output=""
   full_targeted_preset_output="$(
