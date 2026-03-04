@@ -9826,6 +9826,11 @@ EOF_POISON_INDEX
 }
 
 run_refactor_phase_gate_case() {
+  local case_profile="${1:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_refactor_phase_gate_case profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local phase_output_dir="$TMP_DIR/refactor-phase-gate-output"
   local phase_fixture_dir="$TMP_DIR/refactor-phase-gate-fixture"
   local phase_output=""
@@ -9861,6 +9866,11 @@ run_refactor_phase_gate_case() {
     exit 1
   fi
 
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] refactor phase gate (fast)"
+    return
+  fi
+
   local normalized_go_nogo_text=""
   local normalized_rehearsal_text=""
   local normalized_rollout_text=""
@@ -9877,6 +9887,28 @@ run_refactor_phase_gate_case() {
   assert_contains "$normalized_rollout_text" "rehearsal_nested_go_nogo_require_ingestion_grpc: true"
   assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_verdict: PASS"
   assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_reason_code: grpc_active_source_yellowstone"
+
+  local phase_invalid_ingestion_source_output=""
+  if phase_invalid_ingestion_source_output="$(
+    REFACTOR_PHASE_GATE_INGESTION_SOURCE="helius_ws" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.invalid-ingestion" --fixture-dir "$phase_fixture_dir.invalid-ingestion" 2>&1
+  )"; then
+    echo "expected refactor_phase_gate to fail-close for non-yellowstone ingestion source in strict mode" >&2
+    exit 1
+  fi
+  assert_contains "$phase_invalid_ingestion_source_output" "phase-gate error: execution_devnet_rehearsal.sh failed for stage=rehearsal"
+  assert_contains "$phase_invalid_ingestion_source_output" "overall_go_nogo_verdict: NO_GO"
+
+  local phase_invalid_bool_output=""
+  if phase_invalid_bool_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC="sometimes" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.invalid-bool" --fixture-dir "$phase_fixture_dir.invalid-bool" 2>&1
+  )"; then
+    echo "expected refactor_phase_gate to fail-close for invalid REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC token" >&2
+    exit 1
+  fi
+  assert_contains "$phase_invalid_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC must be a boolean token"
+
   echo "[ok] refactor phase gate"
 }
 
@@ -9907,7 +9939,8 @@ expand_ops_smoke_target_case() {
       "executor_rollout_evidence" \
       "adapter_rollout_evidence" \
       "execution_server_rollout" \
-      "execution_runtime_readiness"
+      "execution_runtime_readiness" \
+      "refactor_phase_gate"
     ;;
   *)
     printf '%s\n' "$token"
@@ -9919,6 +9952,7 @@ is_ops_smoke_heavy_case() {
   local case_name="$1"
   case "$case_name" in
   executor_preflight | executor_preflight_fast | \
+    refactor_phase_gate | refactor_phase_gate_fast | \
     windowed_signoff | windowed_signoff_fast | \
     route_fee_signoff | route_fee_signoff_fast | \
     devnet_rehearsal | devnet_rehearsal_fast | \
@@ -10062,7 +10096,11 @@ run_targeted_smoke_cases() {
       executed_cases=$((executed_cases + 1))
       ;;
     refactor_phase_gate | run_refactor_phase_gate_case)
-      run_refactor_phase_gate_case
+      run_refactor_phase_gate_case "$targeted_case_profile"
+      executed_cases=$((executed_cases + 1))
+      ;;
+    refactor_phase_gate_fast | run_refactor_phase_gate_case_fast)
+      run_refactor_phase_gate_case "fast"
       executed_cases=$((executed_cases + 1))
       ;;
     executor_preflight | run_executor_preflight_case | executor_preflight_fast | run_executor_preflight_case_fast | windowed_signoff | run_windowed_signoff_report_case | windowed_signoff_fast | run_windowed_signoff_report_case_fast | route_fee_signoff | run_execution_route_fee_signoff_case | route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast | devnet_rehearsal | run_devnet_rehearsal_case | devnet_rehearsal_fast | run_devnet_rehearsal_case_fast | executor_rollout_evidence | run_executor_rollout_evidence_case | executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast | adapter_rollout_evidence | run_adapter_rollout_evidence_case | adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast | execution_server_rollout | run_execution_server_rollout_report_case | execution_server_rollout_fast | run_execution_server_rollout_report_case_fast | execution_runtime_readiness | run_execution_runtime_readiness_report_case | execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
@@ -10145,7 +10183,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_parsers, audit_guardpack, heavy_runtime_chain, common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, refactor_phase_gate, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
+      echo "known values: common_parsers, audit_guardpack, heavy_runtime_chain, common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, refactor_phase_gate, refactor_phase_gate_fast, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
       exit 1
       ;;
     esac
@@ -10254,7 +10292,7 @@ main() {
   run_audit_executor_test_mode_guard_case
   run_audit_ops_smoke_mode_guard_case
   run_evidence_bundle_pack_case
-  run_refactor_phase_gate_case
+  run_refactor_phase_gate_case "fast"
   run_ops_smoke_targeted_dispatch_case
 
   local legacy_db="$TMP_DIR/legacy.db"
