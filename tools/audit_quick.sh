@@ -9,12 +9,30 @@ cd "$ROOT_DIR"
 
 MAX_AUDIT_TIMEOUT_SEC=86400
 
-SKIP_CONTRACT_SMOKE_RAW="${AUDIT_SKIP_CONTRACT_SMOKE:-false}"
+AUDIT_PROFILE_RAW="${AUDIT_PROFILE:-default}"
+case "$AUDIT_PROFILE_RAW" in
+default | ops_fast)
+  audit_profile="$AUDIT_PROFILE_RAW"
+  ;;
+*)
+  echo "AUDIT_PROFILE must be one of: default,ops_fast (got: $AUDIT_PROFILE_RAW)" >&2
+  exit 1
+  ;;
+esac
+
+profile_skip_contract_smoke_default="false"
+profile_skip_executor_tests_default="false"
+if [[ "$audit_profile" == "ops_fast" ]]; then
+  profile_skip_contract_smoke_default="true"
+  profile_skip_executor_tests_default="true"
+fi
+
+SKIP_CONTRACT_SMOKE_RAW="${AUDIT_SKIP_CONTRACT_SMOKE:-$profile_skip_contract_smoke_default}"
 if ! skip_contract_smoke="$(parse_bool_token_strict "$SKIP_CONTRACT_SMOKE_RAW")"; then
   echo "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_CONTRACT_SMOKE_RAW" >&2
   exit 1
 fi
-SKIP_EXECUTOR_TESTS_RAW="${AUDIT_SKIP_EXECUTOR_TESTS:-false}"
+SKIP_EXECUTOR_TESTS_RAW="${AUDIT_SKIP_EXECUTOR_TESTS:-$profile_skip_executor_tests_default}"
 if ! skip_executor_tests="$(parse_bool_token_strict "$SKIP_EXECUTOR_TESTS_RAW")"; then
   echo "AUDIT_SKIP_EXECUTOR_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_EXECUTOR_TESTS_RAW" >&2
   exit 1
@@ -147,14 +165,14 @@ run_executor_tests() {
 }
 
 if [[ "$skip_executor_tests" == "false" ]]; then
-  echo "[audit:quick] cargo test -p copybot-executor -q (mode=${executor_test_mode}, timeout=${executor_test_timeout_sec}s)"
+  echo "[audit:quick] cargo test -p copybot-executor -q (profile=${audit_profile}, mode=${executor_test_mode}, timeout=${executor_test_timeout_sec}s)"
   run_executor_tests
 else
   echo "[audit:quick] AUDIT_SKIP_EXECUTOR_TESTS=true -> skipped cargo test -p copybot-executor -q"
 fi
 
 if [[ "$skip_contract_smoke" == "false" ]]; then
-  echo "[audit:quick] tools/executor_contract_smoke_test.sh (mode=${contract_smoke_mode}, timeout=${contract_smoke_timeout_sec}s)"
+  echo "[audit:quick] tools/executor_contract_smoke_test.sh (profile=${audit_profile}, mode=${contract_smoke_mode}, timeout=${contract_smoke_timeout_sec}s)"
   run_contract_smoke
 else
   echo "[audit:quick] AUDIT_SKIP_CONTRACT_SMOKE=true -> skipped tools/executor_contract_smoke_test.sh"

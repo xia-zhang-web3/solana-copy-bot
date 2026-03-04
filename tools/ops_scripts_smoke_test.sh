@@ -8631,6 +8631,34 @@ run_audit_quick_strict_bool_guard_case() {
     fi
   fi
   assert_contains "$invalid_output" "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token"
+
+  local invalid_profile_output=""
+  if invalid_profile_output="$(
+    AUDIT_PROFILE="turbo" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      bash "$ROOT_DIR/tools/audit_quick.sh" 2>&1
+  )"; then
+    echo "expected audit_quick.sh to fail for invalid AUDIT_PROFILE token" >&2
+    exit 1
+  else
+    local invalid_profile_exit_code=$?
+    if [[ "$invalid_profile_exit_code" -ne 1 ]]; then
+      echo "expected audit_quick.sh invalid AUDIT_PROFILE exit code 1, got $invalid_profile_exit_code" >&2
+      echo "$invalid_profile_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_profile_output" "AUDIT_PROFILE must be one of: default,ops_fast"
+
+  local ops_fast_output=""
+  ops_fast_output="$(
+    AUDIT_PROFILE="ops_fast" \
+      bash "$ROOT_DIR/tools/audit_quick.sh"
+  )"
+  assert_contains "$ops_fast_output" "[audit:quick] AUDIT_SKIP_EXECUTOR_TESTS=true -> skipped cargo test -p copybot-executor -q"
+  assert_contains "$ops_fast_output" "[audit:quick] AUDIT_SKIP_CONTRACT_SMOKE=true -> skipped tools/executor_contract_smoke_test.sh"
+  assert_contains "$ops_fast_output" "[audit:quick] PASS"
   echo "[ok] audit quick strict bool guard"
 }
 
@@ -8682,7 +8710,7 @@ run_audit_contract_smoke_mode_guard_case() {
       AUDIT_CONTRACT_SMOKE_TARGET_TESTS="constant_time_eq_checks_content" \
       bash "$ROOT_DIR/tools/audit_standard.sh"
   )"
-  assert_contains "$standard_targeted_output" "[audit:quick] tools/executor_contract_smoke_test.sh (mode=targeted"
+  assert_contains "$standard_targeted_output" "[audit:quick] tools/executor_contract_smoke_test.sh (profile=default, mode=targeted"
   assert_contains "$standard_targeted_output" "[audit:standard] PASS"
 
   local full_targeted_output=""
@@ -8695,7 +8723,7 @@ run_audit_contract_smoke_mode_guard_case() {
       AUDIT_CONTRACT_SMOKE_TARGET_TESTS="constant_time_eq_checks_content" \
       bash "$ROOT_DIR/tools/audit_full.sh"
   )"
-  assert_contains "$full_targeted_output" "[audit:quick] tools/executor_contract_smoke_test.sh (mode=targeted"
+  assert_contains "$full_targeted_output" "[audit:quick] tools/executor_contract_smoke_test.sh (profile=default, mode=targeted"
   assert_contains "$full_targeted_output" "[audit:full] PASS"
   echo "[ok] audit contract smoke mode guard"
 }
@@ -8853,7 +8881,7 @@ run_audit_executor_test_mode_guard_case() {
       AUDIT_EXECUTOR_TEST_TARGETS="constant_time_eq_checks_content" \
       bash "$ROOT_DIR/tools/audit_quick.sh"
   )"
-  assert_contains "$quick_targeted_output" "[audit:quick] cargo test -p copybot-executor -q (mode=targeted"
+  assert_contains "$quick_targeted_output" "[audit:quick] cargo test -p copybot-executor -q (profile=default, mode=targeted"
   assert_contains "$quick_targeted_output" "[audit:quick] PASS"
 
   local standard_targeted_output=""
@@ -8866,7 +8894,7 @@ run_audit_executor_test_mode_guard_case() {
       AUDIT_EXECUTOR_TEST_TARGETS="constant_time_eq_checks_content" \
       bash "$ROOT_DIR/tools/audit_standard.sh"
   )"
-  assert_contains "$standard_targeted_output" "[audit:quick] cargo test -p copybot-executor -q (mode=targeted"
+  assert_contains "$standard_targeted_output" "[audit:quick] cargo test -p copybot-executor -q (profile=default, mode=targeted"
   assert_contains "$standard_targeted_output" "[audit:standard] PASS"
 
   local full_targeted_output=""
@@ -8879,7 +8907,7 @@ run_audit_executor_test_mode_guard_case() {
       AUDIT_EXECUTOR_TEST_TARGETS="constant_time_eq_checks_content" \
       bash "$ROOT_DIR/tools/audit_full.sh"
   )"
-  assert_contains "$full_targeted_output" "[audit:quick] cargo test -p copybot-executor -q (mode=targeted"
+  assert_contains "$full_targeted_output" "[audit:quick] cargo test -p copybot-executor -q (profile=default, mode=targeted"
   assert_contains "$full_targeted_output" "[audit:full] PASS"
   echo "[ok] audit executor test mode guard"
 }
@@ -8905,6 +8933,44 @@ run_audit_ops_smoke_mode_guard_case() {
     fi
   fi
   assert_contains "$invalid_mode_output" "AUDIT_OPS_SMOKE_MODE must be one of: full,targeted,targeted_fast,auto"
+
+  local invalid_audit_profile_full_output=""
+  if invalid_audit_profile_full_output="$(
+    AUDIT_PROFILE="turbo" \
+      AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for invalid AUDIT_PROFILE token" >&2
+    exit 1
+  else
+    local invalid_audit_profile_full_exit_code=$?
+    if [[ "$invalid_audit_profile_full_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh invalid AUDIT_PROFILE exit code 1, got $invalid_audit_profile_full_exit_code" >&2
+      echo "$invalid_audit_profile_full_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_audit_profile_full_output" "AUDIT_PROFILE must be one of: default,ops_fast"
+
+  local invalid_audit_profile_standard_output=""
+  if invalid_audit_profile_standard_output="$(
+    AUDIT_PROFILE="turbo" \
+      AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_PACKAGE_TESTS="true" \
+      bash "$ROOT_DIR/tools/audit_standard.sh" 2>&1
+  )"; then
+    echo "expected audit_standard.sh to fail for invalid AUDIT_PROFILE token" >&2
+    exit 1
+  else
+    local invalid_audit_profile_standard_exit_code=$?
+    if [[ "$invalid_audit_profile_standard_exit_code" -ne 1 ]]; then
+      echo "expected audit_standard.sh invalid AUDIT_PROFILE exit code 1, got $invalid_audit_profile_standard_exit_code" >&2
+      echo "$invalid_audit_profile_standard_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_audit_profile_standard_output" "AUDIT_PROFILE must be one of: default,ops_fast"
 
   local empty_targets_output=""
   if empty_targets_output="$(
@@ -9098,6 +9164,18 @@ run_audit_ops_smoke_mode_guard_case() {
   assert_contains "$full_targeted_fast_default_skip_output" "[audit:full] AUDIT_SKIP_OPS_SMOKE=true -> skipped tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast, preset=n/a) cases=heavy_runtime_chain"
   assert_contains "$full_targeted_fast_default_skip_output" "[audit:full] PASS"
 
+  local full_profile_ops_fast_default_skip_output=""
+  full_profile_ops_fast_default_skip_output="$(
+    AUDIT_PROFILE="ops_fast" \
+      AUDIT_SKIP_OPS_SMOKE="true" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_profile_ops_fast_default_skip_output" "[audit:quick] AUDIT_SKIP_EXECUTOR_TESTS=true -> skipped cargo test -p copybot-executor -q"
+  assert_contains "$full_profile_ops_fast_default_skip_output" "[audit:quick] AUDIT_SKIP_CONTRACT_SMOKE=true -> skipped tools/executor_contract_smoke_test.sh"
+  assert_contains "$full_profile_ops_fast_default_skip_output" "[audit:full] AUDIT_SKIP_WORKSPACE_TESTS=true -> skipped cargo test --workspace -q"
+  assert_contains "$full_profile_ops_fast_default_skip_output" "[audit:full] AUDIT_SKIP_OPS_SMOKE=true -> skipped tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast, preset=n/a) cases=heavy_runtime_chain"
+  assert_contains "$full_profile_ops_fast_default_skip_output" "[audit:full] PASS"
+
   local full_targeted_auto_profile_output=""
   full_targeted_auto_profile_output="$(
     AUDIT_SKIP_OPS_SMOKE="false" \
@@ -9222,6 +9300,18 @@ run_audit_ops_smoke_mode_guard_case() {
   )"
   assert_contains "$standard_targeted_fast_default_skip_output" "[audit:standard] targeted ops-smoke requested but AUDIT_SKIP_OPS_SMOKE=true -> skipped (mode=targeted, profile=fast, preset=n/a) cases=heavy_runtime_chain"
   assert_contains "$standard_targeted_fast_default_skip_output" "[audit:standard] PASS"
+
+  local standard_profile_ops_fast_default_skip_output=""
+  standard_profile_ops_fast_default_skip_output="$(
+    AUDIT_PROFILE="ops_fast" \
+      AUDIT_SKIP_OPS_SMOKE="true" \
+      bash "$ROOT_DIR/tools/audit_standard.sh"
+  )"
+  assert_contains "$standard_profile_ops_fast_default_skip_output" "[audit:quick] AUDIT_SKIP_EXECUTOR_TESTS=true -> skipped cargo test -p copybot-executor -q"
+  assert_contains "$standard_profile_ops_fast_default_skip_output" "[audit:quick] AUDIT_SKIP_CONTRACT_SMOKE=true -> skipped tools/executor_contract_smoke_test.sh"
+  assert_contains "$standard_profile_ops_fast_default_skip_output" "[audit:standard] AUDIT_SKIP_PACKAGE_TESTS=true -> skipped changed package tests"
+  assert_contains "$standard_profile_ops_fast_default_skip_output" "[audit:standard] targeted ops-smoke requested but AUDIT_SKIP_OPS_SMOKE=true -> skipped (mode=targeted, profile=fast, preset=n/a) cases=heavy_runtime_chain"
+  assert_contains "$standard_profile_ops_fast_default_skip_output" "[audit:standard] PASS"
   echo "[ok] audit ops smoke mode guard"
 }
 

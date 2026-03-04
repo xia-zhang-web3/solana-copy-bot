@@ -9,18 +9,46 @@ cd "$ROOT_DIR"
 
 MAX_AUDIT_TIMEOUT_SEC=86400
 
+AUDIT_PROFILE_RAW="${AUDIT_PROFILE:-default}"
+case "$AUDIT_PROFILE_RAW" in
+default | ops_fast)
+  audit_profile="$AUDIT_PROFILE_RAW"
+  ;;
+*)
+  echo "AUDIT_PROFILE must be one of: default,ops_fast (got: $AUDIT_PROFILE_RAW)" >&2
+  exit 1
+  ;;
+esac
+profile_skip_ops_smoke_default="false"
+profile_skip_contract_smoke_default=""
+profile_skip_executor_tests_default="false"
+profile_skip_package_tests_default="false"
+profile_ops_smoke_mode_default="full"
+if [[ "$audit_profile" == "ops_fast" ]]; then
+  profile_skip_contract_smoke_default="true"
+  profile_skip_executor_tests_default="true"
+  profile_skip_package_tests_default="true"
+  profile_ops_smoke_mode_default="targeted_fast"
+fi
+
 DIFF_RANGE="${1:-${AUDIT_DIFF_RANGE:-}}"
-SKIP_OPS_SMOKE_RAW="${AUDIT_SKIP_OPS_SMOKE:-false}"
+SKIP_OPS_SMOKE_RAW="${AUDIT_SKIP_OPS_SMOKE:-$profile_skip_ops_smoke_default}"
 if ! skip_ops_smoke="$(parse_bool_token_strict "$SKIP_OPS_SMOKE_RAW")"; then
   echo "AUDIT_SKIP_OPS_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_OPS_SMOKE_RAW" >&2
   exit 1
 fi
-SKIP_CONTRACT_SMOKE_RAW="${AUDIT_SKIP_CONTRACT_SMOKE:-$skip_ops_smoke}"
+if [[ -n "${AUDIT_SKIP_CONTRACT_SMOKE+x}" ]]; then
+  SKIP_CONTRACT_SMOKE_RAW="$AUDIT_SKIP_CONTRACT_SMOKE"
+elif [[ -n "$profile_skip_contract_smoke_default" ]]; then
+  SKIP_CONTRACT_SMOKE_RAW="$profile_skip_contract_smoke_default"
+else
+  SKIP_CONTRACT_SMOKE_RAW="$skip_ops_smoke"
+fi
 if ! skip_contract_smoke="$(parse_bool_token_strict "$SKIP_CONTRACT_SMOKE_RAW")"; then
   echo "AUDIT_SKIP_CONTRACT_SMOKE must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_CONTRACT_SMOKE_RAW" >&2
   exit 1
 fi
-SKIP_EXECUTOR_TESTS_RAW="${AUDIT_SKIP_EXECUTOR_TESTS:-false}"
+SKIP_EXECUTOR_TESTS_RAW="${AUDIT_SKIP_EXECUTOR_TESTS:-$profile_skip_executor_tests_default}"
 if ! skip_executor_tests="$(parse_bool_token_strict "$SKIP_EXECUTOR_TESTS_RAW")"; then
   echo "AUDIT_SKIP_EXECUTOR_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_EXECUTOR_TESTS_RAW" >&2
   exit 1
@@ -40,7 +68,7 @@ if [[ "$executor_test_mode" == "targeted" && -z "$executor_test_targets" ]]; the
   echo "AUDIT_EXECUTOR_TEST_TARGETS must be non-empty when AUDIT_EXECUTOR_TEST_MODE=targeted" >&2
   exit 1
 fi
-SKIP_PACKAGE_TESTS_RAW="${AUDIT_SKIP_PACKAGE_TESTS:-false}"
+SKIP_PACKAGE_TESTS_RAW="${AUDIT_SKIP_PACKAGE_TESTS:-$profile_skip_package_tests_default}"
 if ! skip_package_tests="$(parse_bool_token_strict "$SKIP_PACKAGE_TESTS_RAW")"; then
   echo "AUDIT_SKIP_PACKAGE_TESTS must be boolean token (true/false/1/0/yes/no/on/off), got: $SKIP_PACKAGE_TESTS_RAW" >&2
   exit 1
@@ -60,7 +88,7 @@ if [[ "$contract_smoke_mode" == "targeted" && -z "$contract_smoke_target_tests" 
   echo "AUDIT_CONTRACT_SMOKE_TARGET_TESTS must be non-empty when AUDIT_CONTRACT_SMOKE_MODE=targeted" >&2
   exit 1
 fi
-OPS_SMOKE_MODE_RAW="${AUDIT_OPS_SMOKE_MODE:-full}"
+OPS_SMOKE_MODE_RAW="${AUDIT_OPS_SMOKE_MODE:-$profile_ops_smoke_mode_default}"
 case "$OPS_SMOKE_MODE_RAW" in
 full | targeted | targeted_fast | auto)
   ops_smoke_mode="$OPS_SMOKE_MODE_RAW"
@@ -226,7 +254,8 @@ if ! changed_files="$(collect_changed_files)"; then
   exit 1
 fi
 
-echo "[audit:standard] running quick baseline"
+echo "[audit:standard] running quick baseline (profile=$audit_profile)"
+AUDIT_PROFILE="$audit_profile" \
 AUDIT_SKIP_CONTRACT_SMOKE="$skip_contract_smoke" \
 AUDIT_CONTRACT_SMOKE_TIMEOUT_SEC="$contract_smoke_timeout_sec" \
 AUDIT_SKIP_EXECUTOR_TESTS="$skip_executor_tests" \
