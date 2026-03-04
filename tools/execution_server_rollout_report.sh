@@ -228,13 +228,17 @@ executor_final_capture="$step_root/executor_final_capture_${now_compact}.txt"
 executor_final_artifacts_written="n/a"
 executor_final_nested_package_bundle_enabled="n/a"
 executor_final_go_nogo_require_executor_upstream="n/a"
+executor_final_go_nogo_require_ingestion_grpc="n/a"
 executor_final_executor_env_path="n/a"
 executor_final_rollout_nested_go_nogo_require_executor_upstream="n/a"
+executor_final_rollout_nested_go_nogo_require_ingestion_grpc="n/a"
 executor_final_rollout_nested_executor_env_path="n/a"
 executor_final_rollout_nested_executor_backend_mode_guard_verdict="n/a"
 executor_final_rollout_nested_executor_backend_mode_guard_reason_code="n/a"
 executor_final_rollout_nested_executor_upstream_endpoint_guard_verdict="n/a"
 executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+executor_final_rollout_nested_ingestion_grpc_guard_verdict="n/a"
+executor_final_rollout_nested_ingestion_grpc_guard_reason_code="n/a"
 
 adapter_final_output=""
 adapter_final_exit_code=3
@@ -246,13 +250,17 @@ adapter_final_capture="$step_root/adapter_final_capture_${now_compact}.txt"
 adapter_final_artifacts_written="n/a"
 adapter_final_nested_package_bundle_enabled="n/a"
 adapter_final_go_nogo_require_executor_upstream="n/a"
+adapter_final_go_nogo_require_ingestion_grpc="n/a"
 adapter_final_executor_env_path="n/a"
 adapter_final_rollout_nested_go_nogo_require_executor_upstream="n/a"
+adapter_final_rollout_nested_go_nogo_require_ingestion_grpc="n/a"
 adapter_final_rollout_nested_executor_env_path="n/a"
 adapter_final_rollout_nested_executor_backend_mode_guard_verdict="n/a"
 adapter_final_rollout_nested_executor_backend_mode_guard_reason_code="n/a"
 adapter_final_rollout_nested_executor_upstream_endpoint_guard_verdict="n/a"
 adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+adapter_final_rollout_nested_ingestion_grpc_guard_verdict="n/a"
+adapter_final_rollout_nested_ingestion_grpc_guard_reason_code="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if preflight_output="$(
@@ -520,6 +528,13 @@ package_bundle_enabled: false"
   elif [[ "$executor_final_go_nogo_require_executor_upstream" != "$server_rollout_require_executor_upstream_norm" ]]; then
     input_errors+=("nested executor final go_nogo_require_executor_upstream mismatch: nested=${executor_final_go_nogo_require_executor_upstream} expected=${server_rollout_require_executor_upstream_norm}")
   fi
+  executor_final_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "go_nogo_require_ingestion_grpc" "$executor_final_output")")"
+  if ! executor_final_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "go_nogo_require_ingestion_grpc" "$executor_final_output")"; then
+    input_errors+=("nested executor final go_nogo_require_ingestion_grpc must be boolean token, got: ${executor_final_go_nogo_require_ingestion_grpc_raw:-<empty>}")
+    executor_final_go_nogo_require_ingestion_grpc="unknown"
+  elif [[ "$executor_final_go_nogo_require_ingestion_grpc" != "$go_nogo_require_ingestion_grpc_norm" ]]; then
+    input_errors+=("nested executor final go_nogo_require_ingestion_grpc mismatch: nested=${executor_final_go_nogo_require_ingestion_grpc} expected=${go_nogo_require_ingestion_grpc_norm}")
+  fi
   executor_final_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$executor_final_output")")"
   if [[ -z "$executor_final_executor_env_path" ]]; then
     input_errors+=("nested executor final executor_env_path must be non-empty")
@@ -533,6 +548,13 @@ package_bundle_enabled: false"
     executor_final_rollout_nested_go_nogo_require_executor_upstream="unknown"
   elif [[ "$executor_final_rollout_nested_go_nogo_require_executor_upstream" != "$server_rollout_require_executor_upstream_norm" ]]; then
     input_errors+=("nested executor final rollout_nested_go_nogo_require_executor_upstream mismatch: nested=${executor_final_rollout_nested_go_nogo_require_executor_upstream} expected=${server_rollout_require_executor_upstream_norm}")
+  fi
+  executor_final_rollout_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_ingestion_grpc" "$executor_final_output")")"
+  if ! executor_final_rollout_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "rollout_nested_go_nogo_require_ingestion_grpc" "$executor_final_output")"; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_require_ingestion_grpc must be boolean token, got: ${executor_final_rollout_nested_go_nogo_require_ingestion_grpc_raw:-<empty>}")
+    executor_final_rollout_nested_go_nogo_require_ingestion_grpc="unknown"
+  elif [[ "$executor_final_rollout_nested_go_nogo_require_ingestion_grpc" != "$go_nogo_require_ingestion_grpc_norm" ]]; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_require_ingestion_grpc mismatch: nested=${executor_final_rollout_nested_go_nogo_require_ingestion_grpc} expected=${go_nogo_require_ingestion_grpc_norm}")
   fi
   executor_final_rollout_nested_executor_env_path="$(trim_string "$(extract_field "rollout_nested_executor_env_path" "$executor_final_output")")"
   if [[ -z "$executor_final_rollout_nested_executor_env_path" ]]; then
@@ -571,6 +593,21 @@ package_bundle_enabled: false"
     input_errors+=("nested executor final rollout_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
     executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code="n/a"
   fi
+  executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw="$(trim_string "$(extract_field "rollout_nested_ingestion_grpc_guard_verdict" "$executor_final_output")")"
+  executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper="$(printf '%s' "$executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  executor_final_rollout_nested_ingestion_grpc_guard_verdict="$(normalize_strict_guard_verdict "$executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw")"
+  if [[ -z "$executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw" ]]; then
+    input_errors+=("nested executor final rollout_nested_ingestion_grpc_guard_verdict must be non-empty")
+    executor_final_rollout_nested_ingestion_grpc_guard_verdict="UNKNOWN"
+  elif [[ "$executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper" != "PASS" && "$executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper" != "WARN" && "$executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper" != "UNKNOWN" && "$executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested executor final rollout_nested_ingestion_grpc_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${executor_final_rollout_nested_ingestion_grpc_guard_verdict_raw})")
+    executor_final_rollout_nested_ingestion_grpc_guard_verdict="UNKNOWN"
+  fi
+  executor_final_rollout_nested_ingestion_grpc_guard_reason_code="$(trim_string "$(extract_field "rollout_nested_ingestion_grpc_guard_reason_code" "$executor_final_output")")"
+  if [[ -z "$executor_final_rollout_nested_ingestion_grpc_guard_reason_code" ]]; then
+    input_errors+=("nested executor final rollout_nested_ingestion_grpc_guard_reason_code must be non-empty")
+    executor_final_rollout_nested_ingestion_grpc_guard_reason_code="n/a"
+  fi
   if [[ "$server_rollout_require_executor_upstream_norm" == "true" ]]; then
     if [[ "$executor_final_rollout_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested executor final rollout_nested_executor_backend_mode_guard_verdict cannot be SKIP when SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -584,6 +621,15 @@ package_bundle_enabled: false"
     fi
     if [[ "$executor_final_rollout_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested executor final rollout_nested_executor_upstream_endpoint_guard_verdict must be SKIP when SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${executor_final_rollout_nested_executor_upstream_endpoint_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_ingestion_grpc_norm" == "true" ]]; then
+    if [[ "$executor_final_rollout_nested_ingestion_grpc_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested executor final rollout_nested_ingestion_grpc_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=true")
+    fi
+  else
+    if [[ "$executor_final_rollout_nested_ingestion_grpc_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested executor final rollout_nested_ingestion_grpc_guard_verdict must be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=false (got: ${executor_final_rollout_nested_ingestion_grpc_guard_verdict})")
     fi
   fi
 
@@ -653,6 +699,13 @@ package_bundle_enabled: false"
   elif [[ "$adapter_final_go_nogo_require_executor_upstream" != "$server_rollout_require_executor_upstream_norm" ]]; then
     input_errors+=("nested adapter final go_nogo_require_executor_upstream mismatch: nested=${adapter_final_go_nogo_require_executor_upstream} expected=${server_rollout_require_executor_upstream_norm}")
   fi
+  adapter_final_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "go_nogo_require_ingestion_grpc" "$adapter_final_output")")"
+  if ! adapter_final_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "go_nogo_require_ingestion_grpc" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final go_nogo_require_ingestion_grpc must be boolean token, got: ${adapter_final_go_nogo_require_ingestion_grpc_raw:-<empty>}")
+    adapter_final_go_nogo_require_ingestion_grpc="unknown"
+  elif [[ "$adapter_final_go_nogo_require_ingestion_grpc" != "$go_nogo_require_ingestion_grpc_norm" ]]; then
+    input_errors+=("nested adapter final go_nogo_require_ingestion_grpc mismatch: nested=${adapter_final_go_nogo_require_ingestion_grpc} expected=${go_nogo_require_ingestion_grpc_norm}")
+  fi
   adapter_final_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$adapter_final_output")")"
   if [[ -z "$adapter_final_executor_env_path" ]]; then
     input_errors+=("nested adapter final executor_env_path must be non-empty")
@@ -666,6 +719,13 @@ package_bundle_enabled: false"
     adapter_final_rollout_nested_go_nogo_require_executor_upstream="unknown"
   elif [[ "$adapter_final_rollout_nested_go_nogo_require_executor_upstream" != "$server_rollout_require_executor_upstream_norm" ]]; then
     input_errors+=("nested adapter final rollout_nested_go_nogo_require_executor_upstream mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_executor_upstream} expected=${server_rollout_require_executor_upstream_norm}")
+  fi
+  adapter_final_rollout_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_ingestion_grpc" "$adapter_final_output")")"
+  if ! adapter_final_rollout_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "rollout_nested_go_nogo_require_ingestion_grpc" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_ingestion_grpc must be boolean token, got: ${adapter_final_rollout_nested_go_nogo_require_ingestion_grpc_raw:-<empty>}")
+    adapter_final_rollout_nested_go_nogo_require_ingestion_grpc="unknown"
+  elif [[ "$adapter_final_rollout_nested_go_nogo_require_ingestion_grpc" != "$go_nogo_require_ingestion_grpc_norm" ]]; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_ingestion_grpc mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_ingestion_grpc} expected=${go_nogo_require_ingestion_grpc_norm}")
   fi
   adapter_final_rollout_nested_executor_env_path="$(trim_string "$(extract_field "rollout_nested_executor_env_path" "$adapter_final_output")")"
   if [[ -z "$adapter_final_rollout_nested_executor_env_path" ]]; then
@@ -704,6 +764,21 @@ package_bundle_enabled: false"
     input_errors+=("nested adapter final rollout_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
     adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code="n/a"
   fi
+  adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw="$(trim_string "$(extract_field "rollout_nested_ingestion_grpc_guard_verdict" "$adapter_final_output")")"
+  adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper="$(printf '%s' "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  adapter_final_rollout_nested_ingestion_grpc_guard_verdict="$(normalize_strict_guard_verdict "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw")"
+  if [[ -z "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw" ]]; then
+    input_errors+=("nested adapter final rollout_nested_ingestion_grpc_guard_verdict must be non-empty")
+    adapter_final_rollout_nested_ingestion_grpc_guard_verdict="UNKNOWN"
+  elif [[ "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper" != "PASS" && "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper" != "WARN" && "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper" != "UNKNOWN" && "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested adapter final rollout_nested_ingestion_grpc_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${adapter_final_rollout_nested_ingestion_grpc_guard_verdict_raw})")
+    adapter_final_rollout_nested_ingestion_grpc_guard_verdict="UNKNOWN"
+  fi
+  adapter_final_rollout_nested_ingestion_grpc_guard_reason_code="$(trim_string "$(extract_field "rollout_nested_ingestion_grpc_guard_reason_code" "$adapter_final_output")")"
+  if [[ -z "$adapter_final_rollout_nested_ingestion_grpc_guard_reason_code" ]]; then
+    input_errors+=("nested adapter final rollout_nested_ingestion_grpc_guard_reason_code must be non-empty")
+    adapter_final_rollout_nested_ingestion_grpc_guard_reason_code="n/a"
+  fi
   if [[ "$server_rollout_require_executor_upstream_norm" == "true" ]]; then
     if [[ "$adapter_final_rollout_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested adapter final rollout_nested_executor_backend_mode_guard_verdict cannot be SKIP when SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -717,6 +792,15 @@ package_bundle_enabled: false"
     fi
     if [[ "$adapter_final_rollout_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested adapter final rollout_nested_executor_upstream_endpoint_guard_verdict must be SKIP when SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${adapter_final_rollout_nested_executor_upstream_endpoint_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_ingestion_grpc_norm" == "true" ]]; then
+    if [[ "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_ingestion_grpc_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=true")
+    fi
+  else
+    if [[ "$adapter_final_rollout_nested_ingestion_grpc_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_ingestion_grpc_guard_verdict must be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=false (got: ${adapter_final_rollout_nested_ingestion_grpc_guard_verdict})")
     fi
   fi
 fi
@@ -868,13 +952,17 @@ executor_final_summary_sha256: ${executor_final_summary_sha256:-n/a}
 executor_final_artifacts_written: ${executor_final_artifacts_written:-n/a}
 executor_final_nested_package_bundle_enabled: ${executor_final_nested_package_bundle_enabled:-n/a}
 executor_final_go_nogo_require_executor_upstream: ${executor_final_go_nogo_require_executor_upstream:-n/a}
+executor_final_go_nogo_require_ingestion_grpc: ${executor_final_go_nogo_require_ingestion_grpc:-n/a}
 executor_final_executor_env_path: ${executor_final_executor_env_path:-n/a}
 executor_final_rollout_nested_go_nogo_require_executor_upstream: ${executor_final_rollout_nested_go_nogo_require_executor_upstream:-n/a}
+executor_final_rollout_nested_go_nogo_require_ingestion_grpc: ${executor_final_rollout_nested_go_nogo_require_ingestion_grpc:-n/a}
 executor_final_rollout_nested_executor_env_path: ${executor_final_rollout_nested_executor_env_path:-n/a}
 executor_final_rollout_nested_executor_backend_mode_guard_verdict: ${executor_final_rollout_nested_executor_backend_mode_guard_verdict:-n/a}
 executor_final_rollout_nested_executor_backend_mode_guard_reason_code: ${executor_final_rollout_nested_executor_backend_mode_guard_reason_code:-n/a}
 executor_final_rollout_nested_executor_upstream_endpoint_guard_verdict: ${executor_final_rollout_nested_executor_upstream_endpoint_guard_verdict:-n/a}
 executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code: ${executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
+executor_final_rollout_nested_ingestion_grpc_guard_verdict: ${executor_final_rollout_nested_ingestion_grpc_guard_verdict:-n/a}
+executor_final_rollout_nested_ingestion_grpc_guard_reason_code: ${executor_final_rollout_nested_ingestion_grpc_guard_reason_code:-n/a}
 adapter_final_exit_code: $adapter_final_exit_code
 adapter_final_verdict: $adapter_final_verdict
 adapter_final_reason: ${adapter_final_reason:-n/a}
@@ -883,13 +971,17 @@ adapter_final_summary_sha256: ${adapter_final_summary_sha256:-n/a}
 adapter_final_artifacts_written: ${adapter_final_artifacts_written:-n/a}
 adapter_final_nested_package_bundle_enabled: ${adapter_final_nested_package_bundle_enabled:-n/a}
 adapter_final_go_nogo_require_executor_upstream: ${adapter_final_go_nogo_require_executor_upstream:-n/a}
+adapter_final_go_nogo_require_ingestion_grpc: ${adapter_final_go_nogo_require_ingestion_grpc:-n/a}
 adapter_final_executor_env_path: ${adapter_final_executor_env_path:-n/a}
 adapter_final_rollout_nested_go_nogo_require_executor_upstream: ${adapter_final_rollout_nested_go_nogo_require_executor_upstream:-n/a}
+adapter_final_rollout_nested_go_nogo_require_ingestion_grpc: ${adapter_final_rollout_nested_go_nogo_require_ingestion_grpc:-n/a}
 adapter_final_rollout_nested_executor_env_path: ${adapter_final_rollout_nested_executor_env_path:-n/a}
 adapter_final_rollout_nested_executor_backend_mode_guard_verdict: ${adapter_final_rollout_nested_executor_backend_mode_guard_verdict:-n/a}
 adapter_final_rollout_nested_executor_backend_mode_guard_reason_code: ${adapter_final_rollout_nested_executor_backend_mode_guard_reason_code:-n/a}
 adapter_final_rollout_nested_executor_upstream_endpoint_guard_verdict: ${adapter_final_rollout_nested_executor_upstream_endpoint_guard_verdict:-n/a}
 adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code: ${adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
+adapter_final_rollout_nested_ingestion_grpc_guard_verdict: ${adapter_final_rollout_nested_ingestion_grpc_guard_verdict:-n/a}
+adapter_final_rollout_nested_ingestion_grpc_guard_reason_code: ${adapter_final_rollout_nested_ingestion_grpc_guard_reason_code:-n/a}
 server_rollout_verdict: $overall_verdict
 server_rollout_reason: $overall_reason
 server_rollout_reason_code: $overall_reason_code

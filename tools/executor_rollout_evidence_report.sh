@@ -25,6 +25,7 @@ WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYN
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
+GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-$GO_NOGO_TEST_MODE}"
@@ -111,6 +112,7 @@ parse_rollout_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PAS
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream_norm
+parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE_INGESTION_GRPC" go_nogo_require_ingestion_grpc_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_rollout_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
@@ -268,11 +270,14 @@ rehearsal_tests_sha256=""
 rehearsal_artifacts_written="false"
 rehearsal_nested_package_bundle_enabled="unknown"
 rehearsal_nested_go_nogo_require_executor_upstream="n/a"
+rehearsal_nested_go_nogo_require_ingestion_grpc="n/a"
 rehearsal_nested_executor_env_path="n/a"
 rehearsal_nested_executor_backend_mode_guard_verdict="unknown"
 rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
 rehearsal_nested_executor_upstream_endpoint_guard_verdict="unknown"
 rehearsal_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+rehearsal_nested_ingestion_grpc_guard_verdict="unknown"
+rehearsal_nested_ingestion_grpc_guard_reason_code="n/a"
 tests_run=""
 tests_failed=""
 if [[ "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
@@ -284,11 +289,14 @@ if [[ "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_artifacts_written="n/a"
   rehearsal_nested_package_bundle_enabled="n/a"
   rehearsal_nested_go_nogo_require_executor_upstream="n/a"
+  rehearsal_nested_go_nogo_require_ingestion_grpc="n/a"
   rehearsal_nested_executor_env_path="n/a"
   rehearsal_nested_executor_backend_mode_guard_verdict="n/a"
   rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
   rehearsal_nested_executor_upstream_endpoint_guard_verdict="n/a"
   rehearsal_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+  rehearsal_nested_ingestion_grpc_guard_verdict="n/a"
+  rehearsal_nested_ingestion_grpc_guard_reason_code="n/a"
 elif ((${#input_errors[@]} > 0)); then
   rehearsal_exit_code=3
   rehearsal_verdict="NO_GO"
@@ -319,6 +327,7 @@ else
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream_norm" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
       WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
       WINDOWED_SIGNOFF_REQUIRED="$windowed_signoff_required_norm" \
       WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
@@ -375,6 +384,13 @@ else
   elif [[ "$rehearsal_nested_go_nogo_require_executor_upstream" != "$go_nogo_require_executor_upstream_norm" ]]; then
     input_errors+=("nested devnet rehearsal go_nogo_require_executor_upstream mismatch: nested=${rehearsal_nested_go_nogo_require_executor_upstream} expected=${go_nogo_require_executor_upstream_norm}")
   fi
+  rehearsal_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "go_nogo_require_ingestion_grpc" "$rehearsal_output")")"
+  if ! rehearsal_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "go_nogo_require_ingestion_grpc" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal go_nogo_require_ingestion_grpc must be boolean token, got: ${rehearsal_nested_go_nogo_require_ingestion_grpc_raw:-<empty>}")
+    rehearsal_nested_go_nogo_require_ingestion_grpc="unknown"
+  elif [[ "$rehearsal_nested_go_nogo_require_ingestion_grpc" != "$go_nogo_require_ingestion_grpc_norm" ]]; then
+    input_errors+=("nested devnet rehearsal go_nogo_require_ingestion_grpc mismatch: nested=${rehearsal_nested_go_nogo_require_ingestion_grpc} expected=${go_nogo_require_ingestion_grpc_norm}")
+  fi
   rehearsal_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$rehearsal_output")")"
   if [[ -z "$rehearsal_nested_executor_env_path" ]]; then
     input_errors+=("nested devnet rehearsal executor_env_path must be non-empty")
@@ -412,6 +428,21 @@ else
     input_errors+=("nested devnet rehearsal go_nogo_executor_upstream_endpoint_guard_reason_code must be non-empty")
     rehearsal_nested_executor_upstream_endpoint_guard_reason_code="n/a"
   fi
+  rehearsal_nested_ingestion_grpc_guard_verdict_raw="$(trim_string "$(extract_field "go_nogo_ingestion_grpc_guard_verdict" "$rehearsal_output")")"
+  rehearsal_nested_ingestion_grpc_guard_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_ingestion_grpc_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rehearsal_nested_ingestion_grpc_guard_verdict="$(normalize_strict_guard_verdict "$rehearsal_nested_ingestion_grpc_guard_verdict_raw")"
+  if [[ -z "$rehearsal_nested_ingestion_grpc_guard_verdict_raw" ]]; then
+    input_errors+=("nested devnet rehearsal go_nogo_ingestion_grpc_guard_verdict must be non-empty")
+    rehearsal_nested_ingestion_grpc_guard_verdict="UNKNOWN"
+  elif [[ "$rehearsal_nested_ingestion_grpc_guard_verdict_raw_upper" != "PASS" && "$rehearsal_nested_ingestion_grpc_guard_verdict_raw_upper" != "WARN" && "$rehearsal_nested_ingestion_grpc_guard_verdict_raw_upper" != "UNKNOWN" && "$rehearsal_nested_ingestion_grpc_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested devnet rehearsal go_nogo_ingestion_grpc_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${rehearsal_nested_ingestion_grpc_guard_verdict_raw})")
+    rehearsal_nested_ingestion_grpc_guard_verdict="UNKNOWN"
+  fi
+  rehearsal_nested_ingestion_grpc_guard_reason_code="$(trim_string "$(extract_field "go_nogo_ingestion_grpc_guard_reason_code" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_ingestion_grpc_guard_reason_code" ]]; then
+    input_errors+=("nested devnet rehearsal go_nogo_ingestion_grpc_guard_reason_code must be non-empty")
+    rehearsal_nested_ingestion_grpc_guard_reason_code="n/a"
+  fi
   if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
     if [[ "$rehearsal_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested devnet rehearsal go_nogo_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -425,6 +456,15 @@ else
     fi
     if [[ "$rehearsal_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested devnet rehearsal go_nogo_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${rehearsal_nested_executor_upstream_endpoint_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_ingestion_grpc_norm" == "true" ]]; then
+    if [[ "$rehearsal_nested_ingestion_grpc_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested devnet rehearsal go_nogo_ingestion_grpc_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=true")
+    fi
+  else
+    if [[ "$rehearsal_nested_ingestion_grpc_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested devnet rehearsal go_nogo_ingestion_grpc_guard_verdict must be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=false (got: ${rehearsal_nested_ingestion_grpc_guard_verdict})")
     fi
   fi
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
@@ -517,6 +557,7 @@ executor_rollout_run_rotation: $executor_rollout_run_rotation_norm
 executor_rollout_run_preflight: $executor_rollout_run_preflight_norm
 executor_rollout_run_rehearsal: $executor_rollout_run_rehearsal_norm
 go_nogo_require_executor_upstream: $go_nogo_require_executor_upstream_norm
+go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc_norm
 executor_env_path: $EXECUTOR_ENV_PATH
 
 rotation_readiness_verdict: $rotation_verdict
@@ -562,11 +603,14 @@ rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
 rehearsal_artifacts_written: $rehearsal_artifacts_written
 rehearsal_nested_package_bundle_enabled: ${rehearsal_nested_package_bundle_enabled:-unknown}
 rehearsal_nested_go_nogo_require_executor_upstream: ${rehearsal_nested_go_nogo_require_executor_upstream:-n/a}
+rehearsal_nested_go_nogo_require_ingestion_grpc: ${rehearsal_nested_go_nogo_require_ingestion_grpc:-n/a}
 rehearsal_nested_executor_env_path: ${rehearsal_nested_executor_env_path:-n/a}
 rehearsal_nested_executor_backend_mode_guard_verdict: ${rehearsal_nested_executor_backend_mode_guard_verdict:-unknown}
 rehearsal_nested_executor_backend_mode_guard_reason_code: ${rehearsal_nested_executor_backend_mode_guard_reason_code:-n/a}
 rehearsal_nested_executor_upstream_endpoint_guard_verdict: ${rehearsal_nested_executor_upstream_endpoint_guard_verdict:-unknown}
 rehearsal_nested_executor_upstream_endpoint_guard_reason_code: ${rehearsal_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
+rehearsal_nested_ingestion_grpc_guard_verdict: ${rehearsal_nested_ingestion_grpc_guard_verdict:-unknown}
+rehearsal_nested_ingestion_grpc_guard_reason_code: ${rehearsal_nested_ingestion_grpc_guard_reason_code:-n/a}
 package_bundle_enabled: $package_bundle_enabled_norm
 package_bundle_label: $PACKAGE_BUNDLE_LABEL
 package_bundle_output_dir: ${PACKAGE_BUNDLE_OUTPUT_DIR:-n/a}
