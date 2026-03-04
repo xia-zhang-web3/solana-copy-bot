@@ -262,6 +262,12 @@ rehearsal_go_nogo_sha256=""
 rehearsal_tests_sha256=""
 rehearsal_artifacts_written="false"
 rehearsal_nested_package_bundle_enabled="unknown"
+rehearsal_nested_go_nogo_require_executor_upstream="n/a"
+rehearsal_nested_executor_env_path="n/a"
+rehearsal_nested_executor_backend_mode_guard_verdict="unknown"
+rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
+rehearsal_nested_executor_upstream_endpoint_guard_verdict="unknown"
+rehearsal_nested_executor_upstream_endpoint_guard_reason_code="n/a"
 windowed_signoff_artifact_manifest=""
 windowed_signoff_summary_sha256=""
 windowed_signoff_artifacts_written="false"
@@ -291,6 +297,12 @@ if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_reason_code="stage_disabled"
   rehearsal_artifacts_written="n/a"
   rehearsal_nested_package_bundle_enabled="n/a"
+  rehearsal_nested_go_nogo_require_executor_upstream="n/a"
+  rehearsal_nested_executor_env_path="n/a"
+  rehearsal_nested_executor_backend_mode_guard_verdict="n/a"
+  rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
+  rehearsal_nested_executor_upstream_endpoint_guard_verdict="n/a"
+  rehearsal_nested_executor_upstream_endpoint_guard_reason_code="n/a"
   go_nogo_artifacts_written="n/a"
   windowed_signoff_artifacts_written="n/a"
   rehearsal_route_fee_signoff_artifacts_written="n/a"
@@ -364,6 +376,61 @@ else
   if ! go_nogo_require_executor_upstream="$(extract_bool_field_strict "go_nogo_require_executor_upstream" "$rehearsal_output")"; then
     input_errors+=("nested rehearsal go_nogo_require_executor_upstream must be boolean token, got: ${go_nogo_require_executor_upstream_raw:-<empty>}")
     go_nogo_require_executor_upstream="unknown"
+  elif [[ "$go_nogo_require_executor_upstream" != "$go_nogo_require_executor_upstream_norm" ]]; then
+    input_errors+=("nested rehearsal go_nogo_require_executor_upstream mismatch: nested=${go_nogo_require_executor_upstream} expected=${go_nogo_require_executor_upstream_norm}")
+  fi
+  rehearsal_nested_go_nogo_require_executor_upstream="$go_nogo_require_executor_upstream"
+  rehearsal_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_executor_env_path" ]]; then
+    input_errors+=("nested rehearsal executor_env_path must be non-empty")
+    rehearsal_nested_executor_env_path="n/a"
+  elif [[ "$rehearsal_nested_executor_env_path" != "$EXECUTOR_ENV_PATH" ]]; then
+    input_errors+=("nested rehearsal executor_env_path mismatch: nested=${rehearsal_nested_executor_env_path} expected=${EXECUTOR_ENV_PATH}")
+  fi
+  rehearsal_nested_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "go_nogo_executor_backend_mode_guard_verdict" "$rehearsal_output")")"
+  rehearsal_nested_executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rehearsal_nested_executor_backend_mode_guard_verdict="$(normalize_strict_guard_verdict "$rehearsal_nested_executor_backend_mode_guard_verdict_raw")"
+  if [[ -z "$rehearsal_nested_executor_backend_mode_guard_verdict_raw" ]]; then
+    input_errors+=("nested rehearsal go_nogo_executor_backend_mode_guard_verdict must be non-empty")
+    rehearsal_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+  elif [[ "$rehearsal_nested_executor_backend_mode_guard_verdict_raw_upper" != "PASS" && "$rehearsal_nested_executor_backend_mode_guard_verdict_raw_upper" != "WARN" && "$rehearsal_nested_executor_backend_mode_guard_verdict_raw_upper" != "UNKNOWN" && "$rehearsal_nested_executor_backend_mode_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested rehearsal go_nogo_executor_backend_mode_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${rehearsal_nested_executor_backend_mode_guard_verdict_raw})")
+    rehearsal_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+  fi
+  rehearsal_nested_executor_backend_mode_guard_reason_code="$(trim_string "$(extract_field "go_nogo_executor_backend_mode_guard_reason_code" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_executor_backend_mode_guard_reason_code" ]]; then
+    input_errors+=("nested rehearsal go_nogo_executor_backend_mode_guard_reason_code must be non-empty")
+    rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
+  fi
+  rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw="$(trim_string "$(extract_field "go_nogo_executor_upstream_endpoint_guard_verdict" "$rehearsal_output")")"
+  rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rehearsal_nested_executor_upstream_endpoint_guard_verdict="$(normalize_strict_guard_verdict "$rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw")"
+  if [[ -z "$rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw" ]]; then
+    input_errors+=("nested rehearsal go_nogo_executor_upstream_endpoint_guard_verdict must be non-empty")
+    rehearsal_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+  elif [[ "$rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "PASS" && "$rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "WARN" && "$rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "UNKNOWN" && "$rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested rehearsal go_nogo_executor_upstream_endpoint_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${rehearsal_nested_executor_upstream_endpoint_guard_verdict_raw})")
+    rehearsal_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+  fi
+  rehearsal_nested_executor_upstream_endpoint_guard_reason_code="$(trim_string "$(extract_field "go_nogo_executor_upstream_endpoint_guard_reason_code" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_executor_upstream_endpoint_guard_reason_code" ]]; then
+    input_errors+=("nested rehearsal go_nogo_executor_upstream_endpoint_guard_reason_code must be non-empty")
+    rehearsal_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+  fi
+  if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
+    if [[ "$rehearsal_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+    fi
+    if [[ "$rehearsal_nested_executor_upstream_endpoint_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_executor_upstream_endpoint_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+    fi
+  else
+    if [[ "$rehearsal_nested_executor_backend_mode_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_executor_backend_mode_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${rehearsal_nested_executor_backend_mode_guard_verdict})")
+    fi
+    if [[ "$rehearsal_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${rehearsal_nested_executor_upstream_endpoint_guard_verdict})")
+    fi
   fi
   submit_fastlane_enabled_raw="$(trim_string "$(extract_field "submit_fastlane_enabled" "$rehearsal_output")")"
   if ! submit_fastlane_enabled="$(extract_bool_field_strict "submit_fastlane_enabled" "$rehearsal_output")"; then
@@ -711,6 +778,12 @@ jito_rpc_policy_reason_code: ${jito_rpc_policy_reason_code:-n/a}
 go_nogo_require_fastlane_disabled: ${go_nogo_require_fastlane_disabled:-false}
 go_nogo_require_executor_upstream: ${go_nogo_require_executor_upstream:-false}
 executor_env_path: $EXECUTOR_ENV_PATH
+rehearsal_nested_go_nogo_require_executor_upstream: ${rehearsal_nested_go_nogo_require_executor_upstream:-n/a}
+rehearsal_nested_executor_env_path: ${rehearsal_nested_executor_env_path:-n/a}
+rehearsal_nested_executor_backend_mode_guard_verdict: ${rehearsal_nested_executor_backend_mode_guard_verdict:-unknown}
+rehearsal_nested_executor_backend_mode_guard_reason_code: ${rehearsal_nested_executor_backend_mode_guard_reason_code:-n/a}
+rehearsal_nested_executor_upstream_endpoint_guard_verdict: ${rehearsal_nested_executor_upstream_endpoint_guard_verdict:-unknown}
+rehearsal_nested_executor_upstream_endpoint_guard_reason_code: ${rehearsal_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
 submit_fastlane_enabled: ${submit_fastlane_enabled:-false}
 fastlane_feature_flag_verdict: ${fastlane_feature_flag_verdict:-unknown}
 fastlane_feature_flag_reason: ${fastlane_feature_flag_reason:-n/a}

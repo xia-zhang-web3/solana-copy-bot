@@ -98,6 +98,10 @@ rollout_summary_sha256="n/a"
 rollout_nested_package_bundle_enabled="unknown"
 rollout_nested_go_nogo_require_executor_upstream="n/a"
 rollout_nested_executor_env_path="n/a"
+rollout_nested_executor_backend_mode_guard_verdict="unknown"
+rollout_nested_executor_backend_mode_guard_reason_code="n/a"
+rollout_nested_executor_upstream_endpoint_guard_verdict="unknown"
+rollout_nested_executor_upstream_endpoint_guard_reason_code="n/a"
 if ((${#input_errors[@]} == 0)); then
   if rollout_output="$(
     EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -163,6 +167,51 @@ if ((${#input_errors[@]} == 0)); then
     rollout_nested_executor_env_path="n/a"
   elif [[ "$rollout_nested_executor_env_path" != "$EXECUTOR_ENV_PATH" ]]; then
     input_errors+=("nested executor rollout executor_env_path mismatch: nested=${rollout_nested_executor_env_path} expected=${EXECUTOR_ENV_PATH}")
+  fi
+  rollout_nested_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "rehearsal_nested_executor_backend_mode_guard_verdict" "$rollout_output")")"
+  rollout_nested_executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$rollout_nested_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rollout_nested_executor_backend_mode_guard_verdict="$(normalize_strict_guard_verdict "$rollout_nested_executor_backend_mode_guard_verdict_raw")"
+  if [[ -z "$rollout_nested_executor_backend_mode_guard_verdict_raw" ]]; then
+    input_errors+=("nested executor rollout rehearsal_nested_executor_backend_mode_guard_verdict must be non-empty")
+    rollout_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+  elif [[ "$rollout_nested_executor_backend_mode_guard_verdict_raw_upper" != "PASS" && "$rollout_nested_executor_backend_mode_guard_verdict_raw_upper" != "WARN" && "$rollout_nested_executor_backend_mode_guard_verdict_raw_upper" != "UNKNOWN" && "$rollout_nested_executor_backend_mode_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested executor rollout rehearsal_nested_executor_backend_mode_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${rollout_nested_executor_backend_mode_guard_verdict_raw})")
+    rollout_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+  fi
+  rollout_nested_executor_backend_mode_guard_reason_code="$(trim_string "$(extract_field "rehearsal_nested_executor_backend_mode_guard_reason_code" "$rollout_output")")"
+  if [[ -z "$rollout_nested_executor_backend_mode_guard_reason_code" ]]; then
+    input_errors+=("nested executor rollout rehearsal_nested_executor_backend_mode_guard_reason_code must be non-empty")
+    rollout_nested_executor_backend_mode_guard_reason_code="n/a"
+  fi
+  rollout_nested_executor_upstream_endpoint_guard_verdict_raw="$(trim_string "$(extract_field "rehearsal_nested_executor_upstream_endpoint_guard_verdict" "$rollout_output")")"
+  rollout_nested_executor_upstream_endpoint_guard_verdict_raw_upper="$(printf '%s' "$rollout_nested_executor_upstream_endpoint_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rollout_nested_executor_upstream_endpoint_guard_verdict="$(normalize_strict_guard_verdict "$rollout_nested_executor_upstream_endpoint_guard_verdict_raw")"
+  if [[ -z "$rollout_nested_executor_upstream_endpoint_guard_verdict_raw" ]]; then
+    input_errors+=("nested executor rollout rehearsal_nested_executor_upstream_endpoint_guard_verdict must be non-empty")
+    rollout_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+  elif [[ "$rollout_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "PASS" && "$rollout_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "WARN" && "$rollout_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "UNKNOWN" && "$rollout_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested executor rollout rehearsal_nested_executor_upstream_endpoint_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${rollout_nested_executor_upstream_endpoint_guard_verdict_raw})")
+    rollout_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+  fi
+  rollout_nested_executor_upstream_endpoint_guard_reason_code="$(trim_string "$(extract_field "rehearsal_nested_executor_upstream_endpoint_guard_reason_code" "$rollout_output")")"
+  if [[ -z "$rollout_nested_executor_upstream_endpoint_guard_reason_code" ]]; then
+    input_errors+=("nested executor rollout rehearsal_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
+    rollout_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+  fi
+  if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
+    if [[ "$rollout_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested executor rollout rehearsal_nested_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+    fi
+    if [[ "$rollout_nested_executor_upstream_endpoint_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested executor rollout rehearsal_nested_executor_upstream_endpoint_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+    fi
+  else
+    if [[ "$rollout_nested_executor_backend_mode_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested executor rollout rehearsal_nested_executor_backend_mode_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${rollout_nested_executor_backend_mode_guard_verdict})")
+    fi
+    if [[ "$rollout_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested executor rollout rehearsal_nested_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${rollout_nested_executor_upstream_endpoint_guard_verdict})")
+    fi
   fi
 
   if [[ "$rollout_verdict" == "UNKNOWN" ]]; then
@@ -242,6 +291,10 @@ rollout_artifact_manifest_sha256: $rollout_artifact_manifest_sha256
 rollout_nested_package_bundle_enabled: ${rollout_nested_package_bundle_enabled:-unknown}
 rollout_nested_go_nogo_require_executor_upstream: ${rollout_nested_go_nogo_require_executor_upstream:-n/a}
 rollout_nested_executor_env_path: ${rollout_nested_executor_env_path:-n/a}
+rollout_nested_executor_backend_mode_guard_verdict: ${rollout_nested_executor_backend_mode_guard_verdict:-unknown}
+rollout_nested_executor_backend_mode_guard_reason_code: ${rollout_nested_executor_backend_mode_guard_reason_code:-n/a}
+rollout_nested_executor_upstream_endpoint_guard_verdict: ${rollout_nested_executor_upstream_endpoint_guard_verdict:-unknown}
+rollout_nested_executor_upstream_endpoint_guard_reason_code: ${rollout_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
 final_executor_package_verdict: $rollout_verdict
 final_executor_package_reason: ${rollout_reason:-n/a}
 final_executor_package_reason_code: ${rollout_reason_code:-n/a}
