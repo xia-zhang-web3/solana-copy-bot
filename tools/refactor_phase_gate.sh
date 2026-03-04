@@ -24,6 +24,7 @@ fixture_dir=""
 
 phase_gate_require_executor_upstream_raw="${REFACTOR_PHASE_GATE_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 phase_gate_require_ingestion_grpc_raw="${REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC:-true}"
+phase_gate_require_fastlane_disabled_raw="${REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED:-false}"
 phase_gate_ingestion_source="$(trim_string "${REFACTOR_PHASE_GATE_INGESTION_SOURCE:-yellowstone_grpc}")"
 phase_gate_ingestion_source="$(printf '%s' "$phase_gate_ingestion_source" | tr '[:upper:]' '[:lower:]')"
 
@@ -70,6 +71,10 @@ if ! phase_gate_require_executor_upstream="$(parse_bool_token_strict "$phase_gat
 fi
 if ! phase_gate_require_ingestion_grpc="$(parse_bool_token_strict "$phase_gate_require_ingestion_grpc_raw")"; then
   echo "REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC must be a boolean token (got: ${phase_gate_require_ingestion_grpc_raw:-<empty>})" >&2
+  exit 1
+fi
+if ! phase_gate_require_fastlane_disabled="$(parse_bool_token_strict "$phase_gate_require_fastlane_disabled_raw")"; then
+  echo "REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED must be a boolean token (got: ${phase_gate_require_fastlane_disabled_raw:-<empty>})" >&2
   exit 1
 fi
 
@@ -171,6 +176,34 @@ validate_strict_guard_reason_code() {
   fi
 }
 
+validate_policy_gate_verdict() {
+  local stage="$1"
+  local key="$2"
+  local payload="$3"
+  local required="$4"
+  local raw_value=""
+  local verdict=""
+  raw_value="$(extract_trimmed_field "$key" "$payload")"
+  if [[ -z "$raw_value" ]]; then
+    phase_gate_errors+=("missing $key in $stage output")
+    return
+  fi
+  verdict="$(normalize_gate_verdict "$raw_value")"
+  if [[ "$verdict" == "UNKNOWN" ]]; then
+    phase_gate_errors+=("invalid policy gate verdict for $key in $stage output: $raw_value")
+    return
+  fi
+  if [[ "$required" == "true" ]]; then
+    if [[ "$verdict" != "PASS" ]]; then
+      phase_gate_errors+=("$key must be PASS in $stage output when required=true, got=$verdict")
+    fi
+  else
+    if [[ "$verdict" != "SKIP" ]]; then
+      phase_gate_errors+=("$key must be SKIP in $stage output when required=false, got=$verdict")
+    fi
+  fi
+}
+
 sha256_cmd=()
 if command -v sha256sum >/dev/null 2>&1; then
   sha256_cmd=(sha256sum)
@@ -194,6 +227,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
+  GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -212,6 +246,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
+  GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -231,6 +266,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
+  GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -255,6 +291,9 @@ validate_strict_guard_reason_code "go_nogo" "executor_upstream_endpoint_guard_re
 validate_bool_field_equals "go_nogo" "go_nogo_require_ingestion_grpc" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "go_nogo" "ingestion_grpc_guard_verdict" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "go_nogo" "ingestion_grpc_guard_reason_code" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
+validate_bool_field_equals "go_nogo" "go_nogo_require_fastlane_disabled" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
+validate_policy_gate_verdict "go_nogo" "fastlane_feature_flag_verdict" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
+validate_strict_guard_reason_code "go_nogo" "fastlane_feature_flag_reason_code" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
 
 validate_go_nogo_verdict_is_go "rehearsal" "devnet_rehearsal_verdict" "$rehearsal_output"
 validate_bool_field_equals "rehearsal" "go_nogo_require_executor_upstream" "$rehearsal_output" "$phase_gate_require_executor_upstream"
@@ -265,6 +304,9 @@ validate_strict_guard_reason_code "rehearsal" "go_nogo_executor_upstream_endpoin
 validate_bool_field_equals "rehearsal" "go_nogo_require_ingestion_grpc" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "rehearsal" "go_nogo_ingestion_grpc_guard_verdict" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "rehearsal" "go_nogo_ingestion_grpc_guard_reason_code" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
+validate_bool_field_equals "rehearsal" "go_nogo_require_fastlane_disabled" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
+validate_policy_gate_verdict "rehearsal" "fastlane_feature_flag_verdict" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
+validate_strict_guard_reason_code "rehearsal" "fastlane_feature_flag_reason_code" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
 
 validate_go_nogo_verdict_is_go "rollout" "adapter_rollout_verdict" "$rollout_output"
 validate_bool_field_equals "rollout" "go_nogo_require_executor_upstream" "$rollout_output" "$phase_gate_require_executor_upstream"
@@ -277,6 +319,9 @@ validate_bool_field_equals "rollout" "go_nogo_require_ingestion_grpc" "$rollout_
 validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_ingestion_grpc" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "rollout" "rehearsal_nested_ingestion_grpc_guard_verdict" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "rollout" "rehearsal_nested_ingestion_grpc_guard_reason_code" "$rollout_output" "$phase_gate_require_ingestion_grpc"
+validate_bool_field_equals "rollout" "go_nogo_require_fastlane_disabled" "$rollout_output" "$phase_gate_require_fastlane_disabled"
+validate_policy_gate_verdict "rollout" "fastlane_feature_flag_verdict" "$rollout_output" "$phase_gate_require_fastlane_disabled"
+validate_strict_guard_reason_code "rollout" "fastlane_feature_flag_reason_code" "$rollout_output" "$phase_gate_require_fastlane_disabled"
 
 if ((${#phase_gate_errors[@]} > 0)); then
   for phase_gate_error in "${phase_gate_errors[@]}"; do
@@ -310,5 +355,6 @@ normalized_rehearsal: $norm_dir/rehearsal_normalized.txt
 normalized_rollout: $norm_dir/rollout_normalized.txt
 go_nogo_require_executor_upstream: $phase_gate_require_executor_upstream
 go_nogo_require_ingestion_grpc: $phase_gate_require_ingestion_grpc
+go_nogo_require_fastlane_disabled: $phase_gate_require_fastlane_disabled
 ingestion_source: $phase_gate_ingestion_source
 EOF_SUMMARY

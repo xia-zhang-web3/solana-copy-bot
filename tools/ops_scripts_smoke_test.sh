@@ -9842,6 +9842,7 @@ run_refactor_phase_gate_case() {
   assert_field_equals "$phase_output" "output_dir" "$phase_output_dir"
   assert_field_equals "$phase_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$phase_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$phase_output" "go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$phase_output" "ingestion_source" "yellowstone_grpc"
 
   local raw_checksum_manifest=""
@@ -9934,6 +9935,25 @@ run_refactor_phase_gate_case() {
   assert_contains "$(cat "$phase_relaxed_executor_norm_rollout")" "rehearsal_nested_executor_upstream_endpoint_guard_verdict: SKIP"
   assert_contains "$(cat "$phase_relaxed_executor_norm_rollout")" "rehearsal_nested_executor_upstream_endpoint_guard_reason_code: gate_disabled"
 
+  local phase_strict_fastlane_output=""
+  phase_strict_fastlane_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED="true" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-fastlane" --fixture-dir "$phase_fixture_dir.strict-fastlane"
+  )"
+  assert_field_equals "$phase_strict_fastlane_output" "go_nogo_require_fastlane_disabled" "true"
+  local phase_strict_fastlane_norm_go_nogo=""
+  local phase_strict_fastlane_norm_rehearsal=""
+  local phase_strict_fastlane_norm_rollout=""
+  phase_strict_fastlane_norm_go_nogo="$(extract_field_value "$phase_strict_fastlane_output" "normalized_go_nogo")"
+  phase_strict_fastlane_norm_rehearsal="$(extract_field_value "$phase_strict_fastlane_output" "normalized_rehearsal")"
+  phase_strict_fastlane_norm_rollout="$(extract_field_value "$phase_strict_fastlane_output" "normalized_rollout")"
+  assert_contains "$(cat "$phase_strict_fastlane_norm_go_nogo")" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_fastlane_norm_go_nogo")" "fastlane_feature_flag_reason_code: fastlane_disabled"
+  assert_contains "$(cat "$phase_strict_fastlane_norm_rehearsal")" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_fastlane_norm_rehearsal")" "fastlane_feature_flag_reason_code: fastlane_disabled"
+  assert_contains "$(cat "$phase_strict_fastlane_norm_rollout")" "fastlane_feature_flag_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_fastlane_norm_rollout")" "fastlane_feature_flag_reason_code: fastlane_disabled"
+
   local phase_invalid_ingestion_source_output=""
   if phase_invalid_ingestion_source_output="$(
     REFACTOR_PHASE_GATE_INGESTION_SOURCE="helius_ws" \
@@ -9954,6 +9974,16 @@ run_refactor_phase_gate_case() {
     exit 1
   fi
   assert_contains "$phase_invalid_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC must be a boolean token"
+
+  local phase_invalid_fastlane_bool_output=""
+  if phase_invalid_fastlane_bool_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED="sometimes" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.invalid-fastlane-bool" --fixture-dir "$phase_fixture_dir.invalid-fastlane-bool" 2>&1
+  )"; then
+    echo "expected refactor_phase_gate to fail-close for invalid REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED token" >&2
+    exit 1
+  fi
+  assert_contains "$phase_invalid_fastlane_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED must be a boolean token"
 
   echo "[ok] refactor phase gate"
 }
