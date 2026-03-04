@@ -1036,6 +1036,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 508. strict ingestion gRPC guard fail-closed tightening for unknown source: `tools/execution_go_nogo_report.sh` now classifies `ingestion source=unknown` as `UNKNOWN/source_unknown` (instead of PASS) when `GO_NOGO_REQUIRE_INGESTION_GRPC=true`, preventing strict gate bypass when source config is missing; smoke coverage now pins this path explicitly and pass-path rollout/devnet smoke fixtures now set `SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone_grpc` to keep strict PASS expectations deterministic.
 509. ingestion strict-guard propagation into signoff/final/readiness chain: `tools/execution_windowed_signoff_report.sh` and `tools/execution_route_fee_signoff_report.sh` now propagate+validate per-window nested go/no-go ingestion guard fields (`go_nogo_require_ingestion_grpc`, `ingestion_grpc_guard_*`) with fail-closed parity (`true => non-SKIP`, `false => SKIP`), `tools/execution_route_fee_final_evidence_report.sh` now carries these fields through dynamic guard-window extraction, and `tools/execution_runtime_readiness_report.sh` surfaces+validates nested route-fee ingestion guard parity fields (`route_fee_final_nested_*`) for end-to-end strict observability.
 510. ingestion strict-guard propagation completed for rollout/final orchestration chain: `tools/execution_devnet_rehearsal.sh`, `tools/executor_rollout_evidence_report.sh`, `tools/executor_final_evidence_report.sh`, `tools/adapter_rollout_evidence_report.sh`, and `tools/adapter_rollout_final_evidence_report.sh` now parse+propagate+fail-close validate nested ingestion strict fields (`go_nogo_require_ingestion_grpc`, `*ingestion_grpc_guard_*`) with the same parity contract (`true => non-SKIP`, `false => SKIP`), while `tools/execution_server_rollout_report.sh` now validates and surfaces nested ingestion strict propagation from both executor-final and adapter-final branches; `tools/ops_scripts_smoke_test.sh` assertions were expanded across pass/skip/profile/bundle/mock paths to pin the new nested ingestion guard fields end-to-end.
+511. runtime-readiness adapter branch ingestion strict-guard closure: `tools/execution_runtime_readiness_report.sh` now extracts, validates, and fail-closes adapter-final nested ingestion strict fields (`rollout_nested_go_nogo_require_ingestion_grpc`, `rollout_nested_ingestion_grpc_guard_*`) with the same parity invariant (`true => non-SKIP`, `false => SKIP`), and emits them in summary as `adapter_final_nested_*`; `tools/ops_scripts_smoke_test.sh` now pins these adapter ingestion fields across `execution_runtime_readiness` pass/strict/override/skip/profile/bundle branches.
 
 Остается в next-code-queue:
 
@@ -1380,3 +1381,29 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 
 1. Hotfix закрыл OOM/restart-риск (стабильность подтверждена на окне ~4h45m).
 2. Discovery работает в постоянном режиме backlog-trim (`fetch_limit == cap`), поэтому это уже не incident, а tuning-задача по throughput/capacity.
+
+### 2026-03-04 — Pencil UI consistency pass (Codex)
+
+Проверено:
+
+1. В активном `.pen` присутствуют все desktop-экраны из набора `[Image #1]`:
+   1. `Desktop - Overview`,
+   2. `Desktop - Trades Terminal`,
+   3. `Desktop - Sources & Ingestion`,
+   4. `Desktop - Followlist`,
+   5. `Desktop - Risk & Exposure`,
+   6. `Desktop - Incidents`,
+   7. `Desktop - Runtime Config`.
+2. Mobile-экраны также присутствуют отдельными top-level frames.
+
+Исправлено по запросу (desktop):
+
+1. `Desktop - Followlist` (`2OEsK`):
+   1. выровнены ширины колонок между `th` и всеми `r*`,
+   2. `ACTIONS` переведен в `fill_container` для понятной финальной колонки,
+   3. текстовые ячейки переведены в `textGrowth=fixed-width` для стабильного выравнивания.
+2. `Desktop - Trades Terminal` (`okZw6`):
+   1. выровнены ширины колонок между `th` и всеми `r*`,
+   2. `TX` переведен в `fill_container`,
+   3. унифицированы межколоночные отступы в header/data-rows,
+   4. текстовые ячейки переведены в `textGrowth=fixed-width` для жесткой сетки.

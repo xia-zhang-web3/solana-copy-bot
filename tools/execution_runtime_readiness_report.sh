@@ -135,6 +135,9 @@ adapter_nested_executor_backend_mode_guard_verdict="n/a"
 adapter_nested_executor_backend_mode_guard_reason_code="n/a"
 adapter_nested_executor_upstream_endpoint_guard_verdict="n/a"
 adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+adapter_nested_go_nogo_require_ingestion_grpc="n/a"
+adapter_nested_ingestion_grpc_guard_verdict="n/a"
+adapter_nested_ingestion_grpc_guard_reason_code="n/a"
 
 route_fee_output=""
 route_fee_exit_code="3"
@@ -266,6 +269,28 @@ if ((${#input_errors[@]} == 0)); then
       input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
       adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
     fi
+    adapter_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_ingestion_grpc" "$adapter_output")")"
+    if ! adapter_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "rollout_nested_go_nogo_require_ingestion_grpc" "$adapter_output")"; then
+      input_errors+=("nested adapter rollout final rollout_nested_go_nogo_require_ingestion_grpc must be boolean token, got: ${adapter_nested_go_nogo_require_ingestion_grpc_raw:-<empty>}")
+      adapter_nested_go_nogo_require_ingestion_grpc="unknown"
+    elif [[ "$adapter_nested_go_nogo_require_ingestion_grpc" != "$go_nogo_require_ingestion_grpc_norm" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_go_nogo_require_ingestion_grpc mismatch: nested=${adapter_nested_go_nogo_require_ingestion_grpc} expected=${go_nogo_require_ingestion_grpc_norm}")
+    fi
+    adapter_nested_ingestion_grpc_guard_verdict_raw="$(trim_string "$(extract_field "rollout_nested_ingestion_grpc_guard_verdict" "$adapter_output")")"
+    adapter_nested_ingestion_grpc_guard_verdict_raw_upper="$(printf '%s' "$adapter_nested_ingestion_grpc_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    adapter_nested_ingestion_grpc_guard_verdict="$(normalize_strict_guard_verdict "$adapter_nested_ingestion_grpc_guard_verdict_raw")"
+    if [[ -z "$adapter_nested_ingestion_grpc_guard_verdict_raw" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_ingestion_grpc_guard_verdict must be non-empty")
+      adapter_nested_ingestion_grpc_guard_verdict="UNKNOWN"
+    elif [[ "$adapter_nested_ingestion_grpc_guard_verdict_raw_upper" != "PASS" && "$adapter_nested_ingestion_grpc_guard_verdict_raw_upper" != "WARN" && "$adapter_nested_ingestion_grpc_guard_verdict_raw_upper" != "UNKNOWN" && "$adapter_nested_ingestion_grpc_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_ingestion_grpc_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${adapter_nested_ingestion_grpc_guard_verdict_raw})")
+      adapter_nested_ingestion_grpc_guard_verdict="UNKNOWN"
+    fi
+    adapter_nested_ingestion_grpc_guard_reason_code="$(trim_string "$(extract_field "rollout_nested_ingestion_grpc_guard_reason_code" "$adapter_output")")"
+    if [[ -z "$adapter_nested_ingestion_grpc_guard_reason_code" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_ingestion_grpc_guard_reason_code must be non-empty")
+      adapter_nested_ingestion_grpc_guard_reason_code="n/a"
+    fi
     if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
       if [[ "$adapter_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
         input_errors+=("nested adapter rollout final rollout_nested_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -279,6 +304,15 @@ if ((${#input_errors[@]} == 0)); then
       fi
       if [[ "$adapter_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
         input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${adapter_nested_executor_upstream_endpoint_guard_verdict})")
+      fi
+    fi
+    if [[ "$go_nogo_require_ingestion_grpc_norm" == "true" ]]; then
+      if [[ "$adapter_nested_ingestion_grpc_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_ingestion_grpc_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=true")
+      fi
+    else
+      if [[ "$adapter_nested_ingestion_grpc_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_ingestion_grpc_guard_verdict must be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=false (got: ${adapter_nested_ingestion_grpc_guard_verdict})")
       fi
     fi
 
@@ -305,6 +339,9 @@ if ((${#input_errors[@]} == 0)); then
     adapter_nested_executor_backend_mode_guard_reason_code="n/a"
     adapter_nested_executor_upstream_endpoint_guard_verdict="n/a"
     adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+    adapter_nested_go_nogo_require_ingestion_grpc="n/a"
+    adapter_nested_ingestion_grpc_guard_verdict="n/a"
+    adapter_nested_ingestion_grpc_guard_reason_code="n/a"
     adapter_output="final_rollout_package_verdict: SKIP
 final_rollout_package_reason: adapter final stage disabled via RUNTIME_READINESS_RUN_ADAPTER_FINAL=false
 final_rollout_package_reason_code: stage_disabled
@@ -611,6 +648,9 @@ adapter_final_nested_executor_backend_mode_guard_verdict: ${adapter_nested_execu
 adapter_final_nested_executor_backend_mode_guard_reason_code: ${adapter_nested_executor_backend_mode_guard_reason_code:-n/a}
 adapter_final_nested_executor_upstream_endpoint_guard_verdict: ${adapter_nested_executor_upstream_endpoint_guard_verdict:-n/a}
 adapter_final_nested_executor_upstream_endpoint_guard_reason_code: ${adapter_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
+adapter_final_nested_go_nogo_require_ingestion_grpc: ${adapter_nested_go_nogo_require_ingestion_grpc:-n/a}
+adapter_final_nested_ingestion_grpc_guard_verdict: ${adapter_nested_ingestion_grpc_guard_verdict:-n/a}
+adapter_final_nested_ingestion_grpc_guard_reason_code: ${adapter_nested_ingestion_grpc_guard_reason_code:-n/a}
 route_fee_final_exit_code: $route_fee_exit_code
 route_fee_final_verdict: $route_fee_verdict
 route_fee_final_reason: ${route_fee_reason:-n/a}
