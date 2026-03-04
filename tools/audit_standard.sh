@@ -273,11 +273,20 @@ else
   done
 fi
 
-if [[ "$ops_scope_touched" == "true" && "$skip_ops_smoke" == "false" ]]; then
-  echo "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=${ops_smoke_mode}, profile=${ops_smoke_profile}, preset=${ops_smoke_preset:-n/a})"
+if [[ "$skip_ops_smoke" == "true" ]]; then
+  if [[ "$ops_smoke_mode" == "targeted" ]]; then
+    echo "[audit:standard] targeted ops-smoke requested but AUDIT_SKIP_OPS_SMOKE=true -> skipped"
+  elif [[ "$ops_scope_touched" == "true" ]]; then
+    echo "[audit:standard] ops scope touched but AUDIT_SKIP_OPS_SMOKE=true -> skipped"
+  else
+    echo "[audit:standard] ops scope not touched -> skipped ops smoke"
+  fi
+elif [[ "$ops_smoke_mode" == "targeted" ]]; then
+  echo "[audit:standard] targeted ops-smoke requested -> running tools/ops_scripts_smoke_test.sh (mode=${ops_smoke_mode}, profile=${ops_smoke_profile}, preset=${ops_smoke_preset:-n/a})"
   run_ops_smoke
 elif [[ "$ops_scope_touched" == "true" ]]; then
-  echo "[audit:standard] ops scope touched but AUDIT_SKIP_OPS_SMOKE=true -> skipped"
+  echo "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=${ops_smoke_mode}, profile=${ops_smoke_profile}, preset=${ops_smoke_preset:-n/a})"
+  run_ops_smoke
 else
   echo "[audit:standard] ops scope not touched -> skipped ops smoke"
 fi
