@@ -1017,6 +1017,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 489. server runtime telemetry evidence synced into repo: added dated runtime reports and raw snapshots under `ops/server_reports/*` and `ops/server_reports/raw/*` (morning/post-gym/post-patch follow-up windows), and mirrored summary status in roadmap for 6.1 state visibility.
 490. route/fee final strict-guard window drift hotfix: `tools/execution_route_fee_final_evidence_report.sh` now resolves strict guard keys dynamically from the last valid window in `WINDOWS_CSV` (instead of hardcoded `window_24h_*`), preserving fail-closed behavior for custom window sets (e.g. `1,6`) and emitting `signoff_guard_window_id` in summary for observability.
 491. runtime-readiness guard-window observability extension: `tools/execution_runtime_readiness_report.sh` now propagates nested `route_fee_final` field `signoff_guard_window_id` into top-level summary (`route_fee_final_nested_signoff_guard_window_id`), and smoke coverage pins expected values across pass/override/skip/profile/bundle branches.
+492. smoke-cycle acceleration for heavy orchestrator cases: `tools/ops_scripts_smoke_test.sh` now supports targeted `*_fast` aliases (`executor_rollout_evidence_fast`, `adapter_rollout_evidence_fast`, `execution_server_rollout_fast`, `execution_runtime_readiness_fast`) that execute only baseline PASS-path assertions inside each heavy helper, enabling faster local iteration without changing default full coverage behavior.
 
 Остается в next-code-queue:
 

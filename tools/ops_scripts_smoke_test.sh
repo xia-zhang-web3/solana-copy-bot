@@ -5217,6 +5217,11 @@ EOF
 run_executor_rollout_evidence_case() {
   local db_path="$1"
   local config_path="$2"
+  local case_profile="${3:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_executor_rollout_evidence_case case_profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local executor_env_path="$TMP_DIR/executor-rollout.env"
   local adapter_env_path="$TMP_DIR/adapter-rollout-for-executor.env"
   local artifacts_dir="$TMP_DIR/executor-rollout-artifacts"
@@ -5298,6 +5303,10 @@ run_executor_rollout_evidence_case() {
   if ! ls "$artifacts_dir"/executor_rollout_evidence_manifest_*.txt >/dev/null 2>&1; then
     echo "expected executor rollout manifest artifact in $artifacts_dir" >&2
     exit 1
+  fi
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] executor rollout/final evidence helpers (fast)"
+    return
   fi
 
   local rollout_bundle_output_dir="$TMP_DIR/executor-rollout-with-bundle"
@@ -5922,6 +5931,11 @@ run_executor_rollout_evidence_case() {
 run_execution_server_rollout_report_case() {
   local db_path="$1"
   local config_path="$2"
+  local case_profile="${3:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_execution_server_rollout_report_case case_profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local executor_env_path="$TMP_DIR/server-rollout-executor.env"
   local adapter_env_path="$TMP_DIR/server-rollout-adapter.env"
   local fake_curl_bin="$TMP_DIR/fake-curl-server-rollout"
@@ -6021,6 +6035,10 @@ run_execution_server_rollout_report_case() {
   if ! ls "$output_root"/execution_server_rollout_manifest_*.txt >/dev/null 2>&1; then
     echo "expected server rollout manifest artifact in $output_root" >&2
     exit 1
+  fi
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] execution server rollout report (fast)"
+    return
   fi
 
   local skip_direct_output=""
@@ -6461,6 +6479,11 @@ EOF_SERVER_ROLLOUT_EXECUTOR_MISSING_TOPOLOGY_ENV
 run_adapter_rollout_evidence_case() {
   local db_path="$1"
   local config_path="$2"
+  local case_profile="${3:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_adapter_rollout_evidence_case case_profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local executor_env_path="$TMP_DIR/adapter-rollout-executor.env"
   cat >"$executor_env_path" <<'EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
@@ -6612,6 +6635,10 @@ EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV
   if ! ls "$artifacts_dir"/adapter_rollout_evidence_manifest_*.txt >/dev/null 2>&1; then
     echo "expected adapter rollout manifest artifact in $artifacts_dir" >&2
     exit 1
+  fi
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] adapter rollout evidence helper (fast)"
+    return
   fi
 
   local rollout_bundle_output_dir="$TMP_DIR/adapter-rollout-with-bundle"
@@ -7445,6 +7472,11 @@ EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV
 run_execution_runtime_readiness_report_case() {
   local db_path="$1"
   local config_path="$2"
+  local case_profile="${3:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_execution_runtime_readiness_report_case case_profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local env_path="$TMP_DIR/runtime-readiness-adapter.env"
   local secrets_dir="$TMP_DIR/secrets"
   local artifacts_dir="$TMP_DIR/runtime-readiness-artifacts"
@@ -7539,6 +7571,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   if ! ls "$artifacts_dir"/execution_route_fee_final_captured_*.txt >/dev/null 2>&1; then
     echo "expected route/fee final capture artifact in $artifacts_dir" >&2
     exit 1
+  fi
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] execution runtime readiness report (fast)"
+    return
   fi
 
   printf 'COPYBOT_EXECUTOR_BACKEND_MODE=mock\n' >"$executor_env_path"
@@ -9146,7 +9182,7 @@ run_targeted_smoke_cases() {
       run_evidence_bundle_pack_case
       executed_cases=$((executed_cases + 1))
       ;;
-    executor_preflight | run_executor_preflight_case | windowed_signoff | run_windowed_signoff_report_case | route_fee_signoff | run_execution_route_fee_signoff_case | devnet_rehearsal | run_devnet_rehearsal_case | executor_rollout_evidence | run_executor_rollout_evidence_case | adapter_rollout_evidence | run_adapter_rollout_evidence_case | execution_server_rollout | run_execution_server_rollout_report_case | execution_runtime_readiness | run_execution_runtime_readiness_report_case | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
+    executor_preflight | run_executor_preflight_case | windowed_signoff | run_windowed_signoff_report_case | route_fee_signoff | run_execution_route_fee_signoff_case | devnet_rehearsal | run_devnet_rehearsal_case | executor_rollout_evidence | run_executor_rollout_evidence_case | executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast | adapter_rollout_evidence | run_adapter_rollout_evidence_case | adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast | execution_server_rollout | run_execution_server_rollout_report_case | execution_server_rollout_fast | run_execution_server_rollout_report_case_fast | execution_runtime_readiness | run_execution_runtime_readiness_report_case | execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
       if [[ "$fixtures_ready" != "true" ]]; then
         create_legacy_db "$legacy_db"
         write_config "$legacy_cfg" "$legacy_db"
@@ -9174,16 +9210,32 @@ run_targeted_smoke_cases() {
         run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
         executed_cases=$((executed_cases + 1))
         ;;
+      executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast)
+        run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
+        executed_cases=$((executed_cases + 1))
+        ;;
       adapter_rollout_evidence | run_adapter_rollout_evidence_case)
         run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast)
+        run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       execution_server_rollout | run_execution_server_rollout_report_case)
         run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg"
         executed_cases=$((executed_cases + 1))
         ;;
+      execution_server_rollout_fast | run_execution_server_rollout_report_case_fast)
+        run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
+        executed_cases=$((executed_cases + 1))
+        ;;
       execution_runtime_readiness | run_execution_runtime_readiness_report_case)
         run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast)
+        run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
@@ -9194,7 +9246,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, adapter_rollout_evidence, execution_server_rollout, execution_runtime_readiness, go_nogo_executor_backend_mode_guard" >&2
+      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
       exit 1
       ;;
     esac
