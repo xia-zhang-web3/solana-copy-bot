@@ -71,9 +71,11 @@ full | targeted | targeted_fast | auto)
   ;;
 esac
 ops_smoke_profile_default="full"
+ops_smoke_target_cases_default=""
 if [[ "$ops_smoke_mode" == "targeted_fast" ]]; then
   ops_smoke_mode="targeted"
   ops_smoke_profile_default="fast"
+  ops_smoke_target_cases_default="heavy_runtime_chain"
 fi
 OPS_SMOKE_PRESET_RAW="$(trim_string "${AUDIT_OPS_SMOKE_PRESET:-}")"
 case "$OPS_SMOKE_PRESET_RAW" in
@@ -110,6 +112,9 @@ if [[ "$ops_smoke_mode" == "targeted" ]]; then
   fi
   if [[ -z "$ops_smoke_target_cases" && -n "$ops_smoke_preset" ]]; then
     ops_smoke_target_cases="$ops_smoke_preset"
+  fi
+  if [[ -z "$ops_smoke_target_cases" && -z "$ops_smoke_preset" && -n "$ops_smoke_target_cases_default" ]]; then
+    ops_smoke_target_cases="$ops_smoke_target_cases_default"
   fi
   if [[ -z "$ops_smoke_target_cases" ]]; then
     echo "AUDIT_OPS_SMOKE_TARGET_CASES must be non-empty when AUDIT_OPS_SMOKE_MODE=targeted" >&2
@@ -183,10 +188,10 @@ else
 fi
 
 if [[ "$skip_ops_smoke" == "false" ]]; then
-  echo "[audit:full] tools/ops_scripts_smoke_test.sh (mode=${ops_smoke_mode}, profile=${ops_smoke_profile}, preset=${ops_smoke_preset:-n/a})"
+  echo "[audit:full] tools/ops_scripts_smoke_test.sh (mode=${ops_smoke_mode}, profile=${ops_smoke_profile}, preset=${ops_smoke_preset:-n/a}) cases=${ops_smoke_target_cases:-n/a}"
   run_ops_smoke
 else
-  echo "[audit:full] AUDIT_SKIP_OPS_SMOKE=true -> skipped tools/ops_scripts_smoke_test.sh"
+  echo "[audit:full] AUDIT_SKIP_OPS_SMOKE=true -> skipped tools/ops_scripts_smoke_test.sh (mode=${ops_smoke_mode}, profile=${ops_smoke_profile}, preset=${ops_smoke_preset:-n/a}) cases=${ops_smoke_target_cases:-n/a}"
 fi
 
 echo "[audit:full] PASS"

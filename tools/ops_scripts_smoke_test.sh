@@ -9085,6 +9085,18 @@ run_audit_ops_smoke_mode_guard_case() {
   assert_contains "$full_targeted_fast_mode_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$full_targeted_fast_mode_output" "[audit:full] PASS"
 
+  local full_targeted_fast_default_skip_output=""
+  full_targeted_fast_default_skip_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted_fast" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_targeted_fast_default_skip_output" "[audit:full] AUDIT_SKIP_OPS_SMOKE=true -> skipped tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast, preset=n/a) cases=heavy_runtime_chain"
+  assert_contains "$full_targeted_fast_default_skip_output" "[audit:full] PASS"
+
   local full_targeted_auto_profile_output=""
   full_targeted_auto_profile_output="$(
     AUDIT_SKIP_OPS_SMOKE="false" \
@@ -9165,6 +9177,18 @@ run_audit_ops_smoke_mode_guard_case() {
   assert_contains "$standard_targeted_fast_output" "ops smoke targeted profile: fast"
   assert_contains "$standard_targeted_fast_output" "[ok] executor preflight helper (fast)"
   assert_contains "$standard_targeted_fast_output" "[audit:standard] PASS"
+
+  local standard_targeted_fast_default_skip_output=""
+  standard_targeted_fast_default_skip_output="$(
+    AUDIT_SKIP_OPS_SMOKE="true" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_PACKAGE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted_fast" \
+      bash "$ROOT_DIR/tools/audit_standard.sh"
+  )"
+  assert_contains "$standard_targeted_fast_default_skip_output" "[audit:standard] targeted ops-smoke requested but AUDIT_SKIP_OPS_SMOKE=true -> skipped (mode=targeted, profile=fast, preset=n/a) cases=heavy_runtime_chain"
+  assert_contains "$standard_targeted_fast_default_skip_output" "[audit:standard] PASS"
   echo "[ok] audit ops smoke mode guard"
 }
 
