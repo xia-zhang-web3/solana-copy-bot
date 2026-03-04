@@ -1741,8 +1741,83 @@ EOF_EXECUTOR_INVALID
   assert_field_equals "$upstream_output" "executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_field_equals "$upstream_output" "executor_upstream_endpoint_guard_verdict" "PASS"
   assert_field_equals "$upstream_output" "executor_upstream_endpoint_guard_reason_code" "topology_pass"
+  assert_field_equals "$upstream_output" "go_nogo_require_ingestion_grpc" "false"
+  assert_field_equals "$upstream_output" "ingestion_grpc_guard_verdict" "SKIP"
+  assert_field_equals "$upstream_output" "ingestion_grpc_guard_reason_code" "gate_disabled"
   assert_field_equals "$upstream_output" "overall_go_nogo_verdict" "GO"
   assert_field_equals "$upstream_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local ingestion_grpc_pass_output
+  ingestion_grpc_pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="true" \
+      SOLANA_COPY_BOT_INGESTION_SOURCE="yellowstone_grpc" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$ingestion_grpc_pass_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$ingestion_grpc_pass_output" "ingestion_source" "yellowstone_grpc"
+  assert_field_equals "$ingestion_grpc_pass_output" "ingestion_grpc_guard_verdict" "PASS"
+  assert_field_equals "$ingestion_grpc_pass_output" "ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$ingestion_grpc_pass_output" "overall_go_nogo_verdict" "GO"
+  assert_field_equals "$ingestion_grpc_pass_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local ingestion_grpc_source_mismatch_output
+  ingestion_grpc_source_mismatch_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="true" \
+      SOLANA_COPY_BOT_INGESTION_SOURCE="helius_ws" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$ingestion_grpc_source_mismatch_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$ingestion_grpc_source_mismatch_output" "ingestion_source" "helius_ws"
+  assert_field_equals "$ingestion_grpc_source_mismatch_output" "ingestion_grpc_guard_verdict" "WARN"
+  assert_field_equals "$ingestion_grpc_source_mismatch_output" "ingestion_grpc_guard_reason_code" "source_not_yellowstone_grpc"
+  assert_field_equals "$ingestion_grpc_source_mismatch_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$ingestion_grpc_source_mismatch_output" "overall_go_nogo_reason_code" "ingestion_grpc_not_pass"
+
+  local ingestion_grpc_missing_metric_output
+  ingestion_grpc_missing_metric_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      COPYBOT_SMOKE_JOURNAL_MODE="no_ingestion" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="true" \
+      SOLANA_COPY_BOT_INGESTION_SOURCE="yellowstone_grpc" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$ingestion_grpc_missing_metric_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$ingestion_grpc_missing_metric_output" "ingestion_grpc_guard_verdict" "UNKNOWN"
+  assert_field_equals "$ingestion_grpc_missing_metric_output" "ingestion_grpc_guard_reason_code" "grpc_metric_missing"
+  assert_field_equals "$ingestion_grpc_missing_metric_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$ingestion_grpc_missing_metric_output" "overall_go_nogo_reason_code" "ingestion_grpc_unknown"
 
   local upstream_placeholder_output
   upstream_placeholder_output="$(
@@ -1849,6 +1924,28 @@ EOF_EXECUTOR_INVALID
   fi
   assert_contains "$invalid_bool_output" "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token"
   assert_contains "$invalid_bool_output" "got: sometimes"
+
+  local invalid_ingestion_bool_output=""
+  if invalid_ingestion_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="sometimes" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid GO_NOGO_REQUIRE_INGESTION_GRPC token" >&2
+    exit 1
+  else
+    local invalid_ingestion_bool_exit_code=$?
+    if [[ "$invalid_ingestion_bool_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_REQUIRE_INGESTION_GRPC token, got $invalid_ingestion_bool_exit_code" >&2
+      echo "$invalid_ingestion_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_ingestion_bool_output" "GO_NOGO_REQUIRE_INGESTION_GRPC must be a boolean token"
+  assert_contains "$invalid_ingestion_bool_output" "got: sometimes"
   echo "[ok] go-no-go strict executor backend-mode and topology gate"
 }
 
@@ -4658,6 +4755,9 @@ EOF_DEVNET_EXECUTOR_ENV
   assert_field_equals "$output" "go_nogo_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_field_equals "$output" "go_nogo_executor_upstream_endpoint_guard_verdict" "PASS"
   assert_field_equals "$output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "topology_pass"
+  assert_field_equals "$output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
+  assert_field_equals "$output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_unknown"
   assert_field_equals "$output" "submit_fastlane_enabled" "false"
   assert_contains "$output" "fastlane_feature_flag_verdict: SKIP"
   assert_field_equals "$output" "fastlane_feature_flag_reason_code" "gate_disabled"
@@ -6124,6 +6224,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "go_nogo_executor_backend_mode_guard_reason_code" "stage_disabled"
   assert_field_equals "$skip_direct_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$skip_direct_output" "go_nogo_ingestion_grpc_guard_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "go_nogo_ingestion_grpc_guard_reason_code" "stage_disabled"
   assert_field_equals "$skip_direct_output" "executor_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "adapter_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_executor_upstream" "true"
@@ -6191,6 +6294,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "go_nogo_executor_backend_mode_guard_reason_code" "stage_disabled"
   assert_field_equals "$profile_skip_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "stage_disabled"
+  assert_field_equals "$profile_skip_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$profile_skip_output" "go_nogo_ingestion_grpc_guard_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "go_nogo_ingestion_grpc_guard_reason_code" "stage_disabled"
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_skip_output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
@@ -6250,6 +6356,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "go_nogo_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_field_equals "$bundle_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "PASS"
   assert_field_equals "$bundle_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "topology_pass"
+  assert_field_equals "$bundle_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
+  assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_unknown"
   assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
   assert_field_equals "$bundle_output" "go_nogo_artifacts_written" "true"
@@ -6316,6 +6425,30 @@ run_execution_server_rollout_report_case() {
   assert_contains "$invalid_bool_output" "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token"
   assert_field_equals "$invalid_bool_output" "server_rollout_verdict" "NO_GO"
   assert_field_equals "$invalid_bool_output" "server_rollout_reason_code" "input_error"
+
+  local invalid_ingestion_bool_output=""
+  if invalid_ingestion_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="sometimes" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail for invalid GO_NOGO_REQUIRE_INGESTION_GRPC token" >&2
+    exit 1
+  else
+    local invalid_ingestion_bool_exit_code=$?
+    if [[ "$invalid_ingestion_bool_exit_code" -ne 3 ]]; then
+      echo "expected server rollout invalid ingestion bool exit code 3, got $invalid_ingestion_bool_exit_code" >&2
+      echo "$invalid_ingestion_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_ingestion_bool_output" "GO_NOGO_REQUIRE_INGESTION_GRPC must be a boolean token"
+  assert_field_equals "$invalid_ingestion_bool_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$invalid_ingestion_bool_output" "server_rollout_reason_code" "input_error"
 
   local invalid_profile_output=""
   if invalid_profile_output="$(
@@ -6408,6 +6541,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_executor_backend_mode_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "SKIP"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "gate_disabled"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_unknown"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_executor_upstream" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_executor_env_path" "$mock_backend_env_path"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "false"

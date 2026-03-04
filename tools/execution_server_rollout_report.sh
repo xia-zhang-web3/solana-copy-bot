@@ -32,6 +32,7 @@ WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DY
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-true}"
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-true}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-true}"
+GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-true}"
 
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-true}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
@@ -143,6 +144,7 @@ parse_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS" "$WI
 parse_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" windowed_signoff_require_dynamic_tip_policy_pass_norm
 parse_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy_norm
 parse_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled_norm
+parse_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE_INGESTION_GRPC" go_nogo_require_ingestion_grpc_norm
 parse_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
@@ -202,6 +204,9 @@ go_nogo_executor_backend_mode_guard_verdict="n/a"
 go_nogo_executor_backend_mode_guard_reason_code="n/a"
 go_nogo_executor_upstream_endpoint_guard_verdict="n/a"
 go_nogo_executor_upstream_endpoint_guard_reason_code="n/a"
+go_nogo_ingestion_grpc_guard_verdict="n/a"
+go_nogo_ingestion_grpc_guard_reason_code="n/a"
+go_nogo_require_ingestion_grpc="n/a"
 
 rehearsal_output=""
 rehearsal_exit_code=3
@@ -287,6 +292,7 @@ if ((${#input_errors[@]} == 0)); then
         SERVICE="$SERVICE" \
         OUTPUT_DIR="$go_nogo_output_dir" \
         GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$server_rollout_require_executor_upstream_norm" \
+        GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
         GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
         GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
         GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
@@ -303,6 +309,13 @@ if ((${#input_errors[@]} == 0)); then
     overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
     overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
     go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
+    go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "go_nogo_require_ingestion_grpc" "$go_nogo_output")")"
+    if ! go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "go_nogo_require_ingestion_grpc" "$go_nogo_output")"; then
+      input_errors+=("nested go/no-go go_nogo_require_ingestion_grpc must be boolean token, got: ${go_nogo_require_ingestion_grpc_raw:-<empty>}")
+      go_nogo_require_ingestion_grpc="unknown"
+    elif [[ "$go_nogo_require_ingestion_grpc" != "$go_nogo_require_ingestion_grpc_norm" ]]; then
+      input_errors+=("nested go/no-go go_nogo_require_ingestion_grpc mismatch: nested=${go_nogo_require_ingestion_grpc} expected=${go_nogo_require_ingestion_grpc_norm}")
+    fi
     go_nogo_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "executor_backend_mode_guard_verdict" "$go_nogo_output")")"
     go_nogo_executor_backend_mode_guard_verdict="$(printf '%s' "$go_nogo_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
     if [[ -z "$go_nogo_executor_backend_mode_guard_verdict_raw" ]]; then
@@ -331,6 +344,20 @@ if ((${#input_errors[@]} == 0)); then
       input_errors+=("nested go/no-go executor_upstream_endpoint_guard_reason_code must be non-empty")
       go_nogo_executor_upstream_endpoint_guard_reason_code="n/a"
     fi
+    go_nogo_ingestion_grpc_guard_verdict_raw="$(trim_string "$(extract_field "ingestion_grpc_guard_verdict" "$go_nogo_output")")"
+    go_nogo_ingestion_grpc_guard_verdict="$(printf '%s' "$go_nogo_ingestion_grpc_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    if [[ -z "$go_nogo_ingestion_grpc_guard_verdict_raw" ]]; then
+      input_errors+=("nested go/no-go ingestion_grpc_guard_verdict must be non-empty")
+      go_nogo_ingestion_grpc_guard_verdict="UNKNOWN"
+    elif [[ "$go_nogo_ingestion_grpc_guard_verdict" != "PASS" && "$go_nogo_ingestion_grpc_guard_verdict" != "WARN" && "$go_nogo_ingestion_grpc_guard_verdict" != "UNKNOWN" && "$go_nogo_ingestion_grpc_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested go/no-go ingestion_grpc_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${go_nogo_ingestion_grpc_guard_verdict_raw})")
+      go_nogo_ingestion_grpc_guard_verdict="UNKNOWN"
+    fi
+    go_nogo_ingestion_grpc_guard_reason_code="$(trim_string "$(extract_field "ingestion_grpc_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$go_nogo_ingestion_grpc_guard_reason_code" ]]; then
+      input_errors+=("nested go/no-go ingestion_grpc_guard_reason_code must be non-empty")
+      go_nogo_ingestion_grpc_guard_reason_code="n/a"
+    fi
     go_nogo_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$go_nogo_output")")"
     if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$go_nogo_output")"; then
       input_errors+=("nested go/no-go artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
@@ -356,6 +383,9 @@ if ((${#input_errors[@]} == 0)); then
     go_nogo_executor_backend_mode_guard_reason_code="stage_disabled"
     go_nogo_executor_upstream_endpoint_guard_verdict="SKIP"
     go_nogo_executor_upstream_endpoint_guard_reason_code="stage_disabled"
+    go_nogo_ingestion_grpc_guard_verdict="SKIP"
+    go_nogo_ingestion_grpc_guard_reason_code="stage_disabled"
+    go_nogo_require_ingestion_grpc="$go_nogo_require_ingestion_grpc_norm"
     go_nogo_output="overall_go_nogo_verdict: SKIP
 overall_go_nogo_reason: direct go/no-go stage disabled via SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT=false
 overall_go_nogo_reason_code: stage_disabled
@@ -375,6 +405,7 @@ package_bundle_enabled: false"
         RUN_TESTS="$run_tests_norm" \
         DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
         GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$server_rollout_require_executor_upstream_norm" \
+        GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
         GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
         GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
         GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
@@ -441,6 +472,7 @@ package_bundle_enabled: false"
       RUN_TESTS="$run_tests_norm" \
       DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$server_rollout_require_executor_upstream_norm" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
@@ -567,6 +599,7 @@ package_bundle_enabled: false"
       DEVNET_REHEARSAL_TEST_MODE="$devnet_rehearsal_test_mode_norm" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$server_rollout_require_executor_upstream_norm" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
@@ -783,6 +816,7 @@ windowed_signoff_required: $windowed_signoff_required_norm
 windowed_signoff_windows_csv: $WINDOWED_SIGNOFF_WINDOWS_CSV
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy_norm
 go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled_norm
+go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc_norm
 route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 rehearsal_route_fee_signoff_required: $rehearsal_route_fee_signoff_required_norm
@@ -814,6 +848,8 @@ go_nogo_executor_backend_mode_guard_verdict: ${go_nogo_executor_backend_mode_gua
 go_nogo_executor_backend_mode_guard_reason_code: ${go_nogo_executor_backend_mode_guard_reason_code:-n/a}
 go_nogo_executor_upstream_endpoint_guard_verdict: ${go_nogo_executor_upstream_endpoint_guard_verdict:-n/a}
 go_nogo_executor_upstream_endpoint_guard_reason_code: ${go_nogo_executor_upstream_endpoint_guard_reason_code:-n/a}
+go_nogo_ingestion_grpc_guard_verdict: ${go_nogo_ingestion_grpc_guard_verdict:-n/a}
+go_nogo_ingestion_grpc_guard_reason_code: ${go_nogo_ingestion_grpc_guard_reason_code:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
 go_nogo_artifacts_written: ${go_nogo_artifacts_written:-n/a}
 go_nogo_nested_package_bundle_enabled: ${go_nogo_nested_package_bundle_enabled:-n/a}

@@ -34,6 +34,7 @@ fi
 go_nogo_require_jito_rpc_policy_raw="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 go_nogo_require_executor_upstream_raw="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
+go_nogo_require_ingestion_grpc_raw="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
 if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
   echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2
@@ -45,6 +46,10 @@ if ! go_nogo_require_fastlane_disabled="$(parse_bool_token_strict "$go_nogo_requ
 fi
 if ! go_nogo_require_executor_upstream="$(parse_bool_token_strict "$go_nogo_require_executor_upstream_raw")"; then
   echo "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_executor_upstream_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_require_ingestion_grpc="$(parse_bool_token_strict "$go_nogo_require_ingestion_grpc_raw")"; then
+  echo "GO_NOGO_REQUIRE_INGESTION_GRPC must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_ingestion_grpc_raw}" >&2
   exit 1
 fi
 if ! go_nogo_test_mode="$(parse_bool_token_strict "$go_nogo_test_mode_raw")"; then
@@ -258,6 +263,11 @@ execution_mode_for_go_nogo="$(trim_string "$(cfg_or_env_string execution mode SO
 if [[ -z "$execution_mode_for_go_nogo" ]]; then
   execution_mode_for_go_nogo="paper"
 fi
+ingestion_source_for_go_nogo="$(trim_string "$(cfg_or_env_string ingestion source SOLANA_COPY_BOT_INGESTION_SOURCE "")")"
+ingestion_source_for_go_nogo="$(printf '%s' "$ingestion_source_for_go_nogo" | tr '[:upper:]' '[:lower:]')"
+if [[ -z "$ingestion_source_for_go_nogo" ]]; then
+  ingestion_source_for_go_nogo="unknown"
+fi
 submit_fastlane_enabled="$(cfg_or_env_bool execution submit_fastlane_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED false)"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -436,6 +446,8 @@ fallback_timeout_rate_pct="$(extract_field "fallback_timeout_rate_pct" "$calibra
 ingestion_lag_ms_p95="$(extract_field "ingestion_lag_ms_p95" "$snapshot_output")"
 ingestion_lag_ms_p99="$(extract_field "ingestion_lag_ms_p99" "$snapshot_output")"
 parse_rejected_total="$(extract_field "parse_rejected_total" "$snapshot_output")"
+grpc_message_total="$(extract_field "grpc_message_total" "$snapshot_output")"
+rpc_429_total="$(extract_field "rpc_429" "$snapshot_output")"
 parse_rejected_by_reason="$(extract_field "parse_rejected_by_reason" "$snapshot_output")"
 parse_fallback_by_reason="$(extract_field "parse_fallback_by_reason" "$snapshot_output")"
 replaced_ratio_last_interval="$(extract_field "replaced_ratio_last_interval" "$snapshot_output")"
@@ -610,6 +622,38 @@ if [[ "$go_nogo_require_fastlane_disabled" == "true" ]]; then
   fi
 fi
 
+ingestion_grpc_guard_verdict="SKIP"
+ingestion_grpc_guard_reason="strict ingestion grpc guard disabled"
+ingestion_grpc_guard_reason_code="gate_disabled"
+if [[ "$go_nogo_require_ingestion_grpc" == "true" ]]; then
+  grpc_message_total_raw="$(trim_string "${grpc_message_total:-}")"
+  if [[ "$ingestion_source_for_go_nogo" != "yellowstone_grpc" && "$ingestion_source_for_go_nogo" != "unknown" ]]; then
+    ingestion_grpc_guard_verdict="WARN"
+    ingestion_grpc_guard_reason="ingestion source must be yellowstone_grpc when strict ingestion grpc guard is enabled (observed source=${ingestion_source_for_go_nogo})"
+    ingestion_grpc_guard_reason_code="source_not_yellowstone_grpc"
+  elif [[ -z "$grpc_message_total_raw" || "$grpc_message_total_raw" == "n/a" ]]; then
+    ingestion_grpc_guard_verdict="UNKNOWN"
+    ingestion_grpc_guard_reason="runtime snapshot missing grpc_message_total while strict ingestion grpc guard is enabled"
+    ingestion_grpc_guard_reason_code="grpc_metric_missing"
+  elif ! [[ "$grpc_message_total_raw" =~ ^[0-9]+$ ]]; then
+    ingestion_grpc_guard_verdict="UNKNOWN"
+    ingestion_grpc_guard_reason="runtime snapshot grpc_message_total must be a non-negative integer when strict ingestion grpc guard is enabled (got: ${grpc_message_total_raw})"
+    ingestion_grpc_guard_reason_code="grpc_metric_invalid"
+  elif (( grpc_message_total_raw <= 0 )); then
+    ingestion_grpc_guard_verdict="WARN"
+    ingestion_grpc_guard_reason="strict ingestion grpc guard observed grpc_message_total=${grpc_message_total_raw}; grpc stream appears inactive"
+    ingestion_grpc_guard_reason_code="grpc_inactive"
+  elif [[ "$ingestion_source_for_go_nogo" == "yellowstone_grpc" ]]; then
+    ingestion_grpc_guard_verdict="PASS"
+    ingestion_grpc_guard_reason="strict ingestion grpc guard confirms source=yellowstone_grpc with grpc_message_total=${grpc_message_total_raw}"
+    ingestion_grpc_guard_reason_code="grpc_active_source_yellowstone"
+  else
+    ingestion_grpc_guard_verdict="PASS"
+    ingestion_grpc_guard_reason="strict ingestion grpc guard confirms grpc stream activity with grpc_message_total=${grpc_message_total_raw} (source unspecified)"
+    ingestion_grpc_guard_reason_code="grpc_active_source_unknown"
+  fi
+fi
+
 # Test-only overrides for smoke validation of verdict precedence branches.
 if [[ "$go_nogo_test_mode" == "true" ]]; then
   if [[ -n "${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" ]]; then
@@ -647,6 +691,14 @@ elif [[ "$go_nogo_require_executor_upstream" == "true" && "$executor_upstream_en
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict executor upstream endpoint-topology gate not PASS: ${executor_upstream_endpoint_guard_reason:-n/a}"
   overall_go_nogo_reason_code="executor_upstream_topology_not_pass"
+elif [[ "$go_nogo_require_ingestion_grpc" == "true" && "$ingestion_grpc_guard_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict ingestion grpc guard verdict: ${ingestion_grpc_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="ingestion_grpc_unknown"
+elif [[ "$go_nogo_require_ingestion_grpc" == "true" && "$ingestion_grpc_guard_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict ingestion grpc guard not PASS: ${ingestion_grpc_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="ingestion_grpc_not_pass"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
@@ -655,7 +707,7 @@ elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_fla
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
   overall_go_nogo_reason_code="fastlane_policy_unknown"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
   overall_go_nogo_reason_code="all_required_gates_pass"
@@ -746,6 +798,8 @@ preflight_error_count: ${preflight_error_count:-0}
 ingestion_lag_ms_p95: ${ingestion_lag_ms_p95:-n/a}
 ingestion_lag_ms_p99: ${ingestion_lag_ms_p99:-n/a}
 parse_rejected_total: ${parse_rejected_total:-n/a}
+grpc_message_total: ${grpc_message_total:-n/a}
+rpc_429: ${rpc_429_total:-n/a}
 parse_rejected_by_reason: ${parse_rejected_by_reason:-{}}
 parse_fallback_by_reason: ${parse_fallback_by_reason:-{}}
 replaced_ratio_last_interval: ${replaced_ratio_last_interval:-n/a}
@@ -790,6 +844,11 @@ executor_backend_mode_guard_reason_code: $executor_backend_mode_guard_reason_cod
 executor_upstream_endpoint_guard_verdict: $executor_upstream_endpoint_guard_verdict
 executor_upstream_endpoint_guard_reason: $executor_upstream_endpoint_guard_reason
 executor_upstream_endpoint_guard_reason_code: $executor_upstream_endpoint_guard_reason_code
+go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc
+ingestion_source: ${ingestion_source_for_go_nogo:-unknown}
+ingestion_grpc_guard_verdict: $ingestion_grpc_guard_verdict
+ingestion_grpc_guard_reason: $ingestion_grpc_guard_reason
+ingestion_grpc_guard_reason_code: $ingestion_grpc_guard_reason_code
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 jito_rpc_policy_verdict: $jito_rpc_policy_verdict
 jito_rpc_policy_reason: $jito_rpc_policy_reason
