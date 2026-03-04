@@ -490,6 +490,38 @@ validate_endpoint_identity_into() {
   return 0
 }
 
+endpoint_placeholder_host() {
+  local endpoint="$1"
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    printf ''
+    return 0
+  fi
+  "$PYTHON3_BIN" - "$endpoint" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+endpoint = (sys.argv[1] or "").strip()
+if not endpoint:
+    print("")
+    raise SystemExit(0)
+try:
+    parsed = urlsplit(endpoint)
+except Exception:
+    print("")
+    raise SystemExit(0)
+host = (parsed.hostname or "").strip().lower()
+if not host:
+    print("")
+    raise SystemExit(0)
+if host == "example.com" or host.endswith(".example.com"):
+    print("example.com")
+elif host == "executor.mock.local" or host.endswith(".executor.mock.local"):
+    print("executor.mock.local")
+else:
+    print("")
+PY
+}
+
 url_from_bind_addr() {
   local bind_addr="$1"
   local path="$2"
@@ -900,6 +932,33 @@ while IFS= read -r route; do
   fi
   if [[ -n "$route_send_rpc_fallback" && -z "$route_send_rpc" ]]; then
     errors+=("missing primary send-rpc URL for executor route=$route while send-rpc fallback is configured")
+  fi
+  if [[ "$executor_backend_mode" == "upstream" ]]; then
+    route_endpoint_placeholder_host=""
+    route_endpoint_placeholder_host="$(endpoint_placeholder_host "$route_submit")"
+    if [[ -n "$route_endpoint_placeholder_host" ]]; then
+      errors+=("submit URL for executor route=$route uses placeholder host=$route_endpoint_placeholder_host in upstream mode: $route_submit")
+    fi
+    route_endpoint_placeholder_host="$(endpoint_placeholder_host "$route_submit_fallback")"
+    if [[ -n "$route_endpoint_placeholder_host" ]]; then
+      errors+=("submit fallback URL for executor route=$route uses placeholder host=$route_endpoint_placeholder_host in upstream mode: $route_submit_fallback")
+    fi
+    route_endpoint_placeholder_host="$(endpoint_placeholder_host "$route_simulate")"
+    if [[ -n "$route_endpoint_placeholder_host" ]]; then
+      errors+=("simulate URL for executor route=$route uses placeholder host=$route_endpoint_placeholder_host in upstream mode: $route_simulate")
+    fi
+    route_endpoint_placeholder_host="$(endpoint_placeholder_host "$route_simulate_fallback")"
+    if [[ -n "$route_endpoint_placeholder_host" ]]; then
+      errors+=("simulate fallback URL for executor route=$route uses placeholder host=$route_endpoint_placeholder_host in upstream mode: $route_simulate_fallback")
+    fi
+    route_endpoint_placeholder_host="$(endpoint_placeholder_host "$route_send_rpc")"
+    if [[ -n "$route_endpoint_placeholder_host" ]]; then
+      errors+=("send-rpc URL for executor route=$route uses placeholder host=$route_endpoint_placeholder_host in upstream mode: $route_send_rpc")
+    fi
+    route_endpoint_placeholder_host="$(endpoint_placeholder_host "$route_send_rpc_fallback")"
+    if [[ -n "$route_endpoint_placeholder_host" ]]; then
+      errors+=("send-rpc fallback URL for executor route=$route uses placeholder host=$route_endpoint_placeholder_host in upstream mode: $route_send_rpc_fallback")
+    fi
   fi
 
   has_upstream_fallback_endpoint="false"

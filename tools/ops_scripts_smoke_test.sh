@@ -23,7 +23,11 @@ require_bin bash
 FAKE_BIN_DIR="$TMP_DIR/fake-bin"
 mkdir -p "$FAKE_BIN_DIR"
 DEFAULT_EXECUTOR_ENV_PATH="$TMP_DIR/default-executor.env"
-printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$DEFAULT_EXECUTOR_ENV_PATH"
+cat >"$DEFAULT_EXECUTOR_ENV_PATH" <<'EOF_DEFAULT_EXECUTOR_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+EOF_DEFAULT_EXECUTOR_ENV
 export EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-$DEFAULT_EXECUTOR_ENV_PATH}"
 
 write_fake_journalctl() {
@@ -1669,6 +1673,8 @@ run_go_nogo_executor_backend_mode_guard_case() {
   local config_path="$2"
   local executor_env_mock="$TMP_DIR/go-nogo-executor-mock.env"
   local executor_env_upstream="$TMP_DIR/go-nogo-executor-upstream.env"
+  local executor_env_upstream_placeholder="$TMP_DIR/go-nogo-executor-upstream-placeholder.env"
+  local executor_env_upstream_missing_topology="$TMP_DIR/go-nogo-executor-upstream-missing-topology.env"
   local executor_env_invalid="$TMP_DIR/go-nogo-executor-invalid.env"
 
   cat >"$executor_env_mock" <<'EOF_EXECUTOR_MOCK'
@@ -1676,7 +1682,17 @@ COPYBOT_EXECUTOR_BACKEND_MODE=mock
 EOF_EXECUTOR_MOCK
   cat >"$executor_env_upstream" <<'EOF_EXECUTOR_UPSTREAM'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
 EOF_EXECUTOR_UPSTREAM
+  cat >"$executor_env_upstream_placeholder" <<'EOF_EXECUTOR_UPSTREAM_PLACEHOLDER'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=https://example.com/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=https://example.com/simulate
+EOF_EXECUTOR_UPSTREAM_PLACEHOLDER
+  cat >"$executor_env_upstream_missing_topology" <<'EOF_EXECUTOR_UPSTREAM_MISSING_TOPOLOGY'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+EOF_EXECUTOR_UPSTREAM_MISSING_TOPOLOGY
   cat >"$executor_env_invalid" <<'EOF_EXECUTOR_INVALID'
 COPYBOT_EXECUTOR_BACKEND_MODE=bogus_mode
 EOF_EXECUTOR_INVALID
@@ -1722,8 +1738,52 @@ EOF_EXECUTOR_INVALID
   assert_field_equals "$upstream_output" "executor_backend_mode" "upstream"
   assert_field_equals "$upstream_output" "executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$upstream_output" "executor_backend_mode_guard_reason_code" "backend_mode_upstream"
+  assert_field_equals "$upstream_output" "executor_upstream_endpoint_guard_verdict" "PASS"
+  assert_field_equals "$upstream_output" "executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$upstream_output" "overall_go_nogo_verdict" "GO"
   assert_field_equals "$upstream_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local upstream_placeholder_output
+  upstream_placeholder_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream_placeholder" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$upstream_placeholder_output" "executor_backend_mode" "upstream"
+  assert_field_equals "$upstream_placeholder_output" "executor_upstream_endpoint_guard_verdict" "WARN"
+  assert_field_equals "$upstream_placeholder_output" "executor_upstream_endpoint_guard_reason_code" "endpoint_placeholder"
+  assert_field_equals "$upstream_placeholder_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$upstream_placeholder_output" "overall_go_nogo_reason_code" "executor_upstream_topology_not_pass"
+
+  local upstream_missing_topology_output
+  upstream_missing_topology_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream_missing_topology" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$upstream_missing_topology_output" "executor_backend_mode" "upstream"
+  assert_field_equals "$upstream_missing_topology_output" "executor_upstream_endpoint_guard_verdict" "UNKNOWN"
+  assert_field_equals "$upstream_missing_topology_output" "executor_upstream_endpoint_guard_reason_code" "endpoint_missing"
+  assert_field_equals "$upstream_missing_topology_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$upstream_missing_topology_output" "overall_go_nogo_reason_code" "executor_upstream_topology_unknown"
 
   local missing_env_output
   missing_env_output="$(
@@ -1788,7 +1848,7 @@ EOF_EXECUTOR_INVALID
   fi
   assert_contains "$invalid_bool_output" "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token"
   assert_contains "$invalid_bool_output" "got: sometimes"
-  echo "[ok] go-no-go strict executor backend-mode gate"
+  echo "[ok] go-no-go strict executor backend-mode and topology gate"
 }
 
 run_windowed_signoff_report_case() {
@@ -1796,7 +1856,11 @@ run_windowed_signoff_report_case() {
   local paper_cfg="$2"
   local adapter_cfg="$3"
   local executor_env_path="$TMP_DIR/windowed-signoff-executor.env"
-  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  cat >"$executor_env_path" <<'EOF_WINDOWED_EXECUTOR_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+EOF_WINDOWED_EXECUTOR_ENV
   local EXECUTOR_ENV_PATH="$executor_env_path"
   export EXECUTOR_ENV_PATH
 
@@ -2143,7 +2207,11 @@ run_execution_route_fee_signoff_case() {
   local config_path="$2"
   local strict_config_path="$3"
   local executor_env_path="$TMP_DIR/route-fee-signoff-executor.env"
-  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  cat >"$executor_env_path" <<'EOF_ROUTE_FEE_EXECUTOR_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+EOF_ROUTE_FEE_EXECUTOR_ENV
   local EXECUTOR_ENV_PATH="$executor_env_path"
   export EXECUTOR_ENV_PATH
   local hold_output
@@ -3463,6 +3531,39 @@ run_executor_preflight_case() {
   assert_contains "$invalid_executor_submit_url_output" "preflight_verdict: FAIL"
   assert_contains "$invalid_executor_submit_url_output" "invalid submit URL for executor route=rpc: ftp://executor.upstream.local/submit"
 
+  local executor_placeholder_example_host_output
+  if executor_placeholder_example_host_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL="https://example.com/submit" \
+      COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL="https://example.com/simulate" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for example.com placeholder upstream endpoints in upstream backend mode" >&2
+    exit 1
+  fi
+  assert_contains "$executor_placeholder_example_host_output" "preflight_verdict: FAIL"
+  assert_contains "$executor_placeholder_example_host_output" "submit URL for executor route=rpc uses placeholder host=example.com in upstream mode"
+
+  local executor_placeholder_mock_host_output
+  if executor_placeholder_mock_host_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL="https://executor.mock.local/rpc/submit" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for executor.mock.local placeholder upstream endpoint in upstream backend mode" >&2
+    exit 1
+  fi
+  assert_contains "$executor_placeholder_mock_host_output" "preflight_verdict: FAIL"
+  assert_contains "$executor_placeholder_mock_host_output" "submit URL for executor route=rpc uses placeholder host=executor.mock.local in upstream mode"
+
   local invalid_adapter_simulate_url_output
   if invalid_adapter_simulate_url_output="$(
     PATH="$fake_curl_bin:$PATH" \
@@ -4442,7 +4543,11 @@ run_devnet_rehearsal_case() {
   local db_path="$1"
   local config_path="$2"
   local executor_env_path="$TMP_DIR/devnet-rehearsal-executor.env"
-  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  cat >"$executor_env_path" <<'EOF_DEVNET_EXECUTOR_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+EOF_DEVNET_EXECUTOR_ENV
   local EXECUTOR_ENV_PATH="$executor_env_path"
   export EXECUTOR_ENV_PATH
   local artifacts_dir="$TMP_DIR/devnet-rehearsal-artifacts"
@@ -6002,7 +6107,11 @@ run_adapter_rollout_evidence_case() {
   local db_path="$1"
   local config_path="$2"
   local executor_env_path="$TMP_DIR/adapter-rollout-executor.env"
-  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  cat >"$executor_env_path" <<'EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV
   local EXECUTOR_ENV_PATH="$executor_env_path"
   export EXECUTOR_ENV_PATH
   local env_path="$TMP_DIR/adapter-rollout.env"
@@ -6973,7 +7082,11 @@ run_execution_runtime_readiness_report_case() {
   printf 'route-send-rpc-pass\n' >"$secrets_dir/route_rpc_send_rpc_auth.token"
   chmod 600 "$secrets_dir"/*.token "$secrets_dir"/*.secret
   local executor_env_path="$TMP_DIR/runtime-readiness-executor.env"
-  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  cat >"$executor_env_path" <<'EOF_RUNTIME_READINESS_EXECUTOR_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+EOF_RUNTIME_READINESS_EXECUTOR_ENV
 
   local pass_output=""
   pass_output="$(
@@ -7102,7 +7215,11 @@ run_execution_runtime_readiness_report_case() {
   assert_field_equals "$strict_override_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$strict_override_output" "final_runtime_package_reason_code" "gates_pass"
 
-  printf 'COPYBOT_EXECUTOR_BACKEND_MODE=upstream\n' >"$executor_env_path"
+  cat >"$executor_env_path" <<'EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   local skip_route_fee_output=""
   skip_route_fee_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \

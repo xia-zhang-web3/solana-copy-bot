@@ -163,6 +163,47 @@ read_env_file_key() {
   ' "$env_path"
 }
 
+normalized_route_lines() {
+  local csv="$1"
+  local item normalized
+  while IFS=',' read -r -a _route_tokens; do
+    for item in "${_route_tokens[@]-}"; do
+      normalized="$(trim_string "$item")"
+      normalized="$(printf '%s' "$normalized" | tr '[:upper:]' '[:lower:]')"
+      [[ -z "$normalized" ]] && continue
+      printf '%s\n' "$normalized"
+    done
+  done <<<"$csv"
+}
+
+endpoint_placeholder_host() {
+  local endpoint="$1"
+  python3 - "$endpoint" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+endpoint = (sys.argv[1] or "").strip()
+if not endpoint:
+    print("")
+    raise SystemExit(0)
+try:
+    parsed = urlsplit(endpoint)
+except Exception:
+    print("")
+    raise SystemExit(0)
+host = (parsed.hostname or "").strip().lower()
+if not host:
+    print("")
+    raise SystemExit(0)
+if host == "example.com" or host.endswith(".example.com"):
+    print("example.com")
+elif host == "executor.mock.local" or host.endswith(".executor.mock.local"):
+    print("executor.mock.local")
+else:
+    print("")
+PY
+}
+
 sum_route_map_values() {
   local raw_map="$1"
   python3 - "$raw_map" <<'PY'
@@ -294,6 +335,81 @@ if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
     executor_backend_mode_guard_verdict="PASS"
     executor_backend_mode_guard_reason="executor backend_mode=upstream"
     executor_backend_mode_guard_reason_code="backend_mode_upstream"
+  fi
+fi
+
+executor_upstream_endpoint_guard_verdict="SKIP"
+executor_upstream_endpoint_guard_reason="strict executor upstream endpoint-topology gate disabled"
+executor_upstream_endpoint_guard_reason_code="gate_disabled"
+if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
+  if [[ ! -f "$EXECUTOR_ENV_PATH" ]]; then
+    executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    executor_upstream_endpoint_guard_reason="executor env file not found: $EXECUTOR_ENV_PATH"
+    executor_upstream_endpoint_guard_reason_code="executor_env_missing"
+  elif [[ "$executor_backend_mode" != "upstream" ]]; then
+    executor_upstream_endpoint_guard_verdict="SKIP"
+    executor_upstream_endpoint_guard_reason="executor backend_mode=$executor_backend_mode; strict upstream endpoint-topology gate skipped"
+    executor_upstream_endpoint_guard_reason_code="backend_mode_not_upstream"
+  else
+    executor_route_allowlist_for_topology="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_ALLOWLIST")")"
+    if [[ -z "$executor_route_allowlist_for_topology" ]]; then
+      executor_route_allowlist_for_topology="paper,rpc,jito"
+    fi
+    executor_upstream_submit_default_for_topology="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL")")"
+    executor_upstream_simulate_default_for_topology="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL")")"
+    missing_executor_endpoint_label=""
+    missing_executor_endpoint_route=""
+    placeholder_executor_endpoint_label=""
+    placeholder_executor_endpoint_route=""
+    placeholder_executor_endpoint_host=""
+    while IFS= read -r route; do
+      [[ -z "$route" ]] && continue
+      route_upper="$(printf '%s' "$route" | tr '[:lower:]' '[:upper:]')"
+      route_submit_for_topology="$(first_non_empty \
+        "$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_URL")")" \
+        "$executor_upstream_submit_default_for_topology")"
+      route_simulate_for_topology="$(first_non_empty \
+        "$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SIMULATE_URL")")" \
+        "$executor_upstream_simulate_default_for_topology")"
+      if [[ -z "$route_submit_for_topology" && -z "$missing_executor_endpoint_label" ]]; then
+        missing_executor_endpoint_label="submit"
+        missing_executor_endpoint_route="$route"
+      fi
+      if [[ -z "$route_simulate_for_topology" && -z "$missing_executor_endpoint_label" ]]; then
+        missing_executor_endpoint_label="simulate"
+        missing_executor_endpoint_route="$route"
+      fi
+      if [[ -n "$route_submit_for_topology" && -z "$placeholder_executor_endpoint_label" ]]; then
+        endpoint_placeholder_host_value="$(endpoint_placeholder_host "$route_submit_for_topology")"
+        if [[ -n "$endpoint_placeholder_host_value" ]]; then
+          placeholder_executor_endpoint_label="submit"
+          placeholder_executor_endpoint_route="$route"
+          placeholder_executor_endpoint_host="$endpoint_placeholder_host_value"
+        fi
+      fi
+      if [[ -n "$route_simulate_for_topology" && -z "$placeholder_executor_endpoint_label" ]]; then
+        endpoint_placeholder_host_value="$(endpoint_placeholder_host "$route_simulate_for_topology")"
+        if [[ -n "$endpoint_placeholder_host_value" ]]; then
+          placeholder_executor_endpoint_label="simulate"
+          placeholder_executor_endpoint_route="$route"
+          placeholder_executor_endpoint_host="$endpoint_placeholder_host_value"
+        fi
+      fi
+    done < <(normalized_route_lines "$executor_route_allowlist_for_topology")
+
+    if [[ -n "$missing_executor_endpoint_label" ]]; then
+      executor_upstream_endpoint_guard_verdict="UNKNOWN"
+      executor_upstream_endpoint_guard_reason="missing ${missing_executor_endpoint_label} upstream endpoint for executor route=${missing_executor_endpoint_route}"
+      executor_upstream_endpoint_guard_reason_code="endpoint_missing"
+    elif [[ -n "$placeholder_executor_endpoint_label" ]]; then
+      executor_upstream_endpoint_guard_verdict="WARN"
+      executor_upstream_endpoint_guard_reason="executor ${placeholder_executor_endpoint_label} upstream endpoint for route=${placeholder_executor_endpoint_route} uses placeholder host=${placeholder_executor_endpoint_host}"
+      executor_upstream_endpoint_guard_reason_code="endpoint_placeholder"
+    else
+      executor_upstream_endpoint_guard_verdict="PASS"
+      executor_upstream_endpoint_guard_reason="executor upstream submit/simulate topology is configured and non-placeholder for all allowlisted routes"
+      executor_upstream_endpoint_guard_reason_code="topology_pass"
+    fi
   fi
 fi
 
@@ -523,6 +639,14 @@ elif [[ "$go_nogo_require_executor_upstream" == "true" && "$executor_backend_mod
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict executor upstream backend-mode gate not PASS: ${executor_backend_mode_guard_reason:-n/a}"
   overall_go_nogo_reason_code="executor_backend_mode_not_upstream"
+elif [[ "$go_nogo_require_executor_upstream" == "true" && "$executor_upstream_endpoint_guard_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict executor upstream endpoint-topology gate: ${executor_upstream_endpoint_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="executor_upstream_topology_unknown"
+elif [[ "$go_nogo_require_executor_upstream" == "true" && "$executor_upstream_endpoint_guard_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict executor upstream endpoint-topology gate not PASS: ${executor_upstream_endpoint_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="executor_upstream_topology_not_pass"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
@@ -531,7 +655,7 @@ elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_fla
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
   overall_go_nogo_reason_code="fastlane_policy_unknown"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
   overall_go_nogo_reason_code="all_required_gates_pass"
@@ -663,6 +787,9 @@ executor_backend_mode: ${executor_backend_mode:-unknown}
 executor_backend_mode_guard_verdict: $executor_backend_mode_guard_verdict
 executor_backend_mode_guard_reason: $executor_backend_mode_guard_reason
 executor_backend_mode_guard_reason_code: $executor_backend_mode_guard_reason_code
+executor_upstream_endpoint_guard_verdict: $executor_upstream_endpoint_guard_verdict
+executor_upstream_endpoint_guard_reason: $executor_upstream_endpoint_guard_reason
+executor_upstream_endpoint_guard_reason_code: $executor_upstream_endpoint_guard_reason_code
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 jito_rpc_policy_verdict: $jito_rpc_policy_verdict
 jito_rpc_policy_reason: $jito_rpc_policy_reason
