@@ -7508,6 +7508,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "route_fee_final_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_field_equals "$pass_output" "route_fee_final_nested_executor_upstream_endpoint_guard_verdict" "PASS"
   assert_field_equals "$pass_output" "route_fee_final_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
+  assert_field_equals "$pass_output" "route_fee_final_nested_signoff_guard_window_id" "24"
   assert_field_equals "$pass_output" "final_runtime_package_verdict" "GO"
   assert_field_equals "$pass_output" "final_runtime_package_reason_code" "gates_pass"
   assert_field_equals "$pass_output" "adapter_final_artifacts_written" "true"
@@ -7588,6 +7589,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_non_empty "$strict_mock_output" "route_fee_final_nested_executor_backend_mode_guard_reason_code"
   assert_field_non_empty "$strict_mock_output" "route_fee_final_nested_executor_upstream_endpoint_guard_verdict"
   assert_field_non_empty "$strict_mock_output" "route_fee_final_nested_executor_upstream_endpoint_guard_reason_code"
+  assert_field_non_empty "$strict_mock_output" "route_fee_final_nested_signoff_guard_window_id"
   assert_field_equals "$strict_mock_output" "runtime_readiness_verdict" "NO_GO"
 
   local strict_override_output=""
@@ -7627,6 +7629,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "route_fee_final_nested_executor_backend_mode_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_executor_upstream_endpoint_guard_verdict" "SKIP"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_executor_upstream_endpoint_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_signoff_guard_window_id" "24"
   assert_field_equals "$strict_override_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$strict_override_output" "final_runtime_package_reason_code" "gates_pass"
 
@@ -7676,6 +7679,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_executor_backend_mode_guard_reason_code" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_executor_upstream_endpoint_guard_verdict" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_executor_upstream_endpoint_guard_reason_code" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_signoff_guard_window_id" "n/a"
   assert_field_equals "$skip_route_fee_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$skip_route_fee_output" "final_runtime_package_reason_code" "gates_pass"
 
@@ -7719,6 +7723,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_executor_backend_mode_guard_reason_code" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_executor_upstream_endpoint_guard_verdict" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_executor_upstream_endpoint_guard_reason_code" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_signoff_guard_window_id" "n/a"
   assert_field_equals "$profile_adapter_only_output" "runtime_readiness_verdict" "GO"
 
   local profile_route_fee_only_output=""
@@ -7761,6 +7766,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_executor_upstream_endpoint_guard_verdict" "PASS"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_signoff_guard_window_id" "24"
   assert_field_equals "$profile_route_fee_only_output" "runtime_readiness_verdict" "GO"
 
   local bundle_output=""
@@ -7803,6 +7809,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$bundle_output" "route_fee_final_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_field_equals "$bundle_output" "route_fee_final_nested_executor_upstream_endpoint_guard_verdict" "PASS"
   assert_field_equals "$bundle_output" "route_fee_final_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
+  assert_field_equals "$bundle_output" "route_fee_final_nested_signoff_guard_window_id" "24"
   assert_sha256_field "$bundle_output" "package_bundle_sha256"
   assert_field_non_empty "$bundle_output" "package_bundle_path"
   assert_field_non_empty "$bundle_output" "package_bundle_sha256_path"

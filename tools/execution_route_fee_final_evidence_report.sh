@@ -182,17 +182,17 @@ if ((${#input_errors[@]} == 0)); then
   fi
   if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
     if [[ "$signoff_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
-      input_errors+=("nested route/fee signoff window_24h_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+      input_errors+=("nested route/fee signoff ${signoff_guard_backend_mode_verdict_key} cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
     fi
     if [[ "$signoff_nested_executor_upstream_endpoint_guard_verdict" == "SKIP" ]]; then
-      input_errors+=("nested route/fee signoff window_24h_executor_upstream_endpoint_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+      input_errors+=("nested route/fee signoff ${signoff_guard_upstream_endpoint_verdict_key} cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
     fi
   else
     if [[ "$signoff_nested_executor_backend_mode_guard_verdict" != "SKIP" ]]; then
-      input_errors+=("nested route/fee signoff window_24h_executor_backend_mode_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${signoff_nested_executor_backend_mode_guard_verdict})")
+      input_errors+=("nested route/fee signoff ${signoff_guard_backend_mode_verdict_key} must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${signoff_nested_executor_backend_mode_guard_verdict})")
     fi
     if [[ "$signoff_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
-      input_errors+=("nested route/fee signoff window_24h_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${signoff_nested_executor_upstream_endpoint_guard_verdict})")
+      input_errors+=("nested route/fee signoff ${signoff_guard_upstream_endpoint_verdict_key} must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${signoff_nested_executor_upstream_endpoint_guard_verdict})")
     fi
   fi
 

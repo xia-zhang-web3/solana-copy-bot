@@ -159,6 +159,7 @@ route_fee_nested_executor_backend_mode_guard_verdict="n/a"
 route_fee_nested_executor_backend_mode_guard_reason_code="n/a"
 route_fee_nested_executor_upstream_endpoint_guard_verdict="n/a"
 route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+route_fee_nested_signoff_guard_window_id="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if [[ "$runtime_readiness_run_adapter_final_norm" == "true" ]]; then
@@ -400,6 +401,11 @@ package_bundle_enabled: false"
       input_errors+=("nested route fee final signoff_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
       route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
     fi
+    route_fee_nested_signoff_guard_window_id="$(trim_string "$(extract_field "signoff_guard_window_id" "$route_fee_output")")"
+    if [[ -z "$route_fee_nested_signoff_guard_window_id" ]]; then
+      input_errors+=("nested route fee final signoff_guard_window_id must be non-empty")
+      route_fee_nested_signoff_guard_window_id="n/a"
+    fi
     if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
       if [[ "$route_fee_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
         input_errors+=("nested route fee final signoff_nested_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -439,6 +445,7 @@ package_bundle_enabled: false"
     route_fee_nested_executor_backend_mode_guard_reason_code="n/a"
     route_fee_nested_executor_upstream_endpoint_guard_verdict="n/a"
     route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+    route_fee_nested_signoff_guard_window_id="n/a"
     route_fee_output="final_route_fee_package_verdict: SKIP
 final_route_fee_package_reason: route/fee final stage disabled via RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL=false
 final_route_fee_package_reason_code: stage_disabled
@@ -578,6 +585,7 @@ route_fee_final_nested_executor_backend_mode_guard_verdict: ${route_fee_nested_e
 route_fee_final_nested_executor_backend_mode_guard_reason_code: ${route_fee_nested_executor_backend_mode_guard_reason_code:-n/a}
 route_fee_final_nested_executor_upstream_endpoint_guard_verdict: ${route_fee_nested_executor_upstream_endpoint_guard_verdict:-n/a}
 route_fee_final_nested_executor_upstream_endpoint_guard_reason_code: ${route_fee_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
+route_fee_final_nested_signoff_guard_window_id: ${route_fee_nested_signoff_guard_window_id:-n/a}
 route_fee_window_count: ${route_fee_window_count:-n/a}
 route_fee_go_nogo_go_count: ${route_fee_go_nogo_go_count:-n/a}
 route_fee_route_profile_pass_count: ${route_fee_route_profile_pass_count:-n/a}
