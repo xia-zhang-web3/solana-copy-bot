@@ -1855,6 +1855,11 @@ run_windowed_signoff_report_case() {
   local db_path="$1"
   local paper_cfg="$2"
   local adapter_cfg="$3"
+  local case_profile="${4:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_windowed_signoff_report_case case_profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local executor_env_path="$TMP_DIR/windowed-signoff-executor.env"
   cat >"$executor_env_path" <<'EOF_WINDOWED_EXECUTOR_ENV'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
@@ -2049,6 +2054,10 @@ EOF_WINDOWED_EXECUTOR_ENV
     echo "expected captured go/no-go artifact for 24h window in $artifacts_dir/window_24h" >&2
     exit 1
   fi
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] execution windowed signoff helper (fast)"
+    return
+  fi
 
   local bundle_artifacts_dir="$TMP_DIR/windowed-signoff-artifacts-with-bundle"
   local bundle_output_dir="$TMP_DIR/windowed-signoff-bundles"
@@ -2210,6 +2219,11 @@ run_execution_route_fee_signoff_case() {
   local db_path="$1"
   local config_path="$2"
   local strict_config_path="$3"
+  local case_profile="${4:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_execution_route_fee_signoff_case case_profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local executor_env_path="$TMP_DIR/route-fee-signoff-executor.env"
   cat >"$executor_env_path" <<'EOF_ROUTE_FEE_EXECUTOR_ENV'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
@@ -2333,6 +2347,10 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   if ! grep -Fq "window_24h/execution_fee_calibration_captured_" "$manifest_path"; then
     echo "expected window-qualified 24h calibration capture entry in manifest $manifest_path" >&2
     exit 1
+  fi
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] execution route/fee signoff helper (fast)"
+    return
   fi
 
   local bundle_artifacts_dir="$TMP_DIR/route-fee-signoff-artifacts-with-bundle"
@@ -4591,6 +4609,11 @@ EOF
 run_devnet_rehearsal_case() {
   local db_path="$1"
   local config_path="$2"
+  local case_profile="${3:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_devnet_rehearsal_case case_profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local executor_env_path="$TMP_DIR/devnet-rehearsal-executor.env"
   cat >"$executor_env_path" <<'EOF_DEVNET_EXECUTOR_ENV'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
@@ -4730,6 +4753,10 @@ EOF_DEVNET_EXECUTOR_ENV
   if ! ls "$artifacts_dir"/route_fee_signoff/execution_route_fee_signoff_captured_*.txt >/dev/null 2>&1; then
     echo "expected nested route/fee signoff capture artifact in $artifacts_dir/route_fee_signoff" >&2
     exit 1
+  fi
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] execution devnet rehearsal helper (fast)"
+    return
   fi
 
   local bundle_artifacts_dir="$TMP_DIR/devnet-rehearsal-artifacts-with-bundle"
@@ -9182,7 +9209,7 @@ run_targeted_smoke_cases() {
       run_evidence_bundle_pack_case
       executed_cases=$((executed_cases + 1))
       ;;
-    executor_preflight | run_executor_preflight_case | windowed_signoff | run_windowed_signoff_report_case | route_fee_signoff | run_execution_route_fee_signoff_case | devnet_rehearsal | run_devnet_rehearsal_case | executor_rollout_evidence | run_executor_rollout_evidence_case | executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast | adapter_rollout_evidence | run_adapter_rollout_evidence_case | adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast | execution_server_rollout | run_execution_server_rollout_report_case | execution_server_rollout_fast | run_execution_server_rollout_report_case_fast | execution_runtime_readiness | run_execution_runtime_readiness_report_case | execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
+    executor_preflight | run_executor_preflight_case | windowed_signoff | run_windowed_signoff_report_case | windowed_signoff_fast | run_windowed_signoff_report_case_fast | route_fee_signoff | run_execution_route_fee_signoff_case | route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast | devnet_rehearsal | run_devnet_rehearsal_case | devnet_rehearsal_fast | run_devnet_rehearsal_case_fast | executor_rollout_evidence | run_executor_rollout_evidence_case | executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast | adapter_rollout_evidence | run_adapter_rollout_evidence_case | adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast | execution_server_rollout | run_execution_server_rollout_report_case | execution_server_rollout_fast | run_execution_server_rollout_report_case_fast | execution_runtime_readiness | run_execution_runtime_readiness_report_case | execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
       if [[ "$fixtures_ready" != "true" ]]; then
         create_legacy_db "$legacy_db"
         write_config "$legacy_cfg" "$legacy_db"
@@ -9198,12 +9225,24 @@ run_targeted_smoke_cases() {
         run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
         executed_cases=$((executed_cases + 1))
         ;;
+      windowed_signoff_fast | run_windowed_signoff_report_case_fast)
+        run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "fast"
+        executed_cases=$((executed_cases + 1))
+        ;;
       route_fee_signoff | run_execution_route_fee_signoff_case)
         run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg"
         executed_cases=$((executed_cases + 1))
         ;;
+      route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast)
+        run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "fast"
+        executed_cases=$((executed_cases + 1))
+        ;;
       devnet_rehearsal | run_devnet_rehearsal_case)
         run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      devnet_rehearsal_fast | run_devnet_rehearsal_case_fast)
+        run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       executor_rollout_evidence | run_executor_rollout_evidence_case)
@@ -9246,7 +9285,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, windowed_signoff, route_fee_signoff, devnet_rehearsal, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
+      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
       exit 1
       ;;
     esac
