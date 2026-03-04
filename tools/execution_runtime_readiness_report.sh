@@ -129,6 +129,10 @@ adapter_manifest_sha256="n/a"
 adapter_final_nested_package_bundle_enabled="n/a"
 adapter_nested_go_nogo_require_executor_upstream="n/a"
 adapter_nested_executor_env_path="n/a"
+adapter_nested_executor_backend_mode_guard_verdict="n/a"
+adapter_nested_executor_backend_mode_guard_reason_code="n/a"
+adapter_nested_executor_upstream_endpoint_guard_verdict="n/a"
+adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
 
 route_fee_output=""
 route_fee_exit_code="3"
@@ -151,6 +155,10 @@ route_fee_stable_fallback_route="n/a"
 route_fee_final_nested_package_bundle_enabled="n/a"
 route_fee_nested_go_nogo_require_executor_upstream="n/a"
 route_fee_nested_executor_env_path="n/a"
+route_fee_nested_executor_backend_mode_guard_verdict="n/a"
+route_fee_nested_executor_backend_mode_guard_reason_code="n/a"
+route_fee_nested_executor_upstream_endpoint_guard_verdict="n/a"
+route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if [[ "$runtime_readiness_run_adapter_final_norm" == "true" ]]; then
@@ -221,6 +229,51 @@ if ((${#input_errors[@]} == 0)); then
     elif [[ "$adapter_nested_executor_env_path" != "$EXECUTOR_ENV_PATH" ]]; then
       input_errors+=("nested adapter rollout final executor_env_path mismatch: nested=${adapter_nested_executor_env_path} expected=${EXECUTOR_ENV_PATH}")
     fi
+    adapter_nested_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "rollout_nested_executor_backend_mode_guard_verdict" "$adapter_output")")"
+    adapter_nested_executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$adapter_nested_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    adapter_nested_executor_backend_mode_guard_verdict="$(normalize_strict_guard_verdict "$adapter_nested_executor_backend_mode_guard_verdict_raw")"
+    if [[ -z "$adapter_nested_executor_backend_mode_guard_verdict_raw" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_executor_backend_mode_guard_verdict must be non-empty")
+      adapter_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+    elif [[ "$adapter_nested_executor_backend_mode_guard_verdict_raw_upper" != "PASS" && "$adapter_nested_executor_backend_mode_guard_verdict_raw_upper" != "WARN" && "$adapter_nested_executor_backend_mode_guard_verdict_raw_upper" != "UNKNOWN" && "$adapter_nested_executor_backend_mode_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_executor_backend_mode_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${adapter_nested_executor_backend_mode_guard_verdict_raw})")
+      adapter_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+    fi
+    adapter_nested_executor_backend_mode_guard_reason_code="$(trim_string "$(extract_field "rollout_nested_executor_backend_mode_guard_reason_code" "$adapter_output")")"
+    if [[ -z "$adapter_nested_executor_backend_mode_guard_reason_code" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_executor_backend_mode_guard_reason_code must be non-empty")
+      adapter_nested_executor_backend_mode_guard_reason_code="n/a"
+    fi
+    adapter_nested_executor_upstream_endpoint_guard_verdict_raw="$(trim_string "$(extract_field "rollout_nested_executor_upstream_endpoint_guard_verdict" "$adapter_output")")"
+    adapter_nested_executor_upstream_endpoint_guard_verdict_raw_upper="$(printf '%s' "$adapter_nested_executor_upstream_endpoint_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    adapter_nested_executor_upstream_endpoint_guard_verdict="$(normalize_strict_guard_verdict "$adapter_nested_executor_upstream_endpoint_guard_verdict_raw")"
+    if [[ -z "$adapter_nested_executor_upstream_endpoint_guard_verdict_raw" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_verdict must be non-empty")
+      adapter_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    elif [[ "$adapter_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "PASS" && "$adapter_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "WARN" && "$adapter_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "UNKNOWN" && "$adapter_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${adapter_nested_executor_upstream_endpoint_guard_verdict_raw})")
+      adapter_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    fi
+    adapter_nested_executor_upstream_endpoint_guard_reason_code="$(trim_string "$(extract_field "rollout_nested_executor_upstream_endpoint_guard_reason_code" "$adapter_output")")"
+    if [[ -z "$adapter_nested_executor_upstream_endpoint_guard_reason_code" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
+      adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+    fi
+    if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
+      if [[ "$adapter_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+      fi
+      if [[ "$adapter_nested_executor_upstream_endpoint_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+      fi
+    else
+      if [[ "$adapter_nested_executor_backend_mode_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_executor_backend_mode_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${adapter_nested_executor_backend_mode_guard_verdict})")
+      fi
+      if [[ "$adapter_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${adapter_nested_executor_upstream_endpoint_guard_verdict})")
+      fi
+    fi
 
     if [[ "$adapter_verdict" == "UNKNOWN" ]]; then
       adapter_reason="unable to classify adapter final verdict (exit=${adapter_exit_code})"
@@ -241,6 +294,10 @@ if ((${#input_errors[@]} == 0)); then
     adapter_final_nested_package_bundle_enabled="n/a"
     adapter_nested_go_nogo_require_executor_upstream="n/a"
     adapter_nested_executor_env_path="n/a"
+    adapter_nested_executor_backend_mode_guard_verdict="n/a"
+    adapter_nested_executor_backend_mode_guard_reason_code="n/a"
+    adapter_nested_executor_upstream_endpoint_guard_verdict="n/a"
+    adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
     adapter_output="final_rollout_package_verdict: SKIP
 final_rollout_package_reason: adapter final stage disabled via RUNTIME_READINESS_RUN_ADAPTER_FINAL=false
 final_rollout_package_reason_code: stage_disabled
@@ -313,6 +370,51 @@ package_bundle_enabled: false"
     elif [[ "$route_fee_nested_executor_env_path" != "$EXECUTOR_ENV_PATH" ]]; then
       input_errors+=("nested route fee final executor_env_path mismatch: nested=${route_fee_nested_executor_env_path} expected=${EXECUTOR_ENV_PATH}")
     fi
+    route_fee_nested_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "signoff_nested_executor_backend_mode_guard_verdict" "$route_fee_output")")"
+    route_fee_nested_executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$route_fee_nested_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    route_fee_nested_executor_backend_mode_guard_verdict="$(normalize_strict_guard_verdict "$route_fee_nested_executor_backend_mode_guard_verdict_raw")"
+    if [[ -z "$route_fee_nested_executor_backend_mode_guard_verdict_raw" ]]; then
+      input_errors+=("nested route fee final signoff_nested_executor_backend_mode_guard_verdict must be non-empty")
+      route_fee_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+    elif [[ "$route_fee_nested_executor_backend_mode_guard_verdict_raw_upper" != "PASS" && "$route_fee_nested_executor_backend_mode_guard_verdict_raw_upper" != "WARN" && "$route_fee_nested_executor_backend_mode_guard_verdict_raw_upper" != "UNKNOWN" && "$route_fee_nested_executor_backend_mode_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested route fee final signoff_nested_executor_backend_mode_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${route_fee_nested_executor_backend_mode_guard_verdict_raw})")
+      route_fee_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+    fi
+    route_fee_nested_executor_backend_mode_guard_reason_code="$(trim_string "$(extract_field "signoff_nested_executor_backend_mode_guard_reason_code" "$route_fee_output")")"
+    if [[ -z "$route_fee_nested_executor_backend_mode_guard_reason_code" ]]; then
+      input_errors+=("nested route fee final signoff_nested_executor_backend_mode_guard_reason_code must be non-empty")
+      route_fee_nested_executor_backend_mode_guard_reason_code="n/a"
+    fi
+    route_fee_nested_executor_upstream_endpoint_guard_verdict_raw="$(trim_string "$(extract_field "signoff_nested_executor_upstream_endpoint_guard_verdict" "$route_fee_output")")"
+    route_fee_nested_executor_upstream_endpoint_guard_verdict_raw_upper="$(printf '%s' "$route_fee_nested_executor_upstream_endpoint_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    route_fee_nested_executor_upstream_endpoint_guard_verdict="$(normalize_strict_guard_verdict "$route_fee_nested_executor_upstream_endpoint_guard_verdict_raw")"
+    if [[ -z "$route_fee_nested_executor_upstream_endpoint_guard_verdict_raw" ]]; then
+      input_errors+=("nested route fee final signoff_nested_executor_upstream_endpoint_guard_verdict must be non-empty")
+      route_fee_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    elif [[ "$route_fee_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "PASS" && "$route_fee_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "WARN" && "$route_fee_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "UNKNOWN" && "$route_fee_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested route fee final signoff_nested_executor_upstream_endpoint_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${route_fee_nested_executor_upstream_endpoint_guard_verdict_raw})")
+      route_fee_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    fi
+    route_fee_nested_executor_upstream_endpoint_guard_reason_code="$(trim_string "$(extract_field "signoff_nested_executor_upstream_endpoint_guard_reason_code" "$route_fee_output")")"
+    if [[ -z "$route_fee_nested_executor_upstream_endpoint_guard_reason_code" ]]; then
+      input_errors+=("nested route fee final signoff_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
+      route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+    fi
+    if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
+      if [[ "$route_fee_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("nested route fee final signoff_nested_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+      fi
+      if [[ "$route_fee_nested_executor_upstream_endpoint_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("nested route fee final signoff_nested_executor_upstream_endpoint_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+      fi
+    else
+      if [[ "$route_fee_nested_executor_backend_mode_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("nested route fee final signoff_nested_executor_backend_mode_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${route_fee_nested_executor_backend_mode_guard_verdict})")
+      fi
+      if [[ "$route_fee_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("nested route fee final signoff_nested_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${route_fee_nested_executor_upstream_endpoint_guard_verdict})")
+      fi
+    fi
 
     if [[ "$route_fee_verdict" == "UNKNOWN" ]]; then
       route_fee_reason="unable to classify route/fee final verdict (exit=${route_fee_exit_code})"
@@ -333,6 +435,10 @@ package_bundle_enabled: false"
     route_fee_final_nested_package_bundle_enabled="n/a"
     route_fee_nested_go_nogo_require_executor_upstream="n/a"
     route_fee_nested_executor_env_path="n/a"
+    route_fee_nested_executor_backend_mode_guard_verdict="n/a"
+    route_fee_nested_executor_backend_mode_guard_reason_code="n/a"
+    route_fee_nested_executor_upstream_endpoint_guard_verdict="n/a"
+    route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
     route_fee_output="final_route_fee_package_verdict: SKIP
 final_route_fee_package_reason: route/fee final stage disabled via RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL=false
 final_route_fee_package_reason_code: stage_disabled
@@ -452,6 +558,10 @@ adapter_final_manifest_sha256: ${adapter_manifest_sha256:-n/a}
 adapter_final_nested_package_bundle_enabled: ${adapter_final_nested_package_bundle_enabled:-n/a}
 adapter_final_nested_go_nogo_require_executor_upstream: ${adapter_nested_go_nogo_require_executor_upstream:-n/a}
 adapter_final_nested_executor_env_path: ${adapter_nested_executor_env_path:-n/a}
+adapter_final_nested_executor_backend_mode_guard_verdict: ${adapter_nested_executor_backend_mode_guard_verdict:-n/a}
+adapter_final_nested_executor_backend_mode_guard_reason_code: ${adapter_nested_executor_backend_mode_guard_reason_code:-n/a}
+adapter_final_nested_executor_upstream_endpoint_guard_verdict: ${adapter_nested_executor_upstream_endpoint_guard_verdict:-n/a}
+adapter_final_nested_executor_upstream_endpoint_guard_reason_code: ${adapter_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
 route_fee_final_exit_code: $route_fee_exit_code
 route_fee_final_verdict: $route_fee_verdict
 route_fee_final_reason: ${route_fee_reason:-n/a}
@@ -464,6 +574,10 @@ route_fee_final_manifest_sha256: ${route_fee_manifest_sha256:-n/a}
 route_fee_final_nested_package_bundle_enabled: ${route_fee_final_nested_package_bundle_enabled:-n/a}
 route_fee_final_nested_go_nogo_require_executor_upstream: ${route_fee_nested_go_nogo_require_executor_upstream:-n/a}
 route_fee_final_nested_executor_env_path: ${route_fee_nested_executor_env_path:-n/a}
+route_fee_final_nested_executor_backend_mode_guard_verdict: ${route_fee_nested_executor_backend_mode_guard_verdict:-n/a}
+route_fee_final_nested_executor_backend_mode_guard_reason_code: ${route_fee_nested_executor_backend_mode_guard_reason_code:-n/a}
+route_fee_final_nested_executor_upstream_endpoint_guard_verdict: ${route_fee_nested_executor_upstream_endpoint_guard_verdict:-n/a}
+route_fee_final_nested_executor_upstream_endpoint_guard_reason_code: ${route_fee_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
 route_fee_window_count: ${route_fee_window_count:-n/a}
 route_fee_go_nogo_go_count: ${route_fee_go_nogo_go_count:-n/a}
 route_fee_route_profile_pass_count: ${route_fee_route_profile_pass_count:-n/a}

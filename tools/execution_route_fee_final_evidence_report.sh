@@ -69,6 +69,10 @@ signoff_artifact_summary="n/a"
 signoff_artifact_manifest="n/a"
 signoff_summary_sha256="n/a"
 signoff_nested_package_bundle_enabled="unknown"
+signoff_nested_executor_backend_mode_guard_verdict="unknown"
+signoff_nested_executor_backend_mode_guard_reason_code="n/a"
+signoff_nested_executor_upstream_endpoint_guard_verdict="unknown"
+signoff_nested_executor_upstream_endpoint_guard_reason_code="n/a"
 if ((${#input_errors[@]} == 0)); then
   if signoff_output="$(
     CONFIG_PATH="$CONFIG_PATH" \
@@ -118,6 +122,51 @@ if ((${#input_errors[@]} == 0)); then
     signoff_nested_package_bundle_enabled="unknown"
   elif [[ "$signoff_nested_package_bundle_enabled" != "false" ]]; then
     input_errors+=("nested route/fee signoff helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
+  signoff_nested_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "window_24h_executor_backend_mode_guard_verdict" "$signoff_output")")"
+  signoff_nested_executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$signoff_nested_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  signoff_nested_executor_backend_mode_guard_verdict="$(normalize_strict_guard_verdict "$signoff_nested_executor_backend_mode_guard_verdict_raw")"
+  if [[ -z "$signoff_nested_executor_backend_mode_guard_verdict_raw" ]]; then
+    input_errors+=("nested route/fee signoff window_24h_executor_backend_mode_guard_verdict must be non-empty")
+    signoff_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+  elif [[ "$signoff_nested_executor_backend_mode_guard_verdict_raw_upper" != "PASS" && "$signoff_nested_executor_backend_mode_guard_verdict_raw_upper" != "WARN" && "$signoff_nested_executor_backend_mode_guard_verdict_raw_upper" != "UNKNOWN" && "$signoff_nested_executor_backend_mode_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested route/fee signoff window_24h_executor_backend_mode_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${signoff_nested_executor_backend_mode_guard_verdict_raw})")
+    signoff_nested_executor_backend_mode_guard_verdict="UNKNOWN"
+  fi
+  signoff_nested_executor_backend_mode_guard_reason_code="$(trim_string "$(extract_field "window_24h_executor_backend_mode_guard_reason_code" "$signoff_output")")"
+  if [[ -z "$signoff_nested_executor_backend_mode_guard_reason_code" ]]; then
+    input_errors+=("nested route/fee signoff window_24h_executor_backend_mode_guard_reason_code must be non-empty")
+    signoff_nested_executor_backend_mode_guard_reason_code="n/a"
+  fi
+  signoff_nested_executor_upstream_endpoint_guard_verdict_raw="$(trim_string "$(extract_field "window_24h_executor_upstream_endpoint_guard_verdict" "$signoff_output")")"
+  signoff_nested_executor_upstream_endpoint_guard_verdict_raw_upper="$(printf '%s' "$signoff_nested_executor_upstream_endpoint_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  signoff_nested_executor_upstream_endpoint_guard_verdict="$(normalize_strict_guard_verdict "$signoff_nested_executor_upstream_endpoint_guard_verdict_raw")"
+  if [[ -z "$signoff_nested_executor_upstream_endpoint_guard_verdict_raw" ]]; then
+    input_errors+=("nested route/fee signoff window_24h_executor_upstream_endpoint_guard_verdict must be non-empty")
+    signoff_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+  elif [[ "$signoff_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "PASS" && "$signoff_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "WARN" && "$signoff_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "UNKNOWN" && "$signoff_nested_executor_upstream_endpoint_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested route/fee signoff window_24h_executor_upstream_endpoint_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${signoff_nested_executor_upstream_endpoint_guard_verdict_raw})")
+    signoff_nested_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+  fi
+  signoff_nested_executor_upstream_endpoint_guard_reason_code="$(trim_string "$(extract_field "window_24h_executor_upstream_endpoint_guard_reason_code" "$signoff_output")")"
+  if [[ -z "$signoff_nested_executor_upstream_endpoint_guard_reason_code" ]]; then
+    input_errors+=("nested route/fee signoff window_24h_executor_upstream_endpoint_guard_reason_code must be non-empty")
+    signoff_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+  fi
+  if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
+    if [[ "$signoff_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff window_24h_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+    fi
+    if [[ "$signoff_nested_executor_upstream_endpoint_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff window_24h_executor_upstream_endpoint_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+    fi
+  else
+    if [[ "$signoff_nested_executor_backend_mode_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff window_24h_executor_backend_mode_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${signoff_nested_executor_backend_mode_guard_verdict})")
+    fi
+    if [[ "$signoff_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff window_24h_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${signoff_nested_executor_upstream_endpoint_guard_verdict})")
+    fi
   fi
 
   if [[ "$signoff_verdict" == "UNKNOWN" ]]; then
@@ -194,6 +243,10 @@ signoff_summary_sha256: ${signoff_summary_sha256:-n/a}
 signoff_artifact_summary_sha256: $signoff_artifact_summary_sha256
 signoff_artifact_manifest_sha256: $signoff_artifact_manifest_sha256
 signoff_nested_package_bundle_enabled: ${signoff_nested_package_bundle_enabled:-unknown}
+signoff_nested_executor_backend_mode_guard_verdict: ${signoff_nested_executor_backend_mode_guard_verdict:-unknown}
+signoff_nested_executor_backend_mode_guard_reason_code: ${signoff_nested_executor_backend_mode_guard_reason_code:-n/a}
+signoff_nested_executor_upstream_endpoint_guard_verdict: ${signoff_nested_executor_upstream_endpoint_guard_verdict:-unknown}
+signoff_nested_executor_upstream_endpoint_guard_reason_code: ${signoff_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
 final_route_fee_package_verdict: $signoff_verdict
 final_route_fee_package_reason: ${signoff_reason:-n/a}
 final_route_fee_package_reason_code: ${signoff_reason_code:-n/a}
