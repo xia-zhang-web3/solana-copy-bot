@@ -2590,6 +2590,7 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   )"
   assert_contains "$final_go_output" "signoff_verdict: GO"
   assert_field_equals "$final_go_output" "signoff_reason_code" "test_override"
+  assert_field_equals "$final_go_output" "signoff_guard_window_id" "24"
   assert_field_equals "$final_go_output" "signoff_nested_package_bundle_enabled" "false"
   assert_field_equals "$final_go_output" "signoff_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$final_go_output" "signoff_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -2597,6 +2598,30 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$final_go_output" "signoff_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_contains "$final_go_output" "final_route_fee_package_verdict: GO"
   assert_field_equals "$final_go_output" "final_route_fee_package_reason_code" "test_override"
+
+  local final_go_windows_1_6_output
+  final_go_windows_1_6_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-go-1-6" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "1,6" "60"
+  )"
+  assert_contains "$final_go_windows_1_6_output" "signoff_verdict: GO"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_reason_code" "test_override"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_guard_window_id" "6"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_executor_backend_mode_guard_verdict" "PASS"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_executor_upstream_endpoint_guard_verdict" "PASS"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
+  assert_field_equals "$final_go_windows_1_6_output" "final_route_fee_package_verdict" "GO"
 
   local final_bundle_output
   final_bundle_output="$(
