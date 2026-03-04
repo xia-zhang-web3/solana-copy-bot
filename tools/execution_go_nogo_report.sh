@@ -627,7 +627,11 @@ ingestion_grpc_guard_reason="strict ingestion grpc guard disabled"
 ingestion_grpc_guard_reason_code="gate_disabled"
 if [[ "$go_nogo_require_ingestion_grpc" == "true" ]]; then
   grpc_message_total_raw="$(trim_string "${grpc_message_total:-}")"
-  if [[ "$ingestion_source_for_go_nogo" != "yellowstone_grpc" && "$ingestion_source_for_go_nogo" != "unknown" ]]; then
+  if [[ "$ingestion_source_for_go_nogo" == "unknown" ]]; then
+    ingestion_grpc_guard_verdict="UNKNOWN"
+    ingestion_grpc_guard_reason="ingestion source must be explicitly set to yellowstone_grpc when strict ingestion grpc guard is enabled"
+    ingestion_grpc_guard_reason_code="source_unknown"
+  elif [[ "$ingestion_source_for_go_nogo" != "yellowstone_grpc" ]]; then
     ingestion_grpc_guard_verdict="WARN"
     ingestion_grpc_guard_reason="ingestion source must be yellowstone_grpc when strict ingestion grpc guard is enabled (observed source=${ingestion_source_for_go_nogo})"
     ingestion_grpc_guard_reason_code="source_not_yellowstone_grpc"
@@ -643,14 +647,10 @@ if [[ "$go_nogo_require_ingestion_grpc" == "true" ]]; then
     ingestion_grpc_guard_verdict="WARN"
     ingestion_grpc_guard_reason="strict ingestion grpc guard observed grpc_message_total=${grpc_message_total_raw}; grpc stream appears inactive"
     ingestion_grpc_guard_reason_code="grpc_inactive"
-  elif [[ "$ingestion_source_for_go_nogo" == "yellowstone_grpc" ]]; then
+  else
     ingestion_grpc_guard_verdict="PASS"
     ingestion_grpc_guard_reason="strict ingestion grpc guard confirms source=yellowstone_grpc with grpc_message_total=${grpc_message_total_raw}"
     ingestion_grpc_guard_reason_code="grpc_active_source_yellowstone"
-  else
-    ingestion_grpc_guard_verdict="PASS"
-    ingestion_grpc_guard_reason="strict ingestion grpc guard confirms grpc stream activity with grpc_message_total=${grpc_message_total_raw} (source unspecified)"
-    ingestion_grpc_guard_reason_code="grpc_active_source_unknown"
   fi
 fi
 

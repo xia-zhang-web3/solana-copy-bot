@@ -1771,6 +1771,30 @@ EOF_EXECUTOR_INVALID
   assert_field_equals "$ingestion_grpc_pass_output" "overall_go_nogo_verdict" "GO"
   assert_field_equals "$ingestion_grpc_pass_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
 
+  local ingestion_grpc_unknown_source_output
+  ingestion_grpc_unknown_source_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_INGESTION_GRPC="true" \
+      SOLANA_COPY_BOT_INGESTION_SOURCE="" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$ingestion_grpc_unknown_source_output" "go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$ingestion_grpc_unknown_source_output" "ingestion_source" "unknown"
+  assert_field_equals "$ingestion_grpc_unknown_source_output" "ingestion_grpc_guard_verdict" "UNKNOWN"
+  assert_field_equals "$ingestion_grpc_unknown_source_output" "ingestion_grpc_guard_reason_code" "source_unknown"
+  assert_field_equals "$ingestion_grpc_unknown_source_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$ingestion_grpc_unknown_source_output" "overall_go_nogo_reason_code" "ingestion_grpc_unknown"
+
   local ingestion_grpc_source_mismatch_output
   ingestion_grpc_source_mismatch_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -4755,9 +4779,6 @@ EOF_DEVNET_EXECUTOR_ENV
   assert_field_equals "$output" "go_nogo_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_field_equals "$output" "go_nogo_executor_upstream_endpoint_guard_verdict" "PASS"
   assert_field_equals "$output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "topology_pass"
-  assert_field_equals "$output" "go_nogo_require_ingestion_grpc" "true"
-  assert_field_equals "$output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
-  assert_field_equals "$output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_unknown"
   assert_field_equals "$output" "submit_fastlane_enabled" "false"
   assert_contains "$output" "fastlane_feature_flag_verdict: SKIP"
   assert_field_equals "$output" "fastlane_feature_flag_reason_code" "gate_disabled"
@@ -6080,6 +6101,8 @@ run_execution_server_rollout_report_case() {
   local port="18093"
   local output_root="$TMP_DIR/server-rollout-output"
   local bundle_output_dir="$TMP_DIR/server-rollout-bundles"
+  local SOLANA_COPY_BOT_INGESTION_SOURCE="yellowstone_grpc"
+  export SOLANA_COPY_BOT_INGESTION_SOURCE
 
   write_executor_env_preflight "$executor_env_path" "$port" "$auth_token"
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
@@ -6358,7 +6381,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$bundle_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
-  assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_unknown"
+  assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
   assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
   assert_field_equals "$bundle_output" "go_nogo_artifacts_written" "true"
@@ -6543,7 +6566,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
-  assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_unknown"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_executor_upstream" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_executor_env_path" "$mock_backend_env_path"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "false"
