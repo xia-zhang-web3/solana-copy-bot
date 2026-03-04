@@ -225,7 +225,8 @@ Current mandatory mode:
 
 Current non-mandatory mode:
 
-1. HMAC for adapter->executor hop is optional until adapter implements upstream HMAC forwarding
+1. HMAC for adapter->executor hop is optional and supported via adapter upstream forwarding headers (`x-copybot-*`) when `COPYBOT_ADAPTER_UPSTREAM_HMAC_*` is configured to match executor ingress HMAC config.
+2. When executor is configured with HMAC ingress (`COPYBOT_EXECUTOR_HMAC_*`), adapter MUST forward matching upstream HMAC headers for `/simulate` and `/submit` requests.
 
 ## 9) Change Control
 

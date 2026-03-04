@@ -15,10 +15,12 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use std::{
     collections::{HashMap, HashSet},
-    env, fs,
-    future,
+    env, fs, future,
     net::SocketAddr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tokio::sync::Mutex;
@@ -33,14 +35,14 @@ use crate::http_utils::{
     classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
 };
 use crate::send_rpc::send_signed_transaction_via_rpc;
+#[cfg(test)]
+use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 use crate::submit_verify::{
     parse_submit_signature_verify_config, submit_signature_verification_to_json,
     verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
 };
 #[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
-#[cfg(test)]
-use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 
 const TIP_MAX_LAMPORTS: u64 = 100_000_000;
 const CU_LIMIT_MIN: u32 = 1;
@@ -54,6 +56,7 @@ const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
+static UPSTREAM_HMAC_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 struct AppState {
@@ -73,6 +76,7 @@ struct AdapterConfig {
     hmac_key_id: Option<String>,
     hmac_secret: Option<String>,
     hmac_ttl_sec: u64,
+    upstream_hmac: Option<UpstreamHmacConfig>,
     request_timeout_ms: u64,
     max_notional_sol: f64,
     allow_nonzero_tip: bool,
@@ -354,6 +358,14 @@ impl AdapterConfig {
             optional_non_empty_env("COPYBOT_ADAPTER_HMAC_SECRET_FILE").as_deref(),
         )?;
         let hmac_ttl_sec = parse_u64_env("COPYBOT_ADAPTER_HMAC_TTL_SEC", 30)?;
+        let upstream_hmac_key_id = optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID");
+        let upstream_hmac_secret = resolve_secret_source(
+            "COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET",
+            optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET").as_deref(),
+            "COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET_FILE",
+            optional_non_empty_env("COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET_FILE").as_deref(),
+        )?;
+        let upstream_hmac_ttl_sec = parse_u64_env("COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC", 30)?;
         let allow_unauthenticated = parse_bool_env("COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED", false);
         if (hmac_key_id.is_some() && hmac_secret.is_none())
             || (hmac_key_id.is_none() && hmac_secret.is_some())
@@ -367,11 +379,31 @@ impl AdapterConfig {
                 "COPYBOT_ADAPTER_HMAC_TTL_SEC must be in 5..=300 when HMAC auth is enabled"
             ));
         }
+        if (upstream_hmac_key_id.is_some() && upstream_hmac_secret.is_none())
+            || (upstream_hmac_key_id.is_none() && upstream_hmac_secret.is_some())
+        {
+            return Err(anyhow!(
+                "COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID and COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET must be set together"
+            ));
+        }
+        if upstream_hmac_key_id.is_some() && !(5..=300).contains(&upstream_hmac_ttl_sec) {
+            return Err(anyhow!(
+                "COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC must be in 5..=300 when upstream HMAC auth is enabled"
+            ));
+        }
         require_authenticated_mode(
             bearer_token.as_deref(),
             hmac_key_id.as_deref(),
             allow_unauthenticated,
         )?;
+        let upstream_hmac = match (&upstream_hmac_key_id, &upstream_hmac_secret) {
+            (Some(key_id), Some(secret)) => Some(UpstreamHmacConfig {
+                key_id: key_id.clone(),
+                secret: secret.clone(),
+                ttl_sec: upstream_hmac_ttl_sec,
+            }),
+            _ => None,
+        };
 
         let request_timeout_ms =
             parse_u64_env("COPYBOT_ADAPTER_REQUEST_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;
@@ -395,6 +427,7 @@ impl AdapterConfig {
             hmac_key_id,
             hmac_secret,
             hmac_ttl_sec,
+            upstream_hmac,
             request_timeout_ms,
             max_notional_sol,
             allow_nonzero_tip,
@@ -412,6 +445,13 @@ struct AuthVerifier {
 
 #[derive(Clone)]
 struct HmacConfig {
+    key_id: String,
+    secret: String,
+    ttl_sec: u64,
+}
+
+#[derive(Clone)]
+struct UpstreamHmacConfig {
     key_id: String,
     secret: String,
     ttl_sec: u64,
@@ -516,8 +556,7 @@ impl AuthVerifier {
                 seen.insert(nonce_key, now + max_skew);
             }
 
-            let mut payload = format!("{}\n{}\n{}\n", timestamp, ttl, nonce).into_bytes();
-            payload.extend_from_slice(raw_body);
+            let payload = hmac_payload_bytes(timestamp, ttl, nonce, raw_body);
             let expected_signature =
                 compute_hmac_signature_hex(hmac.secret.as_bytes(), payload.as_slice()).map_err(
                     |_| Reject::terminal("hmac_invalid", "failed computing HMAC signature"),
@@ -1269,6 +1308,32 @@ async fn forward_to_upstream(
         if let Some(token) = selected_auth_token {
             request = request.bearer_auth(token);
         }
+        if let Some(upstream_hmac) = state.config.upstream_hmac.as_ref() {
+            let timestamp = Utc::now().timestamp();
+            let nonce = build_upstream_hmac_nonce(route, action, attempt_idx);
+            let payload =
+                hmac_payload_bytes(timestamp, upstream_hmac.ttl_sec, nonce.as_str(), raw_body);
+            let signature =
+                compute_hmac_signature_hex(upstream_hmac.secret.as_bytes(), payload.as_slice())
+                    .map_err(|error| {
+                        Reject::terminal(
+                            "upstream_hmac_signing_failed",
+                            format!(
+                                "upstream {} hmac signing failed endpoint={} err={}",
+                                action.as_str(),
+                                endpoint_label,
+                                error
+                            ),
+                        )
+                    })?;
+            request = request
+                .header("x-copybot-key-id", upstream_hmac.key_id.as_str())
+                .header("x-copybot-signature-alg", "hmac-sha256-v1")
+                .header("x-copybot-timestamp", timestamp.to_string())
+                .header("x-copybot-auth-ttl-sec", upstream_hmac.ttl_sec.to_string())
+                .header("x-copybot-nonce", nonce)
+                .header("x-copybot-signature", signature);
+        }
 
         let response = match request.send().await {
             Ok(value) => value,
@@ -1713,6 +1778,27 @@ fn is_valid_contract_version_token(value: &str) -> bool {
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
 }
 
+fn hmac_payload_bytes(timestamp: i64, ttl_sec: u64, nonce: &str, raw_body: &[u8]) -> Vec<u8> {
+    let mut payload = format!("{}\n{}\n{}\n", timestamp, ttl_sec, nonce).into_bytes();
+    payload.extend_from_slice(raw_body);
+    payload
+}
+
+fn build_upstream_hmac_nonce(route: &str, action: UpstreamAction, attempt_idx: usize) -> String {
+    let sequence = UPSTREAM_HMAC_NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp_nanos = Utc::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000);
+    format!(
+        "upstream:{}:{}:{}:{}:{}",
+        route,
+        action.as_str(),
+        attempt_idx + 1,
+        timestamp_nanos,
+        sequence
+    )
+}
+
 fn compute_hmac_signature_hex(key: &[u8], payload: &[u8]) -> Result<String> {
     type HmacSha256 = Hmac<Sha256>;
     let mut mac = HmacSha256::new_from_slice(key).context("invalid HMAC key")?;
@@ -2101,10 +2187,7 @@ mod tests {
             "x-copybot-timestamp",
             HeaderValue::from_str(timestamp.to_string().as_str()).expect("timestamp header"),
         );
-        headers.insert(
-            "x-copybot-auth-ttl-sec",
-            HeaderValue::from_static("30"),
-        );
+        headers.insert("x-copybot-auth-ttl-sec", HeaderValue::from_static("30"));
         headers.insert(
             "x-copybot-nonce",
             HeaderValue::from_static("nonce-raw-bytes"),
@@ -2156,10 +2239,7 @@ mod tests {
             "x-copybot-timestamp",
             HeaderValue::from_str(timestamp.to_string().as_str()).expect("timestamp header"),
         );
-        headers.insert(
-            "x-copybot-auth-ttl-sec",
-            HeaderValue::from_static("30"),
-        );
+        headers.insert("x-copybot-auth-ttl-sec", HeaderValue::from_static("30"));
         headers.insert(
             "x-copybot-nonce",
             HeaderValue::from_static("nonce-lossy-body"),
@@ -2315,6 +2395,61 @@ mod tests {
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_adds_upstream_hmac_headers() {
+        let key_id = "executor-hmac-k1";
+        let secret = "executor-hmac-secret";
+        let ttl_sec = 30u64;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_expect_hmac(key_id, secret, ttl_sec, None)
+        else {
+            return;
+        };
+
+        let mut state = test_state(upstream_url.as_str());
+        state.config.upstream_hmac = Some(UpstreamHmacConfig {
+            key_id: key_id.to_string(),
+            secret: secret.to_string(),
+            ttl_sec,
+        });
+
+        let body = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{\"action\":\"submit\"}",
+        )
+        .await
+        .expect("upstream hmac headers should be accepted");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_signs_hmac_over_raw_non_utf8_body() {
+        let key_id = "executor-hmac-k1";
+        let secret = "executor-hmac-secret";
+        let ttl_sec = 30u64;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_expect_hmac(key_id, secret, ttl_sec, None)
+        else {
+            return;
+        };
+
+        let mut state = test_state(upstream_url.as_str());
+        state.config.upstream_hmac = Some(UpstreamHmacConfig {
+            key_id: key_id.to_string(),
+            secret: secret.to_string(),
+            ttl_sec,
+        });
+        let raw_body = [0xff, 0x00, 0x41, 0x42];
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, &raw_body)
+            .await
+            .expect("raw-byte hmac payload should be accepted");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = upstream_handle.join();
     }
 
     #[tokio::test]
@@ -2720,6 +2855,7 @@ mod tests {
             hmac_key_id: None,
             hmac_secret: None,
             hmac_ttl_sec: 30,
+            upstream_hmac: None,
             request_timeout_ms: 2_000,
             max_notional_sol: 10.0,
             allow_nonzero_tip: true,
@@ -2814,6 +2950,133 @@ mod tests {
                     )
                 } else {
                     (401u16, "Unauthorized", "missing or invalid bearer token")
+                };
+                let response = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    reason,
+                    if status == 200 { "application/json" } else { "text/plain" },
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn spawn_one_shot_upstream_expect_hmac(
+        expected_key_id: &str,
+        expected_secret: &str,
+        expected_ttl_sec: u64,
+        expected_bearer: Option<&str>,
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let expected_key_id = expected_key_id.to_string();
+        let expected_secret = expected_secret.to_string();
+        let expected_bearer = expected_bearer.map(ToString::to_string);
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let bytes_read = stream.read(&mut request_buf).unwrap_or(0);
+                let request_bytes = &request_buf[..bytes_read];
+
+                let header_end = request_bytes
+                    .windows(4)
+                    .position(|chunk| chunk == b"\r\n\r\n");
+                let mut headers = HashMap::new();
+                let mut body_bytes: Vec<u8> = Vec::new();
+
+                if let Some(header_end) = header_end {
+                    let header_text = String::from_utf8_lossy(&request_bytes[..header_end]);
+                    for line in header_text.lines().skip(1) {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let Some((name, value)) = trimmed.split_once(':') else {
+                            continue;
+                        };
+                        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+                    }
+
+                    let body_start = header_end + 4;
+                    let declared_len = headers
+                        .get("content-length")
+                        .and_then(|raw| raw.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let available_len = request_bytes.len().saturating_sub(body_start);
+                    let body_len = available_len.min(declared_len);
+                    body_bytes = request_bytes[body_start..body_start + body_len].to_vec();
+                }
+
+                let bearer_ok = match expected_bearer.as_deref() {
+                    Some(expected_token) => headers
+                        .get("authorization")
+                        .and_then(|value| {
+                            if value.len() < "bearer ".len()
+                                || !value[.."bearer ".len()].eq_ignore_ascii_case("bearer ")
+                            {
+                                return None;
+                            }
+                            Some(value["bearer ".len()..].to_string())
+                        })
+                        .map(|provided| provided == expected_token)
+                        .unwrap_or(false),
+                    None => true,
+                };
+
+                let hmac_ok = headers
+                    .get("x-copybot-key-id")
+                    .map(|value| value.as_str() == expected_key_id.as_str())
+                    .unwrap_or(false)
+                    && headers
+                        .get("x-copybot-signature-alg")
+                        .map(|value| value == "hmac-sha256-v1")
+                        .unwrap_or(false)
+                    && headers
+                        .get("x-copybot-auth-ttl-sec")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .map(|value| value == expected_ttl_sec)
+                        .unwrap_or(false)
+                    && headers
+                        .get("x-copybot-timestamp")
+                        .and_then(|value| value.parse::<i64>().ok())
+                        .and_then(|timestamp| {
+                            let nonce = headers.get("x-copybot-nonce")?;
+                            if nonce.is_empty() || nonce.len() > 128 {
+                                return Some(false);
+                            }
+                            let provided_signature = headers.get("x-copybot-signature")?;
+                            let payload = hmac_payload_bytes(
+                                timestamp,
+                                expected_ttl_sec,
+                                nonce.as_str(),
+                                body_bytes.as_slice(),
+                            );
+                            let expected_signature = compute_hmac_signature_hex(
+                                expected_secret.as_bytes(),
+                                payload.as_slice(),
+                            )
+                            .ok()?;
+                            Some(constant_time_eq(
+                                provided_signature.as_bytes(),
+                                expected_signature.as_bytes(),
+                            ))
+                        })
+                        .unwrap_or(false);
+
+                let authorized = bearer_ok && hmac_ok;
+                let (status, reason, body) = if authorized {
+                    (
+                        200u16,
+                        "OK",
+                        "{\"status\":\"ok\",\"ok\":true,\"accepted\":true}",
+                    )
+                } else {
+                    (401u16, "Unauthorized", "missing or invalid auth headers")
                 };
                 let response = format!(
                     "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

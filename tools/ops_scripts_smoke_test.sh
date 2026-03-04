@@ -2933,7 +2933,7 @@ run_executor_preflight_case() {
     exit 1
   fi
   assert_contains "$with_auth_5xx_output" "preflight_verdict: FAIL"
-  assert_contains "$with_auth_5xx_output" "auth probe with configured bearer token must return HTTP 200, got 503"
+  assert_contains "$with_auth_5xx_output" "auth probe with configured executor auth headers must return HTTP 200, got 503"
 
   local send_rpc_health_mismatch_output
   if send_rpc_health_mismatch_output="$(
@@ -3492,6 +3492,110 @@ run_executor_preflight_case() {
   assert_contains "$adapter_fallback_auth_mismatch_output" "preflight_verdict: FAIL"
   assert_contains "$adapter_fallback_auth_mismatch_output" "adapter fallback auth token mismatch for route=paper vs executor bearer token"
 
+  local adapter_upstream_hmac_missing_output
+  if adapter_upstream_hmac_missing_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_EXECUTOR_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_EXECUTOR_HMAC_TTL_SEC="30" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for missing adapter upstream hmac config while executor hmac is required" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_upstream_hmac_missing_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_upstream_hmac_missing_output" "adapter upstream hmac config missing while executor HMAC auth is required"
+
+  local adapter_upstream_hmac_key_mismatch_output
+  if adapter_upstream_hmac_key_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_EXECUTOR_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_EXECUTOR_HMAC_TTL_SEC="30" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID="adapter-hmac-k1" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC="30" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter upstream hmac key mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_upstream_hmac_key_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_upstream_hmac_key_mismatch_output" "adapter upstream HMAC key id mismatch: adapter=adapter-hmac-k1 executor=executor-hmac-k1"
+
+  local adapter_upstream_hmac_secret_mismatch_output
+  if adapter_upstream_hmac_secret_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_EXECUTOR_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_EXECUTOR_HMAC_TTL_SEC="30" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET="adapter-hmac-secret" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC="30" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter upstream hmac secret mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_upstream_hmac_secret_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_upstream_hmac_secret_mismatch_output" "adapter upstream HMAC secret mismatch vs executor HMAC secret"
+
+  local adapter_upstream_hmac_ttl_mismatch_output
+  if adapter_upstream_hmac_ttl_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_EXECUTOR_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_EXECUTOR_HMAC_TTL_SEC="30" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC="60" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter upstream hmac ttl mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_upstream_hmac_ttl_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_upstream_hmac_ttl_mismatch_output" "adapter upstream HMAC ttl mismatch: adapter=60 executor=30"
+
+  local adapter_upstream_hmac_secret_file="$TMP_DIR/adapter-upstream-hmac.secret"
+  printf 'adapter-hmac-file-secret' >"$adapter_upstream_hmac_secret_file"
+  local adapter_upstream_hmac_secret_file_mismatch_output
+  if adapter_upstream_hmac_secret_file_mismatch_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_EXECUTOR_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_EXECUTOR_HMAC_TTL_SEC="30" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET_FILE="$adapter_upstream_hmac_secret_file" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC="30" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for adapter upstream hmac secret file mismatch" >&2
+    exit 1
+  fi
+  assert_contains "$adapter_upstream_hmac_secret_file_mismatch_output" "preflight_verdict: FAIL"
+  assert_contains "$adapter_upstream_hmac_secret_file_mismatch_output" "adapter upstream HMAC secret mismatch vs executor HMAC secret"
+
   local invalid_adapter_send_rpc_url_output
   if invalid_adapter_send_rpc_url_output="$(
     PATH="$fake_curl_bin:$PATH" \
@@ -4004,6 +4108,7 @@ run_executor_preflight_case() {
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
   write_executor_env_preflight "$executor_env_path" "$port" "$auth_token" "true"
+  printf 'COPYBOT_EXECUTOR_BEARER_TOKEN=\n' >>"$executor_env_path"
   local unauth_mismatch_output
   if unauth_mismatch_output="$(
     PATH="$fake_curl_bin:$PATH" \

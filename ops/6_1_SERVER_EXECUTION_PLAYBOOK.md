@@ -92,6 +92,10 @@ Expected key values:
 4. `COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL=http://127.0.0.1:8090/submit`
 5. `COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL=http://127.0.0.1:8090/simulate`
 6. `COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE=/etc/solana-copy-bot/secrets/executor_bearer.token`
+7. Optional when executor HMAC ingress is enabled:
+   1. `COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID` matches `COPYBOT_EXECUTOR_HMAC_KEY_ID`,
+   2. `COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET_FILE` points to same shared secret as executor HMAC,
+   3. `COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC` matches `COPYBOT_EXECUTOR_HMAC_TTL_SEC`.
 
 ### 4.4 `/etc/solana-copy-bot/app.env`
 

@@ -421,6 +421,24 @@ if len(decoded) != 32:
 PY
 }
 
+hmac_sha256_hex() {
+  local secret="$1"
+  local payload="$2"
+  if [[ -z "$PYTHON3_BIN" ]]; then
+    printf ''
+    return 1
+  fi
+  "$PYTHON3_BIN" - "$secret" <<'PY' <<<"$payload"
+import hashlib
+import hmac
+import sys
+
+secret = (sys.argv[1] or "").encode("utf-8")
+payload = sys.stdin.buffer.read()
+print(hmac.new(secret, payload, hashlib.sha256).hexdigest())
+PY
+}
+
 endpoint_identity() {
   local endpoint="$1"
   if [[ -z "$PYTHON3_BIN" ]]; then
@@ -983,6 +1001,7 @@ read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BEARER_TOKEN COPYB
 executor_hmac_key_id="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_KEY_ID)"
 read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_SECRET COPYBOT_EXECUTOR_HMAC_SECRET_FILE "executor hmac" executor_hmac_secret
 executor_hmac_ttl_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_HMAC_TTL_SEC)" "30")"
+executor_hmac_ttl_sec=""
 
 if [[ -n "$executor_hmac_key_id" && -z "$executor_hmac_secret" ]]; then
   errors+=("COPYBOT_EXECUTOR_HMAC_KEY_ID requires COPYBOT_EXECUTOR_HMAC_SECRET")
@@ -995,15 +1014,25 @@ if [[ -n "$executor_hmac_key_id" ]]; then
     errors+=("COPYBOT_EXECUTOR_HMAC_TTL_SEC must be integer when HMAC is configured")
   elif (( executor_hmac_ttl_raw < 5 || executor_hmac_ttl_raw > 300 )); then
     errors+=("COPYBOT_EXECUTOR_HMAC_TTL_SEC must be in 5..=300 when HMAC is configured")
+  else
+    executor_hmac_ttl_sec="$executor_hmac_ttl_raw"
   fi
 fi
 
 executor_bearer_required="false"
-if [[ "$executor_allow_unauthenticated" != "true" ]]; then
+if [[ -n "$executor_bearer_token" ]]; then
   executor_bearer_required="true"
 fi
-if [[ "$executor_bearer_required" == "true" && -z "$executor_bearer_token" ]]; then
-  errors+=("COPYBOT_EXECUTOR_BEARER_TOKEN or COPYBOT_EXECUTOR_BEARER_TOKEN_FILE must be set when COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=false")
+executor_hmac_required="false"
+if [[ -n "$executor_hmac_key_id" ]]; then
+  executor_hmac_required="true"
+fi
+executor_auth_required="false"
+if [[ "$executor_allow_unauthenticated" != "true" || "$executor_bearer_required" == "true" || "$executor_hmac_required" == "true" ]]; then
+  executor_auth_required="true"
+fi
+if [[ "$executor_allow_unauthenticated" != "true" && "$executor_bearer_required" != "true" && "$executor_hmac_required" != "true" ]]; then
+  errors+=("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=false requires COPYBOT_EXECUTOR_BEARER_TOKEN (or *_FILE) or HMAC pair (COPYBOT_EXECUTOR_HMAC_KEY_ID/COPYBOT_EXECUTOR_HMAC_SECRET)")
 fi
 
 if [[ -z "$EXECUTOR_EXPECT_SUBMIT_URL" ]]; then
@@ -1038,8 +1067,46 @@ read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN 
 read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "adapter upstream fallback auth" adapter_fallback_auth_default
 read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN COPYBOT_ADAPTER_SEND_RPC_AUTH_TOKEN_FILE "adapter send-rpc auth" adapter_send_rpc_auth_default
 read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN COPYBOT_ADAPTER_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE "adapter send-rpc fallback auth" adapter_send_rpc_fallback_auth_default
+adapter_upstream_hmac_key_id="$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID)"
+read_secret_from_source "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET_FILE "adapter upstream hmac" adapter_upstream_hmac_secret
+adapter_upstream_hmac_ttl_raw="$(first_non_empty "$(env_or_file_value "$ADAPTER_ENV_PATH" COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC)" "30")"
+adapter_upstream_hmac_ttl_sec=""
+adapter_upstream_hmac_configured="false"
+
+if [[ -n "$adapter_upstream_hmac_key_id" && -z "$adapter_upstream_hmac_secret" ]]; then
+  errors+=("COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID requires COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET")
+fi
+if [[ -z "$adapter_upstream_hmac_key_id" && -n "$adapter_upstream_hmac_secret" ]]; then
+  errors+=("COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET requires COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID")
+fi
+if [[ -n "$adapter_upstream_hmac_key_id" ]]; then
+  adapter_upstream_hmac_configured="true"
+  if ! [[ "$adapter_upstream_hmac_ttl_raw" =~ ^[0-9]+$ ]]; then
+    errors+=("COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC must be integer when upstream HMAC auth is configured")
+  elif (( adapter_upstream_hmac_ttl_raw < 5 || adapter_upstream_hmac_ttl_raw > 300 )); then
+    errors+=("COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC must be in 5..=300 when upstream HMAC auth is configured")
+  else
+    adapter_upstream_hmac_ttl_sec="$adapter_upstream_hmac_ttl_raw"
+  fi
+fi
 
 parse_route_allowlist_csv_strict_into "$adapter_route_allowlist_raw" "COPYBOT_ADAPTER_ROUTE_ALLOWLIST" adapter_route_allowlist_csv
+
+if [[ "$executor_hmac_required" == "true" ]]; then
+  if [[ "$adapter_upstream_hmac_configured" != "true" ]]; then
+    errors+=("adapter upstream hmac config missing while executor HMAC auth is required")
+  else
+    if [[ "$adapter_upstream_hmac_key_id" != "$executor_hmac_key_id" ]]; then
+      errors+=("adapter upstream HMAC key id mismatch: adapter=$adapter_upstream_hmac_key_id executor=$executor_hmac_key_id")
+    fi
+    if [[ -n "$executor_hmac_secret" && "$adapter_upstream_hmac_secret" != "$executor_hmac_secret" ]]; then
+      errors+=("adapter upstream HMAC secret mismatch vs executor HMAC secret")
+    fi
+    if [[ -n "$executor_hmac_ttl_sec" && -n "$adapter_upstream_hmac_ttl_sec" && "$adapter_upstream_hmac_ttl_sec" != "$executor_hmac_ttl_sec" ]]; then
+      errors+=("adapter upstream HMAC ttl mismatch: adapter=$adapter_upstream_hmac_ttl_sec executor=$executor_hmac_ttl_sec")
+    fi
+  fi
+fi
 
 expected_submit_identity=""
 expected_simulate_identity=""
@@ -1409,12 +1476,12 @@ if command -v curl >/dev/null 2>&1; then
         if [[ "$probe_http_status" != "200" ]]; then
           errors+=("auth probe without token must return HTTP 200, got $probe_http_status")
         fi
-        if [[ "$executor_bearer_required" == "true" ]]; then
-          if [[ "$auth_probe_without_auth_code" != "auth_missing" && "$auth_probe_without_auth_code" != "auth_invalid" ]]; then
-            errors+=("auth probe without token must fail with auth_missing/auth_invalid when bearer is required")
+        if [[ "$executor_auth_required" == "true" ]]; then
+          if [[ "$auth_probe_without_auth_code" != "auth_missing" && "$auth_probe_without_auth_code" != "auth_invalid" && "$auth_probe_without_auth_code" != "hmac_missing" && "$auth_probe_without_auth_code" != "hmac_invalid" ]]; then
+            errors+=("auth probe without token must fail with auth_missing/auth_invalid/hmac_missing/hmac_invalid when executor auth is required")
           fi
         else
-          if [[ "$auth_probe_without_auth_code" == "auth_missing" || "$auth_probe_without_auth_code" == "auth_invalid" ]]; then
+          if [[ "$auth_probe_without_auth_code" == "auth_missing" || "$auth_probe_without_auth_code" == "auth_invalid" || "$auth_probe_without_auth_code" == "hmac_missing" || "$auth_probe_without_auth_code" == "hmac_invalid" ]]; then
             errors+=("executor is configured with COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true but simulate endpoint still requires auth")
           fi
         fi
@@ -1422,19 +1489,42 @@ if command -v curl >/dev/null 2>&1; then
         errors+=("failed auth probe without token against simulate endpoint: $probe_url")
       fi
 
-      if [[ -n "$executor_bearer_token" ]]; then
-        if probe_with_auth_status="$(curl -sS -m "$HTTP_TIMEOUT_SEC" -H "content-type: application/json" -H "authorization: Bearer $executor_bearer_token" --data "$simulate_probe_payload" -o "$probe_body_file" -w "%{http_code}" "$probe_url" 2>/dev/null)"; then
+      if [[ "$executor_bearer_required" == "true" || "$executor_hmac_required" == "true" ]]; then
+        probe_auth_headers=(-H "content-type: application/json")
+        if [[ "$executor_bearer_required" == "true" ]]; then
+          probe_auth_headers+=(-H "authorization: Bearer $executor_bearer_token")
+        fi
+        if [[ "$executor_hmac_required" == "true" ]]; then
+          if [[ -z "$executor_hmac_ttl_sec" ]]; then
+            errors+=("cannot build HMAC auth probe headers: executor HMAC TTL is invalid")
+          else
+            auth_probe_timestamp="$(date -u +%s)"
+            auth_probe_nonce="executor-preflight-${auth_probe_timestamp}-$$"
+            auth_probe_hmac_payload="$(printf '%s\n%s\n%s\n%s' "$auth_probe_timestamp" "$executor_hmac_ttl_sec" "$auth_probe_nonce" "$simulate_probe_payload")"
+            if auth_probe_hmac_signature="$(hmac_sha256_hex "$executor_hmac_secret" "$auth_probe_hmac_payload")"; then
+              probe_auth_headers+=(-H "x-copybot-key-id: $executor_hmac_key_id")
+              probe_auth_headers+=(-H "x-copybot-signature-alg: hmac-sha256-v1")
+              probe_auth_headers+=(-H "x-copybot-timestamp: $auth_probe_timestamp")
+              probe_auth_headers+=(-H "x-copybot-auth-ttl-sec: $executor_hmac_ttl_sec")
+              probe_auth_headers+=(-H "x-copybot-nonce: $auth_probe_nonce")
+              probe_auth_headers+=(-H "x-copybot-signature: $auth_probe_hmac_signature")
+            else
+              errors+=("failed building HMAC auth probe signature")
+            fi
+          fi
+        fi
+        if probe_with_auth_status="$(curl -sS -m "$HTTP_TIMEOUT_SEC" "${probe_auth_headers[@]}" --data "$simulate_probe_payload" -o "$probe_body_file" -w "%{http_code}" "$probe_url" 2>/dev/null)"; then
           probe_with_auth_body="$(cat "$probe_body_file")"
           auth_probe_with_auth_http_status="$probe_with_auth_status"
           auth_probe_with_auth_code="$(json_string_field "$probe_with_auth_body" "code")"
           if [[ "$probe_with_auth_status" != "200" ]]; then
-            errors+=("auth probe with configured bearer token must return HTTP 200, got $probe_with_auth_status")
+            errors+=("auth probe with configured executor auth headers must return HTTP 200, got $probe_with_auth_status")
           fi
-          if [[ "$auth_probe_with_auth_code" == "auth_missing" || "$auth_probe_with_auth_code" == "auth_invalid" ]]; then
-            errors+=("auth probe with configured bearer token still failed auth check")
+          if [[ "$auth_probe_with_auth_code" == "auth_missing" || "$auth_probe_with_auth_code" == "auth_invalid" || "$auth_probe_with_auth_code" == "hmac_missing" || "$auth_probe_with_auth_code" == "hmac_invalid" ]]; then
+            errors+=("auth probe with configured executor auth headers still failed auth check")
           fi
         else
-          errors+=("failed auth probe with bearer token against simulate endpoint: $probe_url")
+          errors+=("failed auth probe with configured executor auth headers against simulate endpoint: $probe_url")
         fi
       fi
     fi
@@ -1507,7 +1597,11 @@ summary="$({
   echo "executor_any_upstream_fallback_endpoint: $any_upstream_fallback_endpoint"
   echo "executor_any_send_rpc_primary_endpoint: $any_send_rpc_primary_endpoint"
   echo "executor_any_send_rpc_fallback_endpoint: $any_send_rpc_fallback_endpoint"
+  echo "executor_auth_required: $executor_auth_required"
   echo "executor_bearer_required: $executor_bearer_required"
+  echo "executor_hmac_required: $executor_hmac_required"
+  echo "adapter_upstream_hmac_configured: $adapter_upstream_hmac_configured"
+  echo "adapter_upstream_hmac_ttl_sec: $adapter_upstream_hmac_ttl_sec"
   echo "health_http_status: $health_http_status"
   echo "health_status: $health_status_field"
   echo "health_status_field_kind: $health_status_field_kind"

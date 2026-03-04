@@ -995,6 +995,9 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 467. executor embedded mock backend mode for non-live e2e: `copybot-executor` now supports strict `COPYBOT_EXECUTOR_BACKEND_MODE={upstream|mock}` (`upstream` default, fail-closed on unknown), `/simulate` and `/submit` route adapters return contract-compatible in-process mock success payloads in `mock` mode (no network forward path), `/healthz` now emits `backend_mode`, and `executor_preflight.sh` parity checks now validate backend-mode contract plus runtime-equivalent mock URL synthesis when submit/simulate upstream URLs are omitted in mock mode.
 468. server-rollout fail-closed executor backend-mode guard: `tools/execution_server_rollout_report.sh` now validates `COPYBOT_EXECUTOR_BACKEND_MODE` from `EXECUTOR_ENV_PATH` and enforces `SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true` by default (rejects `mock` with `input_error`), while allowing explicit non-live override (`SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=false`) for controlled mock contour testing; smoke coverage pins both reject and override paths.
 469. go/no-go strict executor backend-mode gate added: `tools/execution_go_nogo_report.sh` now supports `GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM` (strict boolean, default `false`) with `EXECUTOR_ENV_PATH` backend-mode parsing (`upstream|mock` + fail-closed on unknown/missing env path when strict gate enabled), emits explicit guard diagnostics (`executor_backend_mode_guard_*`), and classifies `overall_go_nogo_verdict=NO_GO` on strict-mode `mock`/unknown states; server rollout now propagates this strict flag into nested go/no-go/rehearsal/final evidence runs.
+470. strict executor backend-mode guard propagation completed across runtime-evidence helpers: `GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM` + `EXECUTOR_ENV_PATH` now parse and propagate through `execution_windowed_signoff_report.sh`, `execution_route_fee_signoff_report.sh`, `execution_devnet_rehearsal.sh`, `adapter_rollout_evidence_report.sh`, `adapter_rollout_final_evidence_report.sh`, `execution_route_fee_final_evidence_report.sh`, and `execution_runtime_readiness_report.sh`, with summary observability fields (`go_nogo_require_executor_upstream`, `executor_env_path`) and runtime-readiness smoke pins proving fail-closed on strict+`mock` and explicit override pass on strict=`false`.
+471. adapter upstream HMAC forwarding implemented for executor hop: `copybot-adapter` now supports optional `COPYBOT_ADAPTER_UPSTREAM_HMAC_{KEY_ID,SECRET|SECRET_FILE,TTL_SEC}` and signs forwarded `/simulate` + `/submit` payloads with executor-compatible `x-copybot-*` headers over exact raw body bytes (including non-UTF8), while preserving existing bearer forwarding behavior.
+472. executor preflight HMAC parity + auth-probe hardening: `tools/executor_preflight.sh` now models executor auth requirements as runtime-equivalent (`bearer` and/or `hmac`), validates adapter upstream HMAC config contract (`COPYBOT_ADAPTER_UPSTREAM_HMAC_*`) when executor HMAC ingress is enabled (missing/mismatch/ttl fail-closed), and signs auth probes with HMAC headers when needed; smoke pins cover missing/mismatch (`key_id`, `secret`, `ttl`, `_FILE`) paths.
 
 Остается в next-code-queue:
 
@@ -1039,12 +1042,16 @@ Server execution playbook (copy/paste команды): `ops/6_1_SERVER_EXECUTION
    1. поднят локальный contract-compatible mock upstream (`127.0.0.1:18080`),
    2. `copybot-executor` переключен на mock upstream endpoint-ы,
    3. e2e `adapter -> executor -> mock-upstream` для `/simulate` и `/submit` возвращает `status=ok`.
+8. Снят runtime behavior snapshot текущего стенда:
+   1. зафиксированы uptime, ingestion/discovery throughput, lag/queue, DB growth и текущий execution/shadow output state,
+   2. raw-артефакты сохранены в `ops/server_reports/raw/2026-03-03_runtime_snapshot/`.
 
 Server evidence:
 
 1. `ops/server_reports/2026-03-03_quicknode_staging_status.md`
 2. `ops/server_reports/2026-03-03_quicknode_laserstream_switch.md`
 3. `ops/server_reports/2026-03-03_execution_non_live_mock_e2e.md`
+4. `ops/server_reports/2026-03-03_runtime_behavior_snapshot.md`
 
 Инцидент (дословная фиксация):
 `Я БЛЯДИНА CODEX УСАДИЛ ОВНЕРА НА 300 БАКСОВ ПОТОМУ ЧТО МНЕ ЛЕНЬ БЫЛО ИЗУЧИТЬ ПРОЕКТ И СКАЗАТЬ ЕМУ ПРАВДУ`

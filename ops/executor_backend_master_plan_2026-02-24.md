@@ -168,12 +168,13 @@ Runtime guarded allowlist содержит коды нескольких сло�
 
 ## 8.4 Auth boundary (adapter -> executor)
 
-1. Текущий adapter при upstream forwarding использует Bearer token, HMAC-forwarding отсутствует.
-2. Поэтому Phase 1-6 обязательный auth mode для adapter->executor:
-   1. Bearer (mandatory),
-   2. HMAC для этого hop — out-of-scope до отдельного adapter enhancement.
-3. Optional future item:
-   1. `Phase 4B` — добавить upstream HMAC forwarding в adapter и только после этого включить HMAC mandatory для executor ingress.
+1. Adapter upstream forwarding поддерживает Bearer и optional HMAC (`x-copybot-*`) для `/simulate` и `/submit`.
+2. Базовый mandatory mode для adapter->executor:
+   1. Bearer (mandatory baseline),
+   2. HMAC optional.
+3. Hardened mode (optional, production hardening):
+   1. включается executor ingress HMAC (`COPYBOT_EXECUTOR_HMAC_*`),
+   2. adapter MUST forwarding-match upstream HMAC config (`COPYBOT_ADAPTER_UPSTREAM_HMAC_*`) и preflight MUST fail-close при mismatch.
 
 ## 8.5 HTTP status convention (mandatory)
 
