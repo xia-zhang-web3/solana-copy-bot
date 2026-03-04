@@ -8928,6 +8928,29 @@ run_audit_ops_smoke_mode_guard_case() {
   fi
   assert_contains "$empty_targets_output" "AUDIT_OPS_SMOKE_TARGET_CASES must be non-empty when AUDIT_OPS_SMOKE_MODE=targeted"
 
+  local invalid_profile_output=""
+  if invalid_profile_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
+      AUDIT_OPS_SMOKE_PROFILE="turbo" \
+      bash "$ROOT_DIR/tools/audit_full.sh" 2>&1
+  )"; then
+    echo "expected audit_full.sh to fail for invalid AUDIT_OPS_SMOKE_PROFILE token" >&2
+    exit 1
+  else
+    local invalid_profile_exit_code=$?
+    if [[ "$invalid_profile_exit_code" -ne 1 ]]; then
+      echo "expected audit_full.sh invalid AUDIT_OPS_SMOKE_PROFILE exit code 1, got $invalid_profile_exit_code" >&2
+      echo "$invalid_profile_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_profile_output" "AUDIT_OPS_SMOKE_PROFILE must be one of: full,fast"
+
   local full_targeted_output=""
   full_targeted_output="$(
     AUDIT_SKIP_OPS_SMOKE="false" \
@@ -8938,9 +8961,26 @@ run_audit_ops_smoke_mode_guard_case() {
       AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
       bash "$ROOT_DIR/tools/audit_full.sh"
   )"
+  assert_contains "$full_targeted_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full)"
   assert_contains "$full_targeted_output" "[ok] common timeout parser"
   assert_contains "$full_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$full_targeted_output" "[audit:full] PASS"
+
+  local full_targeted_fast_output=""
+  full_targeted_fast_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_PROFILE="fast" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="executor_preflight" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_targeted_fast_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast)"
+  assert_contains "$full_targeted_fast_output" "ops smoke targeted profile: fast"
+  assert_contains "$full_targeted_fast_output" "[ok] executor preflight helper (fast)"
+  assert_contains "$full_targeted_fast_output" "[audit:full] PASS"
 
   local standard_marker_path="$ROOT_DIR/ops/.audit_ops_smoke_targeted_marker.tmp"
   printf 'marker\n' >"$standard_marker_path"
@@ -8964,10 +9004,33 @@ run_audit_ops_smoke_mode_guard_case() {
     exit 1
   fi
 
-  assert_contains "$standard_targeted_output" "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=targeted)"
+  assert_contains "$standard_targeted_output" "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full)"
   assert_contains "$standard_targeted_output" "[ok] common timeout parser"
   assert_contains "$standard_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$standard_targeted_output" "[audit:standard] PASS"
+
+  local standard_targeted_fast_output=""
+  if standard_targeted_fast_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_PACKAGE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_PROFILE="fast" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="executor_preflight" \
+      bash "$ROOT_DIR/tools/audit_standard.sh"
+  )"; then
+    :
+  else
+    local standard_targeted_fast_exit_code=$?
+    echo "expected audit_standard.sh targeted fast ops-smoke run to pass, got exit code $standard_targeted_fast_exit_code" >&2
+    echo "$standard_targeted_fast_output" >&2
+    exit 1
+  fi
+  assert_contains "$standard_targeted_fast_output" "[audit:standard] ops scope touched -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=fast)"
+  assert_contains "$standard_targeted_fast_output" "ops smoke targeted profile: fast"
+  assert_contains "$standard_targeted_fast_output" "[ok] executor preflight helper (fast)"
+  assert_contains "$standard_targeted_fast_output" "[audit:standard] PASS"
   echo "[ok] audit ops smoke mode guard"
 }
 
@@ -9158,6 +9221,29 @@ EOF_POISON_INDEX
   echo "[ok] evidence bundle pack"
 }
 
+expand_ops_smoke_target_case() {
+  local token="$1"
+  case "$token" in
+  common_parsers)
+    printf '%s\n' "common_strict_bool_parser" "common_bool_compat_wrapper" "common_timeout_parser"
+    ;;
+  heavy_runtime_chain)
+    printf '%s\n' \
+      "executor_preflight" \
+      "windowed_signoff" \
+      "route_fee_signoff" \
+      "devnet_rehearsal" \
+      "executor_rollout_evidence" \
+      "adapter_rollout_evidence" \
+      "execution_server_rollout" \
+      "execution_runtime_readiness"
+    ;;
+  *)
+    printf '%s\n' "$token"
+    ;;
+  esac
+}
+
 run_targeted_smoke_cases() {
   local target_cases_raw="$1"
   local targeted_case_profile_raw="${OPS_SMOKE_PROFILE:-full}"
@@ -9167,12 +9253,59 @@ run_targeted_smoke_cases() {
     echo "OPS_SMOKE_PROFILE must be one of: full,fast (got: ${targeted_case_profile_raw:-<empty>})" >&2
     exit 1
   fi
-  local -a target_cases=()
-  IFS=',' read -r -a target_cases <<<"$target_cases_raw"
-  if ((${#target_cases[@]} == 0)); then
+  local -a raw_target_tokens=()
+  IFS=',' read -r -a raw_target_tokens <<<"$target_cases_raw"
+  if ((${#raw_target_tokens[@]} == 0)); then
     echo "OPS_SMOKE_TARGET_CASES must contain at least one case name" >&2
     exit 1
   fi
+
+  local -a expanded_target_cases=()
+  local raw_target_token=""
+  local trimmed_target_token=""
+  local expanded_case=""
+  for raw_target_token in "${raw_target_tokens[@]-}"; do
+    trimmed_target_token="$(trim_string "$raw_target_token")"
+    if [[ -z "$trimmed_target_token" ]]; then
+      continue
+    fi
+    while IFS= read -r expanded_case; do
+      if [[ -z "$expanded_case" ]]; then
+        continue
+      fi
+      expanded_target_cases+=("$expanded_case")
+    done < <(expand_ops_smoke_target_case "$trimmed_target_token")
+  done
+  if ((${#expanded_target_cases[@]} == 0)); then
+    echo "OPS_SMOKE_TARGET_CASES must contain at least one non-empty case name" >&2
+    exit 1
+  fi
+
+  local -a target_cases=()
+  local seen_target_cases=""
+  for expanded_case in "${expanded_target_cases[@]-}"; do
+    if [[ -n "$seen_target_cases" ]] && grep -Fqx -- "$expanded_case" <<<"$seen_target_cases"; then
+      continue
+    fi
+    target_cases+=("$expanded_case")
+    if [[ -z "$seen_target_cases" ]]; then
+      seen_target_cases="$expanded_case"
+    else
+      seen_target_cases+=$'\n'"$expanded_case"
+    fi
+  done
+
+  local expanded_cases_csv=""
+  local target_case_joined=""
+  local target_case_entry=""
+  for target_case_entry in "${target_cases[@]-}"; do
+    if [[ -z "$target_case_joined" ]]; then
+      target_case_joined="$target_case_entry"
+    else
+      target_case_joined+=",${target_case_entry}"
+    fi
+  done
+  expanded_cases_csv="${target_case_joined:-n/a}"
 
   write_fake_journalctl
 
@@ -9182,10 +9315,8 @@ run_targeted_smoke_cases() {
   local fixtures_ready="false"
   local executed_cases=0
 
-  local target_case_raw=""
   local target_case=""
-  for target_case_raw in "${target_cases[@]-}"; do
-    target_case="$(trim_string "$target_case_raw")"
+  for target_case in "${target_cases[@]-}"; do
     if [[ -z "$target_case" ]]; then
       continue
     fi
@@ -9306,7 +9437,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
+      echo "known values: common_parsers, heavy_runtime_chain, common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
       exit 1
       ;;
     esac
@@ -9318,6 +9449,7 @@ run_targeted_smoke_cases() {
   fi
 
   echo "ops smoke targeted profile: $targeted_case_profile"
+  echo "ops smoke targeted expanded cases: $expanded_cases_csv"
   echo "ops scripts smoke targeted: PASS (cases=$target_cases_raw)"
 }
 
@@ -9330,11 +9462,22 @@ run_ops_smoke_targeted_dispatch_case() {
   assert_contains "$targeted_output" "[ok] common strict bool parser"
   assert_contains "$targeted_output" "[ok] common timeout parser"
   assert_contains "$targeted_output" "ops smoke targeted profile: full"
+  assert_contains "$targeted_output" "ops smoke targeted expanded cases: common_strict_bool_parser,common_timeout_parser"
   assert_contains "$targeted_output" "ops scripts smoke targeted: PASS"
   if grep -Fq "[ok] execution runtime readiness report" <<<"$targeted_output"; then
     echo "targeted smoke dispatcher must not execute unrelated heavy cases" >&2
     exit 1
   fi
+
+  local targeted_group_output=""
+  targeted_group_output="$(
+    OPS_SMOKE_TARGET_CASES="common_parsers" \
+      bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
+  )"
+  assert_contains "$targeted_group_output" "[ok] common strict bool parser"
+  assert_contains "$targeted_group_output" "[ok] common bool compat wrapper"
+  assert_contains "$targeted_group_output" "[ok] common timeout parser"
+  assert_contains "$targeted_group_output" "ops smoke targeted expanded cases: common_strict_bool_parser,common_bool_compat_wrapper,common_timeout_parser"
 
   local targeted_fast_profile_output=""
   targeted_fast_profile_output="$(
