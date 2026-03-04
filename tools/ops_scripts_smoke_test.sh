@@ -2949,6 +2949,11 @@ run_adapter_preflight_case() {
 
 run_executor_preflight_case() {
   local db_path="$1"
+  local case_profile="${2:-full}"
+  if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
+    echo "run_executor_preflight_case case_profile must be one of: full,fast (got: $case_profile)" >&2
+    exit 1
+  fi
   local config_path="$TMP_DIR/executor-preflight.toml"
   local executor_env_path="$TMP_DIR/executor-preflight.env"
   local adapter_env_path="$TMP_DIR/adapter-preflight.env"
@@ -3013,6 +3018,10 @@ run_executor_preflight_case() {
   if ! ls "$artifacts_dir"/executor_preflight_manifest_*.txt >/dev/null 2>&1; then
     echo "expected executor preflight manifest artifact file to be written" >&2
     exit 1
+  fi
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] executor preflight helper (fast)"
+    return
   fi
 
   local invalid_backend_mode_output
@@ -9209,7 +9218,7 @@ run_targeted_smoke_cases() {
       run_evidence_bundle_pack_case
       executed_cases=$((executed_cases + 1))
       ;;
-    executor_preflight | run_executor_preflight_case | windowed_signoff | run_windowed_signoff_report_case | windowed_signoff_fast | run_windowed_signoff_report_case_fast | route_fee_signoff | run_execution_route_fee_signoff_case | route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast | devnet_rehearsal | run_devnet_rehearsal_case | devnet_rehearsal_fast | run_devnet_rehearsal_case_fast | executor_rollout_evidence | run_executor_rollout_evidence_case | executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast | adapter_rollout_evidence | run_adapter_rollout_evidence_case | adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast | execution_server_rollout | run_execution_server_rollout_report_case | execution_server_rollout_fast | run_execution_server_rollout_report_case_fast | execution_runtime_readiness | run_execution_runtime_readiness_report_case | execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
+    executor_preflight | run_executor_preflight_case | executor_preflight_fast | run_executor_preflight_case_fast | windowed_signoff | run_windowed_signoff_report_case | windowed_signoff_fast | run_windowed_signoff_report_case_fast | route_fee_signoff | run_execution_route_fee_signoff_case | route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast | devnet_rehearsal | run_devnet_rehearsal_case | devnet_rehearsal_fast | run_devnet_rehearsal_case_fast | executor_rollout_evidence | run_executor_rollout_evidence_case | executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast | adapter_rollout_evidence | run_adapter_rollout_evidence_case | adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast | execution_server_rollout | run_execution_server_rollout_report_case | execution_server_rollout_fast | run_execution_server_rollout_report_case_fast | execution_runtime_readiness | run_execution_runtime_readiness_report_case | execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
       if [[ "$fixtures_ready" != "true" ]]; then
         create_legacy_db "$legacy_db"
         write_config "$legacy_cfg" "$legacy_db"
@@ -9219,6 +9228,10 @@ run_targeted_smoke_cases() {
       case "$target_case" in
       executor_preflight | run_executor_preflight_case)
         run_executor_preflight_case "$legacy_db"
+        executed_cases=$((executed_cases + 1))
+        ;;
+      executor_preflight_fast | run_executor_preflight_case_fast)
+        run_executor_preflight_case "$legacy_db" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       windowed_signoff | run_windowed_signoff_report_case)
@@ -9285,7 +9298,7 @@ run_targeted_smoke_cases() {
       ;;
     *)
       echo "unknown OPS_SMOKE_TARGET_CASES entry: $target_case" >&2
-      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
+      echo "known values: common_strict_bool_parser, common_bool_compat_wrapper, common_timeout_parser, audit_quick_bool_guard, audit_standard_bool_guard, audit_contract_smoke_mode_guard, audit_executor_test_mode_guard, audit_ops_smoke_mode_guard, evidence_bundle_pack, executor_preflight, executor_preflight_fast, windowed_signoff, windowed_signoff_fast, route_fee_signoff, route_fee_signoff_fast, devnet_rehearsal, devnet_rehearsal_fast, executor_rollout_evidence, executor_rollout_evidence_fast, adapter_rollout_evidence, adapter_rollout_evidence_fast, execution_server_rollout, execution_server_rollout_fast, execution_runtime_readiness, execution_runtime_readiness_fast, go_nogo_executor_backend_mode_guard" >&2
       exit 1
       ;;
     esac
