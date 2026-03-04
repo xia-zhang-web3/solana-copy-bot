@@ -29,6 +29,7 @@ WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DY
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-true}"
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-true}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-true}"
+GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-true}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-$GO_NOGO_TEST_MODE}"
@@ -76,6 +77,7 @@ parse_final_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS
 parse_final_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" windowed_signoff_require_dynamic_tip_policy_pass_norm
 parse_final_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy_norm
 parse_final_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled_norm
+parse_final_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream_norm
 parse_final_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_final_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_final_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
@@ -94,6 +96,8 @@ rollout_artifact_summary="n/a"
 rollout_artifact_manifest="n/a"
 rollout_summary_sha256="n/a"
 rollout_nested_package_bundle_enabled="unknown"
+rollout_nested_go_nogo_require_executor_upstream="n/a"
+rollout_nested_executor_env_path="n/a"
 if ((${#input_errors[@]} == 0)); then
   if rollout_output="$(
     EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -112,6 +116,7 @@ if ((${#input_errors[@]} == 0)); then
       WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream_norm" \
       ROUTE_FEE_SIGNOFF_REQUIRED="$route_fee_signoff_required_norm" \
       ROUTE_FEE_SIGNOFF_WINDOWS_CSV="$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" \
       ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="$route_fee_signoff_go_nogo_test_mode_norm" \
@@ -144,6 +149,20 @@ if ((${#input_errors[@]} == 0)); then
     rollout_nested_package_bundle_enabled="unknown"
   elif [[ "$rollout_nested_package_bundle_enabled" != "false" ]]; then
     input_errors+=("nested executor rollout helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
+  rollout_nested_go_nogo_require_executor_upstream_raw="$(trim_string "$(extract_field "go_nogo_require_executor_upstream" "$rollout_output")")"
+  if ! rollout_nested_go_nogo_require_executor_upstream="$(extract_bool_field_strict "go_nogo_require_executor_upstream" "$rollout_output")"; then
+    input_errors+=("nested executor rollout go_nogo_require_executor_upstream must be boolean token, got: ${rollout_nested_go_nogo_require_executor_upstream_raw:-<empty>}")
+    rollout_nested_go_nogo_require_executor_upstream="unknown"
+  elif [[ "$rollout_nested_go_nogo_require_executor_upstream" != "$go_nogo_require_executor_upstream_norm" ]]; then
+    input_errors+=("nested executor rollout go_nogo_require_executor_upstream mismatch: nested=${rollout_nested_go_nogo_require_executor_upstream} expected=${go_nogo_require_executor_upstream_norm}")
+  fi
+  rollout_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$rollout_output")")"
+  if [[ -z "$rollout_nested_executor_env_path" ]]; then
+    input_errors+=("nested executor rollout executor_env_path must be non-empty")
+    rollout_nested_executor_env_path="n/a"
+  elif [[ "$rollout_nested_executor_env_path" != "$EXECUTOR_ENV_PATH" ]]; then
+    input_errors+=("nested executor rollout executor_env_path mismatch: nested=${rollout_nested_executor_env_path} expected=${EXECUTOR_ENV_PATH}")
   fi
 
   if [[ "$rollout_verdict" == "UNKNOWN" ]]; then
@@ -202,6 +221,8 @@ windowed_signoff_require_dynamic_hint_source_pass: $windowed_signoff_require_dyn
 windowed_signoff_require_dynamic_tip_policy_pass: $windowed_signoff_require_dynamic_tip_policy_pass_norm
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy_norm
 go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled_norm
+go_nogo_require_executor_upstream: $go_nogo_require_executor_upstream_norm
+executor_env_path: $EXECUTOR_ENV_PATH
 route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 package_bundle_enabled: $package_bundle_enabled_norm
@@ -219,6 +240,8 @@ rollout_summary_sha256: ${rollout_summary_sha256:-n/a}
 rollout_artifact_summary_sha256: $rollout_artifact_summary_sha256
 rollout_artifact_manifest_sha256: $rollout_artifact_manifest_sha256
 rollout_nested_package_bundle_enabled: ${rollout_nested_package_bundle_enabled:-unknown}
+rollout_nested_go_nogo_require_executor_upstream: ${rollout_nested_go_nogo_require_executor_upstream:-n/a}
+rollout_nested_executor_env_path: ${rollout_nested_executor_env_path:-n/a}
 final_executor_package_verdict: $rollout_verdict
 final_executor_package_reason: ${rollout_reason:-n/a}
 final_executor_package_reason_code: ${rollout_reason_code:-n/a}

@@ -5197,6 +5197,8 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$pass_output" "executor_rollout_run_rotation" "true"
   assert_field_equals "$pass_output" "executor_rollout_run_preflight" "true"
   assert_field_equals "$pass_output" "executor_rollout_run_rehearsal" "true"
+  assert_field_equals "$pass_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "rotation_readiness_verdict" "PASS"
   assert_field_equals "$pass_output" "preflight_verdict" "PASS"
   assert_field_equals "$pass_output" "devnet_rehearsal_verdict" "GO"
@@ -5204,6 +5206,8 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$pass_output" "preflight_artifacts_written" "true"
   assert_field_equals "$pass_output" "rehearsal_artifacts_written" "true"
   assert_field_equals "$pass_output" "rehearsal_nested_package_bundle_enabled" "false"
+  assert_field_equals "$pass_output" "rehearsal_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$pass_output" "rehearsal_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "executor_rollout_verdict" "GO"
   assert_field_equals "$pass_output" "executor_rollout_reason_code" "gates_pass"
   assert_contains "$pass_output" "artifacts_written: true"
@@ -5267,6 +5271,8 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$rollout_bundle_output" "preflight_artifacts_written" "true"
   assert_field_equals "$rollout_bundle_output" "rehearsal_artifacts_written" "true"
   assert_field_equals "$rollout_bundle_output" "rehearsal_nested_package_bundle_enabled" "false"
+  assert_field_equals "$rollout_bundle_output" "rehearsal_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$rollout_bundle_output" "rehearsal_nested_executor_env_path" "$executor_env_path"
   assert_sha256_field "$rollout_bundle_output" "package_bundle_sha256"
   assert_sha256_field_matches_file "$rollout_bundle_output" "summary_sha256" "artifact_summary"
   assert_sha256_field_matches_file "$rollout_bundle_output" "manifest_sha256" "artifact_manifest"
@@ -5315,6 +5321,29 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$invalid_bool_output" "rotation_readiness_verdict" "UNKNOWN"
   assert_field_equals "$invalid_bool_output" "preflight_verdict" "UNKNOWN"
   assert_field_equals "$invalid_bool_output" "devnet_rehearsal_reason_code" "input_error"
+
+  local invalid_executor_upstream_bool_output=""
+  if invalid_executor_upstream_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$TMP_DIR/missing-executor.env" \
+      ADAPTER_ENV_PATH="$TMP_DIR/missing-adapter.env" \
+      CONFIG_PATH="$TMP_DIR/missing-config.toml" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="sometimes" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor rollout helper when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM token is invalid" >&2
+    exit 1
+  else
+    local invalid_executor_upstream_bool_exit_code=$?
+    if [[ "$invalid_executor_upstream_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for invalid executor rollout upstream bool token, got $invalid_executor_upstream_bool_exit_code" >&2
+      echo "$invalid_executor_upstream_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_executor_upstream_bool_output" "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token"
+  assert_field_equals "$invalid_executor_upstream_bool_output" "executor_rollout_reason_code" "input_error"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "mismatch-token"
   local preflight_fail_output=""
@@ -5410,10 +5439,14 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$precheck_profile_output" "executor_rollout_run_rotation" "true"
   assert_field_equals "$precheck_profile_output" "executor_rollout_run_preflight" "true"
   assert_field_equals "$precheck_profile_output" "executor_rollout_run_rehearsal" "false"
+  assert_field_equals "$precheck_profile_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$precheck_profile_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$precheck_profile_output" "rotation_readiness_verdict" "PASS"
   assert_field_equals "$precheck_profile_output" "preflight_verdict" "PASS"
   assert_field_equals "$precheck_profile_output" "devnet_rehearsal_verdict" "SKIP"
   assert_field_equals "$precheck_profile_output" "devnet_rehearsal_reason_code" "stage_disabled"
+  assert_field_equals "$precheck_profile_output" "rehearsal_nested_go_nogo_require_executor_upstream" "n/a"
+  assert_field_equals "$precheck_profile_output" "rehearsal_nested_executor_env_path" "n/a"
   assert_field_equals "$precheck_profile_output" "executor_rollout_verdict" "GO"
   assert_field_equals "$precheck_profile_output" "executor_rollout_reason_code" "gates_pass"
 
@@ -5441,9 +5474,13 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_run_rotation" "false"
   assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_run_preflight" "false"
   assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_run_rehearsal" "true"
+  assert_field_equals "$rehearsal_only_profile_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$rehearsal_only_profile_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$rehearsal_only_profile_output" "rotation_readiness_verdict" "SKIP"
   assert_field_equals "$rehearsal_only_profile_output" "preflight_verdict" "SKIP"
   assert_field_equals "$rehearsal_only_profile_output" "devnet_rehearsal_verdict" "GO"
+  assert_field_equals "$rehearsal_only_profile_output" "rehearsal_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$rehearsal_only_profile_output" "rehearsal_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_verdict" "GO"
   assert_field_equals "$rehearsal_only_profile_output" "executor_rollout_reason_code" "gates_pass"
 
@@ -5564,9 +5601,13 @@ run_executor_rollout_evidence_case() {
       bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60
   )"
   assert_contains "$final_output" "=== Executor Final Evidence Package ==="
+  assert_field_equals "$final_output" "go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$final_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$final_output" "rollout_verdict" "GO"
   assert_field_equals "$final_output" "rollout_reason_code" "gates_pass"
   assert_field_equals "$final_output" "rollout_nested_package_bundle_enabled" "false"
+  assert_field_equals "$final_output" "rollout_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$final_output" "rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$final_output" "final_executor_package_verdict" "GO"
   assert_field_equals "$final_output" "final_executor_package_reason_code" "gates_pass"
   assert_contains "$final_output" "artifacts_written: true"
@@ -5622,6 +5663,8 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$final_bundle_output" "package_bundle_exit_code" "0"
   assert_field_equals "$final_bundle_output" "rollout_nested_package_bundle_enabled" "false"
+  assert_field_equals "$final_bundle_output" "rollout_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$final_bundle_output" "rollout_nested_executor_env_path" "$executor_env_path"
   assert_sha256_field "$final_bundle_output" "package_bundle_sha256"
   assert_sha256_field_matches_file "$final_bundle_output" "summary_sha256" "artifact_summary"
   assert_sha256_field_matches_file "$final_bundle_output" "manifest_sha256" "artifact_manifest"
@@ -5644,6 +5687,32 @@ run_executor_rollout_evidence_case() {
   local executor_final_rollout_capture_text
   executor_final_rollout_capture_text="$(cat "$executor_final_rollout_capture_path")"
   assert_contains "$executor_final_rollout_capture_text" "package_bundle_enabled: false"
+
+  local final_upstream_override_output
+  final_upstream_override_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/executor-final-package-upstream-override" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60
+  )"
+  assert_field_equals "$final_upstream_override_output" "go_nogo_require_executor_upstream" "false"
+  assert_field_equals "$final_upstream_override_output" "rollout_nested_go_nogo_require_executor_upstream" "false"
+  assert_field_equals "$final_upstream_override_output" "rollout_nested_executor_env_path" "$executor_env_path"
+  assert_field_equals "$final_upstream_override_output" "final_executor_package_verdict" "GO"
 
   local final_hold_output=""
   if final_hold_output="$(
@@ -5745,6 +5814,31 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_invalid_bool_output" "rollout_reason_code" "input_error"
   assert_field_equals "$final_invalid_bool_output" "rollout_artifacts_written" "false"
   assert_field_equals "$final_invalid_bool_output" "final_executor_package_reason_code" "input_error"
+
+  local final_invalid_executor_upstream_bool_output=""
+  if final_invalid_executor_upstream_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/executor-final-package-invalid-upstream-bool" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="sometimes" \
+      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor final package helper when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM token is invalid" >&2
+    exit 1
+  else
+    local final_invalid_executor_upstream_bool_exit_code=$?
+    if [[ "$final_invalid_executor_upstream_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for executor final invalid upstream bool token, got $final_invalid_executor_upstream_bool_exit_code" >&2
+      echo "$final_invalid_executor_upstream_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_invalid_executor_upstream_bool_output" "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token"
+  assert_field_equals "$final_invalid_executor_upstream_bool_output" "final_executor_package_reason_code" "input_error"
   echo "[ok] executor rollout/final evidence helpers"
 }
 

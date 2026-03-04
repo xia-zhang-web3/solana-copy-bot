@@ -24,6 +24,7 @@ WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DY
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
 GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
+GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-$GO_NOGO_TEST_MODE}"
@@ -109,6 +110,7 @@ parse_rollout_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PA
 parse_rollout_bool_setting_into "WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" "$WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS" windowed_signoff_require_dynamic_tip_policy_pass_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled_norm
+parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_rollout_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
@@ -265,6 +267,8 @@ rehearsal_go_nogo_sha256=""
 rehearsal_tests_sha256=""
 rehearsal_artifacts_written="false"
 rehearsal_nested_package_bundle_enabled="unknown"
+rehearsal_nested_go_nogo_require_executor_upstream="n/a"
+rehearsal_nested_executor_env_path="n/a"
 tests_run=""
 tests_failed=""
 if [[ "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
@@ -275,6 +279,8 @@ if [[ "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_reason_code="stage_disabled"
   rehearsal_artifacts_written="n/a"
   rehearsal_nested_package_bundle_enabled="n/a"
+  rehearsal_nested_go_nogo_require_executor_upstream="n/a"
+  rehearsal_nested_executor_env_path="n/a"
 elif ((${#input_errors[@]} > 0)); then
   rehearsal_exit_code=3
   rehearsal_verdict="NO_GO"
@@ -304,6 +310,7 @@ else
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream_norm" \
       WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
       WINDOWED_SIGNOFF_REQUIRED="$windowed_signoff_required_norm" \
       WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="$windowed_signoff_require_dynamic_hint_source_pass_norm" \
@@ -314,6 +321,7 @@ else
       ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
+      EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       PACKAGE_BUNDLE_ENABLED="false" \
       bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
@@ -351,6 +359,20 @@ else
     rehearsal_nested_package_bundle_enabled="unknown"
   elif [[ "$rehearsal_nested_package_bundle_enabled" != "false" ]]; then
     input_errors+=("nested devnet rehearsal helper must run with PACKAGE_BUNDLE_ENABLED=false")
+  fi
+  rehearsal_nested_go_nogo_require_executor_upstream_raw="$(trim_string "$(extract_field "go_nogo_require_executor_upstream" "$rehearsal_output")")"
+  if ! rehearsal_nested_go_nogo_require_executor_upstream="$(extract_bool_field_strict "go_nogo_require_executor_upstream" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal go_nogo_require_executor_upstream must be boolean token, got: ${rehearsal_nested_go_nogo_require_executor_upstream_raw:-<empty>}")
+    rehearsal_nested_go_nogo_require_executor_upstream="unknown"
+  elif [[ "$rehearsal_nested_go_nogo_require_executor_upstream" != "$go_nogo_require_executor_upstream_norm" ]]; then
+    input_errors+=("nested devnet rehearsal go_nogo_require_executor_upstream mismatch: nested=${rehearsal_nested_go_nogo_require_executor_upstream} expected=${go_nogo_require_executor_upstream_norm}")
+  fi
+  rehearsal_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_executor_env_path" ]]; then
+    input_errors+=("nested devnet rehearsal executor_env_path must be non-empty")
+    rehearsal_nested_executor_env_path="n/a"
+  elif [[ "$rehearsal_nested_executor_env_path" != "$EXECUTOR_ENV_PATH" ]]; then
+    input_errors+=("nested devnet rehearsal executor_env_path mismatch: nested=${rehearsal_nested_executor_env_path} expected=${EXECUTOR_ENV_PATH}")
   fi
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
   tests_failed="$(trim_string "$(extract_field "tests_failed" "$rehearsal_output")")"
@@ -441,6 +463,8 @@ executor_rollout_profile: $EXECUTOR_ROLLOUT_PROFILE
 executor_rollout_run_rotation: $executor_rollout_run_rotation_norm
 executor_rollout_run_preflight: $executor_rollout_run_preflight_norm
 executor_rollout_run_rehearsal: $executor_rollout_run_rehearsal_norm
+go_nogo_require_executor_upstream: $go_nogo_require_executor_upstream_norm
+executor_env_path: $EXECUTOR_ENV_PATH
 
 rotation_readiness_verdict: $rotation_verdict
 rotation_readiness_reason: ${rotation_reason:-n/a}
@@ -484,6 +508,8 @@ rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
 rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
 rehearsal_artifacts_written: $rehearsal_artifacts_written
 rehearsal_nested_package_bundle_enabled: ${rehearsal_nested_package_bundle_enabled:-unknown}
+rehearsal_nested_go_nogo_require_executor_upstream: ${rehearsal_nested_go_nogo_require_executor_upstream:-n/a}
+rehearsal_nested_executor_env_path: ${rehearsal_nested_executor_env_path:-n/a}
 package_bundle_enabled: $package_bundle_enabled_norm
 package_bundle_label: $PACKAGE_BUNDLE_LABEL
 package_bundle_output_dir: ${PACKAGE_BUNDLE_OUTPUT_DIR:-n/a}
