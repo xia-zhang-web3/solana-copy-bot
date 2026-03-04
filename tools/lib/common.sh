@@ -159,6 +159,20 @@ normalize_go_nogo_verdict() {
   esac
 }
 
+normalize_strict_guard_verdict() {
+  local raw
+  raw="$(trim_string "$1")"
+  raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
+  case "$raw" in
+    PASS|WARN|UNKNOWN|SKIP)
+      printf '%s' "$raw"
+      ;;
+    *)
+      printf 'UNKNOWN'
+      ;;
+  esac
+}
+
 normalize_rotation_verdict() {
   local raw
   raw="$(trim_string "$1")"

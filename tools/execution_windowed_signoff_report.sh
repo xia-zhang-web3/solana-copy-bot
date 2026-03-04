@@ -118,6 +118,10 @@ declare -a window_jito_rpc_policy_reason_codes=()
 declare -a window_fastlane_feature_flag_verdicts=()
 declare -a window_fastlane_feature_flag_reasons=()
 declare -a window_fastlane_feature_flag_reason_codes=()
+declare -a window_executor_backend_mode_guard_verdicts=()
+declare -a window_executor_backend_mode_guard_reason_codes=()
+declare -a window_executor_upstream_endpoint_guard_verdicts=()
+declare -a window_executor_upstream_endpoint_guard_reason_codes=()
 declare -a window_go_nogo_artifacts_written=()
 declare -a window_go_nogo_nested_package_bundle_enabled=()
 declare -a window_go_nogo_artifact_manifests=()
@@ -236,6 +240,51 @@ if ((${#input_errors[@]} == 0)); then
     fastlane_feature_flag_verdict="$(normalize_gate_verdict "$(extract_field "fastlane_feature_flag_verdict" "$go_nogo_output")")"
     fastlane_feature_flag_reason="$(trim_string "$(extract_field "fastlane_feature_flag_reason" "$go_nogo_output")")"
     fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$go_nogo_output")")"
+    executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "executor_backend_mode_guard_verdict" "$go_nogo_output")")"
+    executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    executor_backend_mode_guard_verdict="$(normalize_strict_guard_verdict "$executor_backend_mode_guard_verdict_raw")"
+    if [[ -z "$executor_backend_mode_guard_verdict_raw" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go executor_backend_mode_guard_verdict must be non-empty")
+      executor_backend_mode_guard_verdict="UNKNOWN"
+    elif [[ "$executor_backend_mode_guard_verdict_raw_upper" != "PASS" && "$executor_backend_mode_guard_verdict_raw_upper" != "WARN" && "$executor_backend_mode_guard_verdict_raw_upper" != "UNKNOWN" && "$executor_backend_mode_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go executor_backend_mode_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${executor_backend_mode_guard_verdict_raw})")
+      executor_backend_mode_guard_verdict="UNKNOWN"
+    fi
+    executor_backend_mode_guard_reason_code="$(trim_string "$(extract_field "executor_backend_mode_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$executor_backend_mode_guard_reason_code" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go executor_backend_mode_guard_reason_code must be non-empty")
+      executor_backend_mode_guard_reason_code="n/a"
+    fi
+    executor_upstream_endpoint_guard_verdict_raw="$(trim_string "$(extract_field "executor_upstream_endpoint_guard_verdict" "$go_nogo_output")")"
+    executor_upstream_endpoint_guard_verdict_raw_upper="$(printf '%s' "$executor_upstream_endpoint_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    executor_upstream_endpoint_guard_verdict="$(normalize_strict_guard_verdict "$executor_upstream_endpoint_guard_verdict_raw")"
+    if [[ -z "$executor_upstream_endpoint_guard_verdict_raw" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go executor_upstream_endpoint_guard_verdict must be non-empty")
+      executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    elif [[ "$executor_upstream_endpoint_guard_verdict_raw_upper" != "PASS" && "$executor_upstream_endpoint_guard_verdict_raw_upper" != "WARN" && "$executor_upstream_endpoint_guard_verdict_raw_upper" != "UNKNOWN" && "$executor_upstream_endpoint_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go executor_upstream_endpoint_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${executor_upstream_endpoint_guard_verdict_raw})")
+      executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    fi
+    executor_upstream_endpoint_guard_reason_code="$(trim_string "$(extract_field "executor_upstream_endpoint_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$executor_upstream_endpoint_guard_reason_code" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go executor_upstream_endpoint_guard_reason_code must be non-empty")
+      executor_upstream_endpoint_guard_reason_code="n/a"
+    fi
+    if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
+      if [[ "$executor_backend_mode_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+      fi
+      if [[ "$executor_upstream_endpoint_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go executor_upstream_endpoint_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+      fi
+    else
+      if [[ "$executor_backend_mode_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go executor_backend_mode_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${executor_backend_mode_guard_verdict})")
+      fi
+      if [[ "$executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${executor_upstream_endpoint_guard_verdict})")
+      fi
+    fi
     if [[ -z "$dynamic_hint_source_reason" ]]; then
       dynamic_hint_source_reason="n/a"
     fi
@@ -288,6 +337,10 @@ if ((${#input_errors[@]} == 0)); then
     window_fastlane_feature_flag_verdicts+=("$fastlane_feature_flag_verdict")
     window_fastlane_feature_flag_reasons+=("$fastlane_feature_flag_reason")
     window_fastlane_feature_flag_reason_codes+=("$fastlane_feature_flag_reason_code")
+    window_executor_backend_mode_guard_verdicts+=("$executor_backend_mode_guard_verdict")
+    window_executor_backend_mode_guard_reason_codes+=("$executor_backend_mode_guard_reason_code")
+    window_executor_upstream_endpoint_guard_verdicts+=("$executor_upstream_endpoint_guard_verdict")
+    window_executor_upstream_endpoint_guard_reason_codes+=("$executor_upstream_endpoint_guard_reason_code")
     window_go_nogo_artifacts_written+=("$go_nogo_artifacts_written")
     window_go_nogo_nested_package_bundle_enabled+=("$go_nogo_nested_package_bundle_enabled")
     window_go_nogo_artifact_manifests+=("${go_nogo_artifact_manifest:-n/a}")
@@ -472,6 +525,10 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_verdict: ${window_fastlane_feature_flag_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_reason: ${window_fastlane_feature_flag_reasons[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_reason_code: ${window_fastlane_feature_flag_reason_codes[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_executor_backend_mode_guard_verdict: ${window_executor_backend_mode_guard_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_executor_backend_mode_guard_reason_code: ${window_executor_backend_mode_guard_reason_codes[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_executor_upstream_endpoint_guard_verdict: ${window_executor_upstream_endpoint_guard_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_executor_upstream_endpoint_guard_reason_code: ${window_executor_upstream_endpoint_guard_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifacts_written: ${window_go_nogo_artifacts_written[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_nested_package_bundle_enabled: ${window_go_nogo_nested_package_bundle_enabled[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_artifact_manifest: ${window_go_nogo_artifact_manifests[$idx]}"

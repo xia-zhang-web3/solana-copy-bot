@@ -421,6 +421,11 @@ else
   route_fee_signoff_nested_package_bundle_enabled="n/a"
 fi
 
+go_nogo_executor_backend_mode_guard_verdict="unknown"
+go_nogo_executor_backend_mode_guard_reason_code="n/a"
+go_nogo_executor_upstream_endpoint_guard_verdict="unknown"
+go_nogo_executor_upstream_endpoint_guard_reason_code="n/a"
+
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
 overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
 overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
@@ -451,6 +456,51 @@ go_nogo_require_executor_upstream_raw="$(trim_string "$(extract_field "go_nogo_r
 if ! go_nogo_require_executor_upstream="$(extract_bool_field_strict "go_nogo_require_executor_upstream" "$go_nogo_output")"; then
   config_errors+=("nested go/no-go go_nogo_require_executor_upstream must be boolean token, got: ${go_nogo_require_executor_upstream_raw:-<empty>}")
   go_nogo_require_executor_upstream="unknown"
+fi
+go_nogo_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "executor_backend_mode_guard_verdict" "$go_nogo_output")")"
+go_nogo_executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$go_nogo_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+go_nogo_executor_backend_mode_guard_verdict="$(normalize_strict_guard_verdict "$go_nogo_executor_backend_mode_guard_verdict_raw")"
+if [[ -z "$go_nogo_executor_backend_mode_guard_verdict_raw" ]]; then
+  config_errors+=("nested go/no-go executor_backend_mode_guard_verdict must be non-empty")
+  go_nogo_executor_backend_mode_guard_verdict="UNKNOWN"
+elif [[ "$go_nogo_executor_backend_mode_guard_verdict_raw_upper" != "PASS" && "$go_nogo_executor_backend_mode_guard_verdict_raw_upper" != "WARN" && "$go_nogo_executor_backend_mode_guard_verdict_raw_upper" != "UNKNOWN" && "$go_nogo_executor_backend_mode_guard_verdict_raw_upper" != "SKIP" ]]; then
+  config_errors+=("nested go/no-go executor_backend_mode_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${go_nogo_executor_backend_mode_guard_verdict_raw})")
+  go_nogo_executor_backend_mode_guard_verdict="UNKNOWN"
+fi
+go_nogo_executor_backend_mode_guard_reason_code="$(trim_string "$(extract_field "executor_backend_mode_guard_reason_code" "$go_nogo_output")")"
+if [[ -z "$go_nogo_executor_backend_mode_guard_reason_code" ]]; then
+  config_errors+=("nested go/no-go executor_backend_mode_guard_reason_code must be non-empty")
+  go_nogo_executor_backend_mode_guard_reason_code="n/a"
+fi
+go_nogo_executor_upstream_endpoint_guard_verdict_raw="$(trim_string "$(extract_field "executor_upstream_endpoint_guard_verdict" "$go_nogo_output")")"
+go_nogo_executor_upstream_endpoint_guard_verdict_raw_upper="$(printf '%s' "$go_nogo_executor_upstream_endpoint_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+go_nogo_executor_upstream_endpoint_guard_verdict="$(normalize_strict_guard_verdict "$go_nogo_executor_upstream_endpoint_guard_verdict_raw")"
+if [[ -z "$go_nogo_executor_upstream_endpoint_guard_verdict_raw" ]]; then
+  config_errors+=("nested go/no-go executor_upstream_endpoint_guard_verdict must be non-empty")
+  go_nogo_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+elif [[ "$go_nogo_executor_upstream_endpoint_guard_verdict_raw_upper" != "PASS" && "$go_nogo_executor_upstream_endpoint_guard_verdict_raw_upper" != "WARN" && "$go_nogo_executor_upstream_endpoint_guard_verdict_raw_upper" != "UNKNOWN" && "$go_nogo_executor_upstream_endpoint_guard_verdict_raw_upper" != "SKIP" ]]; then
+  config_errors+=("nested go/no-go executor_upstream_endpoint_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${go_nogo_executor_upstream_endpoint_guard_verdict_raw})")
+  go_nogo_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+fi
+go_nogo_executor_upstream_endpoint_guard_reason_code="$(trim_string "$(extract_field "executor_upstream_endpoint_guard_reason_code" "$go_nogo_output")")"
+if [[ -z "$go_nogo_executor_upstream_endpoint_guard_reason_code" ]]; then
+  config_errors+=("nested go/no-go executor_upstream_endpoint_guard_reason_code must be non-empty")
+  go_nogo_executor_upstream_endpoint_guard_reason_code="n/a"
+fi
+if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
+  if [[ "$go_nogo_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
+    config_errors+=("nested go/no-go executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+  fi
+  if [[ "$go_nogo_executor_upstream_endpoint_guard_verdict" == "SKIP" ]]; then
+    config_errors+=("nested go/no-go executor_upstream_endpoint_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
+  fi
+else
+  if [[ "$go_nogo_executor_backend_mode_guard_verdict" != "SKIP" ]]; then
+    config_errors+=("nested go/no-go executor_backend_mode_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${go_nogo_executor_backend_mode_guard_verdict})")
+  fi
+  if [[ "$go_nogo_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
+    config_errors+=("nested go/no-go executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${go_nogo_executor_upstream_endpoint_guard_verdict})")
+  fi
 fi
 submit_fastlane_enabled_raw="$(trim_string "$(extract_field "submit_fastlane_enabled" "$go_nogo_output")")"
 if ! submit_fastlane_enabled="$(extract_bool_field_strict "submit_fastlane_enabled" "$go_nogo_output")"; then
@@ -756,6 +806,10 @@ jito_rpc_policy_reason_code: ${jito_rpc_policy_reason_code:-n/a}
 go_nogo_require_fastlane_disabled: ${go_nogo_require_fastlane_disabled:-false}
 go_nogo_require_executor_upstream: ${go_nogo_require_executor_upstream:-false}
 executor_env_path: $EXECUTOR_ENV_PATH
+go_nogo_executor_backend_mode_guard_verdict: ${go_nogo_executor_backend_mode_guard_verdict:-unknown}
+go_nogo_executor_backend_mode_guard_reason_code: ${go_nogo_executor_backend_mode_guard_reason_code:-n/a}
+go_nogo_executor_upstream_endpoint_guard_verdict: ${go_nogo_executor_upstream_endpoint_guard_verdict:-unknown}
+go_nogo_executor_upstream_endpoint_guard_reason_code: ${go_nogo_executor_upstream_endpoint_guard_reason_code:-n/a}
 submit_fastlane_enabled: ${submit_fastlane_enabled:-false}
 fastlane_feature_flag_verdict: ${fastlane_feature_flag_verdict:-unknown}
 fastlane_feature_flag_reason: ${fastlane_feature_flag_reason:-n/a}
