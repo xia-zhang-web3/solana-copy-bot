@@ -121,6 +121,9 @@ if [[ "$ops_smoke_mode" == "targeted" ]]; then
     exit 1
   fi
 fi
+if [[ "$ops_smoke_mode" == "targeted" && "$ops_smoke_profile_default" == "full" ]]; then
+  ops_smoke_profile_default="auto"
+fi
 OPS_SMOKE_PROFILE_RAW="${AUDIT_OPS_SMOKE_PROFILE:-$ops_smoke_profile_default}"
 case "$OPS_SMOKE_PROFILE_RAW" in
 full | fast | auto)

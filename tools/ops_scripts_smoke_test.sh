@@ -9050,7 +9050,8 @@ run_audit_ops_smoke_mode_guard_case() {
       AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
       bash "$ROOT_DIR/tools/audit_full.sh"
   )"
-  assert_contains "$full_targeted_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full, preset=n/a)"
+  assert_contains "$full_targeted_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=auto, preset=n/a)"
+  assert_contains "$full_targeted_output" "ops smoke targeted profile: full"
   assert_contains "$full_targeted_output" "[ok] common timeout parser"
   assert_contains "$full_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$full_targeted_output" "[audit:full] PASS"
@@ -9065,7 +9066,7 @@ run_audit_ops_smoke_mode_guard_case() {
       AUDIT_OPS_SMOKE_TARGET_CASES="common_timeout_parser" \
       bash "$ROOT_DIR/tools/audit_full.sh"
   )"
-  assert_contains "$full_auto_targeted_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full, preset=n/a)"
+  assert_contains "$full_auto_targeted_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=auto, preset=n/a)"
   assert_contains "$full_auto_targeted_output" "[ok] common timeout parser"
   assert_contains "$full_auto_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$full_auto_targeted_output" "[audit:full] PASS"
@@ -9113,6 +9114,21 @@ run_audit_ops_smoke_mode_guard_case() {
   assert_contains "$full_targeted_auto_profile_output" "[ok] executor preflight helper (fast)"
   assert_contains "$full_targeted_auto_profile_output" "[audit:full] PASS"
 
+  local full_targeted_default_auto_heavy_output=""
+  full_targeted_default_auto_heavy_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_WORKSPACE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="executor_preflight" \
+      bash "$ROOT_DIR/tools/audit_full.sh"
+  )"
+  assert_contains "$full_targeted_default_auto_heavy_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=auto, preset=n/a)"
+  assert_contains "$full_targeted_default_auto_heavy_output" "ops smoke targeted profile: fast"
+  assert_contains "$full_targeted_default_auto_heavy_output" "[ok] executor preflight helper (fast)"
+  assert_contains "$full_targeted_default_auto_heavy_output" "[audit:full] PASS"
+
   local full_targeted_preset_output=""
   full_targeted_preset_output="$(
     AUDIT_SKIP_OPS_SMOKE="false" \
@@ -9123,7 +9139,8 @@ run_audit_ops_smoke_mode_guard_case() {
       AUDIT_OPS_SMOKE_PRESET="common_parsers" \
       bash "$ROOT_DIR/tools/audit_full.sh"
   )"
-  assert_contains "$full_targeted_preset_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full, preset=common_parsers)"
+  assert_contains "$full_targeted_preset_output" "[audit:full] tools/ops_scripts_smoke_test.sh (mode=targeted, profile=auto, preset=common_parsers)"
+  assert_contains "$full_targeted_preset_output" "ops smoke targeted profile: full"
   assert_contains "$full_targeted_preset_output" "ops scripts smoke targeted: PASS (cases=common_parsers)"
   assert_contains "$full_targeted_preset_output" "[ok] common strict bool parser"
   assert_contains "$full_targeted_preset_output" "[ok] common bool compat wrapper"
@@ -9157,10 +9174,26 @@ run_audit_ops_smoke_mode_guard_case() {
       bash "$ROOT_DIR/tools/audit_standard.sh"
   )"
 
-  assert_contains "$standard_targeted_output" "[audit:standard] targeted ops-smoke requested -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=full, preset=n/a)"
+  assert_contains "$standard_targeted_output" "[audit:standard] targeted ops-smoke requested -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=auto, preset=n/a)"
+  assert_contains "$standard_targeted_output" "ops smoke targeted profile: full"
   assert_contains "$standard_targeted_output" "[ok] common timeout parser"
   assert_contains "$standard_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$standard_targeted_output" "[audit:standard] PASS"
+
+  local standard_targeted_default_auto_heavy_output=""
+  standard_targeted_default_auto_heavy_output="$(
+    AUDIT_SKIP_OPS_SMOKE="false" \
+      AUDIT_SKIP_CONTRACT_SMOKE="true" \
+      AUDIT_SKIP_EXECUTOR_TESTS="true" \
+      AUDIT_SKIP_PACKAGE_TESTS="true" \
+      AUDIT_OPS_SMOKE_MODE="targeted" \
+      AUDIT_OPS_SMOKE_TARGET_CASES="executor_preflight" \
+      bash "$ROOT_DIR/tools/audit_standard.sh"
+  )"
+  assert_contains "$standard_targeted_default_auto_heavy_output" "[audit:standard] targeted ops-smoke requested -> running tools/ops_scripts_smoke_test.sh (mode=targeted, profile=auto, preset=n/a)"
+  assert_contains "$standard_targeted_default_auto_heavy_output" "ops smoke targeted profile: fast"
+  assert_contains "$standard_targeted_default_auto_heavy_output" "[ok] executor preflight helper (fast)"
+  assert_contains "$standard_targeted_default_auto_heavy_output" "[audit:standard] PASS"
 
   local standard_targeted_fast_output=""
   standard_targeted_fast_output="$(
