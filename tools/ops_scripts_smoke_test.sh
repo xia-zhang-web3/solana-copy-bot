@@ -9843,6 +9843,7 @@ run_refactor_phase_gate_case() {
   assert_field_equals "$phase_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$phase_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$phase_output" "go_nogo_require_fastlane_disabled" "false"
+  assert_field_equals "$phase_output" "go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$phase_output" "ingestion_source" "yellowstone_grpc"
 
   local raw_checksum_manifest=""
@@ -9954,6 +9955,18 @@ run_refactor_phase_gate_case() {
   assert_contains "$(cat "$phase_strict_fastlane_norm_rollout")" "fastlane_feature_flag_verdict: PASS"
   assert_contains "$(cat "$phase_strict_fastlane_norm_rollout")" "fastlane_feature_flag_reason_code: fastlane_disabled"
 
+  local phase_strict_jito_output_path="$phase_output_dir.strict-jito.out"
+  local phase_strict_jito_output=""
+  if REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY="true" \
+    bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-jito" --fixture-dir "$phase_fixture_dir.strict-jito" >"$phase_strict_jito_output_path" 2>&1; then
+    echo "expected refactor_phase_gate to fail-close when strict jito policy is enabled against non-jito/rpc baseline profile" >&2
+    exit 1
+  fi
+  phase_strict_jito_output="$(cat "$phase_strict_jito_output_path")"
+  assert_contains "$phase_strict_jito_output" "phase-gate error: execution_devnet_rehearsal.sh failed for stage=rehearsal"
+  assert_contains "$phase_strict_jito_output" "jito_rpc_policy_verdict: WARN"
+  assert_contains "$phase_strict_jito_output" "jito_rpc_policy_reason_code: route_profile_not_pass"
+
   local phase_invalid_ingestion_source_output=""
   if phase_invalid_ingestion_source_output="$(
     REFACTOR_PHASE_GATE_INGESTION_SOURCE="helius_ws" \
@@ -9984,6 +9997,16 @@ run_refactor_phase_gate_case() {
     exit 1
   fi
   assert_contains "$phase_invalid_fastlane_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED must be a boolean token"
+
+  local phase_invalid_jito_bool_output=""
+  if phase_invalid_jito_bool_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY="sometimes" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.invalid-jito-bool" --fixture-dir "$phase_fixture_dir.invalid-jito-bool" 2>&1
+  )"; then
+    echo "expected refactor_phase_gate to fail-close for invalid REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY token" >&2
+    exit 1
+  fi
+  assert_contains "$phase_invalid_jito_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY must be a boolean token"
 
   echo "[ok] refactor phase gate"
 }

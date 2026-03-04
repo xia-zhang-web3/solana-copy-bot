@@ -25,6 +25,7 @@ fixture_dir=""
 phase_gate_require_executor_upstream_raw="${REFACTOR_PHASE_GATE_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 phase_gate_require_ingestion_grpc_raw="${REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC:-true}"
 phase_gate_require_fastlane_disabled_raw="${REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED:-false}"
+phase_gate_require_jito_rpc_policy_raw="${REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY:-false}"
 phase_gate_ingestion_source="$(trim_string "${REFACTOR_PHASE_GATE_INGESTION_SOURCE:-yellowstone_grpc}")"
 phase_gate_ingestion_source="$(printf '%s' "$phase_gate_ingestion_source" | tr '[:upper:]' '[:lower:]')"
 
@@ -75,6 +76,10 @@ if ! phase_gate_require_ingestion_grpc="$(parse_bool_token_strict "$phase_gate_r
 fi
 if ! phase_gate_require_fastlane_disabled="$(parse_bool_token_strict "$phase_gate_require_fastlane_disabled_raw")"; then
   echo "REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED must be a boolean token (got: ${phase_gate_require_fastlane_disabled_raw:-<empty>})" >&2
+  exit 1
+fi
+if ! phase_gate_require_jito_rpc_policy="$(parse_bool_token_strict "$phase_gate_require_jito_rpc_policy_raw")"; then
+  echo "REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY must be a boolean token (got: ${phase_gate_require_jito_rpc_policy_raw:-<empty>})" >&2
   exit 1
 fi
 
@@ -181,6 +186,7 @@ validate_policy_gate_verdict() {
   local key="$2"
   local payload="$3"
   local required="$4"
+  local required_mode="${5:-PASS}"
   local raw_value=""
   local verdict=""
   raw_value="$(extract_trimmed_field "$key" "$payload")"
@@ -194,8 +200,16 @@ validate_policy_gate_verdict() {
     return
   fi
   if [[ "$required" == "true" ]]; then
-    if [[ "$verdict" != "PASS" ]]; then
-      phase_gate_errors+=("$key must be PASS in $stage output when required=true, got=$verdict")
+    if [[ "$required_mode" == "PASS" ]]; then
+      if [[ "$verdict" != "PASS" ]]; then
+        phase_gate_errors+=("$key must be PASS in $stage output when required=true, got=$verdict")
+      fi
+    elif [[ "$required_mode" == "NON_SKIP" ]]; then
+      if [[ "$verdict" == "SKIP" ]]; then
+        phase_gate_errors+=("$key must not be SKIP in $stage output when required=true")
+      fi
+    else
+      phase_gate_errors+=("invalid required_mode for $key in $stage validation: $required_mode")
     fi
   else
     if [[ "$verdict" != "SKIP" ]]; then
@@ -228,6 +242,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
+  GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -247,6 +262,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
+  GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -267,6 +283,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
+  GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -292,8 +309,11 @@ validate_bool_field_equals "go_nogo" "go_nogo_require_ingestion_grpc" "$go_nogo_
 validate_strict_guard_verdict "go_nogo" "ingestion_grpc_guard_verdict" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "go_nogo" "ingestion_grpc_guard_reason_code" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
 validate_bool_field_equals "go_nogo" "go_nogo_require_fastlane_disabled" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
-validate_policy_gate_verdict "go_nogo" "fastlane_feature_flag_verdict" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
+validate_policy_gate_verdict "go_nogo" "fastlane_feature_flag_verdict" "$go_nogo_output" "$phase_gate_require_fastlane_disabled" "PASS"
 validate_strict_guard_reason_code "go_nogo" "fastlane_feature_flag_reason_code" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
+validate_bool_field_equals "go_nogo" "go_nogo_require_jito_rpc_policy" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy"
+validate_policy_gate_verdict "go_nogo" "jito_rpc_policy_verdict" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
+validate_strict_guard_reason_code "go_nogo" "jito_rpc_policy_reason_code" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy"
 
 validate_go_nogo_verdict_is_go "rehearsal" "devnet_rehearsal_verdict" "$rehearsal_output"
 validate_bool_field_equals "rehearsal" "go_nogo_require_executor_upstream" "$rehearsal_output" "$phase_gate_require_executor_upstream"
@@ -305,8 +325,11 @@ validate_bool_field_equals "rehearsal" "go_nogo_require_ingestion_grpc" "$rehear
 validate_strict_guard_verdict "rehearsal" "go_nogo_ingestion_grpc_guard_verdict" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "rehearsal" "go_nogo_ingestion_grpc_guard_reason_code" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
 validate_bool_field_equals "rehearsal" "go_nogo_require_fastlane_disabled" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
-validate_policy_gate_verdict "rehearsal" "fastlane_feature_flag_verdict" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
+validate_policy_gate_verdict "rehearsal" "fastlane_feature_flag_verdict" "$rehearsal_output" "$phase_gate_require_fastlane_disabled" "PASS"
 validate_strict_guard_reason_code "rehearsal" "fastlane_feature_flag_reason_code" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
+validate_bool_field_equals "rehearsal" "go_nogo_require_jito_rpc_policy" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy"
+validate_policy_gate_verdict "rehearsal" "jito_rpc_policy_verdict" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
+validate_strict_guard_reason_code "rehearsal" "jito_rpc_policy_reason_code" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy"
 
 validate_go_nogo_verdict_is_go "rollout" "adapter_rollout_verdict" "$rollout_output"
 validate_bool_field_equals "rollout" "go_nogo_require_executor_upstream" "$rollout_output" "$phase_gate_require_executor_upstream"
@@ -320,8 +343,11 @@ validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_ingestion
 validate_strict_guard_verdict "rollout" "rehearsal_nested_ingestion_grpc_guard_verdict" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "rollout" "rehearsal_nested_ingestion_grpc_guard_reason_code" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 validate_bool_field_equals "rollout" "go_nogo_require_fastlane_disabled" "$rollout_output" "$phase_gate_require_fastlane_disabled"
-validate_policy_gate_verdict "rollout" "fastlane_feature_flag_verdict" "$rollout_output" "$phase_gate_require_fastlane_disabled"
+validate_policy_gate_verdict "rollout" "fastlane_feature_flag_verdict" "$rollout_output" "$phase_gate_require_fastlane_disabled" "PASS"
 validate_strict_guard_reason_code "rollout" "fastlane_feature_flag_reason_code" "$rollout_output" "$phase_gate_require_fastlane_disabled"
+validate_bool_field_equals "rollout" "go_nogo_require_jito_rpc_policy" "$rollout_output" "$phase_gate_require_jito_rpc_policy"
+validate_policy_gate_verdict "rollout" "jito_rpc_policy_verdict" "$rollout_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
+validate_strict_guard_reason_code "rollout" "jito_rpc_policy_reason_code" "$rollout_output" "$phase_gate_require_jito_rpc_policy"
 
 if ((${#phase_gate_errors[@]} > 0)); then
   for phase_gate_error in "${phase_gate_errors[@]}"; do
@@ -356,5 +382,6 @@ normalized_rollout: $norm_dir/rollout_normalized.txt
 go_nogo_require_executor_upstream: $phase_gate_require_executor_upstream
 go_nogo_require_ingestion_grpc: $phase_gate_require_ingestion_grpc
 go_nogo_require_fastlane_disabled: $phase_gate_require_fastlane_disabled
+go_nogo_require_jito_rpc_policy: $phase_gate_require_jito_rpc_policy
 ingestion_source: $phase_gate_ingestion_source
 EOF_SUMMARY
