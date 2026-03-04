@@ -62,11 +62,11 @@ if [[ "$contract_smoke_mode" == "targeted" && -z "$contract_smoke_target_tests" 
 fi
 OPS_SMOKE_MODE_RAW="${AUDIT_OPS_SMOKE_MODE:-full}"
 case "$OPS_SMOKE_MODE_RAW" in
-full | targeted)
+full | targeted | auto)
   ops_smoke_mode="$OPS_SMOKE_MODE_RAW"
   ;;
 *)
-  echo "AUDIT_OPS_SMOKE_MODE must be one of: full,targeted (got: $OPS_SMOKE_MODE_RAW)" >&2
+  echo "AUDIT_OPS_SMOKE_MODE must be one of: full,targeted,auto (got: $OPS_SMOKE_MODE_RAW)" >&2
   exit 1
   ;;
 esac
@@ -80,11 +80,24 @@ case "$OPS_SMOKE_PRESET_RAW" in
   exit 1
   ;;
 esac
-if [[ "$ops_smoke_mode" != "targeted" && -n "$ops_smoke_preset" ]]; then
-  echo "AUDIT_OPS_SMOKE_PRESET can be used only when AUDIT_OPS_SMOKE_MODE=targeted" >&2
-  exit 1
+if [[ "$ops_smoke_mode" == "auto" ]]; then
+  if [[ -n "$ops_smoke_preset" || -n "$(trim_string "${AUDIT_OPS_SMOKE_TARGET_CASES:-}")" ]]; then
+    ops_smoke_mode="targeted"
+  else
+    ops_smoke_mode="full"
+  fi
 fi
 ops_smoke_target_cases="$(trim_string "${AUDIT_OPS_SMOKE_TARGET_CASES:-}")"
+if [[ "$ops_smoke_mode" == "full" ]]; then
+  if [[ -n "$ops_smoke_target_cases" ]]; then
+    echo "AUDIT_OPS_SMOKE_TARGET_CASES can be used only when AUDIT_OPS_SMOKE_MODE=targeted|auto" >&2
+    exit 1
+  fi
+  if [[ -n "$ops_smoke_preset" ]]; then
+    echo "AUDIT_OPS_SMOKE_PRESET can be used only when AUDIT_OPS_SMOKE_MODE=targeted|auto" >&2
+    exit 1
+  fi
+fi
 if [[ "$ops_smoke_mode" == "targeted" ]]; then
   if [[ -n "$ops_smoke_target_cases" && -n "$ops_smoke_preset" ]]; then
     echo "AUDIT_OPS_SMOKE_TARGET_CASES and AUDIT_OPS_SMOKE_PRESET cannot both be set when AUDIT_OPS_SMOKE_MODE=targeted" >&2

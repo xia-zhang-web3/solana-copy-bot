@@ -1025,6 +1025,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 497. audit-wrapper ops-smoke profile propagation added: `tools/audit_standard.sh` and `tools/audit_full.sh` now parse strict `AUDIT_OPS_SMOKE_PROFILE={full|fast}` and propagate it to targeted `tools/ops_scripts_smoke_test.sh` runs (`OPS_SMOKE_PROFILE`), with fail-closed invalid-token handling and smoke pins for default/full, fast-heavy, and invalid-profile branches.
 498. targeted audit-ops smoke determinism hotfix: `tools/ops_scripts_smoke_test.sh` now recreates the ops-scope marker before `audit_standard` fast-profile subtest (`AUDIT_OPS_SMOKE_PROFILE=fast`) and performs symmetric cleanup in success/failure branches, removing clean-worktree nondeterminism in `audit_ops_smoke_mode_guard`.
 499. audit-wrapper targeted ops-smoke preset contract added: `tools/audit_standard.sh` and `tools/audit_full.sh` now support strict `AUDIT_OPS_SMOKE_PRESET={common_parsers|heavy_runtime_chain|audit_guardpack}` in targeted mode (mutually exclusive with `AUDIT_OPS_SMOKE_TARGET_CASES`), and `tools/ops_scripts_smoke_test.sh` now expands `audit_guardpack` group plus fail-closed guard pins for invalid preset token, preset-in-non-targeted mode, and preset+targets conflict.
+500. audit-wrapper ops-smoke mode auto-resolution + full-mode strictness: `tools/audit_standard.sh` and `tools/audit_full.sh` now support `AUDIT_OPS_SMOKE_MODE=auto` (resolves to `targeted` when `AUDIT_OPS_SMOKE_TARGET_CASES`/`AUDIT_OPS_SMOKE_PRESET` is set, otherwise `full`) and fail-close `AUDIT_OPS_SMOKE_TARGET_CASES`/`AUDIT_OPS_SMOKE_PRESET` in explicit `mode=full`; smoke now pins invalid mode token, full+targets reject, and positive `mode=auto` targeted path.
 
 Остается в next-code-queue:
 
@@ -1345,3 +1346,27 @@ NO-GO для server rollout (остаемся на текущем этапе, з
    2. `swaps_fetch_limit_reached_ratio`,
    3. `eligible_wallets_last` / `active_follow_wallets_last`,
    4. memory/cgroup trend.
+
+### 2026-03-04 — post-patch follow-up (T+~4h45m, snapshot 17:10 UTC)
+
+Источник:
+
+1. `ops/server_reports/2026-03-04_post_patch_followup_1710_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-04_post_patch_followup_1710_snapshot/computed_summary.json`
+
+Итог второго окна после патча:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Ingestion gates: PASS (`~408.33 msg/s`, `~408.13 tx-updates/s`, `rpc_429 delta=0`, `rpc_5xx delta=0`, `parse_rejected delta=0`).
+3. Discovery liveness: PASS (`completed=95`, `still_running=0`, `duration p50=12425ms`).
+4. Health endpoints: PASS (`8080/8090/18080 status=ok`).
+5. Длительность циклов деградирует в хвосте: `duration_ms_last=51556`, `duration_ms_max=96516`.
+6. Monitoring attention item сохраняется:
+   1. `swaps_fetch_limit_reached=true` в `95/95` циклах,
+   2. `swaps_delta_fetched_last=120000`, `swaps_evicted_due_cap_last=120000`,
+   3. `eligible_wallets_last=0`, `active_follow_wallets_last=0`.
+
+Операционный вывод:
+
+1. Hotfix закрыл OOM/restart-риск (стабильность подтверждена на окне ~4h45m).
+2. Discovery работает в постоянном режиме backlog-trim (`fetch_limit == cap`), поэтому это уже не incident, а tuning-задача по throughput/capacity.
