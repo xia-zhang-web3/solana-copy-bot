@@ -621,6 +621,10 @@ expected_token='__EXPECTED_TOKEN__'
 simulate_without_auth_status="${FAKE_EXECUTOR_SIMULATE_WITHOUT_AUTH_STATUS:-200}"
 simulate_with_auth_status="${FAKE_EXECUTOR_SIMULATE_WITH_AUTH_STATUS:-200}"
 simulate_invalid_auth_status="${FAKE_EXECUTOR_SIMULATE_INVALID_AUTH_STATUS:-200}"
+simulate_require_bearer="${FAKE_EXECUTOR_SIMULATE_REQUIRE_BEARER:-true}"
+simulate_require_hmac="${FAKE_EXECUTOR_SIMULATE_REQUIRE_HMAC:-false}"
+simulate_expect_hmac_key_id="${FAKE_EXECUTOR_SIMULATE_EXPECT_HMAC_KEY_ID:-}"
+simulate_expect_hmac_ttl_sec="${FAKE_EXECUTOR_SIMULATE_EXPECT_HMAC_TTL_SEC:-}"
 health_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_ENABLED_ROUTES_CSV:-jito,paper,rpc}"
 health_routes_alias_csv="${FAKE_EXECUTOR_HEALTH_ROUTES_CSV:-$health_enabled_routes_csv}"
 health_send_rpc_enabled_routes_csv="${FAKE_EXECUTOR_HEALTH_SEND_RPC_ENABLED_ROUTES_CSV:-jito,rpc}"
@@ -644,6 +648,12 @@ health_submit_fastlane_enabled_json_raw="${FAKE_EXECUTOR_HEALTH_SUBMIT_FASTLANE_
 health_idempotency_store_status_json_raw="${FAKE_EXECUTOR_HEALTH_IDEMPOTENCY_STORE_STATUS_JSON:-}"
 output_file=""
 auth_header=""
+hmac_key_id_header=""
+hmac_signature_alg_header=""
+hmac_timestamp_header=""
+hmac_ttl_header=""
+hmac_nonce_header=""
+hmac_signature_header=""
 url=""
 status_code="200"
 body='{"status":"not_found"}'
@@ -685,6 +695,18 @@ while (($#)); do
         auth_header="${header#*:}"
         auth_header="${auth_header#"${auth_header%%[![:space:]]*}"}"
         auth_header="${auth_header%"${auth_header##*[![:space:]]}"}"
+      elif [[ "$header_lower" == x-copybot-key-id:* ]]; then
+        hmac_key_id_header="$(trim_string "${header#*:}")"
+      elif [[ "$header_lower" == x-copybot-signature-alg:* ]]; then
+        hmac_signature_alg_header="$(trim_string "${header#*:}")"
+      elif [[ "$header_lower" == x-copybot-timestamp:* ]]; then
+        hmac_timestamp_header="$(trim_string "${header#*:}")"
+      elif [[ "$header_lower" == x-copybot-auth-ttl-sec:* ]]; then
+        hmac_ttl_header="$(trim_string "${header#*:}")"
+      elif [[ "$header_lower" == x-copybot-nonce:* ]]; then
+        hmac_nonce_header="$(trim_string "${header#*:}")"
+      elif [[ "$header_lower" == x-copybot-signature:* ]]; then
+        hmac_signature_header="$(trim_string "${header#*:}")"
       fi
       shift 2
       ;;
@@ -768,15 +790,45 @@ if [[ "$url" == *"/healthz" ]]; then
   body="{\"status\":${health_status_json},\"contract_version\":${health_contract_version_json},\"backend_mode\":${health_backend_mode_json},\"enabled_routes\":${health_enabled_routes_json},\"routes\":${health_routes_alias_json},\"signer_source\":${health_signer_source_json},\"submit_fastlane_enabled\":${health_submit_fastlane_enabled_json},\"signer_pubkey\":${health_signer_pubkey_json},\"idempotency_store_status\":${health_idempotency_store_status_json},\"send_rpc_enabled_routes\":${health_send_rpc_enabled_routes_json},\"send_rpc_fallback_routes\":${health_send_rpc_fallback_routes_json},\"send_rpc_routes\":${health_send_rpc_alias_routes_json}}"
   status_code="200"
 elif [[ "$url" == *"/simulate" ]]; then
-  if [[ -z "$auth_header" ]]; then
-    code="auth_missing"
-    status_code="$simulate_without_auth_status"
-  elif [[ "$auth_header" == "Bearer ${expected_token}" ]]; then
+  bearer_ok="true"
+  if [[ "$simulate_require_bearer" == "true" ]]; then
+    if [[ -z "$auth_header" ]]; then
+      bearer_ok="false"
+      code="auth_missing"
+      status_code="$simulate_without_auth_status"
+    elif [[ "$auth_header" == "Bearer ${expected_token}" ]]; then
+      bearer_ok="true"
+    else
+      bearer_ok="false"
+      code="auth_invalid"
+      status_code="$simulate_invalid_auth_status"
+    fi
+  fi
+
+  hmac_ok="true"
+  if [[ "$simulate_require_hmac" == "true" ]]; then
+    if [[ -z "$hmac_key_id_header" || -z "$hmac_signature_alg_header" || -z "$hmac_timestamp_header" || -z "$hmac_ttl_header" || -z "$hmac_nonce_header" || -z "$hmac_signature_header" ]]; then
+      hmac_ok="false"
+      code="hmac_missing"
+      status_code="$simulate_without_auth_status"
+    elif [[ "$hmac_signature_alg_header" != "hmac-sha256-v1" ]]; then
+      hmac_ok="false"
+      code="hmac_invalid"
+      status_code="$simulate_invalid_auth_status"
+    elif [[ -n "$simulate_expect_hmac_key_id" && "$hmac_key_id_header" != "$simulate_expect_hmac_key_id" ]]; then
+      hmac_ok="false"
+      code="hmac_invalid"
+      status_code="$simulate_invalid_auth_status"
+    elif [[ -n "$simulate_expect_hmac_ttl_sec" && "$hmac_ttl_header" != "$simulate_expect_hmac_ttl_sec" ]]; then
+      hmac_ok="false"
+      code="hmac_invalid"
+      status_code="$simulate_invalid_auth_status"
+    fi
+  fi
+
+  if [[ "$bearer_ok" == "true" && "$hmac_ok" == "true" ]]; then
     code="invalid_request"
     status_code="$simulate_with_auth_status"
-  else
-    code="auth_invalid"
-    status_code="$simulate_invalid_auth_status"
   fi
   body="{\"status\":\"reject\",\"retryable\":false,\"code\":\"${code}\",\"detail\":\"smoke preflight probe\"}"
 fi
@@ -4123,6 +4175,34 @@ run_executor_preflight_case() {
   fi
   assert_contains "$unauth_mismatch_output" "preflight_verdict: FAIL"
   assert_contains "$unauth_mismatch_output" "COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED=true but simulate endpoint still requires auth"
+
+  write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
+  write_executor_env_preflight "$executor_env_path" "$port" "$auth_token"
+  printf 'COPYBOT_EXECUTOR_BEARER_TOKEN=\n' >>"$executor_env_path"
+  local hmac_only_auth_probe_pass_output
+  hmac_only_auth_probe_pass_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      FAKE_EXECUTOR_SIMULATE_REQUIRE_BEARER="false" \
+      FAKE_EXECUTOR_SIMULATE_REQUIRE_HMAC="true" \
+      FAKE_EXECUTOR_SIMULATE_EXPECT_HMAC_KEY_ID="executor-hmac-k1" \
+      FAKE_EXECUTOR_SIMULATE_EXPECT_HMAC_TTL_SEC="30" \
+      COPYBOT_EXECUTOR_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_EXECUTOR_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_EXECUTOR_HMAC_TTL_SEC="30" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_KEY_ID="executor-hmac-k1" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_SECRET="executor-hmac-secret" \
+      COPYBOT_ADAPTER_UPSTREAM_HMAC_TTL_SEC="30" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh"
+  )"
+  assert_contains "$hmac_only_auth_probe_pass_output" "preflight_verdict: PASS"
+  assert_contains "$hmac_only_auth_probe_pass_output" "executor_bearer_required: false"
+  assert_contains "$hmac_only_auth_probe_pass_output" "executor_hmac_required: true"
+  assert_contains "$hmac_only_auth_probe_pass_output" "auth_probe_without_auth_code: hmac_missing"
+  assert_contains "$hmac_only_auth_probe_pass_output" "auth_probe_with_auth_code: invalid_request"
 
   echo "[ok] executor preflight helper"
 }

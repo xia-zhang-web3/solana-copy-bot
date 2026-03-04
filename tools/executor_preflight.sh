@@ -428,7 +428,7 @@ hmac_sha256_hex() {
     printf ''
     return 1
   fi
-  "$PYTHON3_BIN" - "$secret" <<'PY' <<<"$payload"
+  printf '%s' "$payload" | "$PYTHON3_BIN" -c '
 import hashlib
 import hmac
 import sys
@@ -436,7 +436,7 @@ import sys
 secret = (sys.argv[1] or "").encode("utf-8")
 payload = sys.stdin.buffer.read()
 print(hmac.new(secret, payload, hashlib.sha256).hexdigest())
-PY
+' "$secret"
 }
 
 endpoint_identity() {
