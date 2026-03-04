@@ -198,6 +198,10 @@ go_nogo_summary_sha256="n/a"
 go_nogo_capture="$step_root/go_nogo_capture_${now_compact}.txt"
 go_nogo_artifacts_written="n/a"
 go_nogo_nested_package_bundle_enabled="n/a"
+go_nogo_executor_backend_mode_guard_verdict="n/a"
+go_nogo_executor_backend_mode_guard_reason_code="n/a"
+go_nogo_executor_upstream_endpoint_guard_verdict="n/a"
+go_nogo_executor_upstream_endpoint_guard_reason_code="n/a"
 
 rehearsal_output=""
 rehearsal_exit_code=3
@@ -283,6 +287,34 @@ if ((${#input_errors[@]} == 0)); then
     overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
     overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
     go_nogo_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$go_nogo_output")")"
+    go_nogo_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "executor_backend_mode_guard_verdict" "$go_nogo_output")")"
+    go_nogo_executor_backend_mode_guard_verdict="$(printf '%s' "$go_nogo_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    if [[ -z "$go_nogo_executor_backend_mode_guard_verdict_raw" ]]; then
+      input_errors+=("nested go/no-go executor_backend_mode_guard_verdict must be non-empty")
+      go_nogo_executor_backend_mode_guard_verdict="UNKNOWN"
+    elif [[ "$go_nogo_executor_backend_mode_guard_verdict" != "PASS" && "$go_nogo_executor_backend_mode_guard_verdict" != "WARN" && "$go_nogo_executor_backend_mode_guard_verdict" != "UNKNOWN" && "$go_nogo_executor_backend_mode_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested go/no-go executor_backend_mode_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${go_nogo_executor_backend_mode_guard_verdict_raw})")
+      go_nogo_executor_backend_mode_guard_verdict="UNKNOWN"
+    fi
+    go_nogo_executor_backend_mode_guard_reason_code="$(trim_string "$(extract_field "executor_backend_mode_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$go_nogo_executor_backend_mode_guard_reason_code" ]]; then
+      input_errors+=("nested go/no-go executor_backend_mode_guard_reason_code must be non-empty")
+      go_nogo_executor_backend_mode_guard_reason_code="n/a"
+    fi
+    go_nogo_executor_upstream_endpoint_guard_verdict_raw="$(trim_string "$(extract_field "executor_upstream_endpoint_guard_verdict" "$go_nogo_output")")"
+    go_nogo_executor_upstream_endpoint_guard_verdict="$(printf '%s' "$go_nogo_executor_upstream_endpoint_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    if [[ -z "$go_nogo_executor_upstream_endpoint_guard_verdict_raw" ]]; then
+      input_errors+=("nested go/no-go executor_upstream_endpoint_guard_verdict must be non-empty")
+      go_nogo_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    elif [[ "$go_nogo_executor_upstream_endpoint_guard_verdict" != "PASS" && "$go_nogo_executor_upstream_endpoint_guard_verdict" != "WARN" && "$go_nogo_executor_upstream_endpoint_guard_verdict" != "UNKNOWN" && "$go_nogo_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested go/no-go executor_upstream_endpoint_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${go_nogo_executor_upstream_endpoint_guard_verdict_raw})")
+      go_nogo_executor_upstream_endpoint_guard_verdict="UNKNOWN"
+    fi
+    go_nogo_executor_upstream_endpoint_guard_reason_code="$(trim_string "$(extract_field "executor_upstream_endpoint_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$go_nogo_executor_upstream_endpoint_guard_reason_code" ]]; then
+      input_errors+=("nested go/no-go executor_upstream_endpoint_guard_reason_code must be non-empty")
+      go_nogo_executor_upstream_endpoint_guard_reason_code="n/a"
+    fi
     go_nogo_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$go_nogo_output")")"
     if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$go_nogo_output")"; then
       input_errors+=("nested go/no-go artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
@@ -304,6 +336,10 @@ if ((${#input_errors[@]} == 0)); then
     overall_go_nogo_reason_code="stage_disabled"
     go_nogo_artifacts_written="n/a"
     go_nogo_nested_package_bundle_enabled="n/a"
+    go_nogo_executor_backend_mode_guard_verdict="SKIP"
+    go_nogo_executor_backend_mode_guard_reason_code="stage_disabled"
+    go_nogo_executor_upstream_endpoint_guard_verdict="SKIP"
+    go_nogo_executor_upstream_endpoint_guard_reason_code="stage_disabled"
     go_nogo_output="overall_go_nogo_verdict: SKIP
 overall_go_nogo_reason: direct go/no-go stage disabled via SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT=false
 overall_go_nogo_reason_code: stage_disabled
@@ -612,6 +648,10 @@ go_nogo_exit_code: $go_nogo_exit_code
 go_nogo_verdict: $overall_go_nogo_verdict
 go_nogo_reason: ${overall_go_nogo_reason:-n/a}
 go_nogo_reason_code: ${overall_go_nogo_reason_code:-n/a}
+go_nogo_executor_backend_mode_guard_verdict: ${go_nogo_executor_backend_mode_guard_verdict:-n/a}
+go_nogo_executor_backend_mode_guard_reason_code: ${go_nogo_executor_backend_mode_guard_reason_code:-n/a}
+go_nogo_executor_upstream_endpoint_guard_verdict: ${go_nogo_executor_upstream_endpoint_guard_verdict:-n/a}
+go_nogo_executor_upstream_endpoint_guard_reason_code: ${go_nogo_executor_upstream_endpoint_guard_reason_code:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
 go_nogo_artifacts_written: ${go_nogo_artifacts_written:-n/a}
 go_nogo_nested_package_bundle_enabled: ${go_nogo_nested_package_bundle_enabled:-n/a}

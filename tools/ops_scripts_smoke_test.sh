@@ -5804,6 +5804,10 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "rehearsal_verdict" "GO"
   assert_field_equals "$output" "executor_final_verdict" "GO"
   assert_field_equals "$output" "adapter_final_verdict" "GO"
+  assert_field_equals "$output" "go_nogo_executor_backend_mode_guard_verdict" "PASS"
+  assert_field_equals "$output" "go_nogo_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
+  assert_field_equals "$output" "go_nogo_executor_upstream_endpoint_guard_verdict" "PASS"
+  assert_field_equals "$output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$output" "go_nogo_artifacts_written" "true"
   assert_field_equals "$output" "rehearsal_artifacts_written" "true"
   assert_field_equals "$output" "executor_final_artifacts_written" "true"
@@ -5874,6 +5878,10 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "rehearsal_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "go_nogo_reason_code" "stage_disabled"
   assert_field_equals "$skip_direct_output" "rehearsal_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "go_nogo_executor_backend_mode_guard_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "go_nogo_executor_backend_mode_guard_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "stage_disabled"
   assert_field_equals "$skip_direct_output" "executor_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "adapter_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "server_rollout_verdict" "HOLD"
@@ -5921,6 +5929,10 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "rehearsal_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "go_nogo_reason_code" "stage_disabled"
   assert_field_equals "$profile_skip_output" "rehearsal_reason_code" "stage_disabled"
+  assert_field_equals "$profile_skip_output" "go_nogo_executor_backend_mode_guard_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "go_nogo_executor_backend_mode_guard_reason_code" "stage_disabled"
+  assert_field_equals "$profile_skip_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "stage_disabled"
 
   local bundle_output
   local bundle_exit_code=0
@@ -5960,6 +5972,10 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "server_rollout_reason_code" "calibration_fee_not_pass"
   assert_field_equals "$bundle_output" "server_rollout_require_executor_upstream" "true"
   assert_field_equals "$bundle_output" "executor_backend_mode" "upstream"
+  assert_field_equals "$bundle_output" "go_nogo_executor_backend_mode_guard_verdict" "PASS"
+  assert_field_equals "$bundle_output" "go_nogo_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
+  assert_field_equals "$bundle_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "PASS"
+  assert_field_equals "$bundle_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
   assert_field_equals "$bundle_output" "go_nogo_artifacts_written" "true"
@@ -6098,8 +6114,96 @@ run_execution_server_rollout_report_case() {
   fi
   assert_field_equals "$mock_backend_allowed_output" "server_rollout_require_executor_upstream" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_backend_mode" "mock"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_executor_backend_mode_guard_verdict" "SKIP"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_executor_backend_mode_guard_reason_code" "gate_disabled"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "SKIP"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "server_rollout_verdict" "HOLD"
   assert_field_equals "$mock_backend_allowed_output" "server_rollout_reason_code" "calibration_fee_not_pass"
+
+  local placeholder_topology_env_path="$TMP_DIR/server-rollout-executor-placeholder-topology.env"
+  cat >"$placeholder_topology_env_path" <<'EOF_SERVER_ROLLOUT_EXECUTOR_PLACEHOLDER_TOPOLOGY_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=https://example.com/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=https://example.com/simulate
+EOF_SERVER_ROLLOUT_EXECUTOR_PLACEHOLDER_TOPOLOGY_ENV
+  local placeholder_topology_output=""
+  if placeholder_topology_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$placeholder_topology_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-placeholder-topology" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail when strict upstream topology has placeholder endpoints" >&2
+    exit 1
+  else
+    local placeholder_topology_exit_code=$?
+    if [[ "$placeholder_topology_exit_code" -ne 3 ]]; then
+      echo "expected server rollout placeholder topology exit code 3, got $placeholder_topology_exit_code" >&2
+      echo "$placeholder_topology_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$placeholder_topology_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$placeholder_topology_output" "go_nogo_reason_code" "executor_upstream_topology_not_pass"
+  assert_field_equals "$placeholder_topology_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "WARN"
+  assert_field_equals "$placeholder_topology_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "endpoint_placeholder"
+
+  local missing_topology_env_path="$TMP_DIR/server-rollout-executor-missing-topology.env"
+  cat >"$missing_topology_env_path" <<'EOF_SERVER_ROLLOUT_EXECUTOR_MISSING_TOPOLOGY_ENV'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+EOF_SERVER_ROLLOUT_EXECUTOR_MISSING_TOPOLOGY_ENV
+  local missing_topology_output=""
+  if missing_topology_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$missing_topology_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-missing-topology" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail when strict upstream topology is missing endpoints" >&2
+    exit 1
+  else
+    local missing_topology_exit_code=$?
+    if [[ "$missing_topology_exit_code" -ne 3 ]]; then
+      echo "expected server rollout missing topology exit code 3, got $missing_topology_exit_code" >&2
+      echo "$missing_topology_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$missing_topology_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$missing_topology_output" "go_nogo_reason_code" "executor_upstream_topology_unknown"
+  assert_field_equals "$missing_topology_output" "go_nogo_executor_upstream_endpoint_guard_verdict" "UNKNOWN"
+  assert_field_equals "$missing_topology_output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "endpoint_missing"
   echo "[ok] execution server rollout report"
 }
 
@@ -7116,6 +7220,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$pass_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
+  assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$pass_output" "adapter_final_nested_executor_env_path" "$executor_env_path"
+  assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$pass_output" "route_fee_final_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "final_runtime_package_verdict" "GO"
   assert_field_equals "$pass_output" "final_runtime_package_reason_code" "gates_pass"
   assert_field_equals "$pass_output" "adapter_final_artifacts_written" "true"
@@ -7184,6 +7292,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   fi
   assert_field_equals "$strict_mock_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$strict_mock_output" "executor_env_path" "$executor_env_path"
+  assert_field_equals "$strict_mock_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$strict_mock_output" "adapter_final_nested_executor_env_path" "$executor_env_path"
+  assert_field_equals "$strict_mock_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$strict_mock_output" "route_fee_final_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$strict_mock_output" "runtime_readiness_verdict" "NO_GO"
   assert_contains "$strict_mock_output" "strict executor upstream backend-mode gate not PASS"
 
@@ -7212,6 +7324,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   )"
   assert_field_equals "$strict_override_output" "go_nogo_require_executor_upstream" "false"
   assert_field_equals "$strict_override_output" "executor_env_path" "$executor_env_path"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_executor_upstream" "false"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_executor_env_path" "$executor_env_path"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "false"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$strict_override_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$strict_override_output" "final_runtime_package_reason_code" "gates_pass"
 
@@ -7249,6 +7365,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$skip_route_fee_output" "adapter_final_verdict" "GO"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_verdict" "SKIP"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_reason_code" "stage_disabled"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_executor_env_path" "$executor_env_path"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_executor_env_path" "n/a"
   assert_field_equals "$skip_route_fee_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$skip_route_fee_output" "final_runtime_package_reason_code" "gates_pass"
 
@@ -7280,6 +7400,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_adapter_only_output" "runtime_readiness_run_route_fee_final" "false"
   assert_field_equals "$profile_adapter_only_output" "adapter_final_verdict" "GO"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_verdict" "SKIP"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_executor_env_path" "$executor_env_path"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_executor_env_path" "n/a"
   assert_field_equals "$profile_adapter_only_output" "runtime_readiness_verdict" "GO"
 
   local profile_route_fee_only_output=""
@@ -7310,6 +7434,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_route_fee_only_output" "runtime_readiness_run_route_fee_final" "true"
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_verdict" "SKIP"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_verdict" "GO"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_go_nogo_require_executor_upstream" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_executor_env_path" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "true"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_route_fee_only_output" "runtime_readiness_verdict" "GO"
 
   local bundle_output=""

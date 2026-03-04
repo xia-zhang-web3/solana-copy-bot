@@ -127,6 +127,8 @@ adapter_artifact_manifest="n/a"
 adapter_summary_sha256="n/a"
 adapter_manifest_sha256="n/a"
 adapter_final_nested_package_bundle_enabled="n/a"
+adapter_nested_go_nogo_require_executor_upstream="n/a"
+adapter_nested_executor_env_path="n/a"
 
 route_fee_output=""
 route_fee_exit_code="3"
@@ -147,6 +149,8 @@ route_fee_stable_primary_route="n/a"
 route_fee_fallback_route_stable="n/a"
 route_fee_stable_fallback_route="n/a"
 route_fee_final_nested_package_bundle_enabled="n/a"
+route_fee_nested_go_nogo_require_executor_upstream="n/a"
+route_fee_nested_executor_env_path="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if [[ "$runtime_readiness_run_adapter_final_norm" == "true" ]]; then
@@ -203,6 +207,20 @@ if ((${#input_errors[@]} == 0)); then
     elif [[ "$adapter_final_nested_package_bundle_enabled" != "false" ]]; then
       input_errors+=("nested adapter rollout final helper must run with PACKAGE_BUNDLE_ENABLED=false")
     fi
+    adapter_nested_go_nogo_require_executor_upstream_raw="$(trim_string "$(extract_field "go_nogo_require_executor_upstream" "$adapter_output")")"
+    if ! adapter_nested_go_nogo_require_executor_upstream="$(extract_bool_field_strict "go_nogo_require_executor_upstream" "$adapter_output")"; then
+      input_errors+=("nested adapter rollout final go_nogo_require_executor_upstream must be boolean token, got: ${adapter_nested_go_nogo_require_executor_upstream_raw:-<empty>}")
+      adapter_nested_go_nogo_require_executor_upstream="unknown"
+    elif [[ "$adapter_nested_go_nogo_require_executor_upstream" != "$go_nogo_require_executor_upstream_norm" ]]; then
+      input_errors+=("nested adapter rollout final go_nogo_require_executor_upstream mismatch: nested=${adapter_nested_go_nogo_require_executor_upstream} expected=${go_nogo_require_executor_upstream_norm}")
+    fi
+    adapter_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$adapter_output")")"
+    if [[ -z "$adapter_nested_executor_env_path" ]]; then
+      input_errors+=("nested adapter rollout final executor_env_path must be non-empty")
+      adapter_nested_executor_env_path="n/a"
+    elif [[ "$adapter_nested_executor_env_path" != "$EXECUTOR_ENV_PATH" ]]; then
+      input_errors+=("nested adapter rollout final executor_env_path mismatch: nested=${adapter_nested_executor_env_path} expected=${EXECUTOR_ENV_PATH}")
+    fi
 
     if [[ "$adapter_verdict" == "UNKNOWN" ]]; then
       adapter_reason="unable to classify adapter final verdict (exit=${adapter_exit_code})"
@@ -221,6 +239,8 @@ if ((${#input_errors[@]} == 0)); then
     adapter_reason_code="stage_disabled"
     adapter_artifacts_written="n/a"
     adapter_final_nested_package_bundle_enabled="n/a"
+    adapter_nested_go_nogo_require_executor_upstream="n/a"
+    adapter_nested_executor_env_path="n/a"
     adapter_output="final_rollout_package_verdict: SKIP
 final_rollout_package_reason: adapter final stage disabled via RUNTIME_READINESS_RUN_ADAPTER_FINAL=false
 final_rollout_package_reason_code: stage_disabled
@@ -279,6 +299,20 @@ package_bundle_enabled: false"
     elif [[ "$route_fee_final_nested_package_bundle_enabled" != "false" ]]; then
       input_errors+=("nested route fee final helper must run with PACKAGE_BUNDLE_ENABLED=false")
     fi
+    route_fee_nested_go_nogo_require_executor_upstream_raw="$(trim_string "$(extract_field "go_nogo_require_executor_upstream" "$route_fee_output")")"
+    if ! route_fee_nested_go_nogo_require_executor_upstream="$(extract_bool_field_strict "go_nogo_require_executor_upstream" "$route_fee_output")"; then
+      input_errors+=("nested route fee final go_nogo_require_executor_upstream must be boolean token, got: ${route_fee_nested_go_nogo_require_executor_upstream_raw:-<empty>}")
+      route_fee_nested_go_nogo_require_executor_upstream="unknown"
+    elif [[ "$route_fee_nested_go_nogo_require_executor_upstream" != "$go_nogo_require_executor_upstream_norm" ]]; then
+      input_errors+=("nested route fee final go_nogo_require_executor_upstream mismatch: nested=${route_fee_nested_go_nogo_require_executor_upstream} expected=${go_nogo_require_executor_upstream_norm}")
+    fi
+    route_fee_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$route_fee_output")")"
+    if [[ -z "$route_fee_nested_executor_env_path" ]]; then
+      input_errors+=("nested route fee final executor_env_path must be non-empty")
+      route_fee_nested_executor_env_path="n/a"
+    elif [[ "$route_fee_nested_executor_env_path" != "$EXECUTOR_ENV_PATH" ]]; then
+      input_errors+=("nested route fee final executor_env_path mismatch: nested=${route_fee_nested_executor_env_path} expected=${EXECUTOR_ENV_PATH}")
+    fi
 
     if [[ "$route_fee_verdict" == "UNKNOWN" ]]; then
       route_fee_reason="unable to classify route/fee final verdict (exit=${route_fee_exit_code})"
@@ -297,6 +331,8 @@ package_bundle_enabled: false"
     route_fee_reason_code="stage_disabled"
     route_fee_artifacts_written="n/a"
     route_fee_final_nested_package_bundle_enabled="n/a"
+    route_fee_nested_go_nogo_require_executor_upstream="n/a"
+    route_fee_nested_executor_env_path="n/a"
     route_fee_output="final_route_fee_package_verdict: SKIP
 final_route_fee_package_reason: route/fee final stage disabled via RUNTIME_READINESS_RUN_ROUTE_FEE_FINAL=false
 final_route_fee_package_reason_code: stage_disabled
@@ -414,6 +450,8 @@ adapter_final_artifact_manifest: ${adapter_artifact_manifest:-n/a}
 adapter_final_summary_sha256: ${adapter_summary_sha256:-n/a}
 adapter_final_manifest_sha256: ${adapter_manifest_sha256:-n/a}
 adapter_final_nested_package_bundle_enabled: ${adapter_final_nested_package_bundle_enabled:-n/a}
+adapter_final_nested_go_nogo_require_executor_upstream: ${adapter_nested_go_nogo_require_executor_upstream:-n/a}
+adapter_final_nested_executor_env_path: ${adapter_nested_executor_env_path:-n/a}
 route_fee_final_exit_code: $route_fee_exit_code
 route_fee_final_verdict: $route_fee_verdict
 route_fee_final_reason: ${route_fee_reason:-n/a}
@@ -424,6 +462,8 @@ route_fee_final_artifact_manifest: ${route_fee_artifact_manifest:-n/a}
 route_fee_final_summary_sha256: ${route_fee_summary_sha256:-n/a}
 route_fee_final_manifest_sha256: ${route_fee_manifest_sha256:-n/a}
 route_fee_final_nested_package_bundle_enabled: ${route_fee_final_nested_package_bundle_enabled:-n/a}
+route_fee_final_nested_go_nogo_require_executor_upstream: ${route_fee_nested_go_nogo_require_executor_upstream:-n/a}
+route_fee_final_nested_executor_env_path: ${route_fee_nested_executor_env_path:-n/a}
 route_fee_window_count: ${route_fee_window_count:-n/a}
 route_fee_go_nogo_go_count: ${route_fee_go_nogo_go_count:-n/a}
 route_fee_route_profile_pass_count: ${route_fee_route_profile_pass_count:-n/a}
