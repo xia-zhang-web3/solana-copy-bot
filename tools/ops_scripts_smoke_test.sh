@@ -9009,6 +9009,8 @@ run_audit_ops_smoke_mode_guard_case() {
   assert_contains "$standard_targeted_output" "ops scripts smoke targeted: PASS (cases=common_timeout_parser)"
   assert_contains "$standard_targeted_output" "[audit:standard] PASS"
 
+  printf 'marker\n' >"$standard_marker_path"
+
   local standard_targeted_fast_output=""
   if standard_targeted_fast_output="$(
     AUDIT_SKIP_OPS_SMOKE="false" \
@@ -9020,9 +9022,10 @@ run_audit_ops_smoke_mode_guard_case() {
       AUDIT_OPS_SMOKE_TARGET_CASES="executor_preflight" \
       bash "$ROOT_DIR/tools/audit_standard.sh"
   )"; then
-    :
+    rm -f "$standard_marker_path"
   else
     local standard_targeted_fast_exit_code=$?
+    rm -f "$standard_marker_path"
     echo "expected audit_standard.sh targeted fast ops-smoke run to pass, got exit code $standard_targeted_fast_exit_code" >&2
     echo "$standard_targeted_fast_output" >&2
     exit 1
