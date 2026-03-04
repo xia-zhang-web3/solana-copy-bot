@@ -9888,6 +9888,52 @@ run_refactor_phase_gate_case() {
   assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_verdict: PASS"
   assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_reason_code: grpc_active_source_yellowstone"
 
+  local phase_relaxed_ingestion_output=""
+  phase_relaxed_ingestion_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC="false" \
+      REFACTOR_PHASE_GATE_INGESTION_SOURCE="helius_ws" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.relaxed-ingestion" --fixture-dir "$phase_fixture_dir.relaxed-ingestion"
+  )"
+  assert_field_equals "$phase_relaxed_ingestion_output" "go_nogo_require_ingestion_grpc" "false"
+  assert_field_equals "$phase_relaxed_ingestion_output" "ingestion_source" "helius_ws"
+  local phase_relaxed_ingestion_norm_go_nogo=""
+  local phase_relaxed_ingestion_norm_rehearsal=""
+  local phase_relaxed_ingestion_norm_rollout=""
+  phase_relaxed_ingestion_norm_go_nogo="$(extract_field_value "$phase_relaxed_ingestion_output" "normalized_go_nogo")"
+  phase_relaxed_ingestion_norm_rehearsal="$(extract_field_value "$phase_relaxed_ingestion_output" "normalized_rehearsal")"
+  phase_relaxed_ingestion_norm_rollout="$(extract_field_value "$phase_relaxed_ingestion_output" "normalized_rollout")"
+  assert_contains "$(cat "$phase_relaxed_ingestion_norm_go_nogo")" "ingestion_grpc_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_ingestion_norm_go_nogo")" "ingestion_grpc_guard_reason_code: gate_disabled"
+  assert_contains "$(cat "$phase_relaxed_ingestion_norm_rehearsal")" "go_nogo_ingestion_grpc_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_ingestion_norm_rehearsal")" "go_nogo_ingestion_grpc_guard_reason_code: gate_disabled"
+  assert_contains "$(cat "$phase_relaxed_ingestion_norm_rollout")" "rehearsal_nested_ingestion_grpc_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_ingestion_norm_rollout")" "rehearsal_nested_ingestion_grpc_guard_reason_code: gate_disabled"
+
+  local phase_relaxed_executor_output=""
+  phase_relaxed_executor_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_EXECUTOR_UPSTREAM="false" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.relaxed-executor" --fixture-dir "$phase_fixture_dir.relaxed-executor"
+  )"
+  assert_field_equals "$phase_relaxed_executor_output" "go_nogo_require_executor_upstream" "false"
+  local phase_relaxed_executor_norm_go_nogo=""
+  local phase_relaxed_executor_norm_rehearsal=""
+  local phase_relaxed_executor_norm_rollout=""
+  phase_relaxed_executor_norm_go_nogo="$(extract_field_value "$phase_relaxed_executor_output" "normalized_go_nogo")"
+  phase_relaxed_executor_norm_rehearsal="$(extract_field_value "$phase_relaxed_executor_output" "normalized_rehearsal")"
+  phase_relaxed_executor_norm_rollout="$(extract_field_value "$phase_relaxed_executor_output" "normalized_rollout")"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_go_nogo")" "executor_backend_mode_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_go_nogo")" "executor_backend_mode_guard_reason_code: gate_disabled"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_go_nogo")" "executor_upstream_endpoint_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_go_nogo")" "executor_upstream_endpoint_guard_reason_code: gate_disabled"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_rehearsal")" "go_nogo_executor_backend_mode_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_rehearsal")" "go_nogo_executor_backend_mode_guard_reason_code: gate_disabled"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_rehearsal")" "go_nogo_executor_upstream_endpoint_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_rehearsal")" "go_nogo_executor_upstream_endpoint_guard_reason_code: gate_disabled"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_rollout")" "rehearsal_nested_executor_backend_mode_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_rollout")" "rehearsal_nested_executor_backend_mode_guard_reason_code: gate_disabled"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_rollout")" "rehearsal_nested_executor_upstream_endpoint_guard_verdict: SKIP"
+  assert_contains "$(cat "$phase_relaxed_executor_norm_rollout")" "rehearsal_nested_executor_upstream_endpoint_guard_reason_code: gate_disabled"
+
   local phase_invalid_ingestion_source_output=""
   if phase_invalid_ingestion_source_output="$(
     REFACTOR_PHASE_GATE_INGESTION_SOURCE="helius_ws" \

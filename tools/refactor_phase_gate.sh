@@ -149,6 +149,28 @@ validate_strict_guard_verdict() {
   fi
 }
 
+validate_strict_guard_reason_code() {
+  local stage="$1"
+  local key="$2"
+  local payload="$3"
+  local required="$4"
+  local raw_value=""
+  raw_value="$(extract_trimmed_field "$key" "$payload")"
+  if [[ -z "$raw_value" ]]; then
+    phase_gate_errors+=("missing $key in $stage output")
+    return
+  fi
+  if [[ "$required" == "false" ]]; then
+    if [[ "$raw_value" != "gate_disabled" ]]; then
+      phase_gate_errors+=("$key must be gate_disabled in $stage output when required=false, got=$raw_value")
+    fi
+    return
+  fi
+  if [[ "$raw_value" == "gate_disabled" ]]; then
+    phase_gate_errors+=("$key must not be gate_disabled in $stage output when required=true")
+  fi
+}
+
 sha256_cmd=()
 if command -v sha256sum >/dev/null 2>&1; then
   sha256_cmd=(sha256sum)
@@ -227,25 +249,34 @@ rollout_output="$(cat "$raw_dir/rollout_stdout.txt")"
 validate_go_nogo_verdict_is_go "go_nogo" "overall_go_nogo_verdict" "$go_nogo_output"
 validate_bool_field_equals "go_nogo" "go_nogo_require_executor_upstream" "$go_nogo_output" "$phase_gate_require_executor_upstream"
 validate_strict_guard_verdict "go_nogo" "executor_backend_mode_guard_verdict" "$go_nogo_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "go_nogo" "executor_backend_mode_guard_reason_code" "$go_nogo_output" "$phase_gate_require_executor_upstream"
 validate_strict_guard_verdict "go_nogo" "executor_upstream_endpoint_guard_verdict" "$go_nogo_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "go_nogo" "executor_upstream_endpoint_guard_reason_code" "$go_nogo_output" "$phase_gate_require_executor_upstream"
 validate_bool_field_equals "go_nogo" "go_nogo_require_ingestion_grpc" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "go_nogo" "ingestion_grpc_guard_verdict" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
+validate_strict_guard_reason_code "go_nogo" "ingestion_grpc_guard_reason_code" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
 
 validate_go_nogo_verdict_is_go "rehearsal" "devnet_rehearsal_verdict" "$rehearsal_output"
 validate_bool_field_equals "rehearsal" "go_nogo_require_executor_upstream" "$rehearsal_output" "$phase_gate_require_executor_upstream"
 validate_strict_guard_verdict "rehearsal" "go_nogo_executor_backend_mode_guard_verdict" "$rehearsal_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_executor_backend_mode_guard_reason_code" "$rehearsal_output" "$phase_gate_require_executor_upstream"
 validate_strict_guard_verdict "rehearsal" "go_nogo_executor_upstream_endpoint_guard_verdict" "$rehearsal_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_executor_upstream_endpoint_guard_reason_code" "$rehearsal_output" "$phase_gate_require_executor_upstream"
 validate_bool_field_equals "rehearsal" "go_nogo_require_ingestion_grpc" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "rehearsal" "go_nogo_ingestion_grpc_guard_verdict" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_ingestion_grpc_guard_reason_code" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
 
 validate_go_nogo_verdict_is_go "rollout" "adapter_rollout_verdict" "$rollout_output"
 validate_bool_field_equals "rollout" "go_nogo_require_executor_upstream" "$rollout_output" "$phase_gate_require_executor_upstream"
 validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_executor_upstream" "$rollout_output" "$phase_gate_require_executor_upstream"
 validate_strict_guard_verdict "rollout" "rehearsal_nested_executor_backend_mode_guard_verdict" "$rollout_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "rollout" "rehearsal_nested_executor_backend_mode_guard_reason_code" "$rollout_output" "$phase_gate_require_executor_upstream"
 validate_strict_guard_verdict "rollout" "rehearsal_nested_executor_upstream_endpoint_guard_verdict" "$rollout_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "rollout" "rehearsal_nested_executor_upstream_endpoint_guard_reason_code" "$rollout_output" "$phase_gate_require_executor_upstream"
 validate_bool_field_equals "rollout" "go_nogo_require_ingestion_grpc" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_ingestion_grpc" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "rollout" "rehearsal_nested_ingestion_grpc_guard_verdict" "$rollout_output" "$phase_gate_require_ingestion_grpc"
+validate_strict_guard_reason_code "rollout" "rehearsal_nested_ingestion_grpc_guard_reason_code" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 
 if ((${#phase_gate_errors[@]} > 0)); then
   for phase_gate_error in "${phase_gate_errors[@]}"; do
