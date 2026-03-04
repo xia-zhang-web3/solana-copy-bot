@@ -63,6 +63,8 @@ max_tx_per_minute = 50
 min_buy_count = 10
 min_tradable_ratio = 0.25
 max_rug_ratio = 0.60
+max_window_swaps_in_memory = 120000
+max_fetch_swaps_per_cycle = 120000
 
 [shadow]
 enabled = true

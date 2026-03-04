@@ -1,4 +1,7 @@
-use crate::{SqliteStore, TokenMarketStats, TokenQualityCacheRow, TokenQualityRpcRow};
+use crate::{
+    DiscoveryRuntimeCursor, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
+    TokenQualityRpcRow,
+};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::SwapEvent;
@@ -100,6 +103,137 @@ impl SqliteStore {
         Ok(seen)
     }
 
+    pub fn for_each_observed_swap_after_cursor<F>(
+        &self,
+        cursor_ts: DateTime<Utc>,
+        cursor_slot: u64,
+        cursor_signature: &str,
+        limit: usize,
+        mut on_swap: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        if limit == 0 {
+            return Ok(0);
+        }
+        let limit = (limit.min(i64::MAX as usize)) as i64;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+                 FROM observed_swaps
+                 WHERE ts > ?1
+                    OR (ts = ?1 AND slot > ?2)
+                    OR (ts = ?1 AND slot = ?2 AND signature > ?3)
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT ?4",
+            )
+            .context("failed to prepare observed_swaps cursor query")?;
+        let mut rows = stmt
+            .query(params![
+                cursor_ts.to_rfc3339(),
+                cursor_slot as i64,
+                cursor_signature,
+                limit,
+            ])
+            .context("failed to query observed_swaps by cursor")?;
+
+        let mut seen = 0usize;
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating observed_swaps cursor rows")?
+        {
+            let swap = Self::row_to_swap_event(row)?;
+            on_swap(swap)?;
+            seen = seen.saturating_add(1);
+        }
+        Ok(seen)
+    }
+
+    pub fn load_recent_observed_swaps_since(
+        &self,
+        since: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<SwapEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = (limit.min(i64::MAX as usize)) as i64;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+                 FROM observed_swaps
+                 WHERE ts >= ?1
+                 ORDER BY ts DESC, slot DESC, signature DESC
+                 LIMIT ?2",
+            )
+            .context("failed to prepare recent observed_swaps query")?;
+        let mut rows = stmt
+            .query(params![since.to_rfc3339(), limit])
+            .context("failed to query recent observed_swaps")?;
+
+        let mut swaps = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating recent observed_swaps rows")?
+        {
+            swaps.push(Self::row_to_swap_event(row)?);
+        }
+        swaps.reverse();
+        Ok(swaps)
+    }
+
+    pub fn load_discovery_runtime_cursor(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
+        self.ensure_discovery_runtime_state_table()?;
+        let row: Option<(String, i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT cursor_ts, cursor_slot, cursor_signature
+                 FROM discovery_runtime_state
+                 WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .context("failed reading discovery runtime cursor")?;
+        let Some((cursor_ts_raw, cursor_slot_raw, cursor_signature)) = row else {
+            return Ok(None);
+        };
+        let cursor_ts = DateTime::parse_from_rfc3339(cursor_ts_raw.as_str())
+            .map(|dt| dt.with_timezone(&Utc))
+            .with_context(|| format!("invalid discovery cursor timestamp: {cursor_ts_raw}"))?;
+        Ok(Some(DiscoveryRuntimeCursor {
+            ts_utc: cursor_ts,
+            slot: cursor_slot_raw.max(0) as u64,
+            signature: cursor_signature,
+        }))
+    }
+
+    pub fn upsert_discovery_runtime_cursor(&self, cursor: &DiscoveryRuntimeCursor) -> Result<()> {
+        self.ensure_discovery_runtime_state_table()?;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO discovery_runtime_state(
+                    id, cursor_ts, cursor_slot, cursor_signature, updated_at
+                 ) VALUES (1, ?1, ?2, ?3, datetime('now'))
+                 ON CONFLICT(id) DO UPDATE SET
+                    cursor_ts = excluded.cursor_ts,
+                    cursor_slot = excluded.cursor_slot,
+                    cursor_signature = excluded.cursor_signature,
+                    updated_at = excluded.updated_at",
+                params![
+                    cursor.ts_utc.to_rfc3339(),
+                    cursor.slot as i64,
+                    cursor.signature.as_str(),
+                ],
+            )
+        })
+        .context("failed updating discovery runtime cursor")?;
+        Ok(())
+    }
+
     pub fn list_unique_sol_buy_mints_since(&self, since: DateTime<Utc>) -> Result<HashSet<String>> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
         let mut stmt = self
@@ -127,6 +261,21 @@ impl SqliteStore {
             out.insert(mint);
         }
         Ok(out)
+    }
+
+    fn ensure_discovery_runtime_state_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS discovery_runtime_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    cursor_ts TEXT NOT NULL,
+                    cursor_slot INTEGER NOT NULL,
+                    cursor_signature TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )",
+            )
+            .context("failed to ensure discovery_runtime_state table exists")?;
+        Ok(())
     }
 
     fn row_to_swap_event(row: &rusqlite::Row<'_>) -> Result<SwapEvent> {

@@ -191,6 +191,30 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
 }
 
 #[test]
+fn load_from_env_applies_discovery_window_memory_overrides() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
+                "222222",
+                || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
+                        "333333",
+                        || {
+                            let (cfg, _) = load_from_env_or_default(config_path)
+                                .expect("load config with discovery memory env overrides");
+                            assert_eq!(cfg.discovery.max_window_swaps_in_memory, 222_222);
+                            assert_eq!(cfg.discovery.max_fetch_swaps_per_cycle, 333_333);
+                        },
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
 fn load_from_env_applies_dynamic_cu_price_api_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {

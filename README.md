@@ -119,6 +119,13 @@ SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_JITTER_MS=150 \
 SOLANA_COPY_BOT_INGESTION_TELEMETRY_REPORT_SECONDS=30
 ```
 
+Bound discovery memory and per-cycle catch-up load:
+
+```bash
+SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY=120000 \
+SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE=120000
+```
+
 Optional: load-balance ingestion `getTransaction` calls across multiple Helius keys:
 
 ```bash

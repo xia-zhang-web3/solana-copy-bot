@@ -205,6 +205,20 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(discovery_http_url) = env::var("SOLANA_COPY_BOT_DISCOVERY_HELIUS_HTTP_URL") {
         config.discovery.helius_http_url = discovery_http_url;
     }
+    if let Some(max_window_swaps_in_memory) =
+        env::var("SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.discovery.max_window_swaps_in_memory = max_window_swaps_in_memory;
+    }
+    if let Some(max_fetch_swaps_per_cycle) =
+        env::var("SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.discovery.max_fetch_swaps_per_cycle = max_fetch_swaps_per_cycle;
+    }
     if let Ok(shadow_http_url) = env::var("SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL") {
         config.shadow.helius_http_url = shadow_http_url;
     }

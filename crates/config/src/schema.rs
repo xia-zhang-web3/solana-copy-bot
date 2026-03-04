@@ -257,6 +257,8 @@ pub struct DiscoveryConfig {
     pub rug_lookahead_seconds: u64,
     pub thin_market_min_volume_sol: f64,
     pub thin_market_min_unique_traders: u32,
+    pub max_window_swaps_in_memory: usize,
+    pub max_fetch_swaps_per_cycle: usize,
 }
 
 impl Default for DiscoveryConfig {
@@ -278,6 +280,8 @@ impl Default for DiscoveryConfig {
             rug_lookahead_seconds: 30 * 60,
             thin_market_min_volume_sol: 3.0,
             thin_market_min_unique_traders: 10,
+            max_window_swaps_in_memory: 120_000,
+            max_fetch_swaps_per_cycle: 120_000,
         }
     }
 }

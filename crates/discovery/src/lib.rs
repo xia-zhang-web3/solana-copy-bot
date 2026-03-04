@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{SqliteStore, WalletMetricRow, WalletUpsertRow};
+use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore, WalletMetricRow, WalletUpsertRow};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -15,7 +15,7 @@ mod scoring;
 mod windows;
 use self::followlist::{desired_wallets, rank_follow_candidates, top_wallet_labels};
 use self::scoring::{hold_time_quality_score, median_i64, tanh01};
-use self::windows::{cmp_swap_order, DiscoveryWindowState};
+use self::windows::{cmp_swap_order, DiscoveryCursor, DiscoveryWindowState};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
@@ -23,7 +23,6 @@ const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
 const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
-const DELTA_FETCH_OVERLAP_SECONDS: i64 = 15 * 60;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
@@ -137,7 +136,11 @@ impl DiscoveryService {
         let window_days = self.config.scoring_window_days.max(1);
         let window_start = now - Duration::days(window_days as i64);
         let mut delta_fetched = 0usize;
-        let (snapshots, swaps_window) = {
+        let mut swaps_evicted_due_cap = 0usize;
+        let mut swaps_warm_loaded = 0usize;
+        let max_window_swaps_in_memory = self.config.max_window_swaps_in_memory.max(1);
+        let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
+        let (snapshots, swaps_window, swaps_query_rows) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -146,48 +149,113 @@ impl DiscoveryService {
                 }
             };
             state.evict_before(window_start);
-
-            let fetch_start = state
-                .high_watermark_ts
-                .map(|ts| {
-                    let overlap_start = ts - Duration::seconds(DELTA_FETCH_OVERLAP_SECONDS);
-                    overlap_start.max(window_start)
-                })
-                .unwrap_or(window_start);
-
             let mut out_of_order = false;
-            store.for_each_observed_swap_since(fetch_start, |swap| {
-                if swap.ts_utc < window_start {
-                    return Ok(());
-                }
-                if state.signatures.contains(&swap.signature) {
-                    return Ok(());
-                }
+            let mut cursor_restored_from_store = false;
+            if state.cursor.is_none() {
+                let restored = match store.load_discovery_runtime_cursor() {
+                    Ok(cursor) => cursor,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "failed loading discovery runtime cursor; falling back to window_start bootstrap"
+                        );
+                        None
+                    }
+                };
+                cursor_restored_from_store = restored.is_some();
+                let restored = restored.map(|cursor| DiscoveryCursor {
+                    ts_utc: cursor.ts_utc,
+                    slot: cursor.slot,
+                    signature: cursor.signature,
+                });
+                state.cursor = Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
+            }
 
-                if let Some(back) = state.swaps.back() {
-                    if cmp_swap_order(&swap, back) == Ordering::Less {
-                        out_of_order = true;
+            let mut cursor = state
+                .cursor
+                .clone()
+                .unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start));
+            if cursor.ts_utc < window_start {
+                cursor = DiscoveryCursor::bootstrap(window_start);
+            }
+
+            if state.swaps.is_empty() && cursor_restored_from_store {
+                match store.load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
+                {
+                    Ok(swaps) => {
+                        for swap in swaps {
+                            if let Some(back) = state.swaps.back() {
+                                if cmp_swap_order(&swap, back) == Ordering::Less {
+                                    out_of_order = true;
+                                }
+                            }
+                            if state.signatures.insert(swap.signature.clone()) {
+                                state.swaps.push_back(swap);
+                                swaps_warm_loaded = swaps_warm_loaded.saturating_add(1);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "failed warm-loading discovery window from sqlite recent slice"
+                        );
                     }
                 }
-                let next_high_watermark = state
-                    .high_watermark_ts
-                    .map_or(swap.ts_utc, |v| v.max(swap.ts_utc));
-                state.high_watermark_ts = Some(next_high_watermark);
-                state.signatures.insert(swap.signature.clone());
-                state.swaps.push_back(swap);
-                delta_fetched = delta_fetched.saturating_add(1);
-                Ok(())
-            })?;
+            }
+
+            let cursor_signature = cursor.signature.clone();
+            let swaps_query_rows = store.for_each_observed_swap_after_cursor(
+                cursor.ts_utc,
+                cursor.slot,
+                cursor_signature.as_str(),
+                fetch_limit,
+                |swap| {
+                    cursor = DiscoveryCursor::from_swap(&swap);
+                    if swap.ts_utc < window_start {
+                        return Ok(());
+                    }
+                    if state.signatures.contains(&swap.signature) {
+                        return Ok(());
+                    }
+                    if let Some(back) = state.swaps.back() {
+                        if cmp_swap_order(&swap, back) == Ordering::Less {
+                            out_of_order = true;
+                        }
+                    }
+                    state.signatures.insert(swap.signature.clone());
+                    state.swaps.push_back(swap);
+                    delta_fetched = delta_fetched.saturating_add(1);
+                    Ok(())
+                },
+            )?;
+
+            if swaps_query_rows > 0 {
+                state.cursor = Some(cursor.clone());
+                let persisted = DiscoveryRuntimeCursor {
+                    ts_utc: cursor.ts_utc,
+                    slot: cursor.slot,
+                    signature: cursor.signature,
+                };
+                if let Err(error) = store.upsert_discovery_runtime_cursor(&persisted) {
+                    warn!(
+                        error = %error,
+                        "failed persisting discovery runtime cursor"
+                    );
+                }
+            }
 
             if out_of_order {
                 let mut sorted: Vec<SwapEvent> = state.swaps.drain(..).collect();
                 sorted.sort_by(cmp_swap_order);
                 state.swaps = sorted.into();
             }
+            swaps_evicted_due_cap = swaps_evicted_due_cap
+                .saturating_add(state.enforce_max_swaps(max_window_swaps_in_memory));
 
             let swaps_window = state.swaps.len();
             let snapshots = self.build_wallet_snapshots_from_cached(store, &state.swaps, now);
-            (snapshots, swaps_window)
+            (snapshots, swaps_window, swaps_query_rows)
         };
 
         if swaps_window == 0 {
@@ -201,6 +269,11 @@ impl DiscoveryService {
                 follow_demoted = 0usize,
                 active_follow_wallets = 0usize,
                 swaps_window = 0usize,
+                swaps_query_rows,
+                swaps_delta_fetched = delta_fetched,
+                swaps_warm_loaded,
+                swaps_evicted_due_cap,
+                swaps_fetch_limit = fetch_limit,
                 discovery_cycle_duration_ms = elapsed_ms,
                 "discovery cycle completed"
             );
@@ -271,11 +344,24 @@ impl DiscoveryService {
             follow_demoted = summary.follow_demoted,
             active_follow_wallets = summary.active_follow_wallets,
             swaps_window,
+            swaps_query_rows,
             swaps_delta_fetched = delta_fetched,
+            swaps_warm_loaded,
+            swaps_evicted_due_cap,
+            swaps_fetch_limit = fetch_limit,
+            swaps_fetch_limit_reached = swaps_query_rows >= fetch_limit,
             discovery_cycle_duration_ms = elapsed_ms,
             top_wallets = ?summary.top_wallets,
             "discovery cycle completed"
         );
+
+        if swaps_query_rows >= fetch_limit {
+            warn!(
+                swaps_query_rows,
+                swaps_fetch_limit = fetch_limit,
+                "discovery swap fetch reached per-cycle limit; backlog processing continues next cycle"
+            );
+        }
 
         Ok(summary)
     }
@@ -611,7 +697,7 @@ fn is_sol_sell(swap: &SwapEvent) -> bool {
 mod tests {
     use super::*;
     use anyhow::Context;
-    use copybot_storage::SqliteStore;
+    use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore};
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -719,6 +805,263 @@ mod tests {
         let summary = discovery.run_cycle(&store, now)?;
         assert_eq!(summary.wallets_seen, 0);
         assert_eq!(summary.metrics_written, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_enforces_max_window_swaps_in_memory_cap() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-cap.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-04T11:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let start = now - Duration::minutes(30);
+        for idx in 0..20 {
+            let ts = start + Duration::seconds((idx * 5) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_cap",
+                &format!("cap-sig-{idx:03}"),
+                ts,
+                SOL_MINT,
+                "TokenCap1111111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.max_window_swaps_in_memory = 5;
+        config.max_fetch_swaps_per_cycle = 100;
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+        let _ = discovery.run_cycle(&store, now)?;
+
+        let guard = discovery
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert!(
+            guard.swaps.len() <= 5,
+            "window swap cache must stay within configured cap"
+        );
+        assert!(
+            guard.signatures.len() <= 5,
+            "window signature cache must stay within configured cap"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_uses_persisted_cursor_for_incremental_fetch_after_restart() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-cursor.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let start = now - Duration::minutes(20);
+        for idx in 0..12 {
+            let ts = start + Duration::seconds((idx * 10) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_cursor",
+                &format!("cursor-sig-{idx:03}"),
+                ts,
+                SOL_MINT,
+                "TokenCursor1111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.max_window_swaps_in_memory = 100;
+        config.max_fetch_swaps_per_cycle = 4;
+
+        let discovery_first = DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
+        let _ = discovery_first.run_cycle(&store, now)?;
+        let cursor_after_first = store
+            .load_discovery_runtime_cursor()?
+            .expect("cursor must be persisted after first cycle");
+        assert_eq!(cursor_after_first.signature, "cursor-sig-003");
+
+        // Simulate process restart: new DiscoveryService should continue from persisted cursor.
+        let discovery_second =
+            DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+        let _ = discovery_second.run_cycle(&store, now + Duration::minutes(1))?;
+        let cursor_after_second = store
+            .load_discovery_runtime_cursor()?
+            .expect("cursor must stay persisted after second cycle");
+        assert_eq!(cursor_after_second.signature, "cursor-sig-007");
+        Ok(())
+    }
+
+    #[test]
+    fn restart_with_persisted_cursor_warm_load_does_not_false_demote_followlist() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-followlist-warm.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-04T13:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let start = now - Duration::hours(8);
+        for idx in 0..12 {
+            let buy_ts = start + Duration::minutes((idx * 20) as i64);
+            let sell_ts = buy_ts + Duration::minutes(5);
+            store.insert_observed_swap(&swap(
+                "wallet_a",
+                &format!("warm-a-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenWarmA11111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_a",
+                &format!("warm-a-sell-{idx}"),
+                sell_ts,
+                "TokenWarmA11111111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.35,
+            ))?;
+
+            store.insert_observed_swap(&swap(
+                "wallet_b",
+                &format!("warm-b-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenWarmB11111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_b",
+                &format!("warm-b-sell-{idx}"),
+                sell_ts,
+                "TokenWarmB11111111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                0.70,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.55;
+        config.max_tx_per_minute = 50;
+        config.min_buy_count = 10;
+        config.thin_market_min_unique_traders = 1;
+        config.max_window_swaps_in_memory = 200;
+        config.max_fetch_swaps_per_cycle = 200;
+        let discovery = DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
+        let summary = discovery.run_cycle(&store, now)?;
+        assert!(summary.follow_promoted >= 1);
+        let active_before = store.list_active_follow_wallets()?;
+        assert!(active_before.contains("wallet_a"));
+
+        // One fresh low-signal swap arrives after cursor checkpoint.
+        store.insert_observed_swap(&swap(
+            "wallet_noise",
+            "warm-noise-buy-0",
+            now + Duration::minutes(1),
+            SOL_MINT,
+            "TokenNoise111111111111111111111111111111111",
+            0.2,
+            20.0,
+        ))?;
+
+        // Simulate restart with narrow per-cycle fetch budget.
+        let mut restart_config = config.clone();
+        restart_config.max_fetch_swaps_per_cycle = 1;
+        let discovery_after_restart =
+            DiscoveryService::new(restart_config, copybot_config::ShadowConfig::default());
+        let _ = discovery_after_restart.run_cycle(&store, now + Duration::minutes(2))?;
+        let active_after = store.list_active_follow_wallets()?;
+        assert!(
+            active_after.contains("wallet_a"),
+            "wallet_a should not be false-demoted on restart cold state"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn warm_restore_and_cursor_delta_keep_cache_ordered_before_cap_eviction() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-ordering-cap.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-04T14:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let start = now - Duration::minutes(40);
+        for idx in 0..20 {
+            let ts = start + Duration::minutes(idx as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_mix",
+                &format!("mix-sig-{idx:03}"),
+                ts,
+                SOL_MINT,
+                "TokenMix1111111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+        }
+
+        // Simulate persisted cursor far behind recent tail.
+        let cursor = DiscoveryRuntimeCursor {
+            ts_utc: start + Duration::minutes(5),
+            slot: (start + Duration::minutes(5)).timestamp().max(0) as u64,
+            signature: "mix-sig-005".to_string(),
+        };
+        store.upsert_discovery_runtime_cursor(&cursor)?;
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.max_window_swaps_in_memory = 5;
+        config.max_fetch_swaps_per_cycle = 3;
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+        let _ = discovery.run_cycle(&store, now)?;
+
+        let guard = discovery
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        let signatures: Vec<String> = guard
+            .swaps
+            .iter()
+            .map(|swap| swap.signature.clone())
+            .collect();
+        assert_eq!(signatures.len(), 5);
+        assert_eq!(
+            signatures,
+            vec![
+                "mix-sig-015".to_string(),
+                "mix-sig-016".to_string(),
+                "mix-sig-017".to_string(),
+                "mix-sig-018".to_string(),
+                "mix-sig-019".to_string(),
+            ],
+            "cache must keep latest swaps after ordering normalization + cap eviction"
+        );
         Ok(())
     }
 

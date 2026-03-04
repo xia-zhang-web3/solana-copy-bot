@@ -1002,6 +1002,9 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 474. executor preflight upstream-placeholder hardening: `tools/executor_preflight.sh` now fail-closes executor upstream topology in `backend_mode=upstream` when route submit/simulate/send-rpc endpoints resolve to known placeholder hosts (`example.com`, `executor.mock.local`), preventing false-green preflight with non-routable/test-only endpoint stubs.
 475. go/no-go strict executor-upstream topology gate: `tools/execution_go_nogo_report.sh` now evaluates effective executor submit/simulate endpoint topology per allowlisted route (route override -> global default) when `GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true`, and fail-closes readiness on missing endpoints (`UNKNOWN`) or placeholder hosts (`WARN`) with explicit guard diagnostics.
 476. strict-topology smoke coverage expansion: `tools/ops_scripts_smoke_test.sh` now pins go/no-go strict upstream topology branches (`PASS`, `endpoint_missing`, `endpoint_placeholder`) and executor preflight placeholder-host rejects, plus updates strict helper fixtures to include canonical non-placeholder upstream endpoints for default PASS paths.
+477. server-rollout nested strict-guard observability hardening: `tools/execution_server_rollout_report.sh` now extracts and validates nested go/no-go strict guard diagnostics (`executor_backend_mode_guard_*`, `executor_upstream_endpoint_guard_*`), emits them in rollout summary, and fail-closes on malformed/missing nested guard fields.
+478. runtime-readiness nested strict-guard parity hardening: `tools/execution_runtime_readiness_report.sh` now validates nested final helper propagation for `go_nogo_require_executor_upstream` and `executor_env_path` (adapter final + route/fee final), and fail-closes runtime-readiness on propagation drift or malformed nested fields.
+479. orchestrator strict-topology smoke expansion: `tools/ops_scripts_smoke_test.sh` now pins strict topology failures at orchestrator level (`execution_server_rollout_report`: placeholder and missing submit/simulate endpoints) and asserts nested strict-guard propagation fields in runtime-readiness summaries.
 
 Остается в next-code-queue:
 
@@ -1219,3 +1222,80 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 1. Переход tiny-live -> limited-live только после минимум 24h green KPI.
 2. Переход limited-live -> standard-live только после минимум 48h green KPI + закрытых инцидентов.
 3. Любой P0 автоматически возвращает режим на предыдущую ступень лимитов до разбора причины.
+
+## 12) Оперативный журнал работ
+
+### 2026-03-04 — обзор проекта (Codex)
+
+Сделано:
+
+1. Изучена текущая структура workspace (`crates/app`, `crates/executor`, `crates/adapter`, `crates/ingestion`, `crates/execution`, `crates/storage`, `crates/discovery`, `crates/config`, `crates/shadow`), а также operational-контур (`ops/*`, `tools/*`, `migrations/*`).
+2. Проверены ключевые документы верхнего уровня: `README.md`, `ARCHITECTURE_BLUEPRINT.md`, `ops/executor_backend_master_plan_2026-02-24.md`.
+3. Проверены основные entrypoints:
+   1. `crates/app/src/main.rs` (оркестрация ingestion/discovery/shadow/execution, ingestion override, emergency-stop polling),
+   2. `crates/adapter/src/main.rs` (adapter contract boundary, route-aware upstream topology, auth/HMAC),
+   3. `crates/executor/src/main.rs` (upstream executor сервис с `/simulate`, `/submit`, `/healthz`, idempotency store, graceful shutdown).
+4. Проверены production-like конфиги `configs/prod.toml` и `configs/live.toml` (execution по умолчанию выключен, staged rollout профиль присутствует).
+
+Наблюдения для следующего прохода:
+
+1. В `ops/executor_backend_master_plan_2026-02-24.md` есть устаревшая строка в разделе Current State: указано, что `crates/executor` отсутствует, но в текущем workspace он уже есть.
+2. `ROAD_TO_PRODUCTION.md` остается каноничным трекером rollout-gates и checklist; дальнейшие действия/изменения фиксируем здесь же отдельными датированными записями.
+
+### 2026-03-04 — расследование OOM `copybot-app` (Codex)
+
+Проверено по артефактам:
+
+1. `ops/server_reports/2026-03-04_post_gym_runtime_report.md` подтверждает повторяющиеся OOM-kill (`21` kill/restart за ~4h), отсутствие swap и постоянные `discovery cycle still running`.
+2. `ops/server_reports/raw/2026-03-04_post_gym_snapshot/kernel_oom_4h.log` фиксирует `Out of memory: Killed process ... copybot-app` с anon RSS ~`7.5GB`.
+3. `ops/server_reports/raw/2026-03-04_post_gym_snapshot/service_events_4h.log` фиксирует циклические `status=9/KILL` + restart.
+4. `ops/server_reports/raw/2026-03-04_post_gym_snapshot/memory_snapshot.txt` показывает `Mem 7.6Gi`, `Swap 0`.
+
+Кодовый разбор root-cause (вероятный, подтвержденный структурой runtime):
+
+1. Discovery держит in-memory окно свопов без верхнего лимита по объему:
+   1. `DiscoveryWindowState { swaps: VecDeque<SwapEvent>, signatures: HashSet<String> }` в `crates/discovery/src/windows.rs`.
+   2. Eviction только по времени (`evict_before(window_start)`), а не по количеству/байтам.
+2. На каждом цикле идет подгрузка всех `observed_swaps` от `fetch_start` без `LIMIT` (`for_each_observed_swap_since`), затем записи добавляются в `state.swaps` и `state.signatures`:
+   1. `store.for_each_observed_swap_since(fetch_start, ...)` -> `state.signatures.insert(...)` + `state.swaps.push_back(...)` в `crates/discovery/src/lib.rs`.
+3. При рестарте процесса `window_state` теряется (in-memory), `high_watermark_ts` снова `None`, и discovery повторно сканирует БД от `window_start`; при `scoring_window_days=30` это приводит к массивному rehydrate state из `observed_swaps`.
+4. Дополнительно в пределах одного цикла собираются крупные временные структуры (`by_wallet`, `token_sol_history`), что повышает peak RSS в момент обработки окна.
+
+Вывод:
+
+1. По текущим данным это выглядит не как «случайный краш», а как алгоритмический memory pressure в discovery pipeline (неограниченное in-memory окно + тяжелый rebuild после restart) при текущем объеме событий.
+2. До стабилизации discovery long-window непрерывные runtime-прогоны считать валидными нельзя.
+
+### 2026-03-04 — OOM stabilization patch для discovery (Codex)
+
+Реализовано:
+
+1. В discovery добавлен жесткий memory cap in-memory окна:
+   1. новый config `discovery.max_window_swaps_in_memory`,
+   2. при превышении лимита старые swap/signature eviction выполняются принудительно.
+2. В discovery добавлен лимит SQL-подгрузки за цикл:
+   1. новый config `discovery.max_fetch_swaps_per_cycle`,
+   2. цикл больше не пытается перечитать весь исторический диапазон за один проход.
+3. Добавлен persisted cursor в SQLite (`discovery_runtime_state`) для discovery catch-up:
+   1. курсор `ts/slot/signature` читается на старте цикла,
+   2. обновляется после обработки батча,
+   3. после restart не требуется re-scan «от window_start за 30 дней».
+4. Добавлена telemetry-видимость в `discovery cycle completed`:
+   1. `swaps_query_rows`,
+   2. `swaps_evicted_due_cap`,
+   3. `swaps_fetch_limit`,
+   4. `swaps_fetch_limit_reached` + отдельный warn при достижении лимита.
+5. Обновлены runtime-конфиги:
+   1. `configs/live.toml`: `max_window_swaps_in_memory=120000`, `max_fetch_swaps_per_cycle=120000`,
+   2. `configs/prod.toml`: те же параметры,
+   3. env-overrides: `SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY`, `SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE`.
+6. Дополнительный hotfix по аудит-findings (false demotion после restart):
+   1. при cold-start с восстановленным persisted cursor discovery теперь warm-load'ит bounded recent window из SQLite (`load_recent_observed_swaps_since`) до reconciliation,
+   2. это убирает сценарий, где followlist деактивируется из-за «узкого дельта-среза» сразу после рестарта.
+7. Дополнительный hotfix по аудит-findings (ordering drift warm+delta):
+   1. после merge warm-restore + cursor-delta выполняется deterministic order normalization (`ts, slot, signature`),
+   2. cap-eviction выполняется только после нормализации порядка, чтобы не выталкивать более свежие swaps при backlog recovery.
+
+Проверка:
+
+1. `cargo test -p copybot-config -p copybot-storage -p copybot-discovery` — PASS.

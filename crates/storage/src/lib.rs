@@ -95,6 +95,13 @@ pub struct TokenMarketStats {
     pub unique_traders_5m: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct DiscoveryRuntimeCursor {
+    pub ts_utc: DateTime<Utc>,
+    pub slot: u64,
+    pub signature: String,
+}
+
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
