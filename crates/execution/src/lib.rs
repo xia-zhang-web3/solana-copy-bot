@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{ExecutionConfig, RiskConfig};
-use copybot_storage::{CopySignalRow, InsertExecutionOrderPendingOutcome, SqliteStore};
+use copybot_storage::{
+    CopySignalRow, InsertExecutionOrderPendingOutcome, SqliteStore,
+    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+};
 use serde_json::json;
 use std::collections::HashSet;
 use tracing::{debug, warn};
@@ -301,6 +304,7 @@ impl ExecutionRuntime {
         let prioritize_sell_pre_submit = buy_submit_pause_reason.is_some();
         for status in [
             "execution_submitted",
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
             "execution_simulated",
             "execution_pending",
             "shadow_recorded",
@@ -478,7 +482,7 @@ impl ExecutionRuntime {
             "execution_simulated" => {
                 self.process_simulated_order(store, &intent, &client_order_id, &order, now, report)
             }
-            "execution_submitted" => {
+            "execution_submitted" | EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS => {
                 self.process_submitted_order(store, &intent, &order, now, report)
             }
             other => {
@@ -833,6 +837,34 @@ mod tests {
                 network_fee_lookup_error: None,
                 detail: "forced_confirmed_with_fee".to_string(),
             })
+        }
+    }
+
+    struct SequenceConfirmer {
+        outcomes: Arc<Mutex<Vec<confirm::ConfirmationResult>>>,
+    }
+
+    impl SequenceConfirmer {
+        fn new(outcomes: Vec<confirm::ConfirmationResult>) -> Self {
+            Self {
+                outcomes: Arc::new(Mutex::new(outcomes.into_iter().rev().collect())),
+            }
+        }
+    }
+
+    impl OrderConfirmer for SequenceConfirmer {
+        fn confirm(
+            &self,
+            _tx_signature: &str,
+            _deadline: DateTime<Utc>,
+        ) -> Result<confirm::ConfirmationResult> {
+            let mut outcomes = self
+                .outcomes
+                .lock()
+                .expect("sequence confirmer outcomes mutex poisoned");
+            outcomes
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("sequence confirmer exhausted"))
         }
     }
 
@@ -3286,6 +3318,151 @@ mod tests {
             1
         );
         assert_eq!(store.live_open_positions_count()?, 2);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_keeps_timeout_manual_reconcile_order_reconcilable() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-timeout-reconcile-pending")?;
+        let now = Utc::now();
+        let submit_ts = now - Duration::seconds(30);
+        seed_token_price(
+            &store,
+            "token-timeout-reconcile",
+            now,
+            "sig-price-timeout-reconcile",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s10:w:buy:t-timeout-reconcile".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-timeout-reconcile".to_string(),
+            notional_sol: 0.1,
+            ts: submit_ts,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-confirm-timeout-reconcile-1",
+                &signal.signal_id,
+                &client_order_id,
+                "rpc",
+                submit_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-confirm-timeout-reconcile-1",
+            "rpc",
+            "sig-timeout-reconcile",
+            submit_ts,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 5,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(SequenceConfirmer::new(vec![
+                confirm::ConfirmationResult {
+                    status: ConfirmationStatus::Timeout,
+                    confirmed_at: None,
+                    network_fee_lamports: None,
+                    network_fee_lookup_error: None,
+                    detail: "forced_timeout".to_string(),
+                },
+                confirm::ConfirmationResult {
+                    status: ConfirmationStatus::Confirmed,
+                    confirmed_at: Some(now + Duration::seconds(1)),
+                    network_fee_lamports: None,
+                    network_fee_lookup_error: None,
+                    detail: "late_confirmed".to_string(),
+                },
+            ])),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
+        assert_eq!(
+            first.confirm_retry_scheduled_by_route.get("rpc"),
+            Some(&1),
+            "timeout reconcile-pending should keep confirm retry scheduled"
+        );
+        assert_eq!(
+            store
+                .risk_event_count_by_type("execution_confirm_timeout_manual_reconcile_required")?,
+            1
+        );
+        assert_eq!(
+            store
+                .list_copy_signals_by_status(EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS, 10)?
+                .len(),
+            1
+        );
+        let pending = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("timeout reconcile-pending order should remain present")?;
+        assert_eq!(pending.status, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS);
+        assert_eq!(
+            pending.err_code.as_deref(),
+            Some("confirm_timeout_manual_reconcile_required")
+        );
+
+        let second = runtime.process_batch(&store, now + Duration::seconds(1), None)?;
+        assert_eq!(second.confirmed, 1);
+        assert_eq!(
+            store
+                .list_copy_signals_by_status("execution_confirmed", 10)?
+                .len(),
+            1
+        );
+        let confirmed = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("late confirmed reconcile-pending order should remain present")?;
+        assert_eq!(confirmed.status, "execution_confirmed");
+        assert_eq!(confirmed.err_code, None);
+        let exposure = store.live_open_exposure_sol()?;
+        assert!(
+            exposure > 0.0,
+            "late confirmed reconcile-pending order should restore local exposure, got {}",
+            exposure
+        );
+        assert_eq!(
+            store
+                .risk_event_count_by_type("execution_confirm_timeout_manual_reconcile_required")?,
+            1,
+            "timeout manual-reconcile event should not duplicate after late confirm"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

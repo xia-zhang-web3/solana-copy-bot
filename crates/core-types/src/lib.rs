@@ -113,6 +113,9 @@ pub enum InsertExecutionOrderPendingOutcome {
     Duplicate,
 }
 
+pub const EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS: &str =
+    "execution_submitted_reconcile_pending";
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExecutionConfirmStateSnapshot {
     pub total_exposure_sol: f64,

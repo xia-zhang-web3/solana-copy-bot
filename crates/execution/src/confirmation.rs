@@ -8,7 +8,9 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use copybot_storage::{FinalizeExecutionConfirmOutcome, SqliteStore};
+use copybot_storage::{
+    FinalizeExecutionConfirmOutcome, SqliteStore, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+};
 use serde_json::json;
 use tracing::warn;
 
@@ -21,6 +23,7 @@ impl ExecutionRuntime {
         order_id: &str,
         route: &str,
         tx_signature: &str,
+        lifecycle_status: &str,
         submit_ts: DateTime<Utc>,
         applied_tip_lamports: Option<u64>,
         ata_create_rent_lamports: Option<u64>,
@@ -256,8 +259,7 @@ impl ExecutionRuntime {
                     confirmed_at,
                 )? {
                     FinalizeExecutionConfirmOutcome::Applied(snapshot) => {
-                        post_confirm_risk_breach =
-                            self.confirmed_buy_risk_breach(intent, snapshot);
+                        post_confirm_risk_breach = self.confirmed_buy_risk_breach(intent, snapshot);
                     }
                     FinalizeExecutionConfirmOutcome::AlreadyConfirmed => {
                         store
@@ -402,26 +404,35 @@ impl ExecutionRuntime {
                 } else {
                     "confirm_timeout"
                 };
+                if manual_reconcile_required {
+                    if lifecycle_status != EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS {
+                        store.mark_order_reconcile_pending(order_id, err_code)?;
+                        store.update_copy_signal_status(
+                            &intent.signal_id,
+                            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+                        )?;
+                        let details = json!({
+                            "signal_id": intent.signal_id,
+                            "order_id": order_id,
+                            "mode": self.mode,
+                            "manual_reconcile_required": true,
+                            "deadline": deadline.to_rfc3339(),
+                            "detail": confirm.detail,
+                        })
+                        .to_string();
+                        let _ = store.insert_risk_event(
+                            "execution_confirm_timeout_manual_reconcile_required",
+                            "error",
+                            now,
+                            Some(&details),
+                        );
+                    }
+                    bump_route_counter(&mut report.confirm_retry_scheduled_by_route, route);
+                    return Ok(SignalResult::Skipped);
+                }
                 store.mark_order_failed(order_id, err_code, Some(confirm.detail.as_str()))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
                 bump_route_counter(&mut report.confirm_failed_by_route, route);
-                if manual_reconcile_required {
-                    let details = json!({
-                        "signal_id": intent.signal_id,
-                        "order_id": order_id,
-                        "mode": self.mode,
-                        "manual_reconcile_required": true,
-                        "deadline": deadline.to_rfc3339(),
-                        "detail": confirm.detail,
-                    })
-                    .to_string();
-                    let _ = store.insert_risk_event(
-                        "execution_confirm_timeout_manual_reconcile_required",
-                        "error",
-                        now,
-                        Some(&details),
-                    );
-                }
                 Ok(SignalResult::Failed)
             }
         }

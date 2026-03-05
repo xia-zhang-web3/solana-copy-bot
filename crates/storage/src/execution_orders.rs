@@ -1,6 +1,6 @@
 use super::{
     parse_non_negative_i64, u64_to_sql_i64, CopySignalRow, ExecutionOrderRow,
-    InsertExecutionOrderPendingOutcome, SqliteStore,
+    InsertExecutionOrderPendingOutcome, SqliteStore, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -484,6 +484,29 @@ impl SqliteStore {
         if changed == 0 {
             return Err(anyhow!(
                 "failed marking order failed: order_id={} not found",
+                order_id
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn mark_order_reconcile_pending(&self, order_id: &str, err_code: &str) -> Result<()> {
+        let changed = self.execute_with_retry(|conn| {
+            conn.execute(
+                "UPDATE orders
+                 SET status = ?1,
+                     err_code = ?2
+                 WHERE order_id = ?3",
+                params![
+                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+                    err_code,
+                    order_id
+                ],
+            )
+        })?;
+        if changed == 0 {
+            return Err(anyhow!(
+                "failed marking order reconcile-pending: order_id={} not found",
                 order_id
             ));
         }

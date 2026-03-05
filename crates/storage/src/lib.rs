@@ -8,9 +8,9 @@ use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
     CopySignalRow, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
-    FinalizeExecutionConfirmOutcome,
-    InsertExecutionOrderPendingOutcome, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow,
-    WalletUpsertRow,
+    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, TokenQualityCacheRow,
+    TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
+    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
@@ -137,9 +137,7 @@ impl SqliteStore {
                 [],
                 |row| row.get(0),
             )
-            .context(
-                "failed querying live open positions count in finalize confirm transaction",
-            )?;
+            .context("failed querying live open positions count in finalize confirm transaction")?;
 
         Ok(ExecutionConfirmStateSnapshot {
             total_exposure_sol: total_exposure_sol.max(0.0),
@@ -225,7 +223,10 @@ impl SqliteStore {
                 if status == "execution_confirmed" {
                     return Ok(FinalizeExecutionConfirmOutcome::AlreadyConfirmed);
                 }
-                if status != "execution_submitted" {
+                if !matches!(
+                    status.as_str(),
+                    "execution_submitted" | EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                ) {
                     return Err(anyhow!(
                         "failed finalizing confirmed order: order_id={} has unexpected status={}",
                         order_id,
@@ -256,7 +257,8 @@ impl SqliteStore {
                     .execute(
                         "UPDATE orders
                          SET status = 'execution_confirmed',
-                             confirm_ts = ?1
+                             confirm_ts = ?1,
+                             err_code = NULL
                          WHERE order_id = ?2",
                         params![confirmed_ts.to_rfc3339(), order_id],
                     )
@@ -930,6 +932,89 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(fills_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_execution_confirmed_order_accepts_reconcile_pending_status() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-confirm-reconcile-pending.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-reconcile:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS.to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+
+        let order_id = "ord-reconcile-pending-1";
+        let client_order_id = "cb_test_reconcile_pending_a1";
+        assert_eq!(
+            store.insert_execution_order_pending(
+                order_id,
+                &signal.signal_id,
+                client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            order_id,
+            "paper",
+            "paper:tx-reconcile-pending",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store
+            .mark_order_reconcile_pending(order_id, "confirm_timeout_manual_reconcile_required")?;
+
+        let outcome = store.finalize_execution_confirmed_order(
+            order_id,
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            1.0,
+            0.25,
+            0.25,
+            0.0,
+            50.0,
+            now + Duration::seconds(1),
+        )?;
+        let FinalizeExecutionConfirmOutcome::Applied(snapshot) = outcome else {
+            panic!("expected applied outcome, got {:?}", outcome);
+        };
+        assert!((snapshot.total_exposure_sol - 0.25).abs() < 1e-9);
+        assert_eq!(snapshot.open_positions, 1);
+
+        let order = store
+            .execution_order_by_client_order_id(client_order_id)?
+            .context("expected order row after late confirm finalize")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(order.err_code, None);
+        assert_eq!(
+            store
+                .list_copy_signals_by_status("execution_confirmed", 10)?
+                .len(),
+            1
+        );
 
         Ok(())
     }
