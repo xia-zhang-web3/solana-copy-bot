@@ -10321,7 +10321,7 @@ run_refactor_phase_gate_case() {
     exit 1
   fi
   phase_strict_jito_output="$(cat "$phase_strict_jito_output_path")"
-  assert_contains "$phase_strict_jito_output" "phase-gate error: execution_devnet_rehearsal.sh failed for stage=rehearsal"
+  assert_contains "$phase_strict_jito_output" "phase-gate error: execution_go_nogo_report.sh failed for stage=go_nogo"
   assert_contains "$phase_strict_jito_output" "jito_rpc_policy_verdict: WARN"
   assert_contains "$phase_strict_jito_output" "jito_rpc_policy_reason_code: route_profile_not_pass"
 
@@ -10333,9 +10333,9 @@ run_refactor_phase_gate_case() {
     exit 1
   fi
   phase_strict_signer_output="$(cat "$phase_strict_signer_output_path")"
-  assert_contains "$phase_strict_signer_output" "phase-gate error: execution_devnet_rehearsal.sh failed for stage=rehearsal"
-  assert_contains "$phase_strict_signer_output" "go_nogo_non_bootstrap_signer_guard_verdict: UNKNOWN"
-  assert_contains "$phase_strict_signer_output" "go_nogo_non_bootstrap_signer_guard_reason_code: signer_pubkey_missing"
+  assert_contains "$phase_strict_signer_output" "phase-gate error: execution_go_nogo_report.sh failed for stage=go_nogo"
+  assert_contains "$phase_strict_signer_output" "non_bootstrap_signer_guard_verdict: UNKNOWN"
+  assert_contains "$phase_strict_signer_output" "non_bootstrap_signer_guard_reason_code: signer_pubkey_missing"
 
   local phase_invalid_ingestion_source_output=""
   if phase_invalid_ingestion_source_output="$(
@@ -10345,7 +10345,7 @@ run_refactor_phase_gate_case() {
     echo "expected refactor_phase_gate to fail-close for non-yellowstone ingestion source in strict mode" >&2
     exit 1
   fi
-  assert_contains "$phase_invalid_ingestion_source_output" "phase-gate error: execution_devnet_rehearsal.sh failed for stage=rehearsal"
+  assert_contains "$phase_invalid_ingestion_source_output" "phase-gate error: execution_go_nogo_report.sh failed for stage=go_nogo"
   assert_contains "$phase_invalid_ingestion_source_output" "overall_go_nogo_verdict: NO_GO"
 
   local phase_invalid_bool_output=""

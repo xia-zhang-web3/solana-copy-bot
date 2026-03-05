@@ -223,6 +223,21 @@ validate_policy_gate_verdict() {
   fi
 }
 
+fail_phase_gate_stage() {
+  local stage="$1"
+  local capture_path="$2"
+  local stage_script="$3"
+  if ((${#phase_gate_errors[@]} == 0)); then
+    return
+  fi
+  cat "$capture_path" >&2 || true
+  for phase_gate_error in "${phase_gate_errors[@]}"; do
+    echo "phase-gate error: $phase_gate_error" >&2
+  done
+  echo "phase-gate error: $stage_script failed for stage=$stage" >&2
+  exit 3
+}
+
 sha256_cmd=()
 if command -v sha256sum >/dev/null 2>&1; then
   sha256_cmd=(sha256sum)
@@ -259,6 +274,29 @@ if ! PATH="$fake_bin_dir:$PATH" \
   exit 3
 fi
 
+go_nogo_output="$(cat "$raw_dir/go_nogo_stdout.txt")"
+phase_gate_errors=()
+
+validate_go_nogo_verdict_is_go "go_nogo" "overall_go_nogo_verdict" "$go_nogo_output"
+validate_bool_field_equals "go_nogo" "go_nogo_require_executor_upstream" "$go_nogo_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_verdict "go_nogo" "executor_backend_mode_guard_verdict" "$go_nogo_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "go_nogo" "executor_backend_mode_guard_reason_code" "$go_nogo_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_verdict "go_nogo" "executor_upstream_endpoint_guard_verdict" "$go_nogo_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "go_nogo" "executor_upstream_endpoint_guard_reason_code" "$go_nogo_output" "$phase_gate_require_executor_upstream"
+validate_bool_field_equals "go_nogo" "go_nogo_require_ingestion_grpc" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
+validate_strict_guard_verdict "go_nogo" "ingestion_grpc_guard_verdict" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
+validate_strict_guard_reason_code "go_nogo" "ingestion_grpc_guard_reason_code" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
+validate_bool_field_equals "go_nogo" "go_nogo_require_fastlane_disabled" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
+validate_policy_gate_verdict "go_nogo" "fastlane_feature_flag_verdict" "$go_nogo_output" "$phase_gate_require_fastlane_disabled" "PASS"
+validate_strict_guard_reason_code "go_nogo" "fastlane_feature_flag_reason_code" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
+validate_bool_field_equals "go_nogo" "go_nogo_require_jito_rpc_policy" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy"
+validate_policy_gate_verdict "go_nogo" "jito_rpc_policy_verdict" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
+validate_strict_guard_reason_code "go_nogo" "jito_rpc_policy_reason_code" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy"
+validate_bool_field_equals "go_nogo" "go_nogo_require_non_bootstrap_signer" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_verdict "go_nogo" "non_bootstrap_signer_guard_verdict" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_reason_code "go_nogo" "non_bootstrap_signer_guard_reason_code" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
+fail_phase_gate_stage "go_nogo" "$raw_dir/go_nogo_stdout.txt" "execution_go_nogo_report.sh"
+
 if ! PATH="$fake_bin_dir:$PATH" \
   RUN_TESTS=false \
   DEVNET_REHEARSAL_TEST_MODE=true \
@@ -279,6 +317,29 @@ if ! PATH="$fake_bin_dir:$PATH" \
   echo "phase-gate error: execution_devnet_rehearsal.sh failed for stage=rehearsal" >&2
   exit 3
 fi
+
+rehearsal_output="$(cat "$raw_dir/rehearsal_stdout.txt")"
+phase_gate_errors=()
+
+validate_go_nogo_verdict_is_go "rehearsal" "devnet_rehearsal_verdict" "$rehearsal_output"
+validate_bool_field_equals "rehearsal" "go_nogo_require_executor_upstream" "$rehearsal_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_verdict "rehearsal" "go_nogo_executor_backend_mode_guard_verdict" "$rehearsal_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_executor_backend_mode_guard_reason_code" "$rehearsal_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_verdict "rehearsal" "go_nogo_executor_upstream_endpoint_guard_verdict" "$rehearsal_output" "$phase_gate_require_executor_upstream"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_executor_upstream_endpoint_guard_reason_code" "$rehearsal_output" "$phase_gate_require_executor_upstream"
+validate_bool_field_equals "rehearsal" "go_nogo_require_ingestion_grpc" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
+validate_strict_guard_verdict "rehearsal" "go_nogo_ingestion_grpc_guard_verdict" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_ingestion_grpc_guard_reason_code" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
+validate_bool_field_equals "rehearsal" "go_nogo_require_fastlane_disabled" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
+validate_policy_gate_verdict "rehearsal" "fastlane_feature_flag_verdict" "$rehearsal_output" "$phase_gate_require_fastlane_disabled" "PASS"
+validate_strict_guard_reason_code "rehearsal" "fastlane_feature_flag_reason_code" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
+validate_bool_field_equals "rehearsal" "go_nogo_require_jito_rpc_policy" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy"
+validate_policy_gate_verdict "rehearsal" "jito_rpc_policy_verdict" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
+validate_strict_guard_reason_code "rehearsal" "jito_rpc_policy_reason_code" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy"
+validate_bool_field_equals "rehearsal" "go_nogo_require_non_bootstrap_signer" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_verdict "rehearsal" "go_nogo_non_bootstrap_signer_guard_verdict" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_non_bootstrap_signer_guard_reason_code" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
+fail_phase_gate_stage "rehearsal" "$raw_dir/rehearsal_stdout.txt" "execution_devnet_rehearsal.sh"
 
 if ! PATH="$fake_bin_dir:$PATH" \
   ADAPTER_ENV_PATH="$adapter_env_path" \
@@ -302,49 +363,8 @@ if ! PATH="$fake_bin_dir:$PATH" \
   exit 3
 fi
 
-phase_gate_errors=()
-go_nogo_output="$(cat "$raw_dir/go_nogo_stdout.txt")"
-rehearsal_output="$(cat "$raw_dir/rehearsal_stdout.txt")"
 rollout_output="$(cat "$raw_dir/rollout_stdout.txt")"
-
-validate_go_nogo_verdict_is_go "go_nogo" "overall_go_nogo_verdict" "$go_nogo_output"
-validate_bool_field_equals "go_nogo" "go_nogo_require_executor_upstream" "$go_nogo_output" "$phase_gate_require_executor_upstream"
-validate_strict_guard_verdict "go_nogo" "executor_backend_mode_guard_verdict" "$go_nogo_output" "$phase_gate_require_executor_upstream"
-validate_strict_guard_reason_code "go_nogo" "executor_backend_mode_guard_reason_code" "$go_nogo_output" "$phase_gate_require_executor_upstream"
-validate_strict_guard_verdict "go_nogo" "executor_upstream_endpoint_guard_verdict" "$go_nogo_output" "$phase_gate_require_executor_upstream"
-validate_strict_guard_reason_code "go_nogo" "executor_upstream_endpoint_guard_reason_code" "$go_nogo_output" "$phase_gate_require_executor_upstream"
-validate_bool_field_equals "go_nogo" "go_nogo_require_ingestion_grpc" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
-validate_strict_guard_verdict "go_nogo" "ingestion_grpc_guard_verdict" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
-validate_strict_guard_reason_code "go_nogo" "ingestion_grpc_guard_reason_code" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
-validate_bool_field_equals "go_nogo" "go_nogo_require_fastlane_disabled" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
-validate_policy_gate_verdict "go_nogo" "fastlane_feature_flag_verdict" "$go_nogo_output" "$phase_gate_require_fastlane_disabled" "PASS"
-validate_strict_guard_reason_code "go_nogo" "fastlane_feature_flag_reason_code" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
-validate_bool_field_equals "go_nogo" "go_nogo_require_jito_rpc_policy" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy"
-validate_policy_gate_verdict "go_nogo" "jito_rpc_policy_verdict" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
-validate_strict_guard_reason_code "go_nogo" "jito_rpc_policy_reason_code" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy"
-validate_bool_field_equals "go_nogo" "go_nogo_require_non_bootstrap_signer" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
-validate_strict_guard_verdict "go_nogo" "non_bootstrap_signer_guard_verdict" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
-validate_strict_guard_reason_code "go_nogo" "non_bootstrap_signer_guard_reason_code" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
-
-validate_go_nogo_verdict_is_go "rehearsal" "devnet_rehearsal_verdict" "$rehearsal_output"
-validate_bool_field_equals "rehearsal" "go_nogo_require_executor_upstream" "$rehearsal_output" "$phase_gate_require_executor_upstream"
-validate_strict_guard_verdict "rehearsal" "go_nogo_executor_backend_mode_guard_verdict" "$rehearsal_output" "$phase_gate_require_executor_upstream"
-validate_strict_guard_reason_code "rehearsal" "go_nogo_executor_backend_mode_guard_reason_code" "$rehearsal_output" "$phase_gate_require_executor_upstream"
-validate_strict_guard_verdict "rehearsal" "go_nogo_executor_upstream_endpoint_guard_verdict" "$rehearsal_output" "$phase_gate_require_executor_upstream"
-validate_strict_guard_reason_code "rehearsal" "go_nogo_executor_upstream_endpoint_guard_reason_code" "$rehearsal_output" "$phase_gate_require_executor_upstream"
-validate_bool_field_equals "rehearsal" "go_nogo_require_ingestion_grpc" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
-validate_strict_guard_verdict "rehearsal" "go_nogo_ingestion_grpc_guard_verdict" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
-validate_strict_guard_reason_code "rehearsal" "go_nogo_ingestion_grpc_guard_reason_code" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
-validate_bool_field_equals "rehearsal" "go_nogo_require_fastlane_disabled" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
-validate_policy_gate_verdict "rehearsal" "fastlane_feature_flag_verdict" "$rehearsal_output" "$phase_gate_require_fastlane_disabled" "PASS"
-validate_strict_guard_reason_code "rehearsal" "fastlane_feature_flag_reason_code" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
-validate_bool_field_equals "rehearsal" "go_nogo_require_jito_rpc_policy" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy"
-validate_policy_gate_verdict "rehearsal" "jito_rpc_policy_verdict" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
-validate_strict_guard_reason_code "rehearsal" "jito_rpc_policy_reason_code" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy"
-validate_bool_field_equals "rehearsal" "go_nogo_require_non_bootstrap_signer" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
-validate_strict_guard_verdict "rehearsal" "go_nogo_non_bootstrap_signer_guard_verdict" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
-validate_strict_guard_reason_code "rehearsal" "go_nogo_non_bootstrap_signer_guard_reason_code" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
-
+phase_gate_errors=()
 validate_go_nogo_verdict_is_go "rollout" "adapter_rollout_verdict" "$rollout_output"
 validate_bool_field_equals "rollout" "go_nogo_require_executor_upstream" "$rollout_output" "$phase_gate_require_executor_upstream"
 validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_executor_upstream" "$rollout_output" "$phase_gate_require_executor_upstream"
@@ -366,13 +386,7 @@ validate_bool_field_equals "rollout" "go_nogo_require_non_bootstrap_signer" "$ro
 validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_non_bootstrap_signer" "$rollout_output" "$phase_gate_require_non_bootstrap_signer"
 validate_strict_guard_verdict "rollout" "rehearsal_nested_non_bootstrap_signer_guard_verdict" "$rollout_output" "$phase_gate_require_non_bootstrap_signer"
 validate_strict_guard_reason_code "rollout" "rehearsal_nested_non_bootstrap_signer_guard_reason_code" "$rollout_output" "$phase_gate_require_non_bootstrap_signer"
-
-if ((${#phase_gate_errors[@]} > 0)); then
-  for phase_gate_error in "${phase_gate_errors[@]}"; do
-    echo "phase-gate error: $phase_gate_error" >&2
-  done
-  exit 3
-fi
+fail_phase_gate_stage "rollout" "$raw_dir/rollout_stdout.txt" "adapter_rollout_evidence_report.sh"
 
 bash "$ROOT_DIR/tools/refactor_normalize_output.sh" "$raw_dir/go_nogo_stdout.txt" "$norm_dir/go_nogo_normalized.txt"
 bash "$ROOT_DIR/tools/refactor_normalize_output.sh" "$raw_dir/rehearsal_stdout.txt" "$norm_dir/rehearsal_normalized.txt"
