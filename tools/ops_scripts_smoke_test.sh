@@ -8,6 +8,7 @@ source "$ROOT_DIR/tools/lib/common.sh"
 
 OPS_SMOKE_TARGET_CASES="${OPS_SMOKE_TARGET_CASES:-}"
 OPS_SMOKE_PROFILE="${OPS_SMOKE_PROFILE:-auto}"
+OPS_SMOKE_ALLOW_HEAVY_FULL="${OPS_SMOKE_ALLOW_HEAVY_FULL:-false}"
 
 require_bin() {
   local bin="$1"
@@ -11568,11 +11569,17 @@ is_ops_smoke_heavy_case() {
 run_targeted_smoke_cases() {
   local target_cases_raw="$1"
   local targeted_case_profile_raw="${OPS_SMOKE_PROFILE:-auto}"
+  local allow_heavy_full_raw="${OPS_SMOKE_ALLOW_HEAVY_FULL:-false}"
   local requested_targeted_case_profile
   local targeted_case_profile
+  local allow_heavy_full
   requested_targeted_case_profile="$(printf '%s' "$(trim_string "$targeted_case_profile_raw")" | tr '[:upper:]' '[:lower:]')"
   if [[ "$requested_targeted_case_profile" != "full" && "$requested_targeted_case_profile" != "fast" && "$requested_targeted_case_profile" != "auto" ]]; then
     echo "OPS_SMOKE_PROFILE must be one of: full,fast,auto (got: ${targeted_case_profile_raw:-<empty>})" >&2
+    exit 1
+  fi
+  if ! allow_heavy_full="$(parse_bool_token_strict "$allow_heavy_full_raw")"; then
+    echo "OPS_SMOKE_ALLOW_HEAVY_FULL must be a boolean token (got: ${allow_heavy_full_raw:-<empty>})" >&2
     exit 1
   fi
   local -a raw_target_tokens=()
@@ -11640,6 +11647,26 @@ run_targeted_smoke_cases() {
     done
   else
     targeted_case_profile="$requested_targeted_case_profile"
+  fi
+  if [[ "$targeted_case_profile" == "full" && "$allow_heavy_full" != "true" ]]; then
+    local heavy_target_case_csv=""
+    local profile_case=""
+    for profile_case in "${target_cases[@]-}"; do
+      if ! is_ops_smoke_heavy_case "$profile_case"; then
+        continue
+      fi
+      if [[ -z "$heavy_target_case_csv" ]]; then
+        heavy_target_case_csv="$profile_case"
+      else
+        heavy_target_case_csv+=",$profile_case"
+      fi
+    done
+    if [[ -n "$heavy_target_case_csv" ]]; then
+      echo "OPS_SMOKE_PROFILE=full is blocked for heavy targeted cases unless OPS_SMOKE_ALLOW_HEAVY_FULL=true" >&2
+      echo "heavy targeted cases: $heavy_target_case_csv" >&2
+      echo "hint: use OPS_SMOKE_PROFILE=fast or OPS_SMOKE_PROFILE=auto" >&2
+      exit 1
+    fi
   fi
 
   write_fake_journalctl
@@ -11859,6 +11886,35 @@ run_ops_smoke_targeted_dispatch_case() {
   local invalid_profile_output=""
   invalid_profile_output="$(cat "$invalid_profile_output_path")"
   assert_contains "$invalid_profile_output" "OPS_SMOKE_PROFILE must be one of: full,fast,auto"
+
+  local invalid_allow_heavy_full_output_path="$TMP_DIR/ops-smoke-target-invalid-allow-heavy-full.out"
+  if OPS_SMOKE_PROFILE="full" OPS_SMOKE_ALLOW_HEAVY_FULL="sometimes" OPS_SMOKE_TARGET_CASES="executor_preflight_fast" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_allow_heavy_full_output_path" 2>&1; then
+    echo "expected targeted smoke mode to fail on invalid OPS_SMOKE_ALLOW_HEAVY_FULL token" >&2
+    exit 1
+  fi
+  local invalid_allow_heavy_full_output=""
+  invalid_allow_heavy_full_output="$(cat "$invalid_allow_heavy_full_output_path")"
+  assert_contains "$invalid_allow_heavy_full_output" "OPS_SMOKE_ALLOW_HEAVY_FULL must be a boolean token"
+
+  local blocked_full_heavy_output_path="$TMP_DIR/ops-smoke-target-blocked-full-heavy.out"
+  if OPS_SMOKE_PROFILE="full" OPS_SMOKE_TARGET_CASES="executor_preflight_fast" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$blocked_full_heavy_output_path" 2>&1; then
+    echo "expected targeted smoke mode to reject full profile for heavy targeted cases" >&2
+    exit 1
+  fi
+  local blocked_full_heavy_output=""
+  blocked_full_heavy_output="$(cat "$blocked_full_heavy_output_path")"
+  assert_contains "$blocked_full_heavy_output" "OPS_SMOKE_PROFILE=full is blocked for heavy targeted cases unless OPS_SMOKE_ALLOW_HEAVY_FULL=true"
+  assert_contains "$blocked_full_heavy_output" "heavy targeted cases: executor_preflight_fast"
+
+  local allow_full_heavy_override_output=""
+  allow_full_heavy_override_output="$(
+    OPS_SMOKE_PROFILE="full" \
+      OPS_SMOKE_ALLOW_HEAVY_FULL="true" \
+      OPS_SMOKE_TARGET_CASES="executor_preflight_fast" \
+      bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
+  )"
+  assert_contains "$allow_full_heavy_override_output" "ops smoke targeted profile: full"
+  assert_contains "$allow_full_heavy_override_output" "[ok] executor preflight helper (fast)"
   echo "[ok] ops smoke targeted dispatcher"
 }
 
