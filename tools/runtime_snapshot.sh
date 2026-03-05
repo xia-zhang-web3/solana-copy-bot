@@ -277,6 +277,7 @@ text = sys.argv[1]
 rows = []
 sqlite_rows = []
 execution_rows = []
+discovery_rows = []
 for line in text.splitlines():
     m = re.search(r'(\{.*\})\s*$', line)
     if not m:
@@ -291,6 +292,8 @@ for line in text.splitlines():
         sqlite_rows.append(payload)
     elif "execution batch processed" in line:
         execution_rows.append(payload)
+    elif "discovery cycle completed" in line:
+        discovery_rows.append(payload)
 
 def emit_execution_sample(rows):
     if rows:
@@ -329,8 +332,36 @@ def emit_execution_sample(rows):
     else:
         print("execution_batch_sample_available: false")
 
+def emit_discovery_sample(rows):
+    if not rows:
+        print("discovery_cycle_sample_available: false")
+        print("discovery_cycle_duration_ms_last: n/a")
+        print("eligible_wallets_last: n/a")
+        print("active_follow_wallets_last: n/a")
+        print("swaps_delta_fetched_last: n/a")
+        print("swaps_evicted_due_cap_last: n/a")
+        print("swaps_fetch_limit_reached_last: n/a")
+        return
+
+    last = rows[-1]
+    print("discovery_cycle_sample_available: true")
+    keys = [
+        "discovery_cycle_duration_ms",
+        "eligible_wallets",
+        "active_follow_wallets",
+        "swaps_delta_fetched",
+        "swaps_evicted_due_cap",
+        "swaps_fetch_limit_reached",
+    ]
+    for key in keys:
+        value = last.get(key)
+        if isinstance(value, bool):
+            value = str(value).lower()
+        print(f"{key}_last: {value}")
+
 if not rows:
     print("no ingestion metric samples found")
+    emit_discovery_sample(discovery_rows)
     emit_execution_sample(execution_rows)
     raise SystemExit(0)
 
@@ -376,6 +407,7 @@ if sqlite_rows:
     print(f"sqlite_write_retry_total: {sqlite_last.get('sqlite_write_retry_total')}")
     print(f"sqlite_busy_error_total: {sqlite_last.get('sqlite_busy_error_total')}")
 
+emit_discovery_sample(discovery_rows)
 emit_execution_sample(execution_rows)
 PY
 else

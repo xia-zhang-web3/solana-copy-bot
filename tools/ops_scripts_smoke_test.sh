@@ -47,6 +47,10 @@ if [[ "$args" == *"-n 250"* ]]; then
 LOGS
     exit 0
   fi
+  discovery_tail_line='2026-02-19T12:00:03Z INFO discovery cycle completed {"active_follow_wallets":0,"eligible_wallets":0,"discovery_cycle_duration_ms":8200,"swaps_delta_fetched":120000,"swaps_evicted_due_cap":120000,"swaps_fetch_limit_reached":true}'
+  if [[ "$mode" == "followlist_active" ]]; then
+    discovery_tail_line='2026-02-19T12:00:03Z INFO discovery cycle completed {"active_follow_wallets":4,"eligible_wallets":9,"discovery_cycle_duration_ms":7800,"swaps_delta_fetched":34000,"swaps_evicted_due_cap":32000,"swaps_fetch_limit_reached":false}'
+  fi
   cat <<'LOGS'
 2026-02-19T12:00:00Z INFO unrelated runtime line without json payload
 2026-02-19T12:00:00Z INFO ingestion pipeline metrics {not-valid-json
@@ -56,6 +60,7 @@ LOGS
 2026-02-19T12:00:01Z INFO sqlite contention counters {"sqlite_write_retry_total":0,"sqlite_busy_error_total":0}
 2026-02-19T12:00:02Z INFO execution batch processed {"attempted":3,"confirmed":2,"dropped":0,"failed":1,"skipped":0,"submit_attempted_by_route":{"rpc":3},"submit_retry_scheduled_by_route":{"rpc":1},"submit_failed_by_route":{"rpc":1},"submit_dynamic_cu_policy_enabled_by_route":{"rpc":2},"submit_dynamic_cu_hint_used_by_route":{"rpc":2},"submit_dynamic_cu_hint_api_by_route":{"rpc":1},"submit_dynamic_cu_hint_rpc_by_route":{"rpc":1},"submit_dynamic_cu_price_applied_by_route":{"rpc":1},"submit_dynamic_cu_static_fallback_by_route":{"rpc":1},"submit_dynamic_tip_policy_enabled_by_route":{"rpc":2},"submit_dynamic_tip_applied_by_route":{"rpc":1},"submit_dynamic_tip_static_floor_by_route":{"rpc":1}}
 LOGS
+  printf '%s\n' "$discovery_tail_line"
 fi
 exit 0
 EOF
@@ -1201,6 +1206,9 @@ run_ops_scripts_for_db() {
   assert_contains "$snapshot_output" "parse_rejected_total: 5"
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
   assert_contains "$snapshot_output" "parse_fallback_by_reason: {\"missing_program_ids_fallback\": 1, \"missing_slot_fallback\": 2}"
+  assert_contains "$snapshot_output" "discovery_cycle_sample_available: true"
+  assert_contains "$snapshot_output" "eligible_wallets_last: 0"
+  assert_contains "$snapshot_output" "active_follow_wallets_last: 0"
   assert_contains "$snapshot_output" "execution_batch_sample_available: true"
   assert_contains "$snapshot_output" "submit_dynamic_cu_policy_enabled_by_route: {\"rpc\": 2}"
   assert_contains "$snapshot_output" "submit_dynamic_cu_hint_api_by_route: {\"rpc\": 1}"
@@ -1242,6 +1250,9 @@ run_ops_scripts_for_db() {
   assert_contains "$go_nogo_output" "executor_backend_mode: upstream"
   assert_contains "$go_nogo_output" "executor_backend_mode_guard_verdict: PASS"
   assert_field_equals "$go_nogo_output" "executor_backend_mode_guard_reason_code" "backend_mode_upstream"
+  assert_contains "$go_nogo_output" "go_nogo_require_followlist_activity: false"
+  assert_contains "$go_nogo_output" "followlist_activity_guard_verdict: SKIP"
+  assert_field_equals "$go_nogo_output" "followlist_activity_guard_reason_code" "gate_disabled"
   assert_contains "$go_nogo_output" "go_nogo_require_jito_rpc_policy: false"
   assert_contains "$go_nogo_output" "jito_rpc_policy_verdict: SKIP"
   assert_field_equals "$go_nogo_output" "jito_rpc_policy_reason_code" "gate_disabled"
@@ -1374,6 +1385,9 @@ run_runtime_snapshot_no_ingestion_case() {
   )"
   assert_contains "$snapshot_output" "=== Ingestion Runtime (latest samples) ==="
   assert_contains "$snapshot_output" "no ingestion metric samples found"
+  assert_contains "$snapshot_output" "discovery_cycle_sample_available: false"
+  assert_contains "$snapshot_output" "eligible_wallets_last: n/a"
+  assert_contains "$snapshot_output" "active_follow_wallets_last: n/a"
   assert_contains "$snapshot_output" "execution_batch_sample_available: false"
   echo "[ok] runtime snapshot no-ingestion branch"
 }
@@ -2076,6 +2090,78 @@ EOF_EXECUTOR_INVALID
   assert_field_equals "$ingestion_grpc_missing_metric_output" "overall_go_nogo_verdict" "NO_GO"
   assert_field_equals "$ingestion_grpc_missing_metric_output" "overall_go_nogo_reason_code" "ingestion_grpc_unknown"
 
+  local strict_followlist_pass_output
+  strict_followlist_pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      COPYBOT_SMOKE_JOURNAL_MODE="followlist_active" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_followlist_pass_output" "go_nogo_require_followlist_activity" "true"
+  assert_field_equals "$strict_followlist_pass_output" "eligible_wallets_last" "9"
+  assert_field_equals "$strict_followlist_pass_output" "active_follow_wallets_last" "4"
+  assert_field_equals "$strict_followlist_pass_output" "followlist_activity_guard_verdict" "PASS"
+  assert_field_equals "$strict_followlist_pass_output" "followlist_activity_guard_reason_code" "followlist_active"
+  assert_field_equals "$strict_followlist_pass_output" "overall_go_nogo_verdict" "GO"
+  assert_field_equals "$strict_followlist_pass_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local strict_followlist_inactive_output
+  strict_followlist_inactive_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_followlist_inactive_output" "go_nogo_require_followlist_activity" "true"
+  assert_field_equals "$strict_followlist_inactive_output" "eligible_wallets_last" "0"
+  assert_field_equals "$strict_followlist_inactive_output" "active_follow_wallets_last" "0"
+  assert_field_equals "$strict_followlist_inactive_output" "followlist_activity_guard_verdict" "WARN"
+  assert_field_equals "$strict_followlist_inactive_output" "followlist_activity_guard_reason_code" "followlist_inactive"
+  assert_field_equals "$strict_followlist_inactive_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_followlist_inactive_output" "overall_go_nogo_reason_code" "followlist_activity_not_pass"
+
+  local strict_followlist_missing_metric_output
+  strict_followlist_missing_metric_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      COPYBOT_SMOKE_JOURNAL_MODE="no_ingestion" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_followlist_missing_metric_output" "go_nogo_require_followlist_activity" "true"
+  assert_field_equals "$strict_followlist_missing_metric_output" "followlist_activity_guard_verdict" "UNKNOWN"
+  assert_field_equals "$strict_followlist_missing_metric_output" "followlist_activity_guard_reason_code" "followlist_metric_missing"
+  assert_field_equals "$strict_followlist_missing_metric_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_followlist_missing_metric_output" "overall_go_nogo_reason_code" "followlist_activity_unknown"
+
   local upstream_placeholder_output
   upstream_placeholder_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -2203,6 +2289,28 @@ EOF_EXECUTOR_INVALID
   fi
   assert_contains "$invalid_ingestion_bool_output" "GO_NOGO_REQUIRE_INGESTION_GRPC must be a boolean token"
   assert_contains "$invalid_ingestion_bool_output" "got: sometimes"
+
+  local invalid_followlist_bool_output=""
+  if invalid_followlist_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="sometimes" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY token" >&2
+    exit 1
+  else
+    local invalid_followlist_bool_exit_code=$?
+    if [[ "$invalid_followlist_bool_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY token, got $invalid_followlist_bool_exit_code" >&2
+      echo "$invalid_followlist_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_followlist_bool_output" "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY must be a boolean token"
+  assert_contains "$invalid_followlist_bool_output" "got: sometimes"
 
   local invalid_signer_bool_output=""
   if invalid_signer_bool_output="$(

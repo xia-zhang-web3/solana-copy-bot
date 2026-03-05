@@ -35,6 +35,7 @@ go_nogo_require_jito_rpc_policy_raw="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 go_nogo_require_executor_upstream_raw="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 go_nogo_require_ingestion_grpc_raw="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
+go_nogo_require_followlist_activity_raw="${GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY:-false}"
 go_nogo_require_non_bootstrap_signer_raw="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 go_nogo_require_submit_verify_strict_raw="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
@@ -52,6 +53,10 @@ if ! go_nogo_require_executor_upstream="$(parse_bool_token_strict "$go_nogo_requ
 fi
 if ! go_nogo_require_ingestion_grpc="$(parse_bool_token_strict "$go_nogo_require_ingestion_grpc_raw")"; then
   echo "GO_NOGO_REQUIRE_INGESTION_GRPC must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_ingestion_grpc_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_require_followlist_activity="$(parse_bool_token_strict "$go_nogo_require_followlist_activity_raw")"; then
+  echo "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_followlist_activity_raw}" >&2
   exit 1
 fi
 if ! go_nogo_require_non_bootstrap_signer="$(parse_bool_token_strict "$go_nogo_require_non_bootstrap_signer_raw")"; then
@@ -631,6 +636,8 @@ ingestion_lag_ms_p99="$(extract_field "ingestion_lag_ms_p99" "$snapshot_output")
 parse_rejected_total="$(extract_field "parse_rejected_total" "$snapshot_output")"
 grpc_message_total="$(extract_field "grpc_message_total" "$snapshot_output")"
 rpc_429_total="$(extract_field "rpc_429" "$snapshot_output")"
+eligible_wallets_last="$(extract_field "eligible_wallets_last" "$snapshot_output")"
+active_follow_wallets_last="$(extract_field "active_follow_wallets_last" "$snapshot_output")"
 parse_rejected_by_reason="$(extract_field "parse_rejected_by_reason" "$snapshot_output")"
 parse_fallback_by_reason="$(extract_field "parse_fallback_by_reason" "$snapshot_output")"
 replaced_ratio_last_interval="$(extract_field "replaced_ratio_last_interval" "$snapshot_output")"
@@ -837,6 +844,39 @@ if [[ "$go_nogo_require_ingestion_grpc" == "true" ]]; then
   fi
 fi
 
+followlist_activity_guard_verdict="SKIP"
+followlist_activity_guard_reason="strict followlist activity guard disabled"
+followlist_activity_guard_reason_code="gate_disabled"
+if [[ "$go_nogo_require_followlist_activity" == "true" ]]; then
+  eligible_wallets_last_raw="$(trim_string "${eligible_wallets_last:-}")"
+  active_follow_wallets_last_raw="$(trim_string "${active_follow_wallets_last:-}")"
+  if [[ -z "$eligible_wallets_last_raw" || "$eligible_wallets_last_raw" == "n/a" || -z "$active_follow_wallets_last_raw" || "$active_follow_wallets_last_raw" == "n/a" ]]; then
+    followlist_activity_guard_verdict="UNKNOWN"
+    followlist_activity_guard_reason="runtime snapshot missing eligible/active follow-wallet metrics while strict followlist activity guard is enabled"
+    followlist_activity_guard_reason_code="followlist_metric_missing"
+  elif ! [[ "$eligible_wallets_last_raw" =~ ^-?[0-9]+$ ]] || ! [[ "$active_follow_wallets_last_raw" =~ ^-?[0-9]+$ ]]; then
+    followlist_activity_guard_verdict="UNKNOWN"
+    followlist_activity_guard_reason="runtime snapshot followlist metrics must be integers when strict followlist activity guard is enabled (eligible=${eligible_wallets_last_raw}, active=${active_follow_wallets_last_raw})"
+    followlist_activity_guard_reason_code="followlist_metric_invalid"
+  elif (( eligible_wallets_last_raw < 0 || active_follow_wallets_last_raw < 0 )); then
+    followlist_activity_guard_verdict="UNKNOWN"
+    followlist_activity_guard_reason="runtime snapshot followlist metrics must be non-negative when strict followlist activity guard is enabled (eligible=${eligible_wallets_last_raw}, active=${active_follow_wallets_last_raw})"
+    followlist_activity_guard_reason_code="followlist_metric_invalid"
+  elif (( active_follow_wallets_last_raw > eligible_wallets_last_raw )); then
+    followlist_activity_guard_verdict="UNKNOWN"
+    followlist_activity_guard_reason="runtime snapshot followlist metrics are inconsistent (active=${active_follow_wallets_last_raw} > eligible=${eligible_wallets_last_raw})"
+    followlist_activity_guard_reason_code="followlist_metric_inconsistent"
+  elif (( eligible_wallets_last_raw <= 0 || active_follow_wallets_last_raw <= 0 )); then
+    followlist_activity_guard_verdict="WARN"
+    followlist_activity_guard_reason="strict followlist activity guard requires eligible/active follow wallets > 0 (eligible=${eligible_wallets_last_raw}, active=${active_follow_wallets_last_raw})"
+    followlist_activity_guard_reason_code="followlist_inactive"
+  else
+    followlist_activity_guard_verdict="PASS"
+    followlist_activity_guard_reason="strict followlist activity guard confirms eligible=${eligible_wallets_last_raw} and active=${active_follow_wallets_last_raw}"
+    followlist_activity_guard_reason_code="followlist_active"
+  fi
+fi
+
 # Test-only overrides for smoke validation of verdict precedence branches.
 if [[ "$go_nogo_test_mode" == "true" ]]; then
   if [[ -n "${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" ]]; then
@@ -898,6 +938,14 @@ elif [[ "$go_nogo_require_submit_verify_strict" == "true" && "$submit_verify_gua
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict submit-verify guard not PASS: ${submit_verify_guard_reason:-n/a}"
   overall_go_nogo_reason_code="submit_verify_guard_not_pass"
+elif [[ "$go_nogo_require_followlist_activity" == "true" && "$followlist_activity_guard_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict followlist activity guard verdict: ${followlist_activity_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="followlist_activity_unknown"
+elif [[ "$go_nogo_require_followlist_activity" == "true" && "$followlist_activity_guard_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict followlist activity guard not PASS: ${followlist_activity_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="followlist_activity_not_pass"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
@@ -906,7 +954,7 @@ elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_fla
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
   overall_go_nogo_reason_code="fastlane_policy_unknown"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_submit_verify_strict" != "true" || "$submit_verify_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_followlist_activity" != "true" || "$followlist_activity_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_submit_verify_strict" != "true" || "$submit_verify_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
   overall_go_nogo_reason_code="all_required_gates_pass"
@@ -999,6 +1047,8 @@ ingestion_lag_ms_p99: ${ingestion_lag_ms_p99:-n/a}
 parse_rejected_total: ${parse_rejected_total:-n/a}
 grpc_message_total: ${grpc_message_total:-n/a}
 rpc_429: ${rpc_429_total:-n/a}
+eligible_wallets_last: ${eligible_wallets_last:-n/a}
+active_follow_wallets_last: ${active_follow_wallets_last:-n/a}
 parse_rejected_by_reason: ${parse_rejected_by_reason:-{}}
 parse_fallback_by_reason: ${parse_fallback_by_reason:-{}}
 replaced_ratio_last_interval: ${replaced_ratio_last_interval:-n/a}
@@ -1048,6 +1098,10 @@ ingestion_source: ${ingestion_source_for_go_nogo:-unknown}
 ingestion_grpc_guard_verdict: $ingestion_grpc_guard_verdict
 ingestion_grpc_guard_reason: $ingestion_grpc_guard_reason
 ingestion_grpc_guard_reason_code: $ingestion_grpc_guard_reason_code
+go_nogo_require_followlist_activity: $go_nogo_require_followlist_activity
+followlist_activity_guard_verdict: $followlist_activity_guard_verdict
+followlist_activity_guard_reason: $followlist_activity_guard_reason
+followlist_activity_guard_reason_code: $followlist_activity_guard_reason_code
 go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer
 executor_signer_pubkey_observed: ${executor_signer_pubkey_observed:-n/a}
 non_bootstrap_signer_guard_verdict: $non_bootstrap_signer_guard_verdict

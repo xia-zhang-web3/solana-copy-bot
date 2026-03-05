@@ -1058,6 +1058,7 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 530. submit-verify strict parity closure for adapter/runtime/server nested chains (follow-up on accelerated targeted smoke loops from `4cc86fc`): `tools/adapter_rollout_evidence_report.sh` and `tools/adapter_rollout_final_evidence_report.sh` now parse+propagate+fail-close validate `GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT` and nested submit-verify guard fields (`go_nogo_submit_verify_guard_*` -> `rehearsal_nested_*` -> `rollout_nested_*`) with parity contract (`required=true => non-SKIP`, `required=false => SKIP`); `tools/execution_runtime_readiness_report.sh` now validates and exports adapter-final + route-fee-final nested submit-verify strict fields (`*_nested_go_nogo_require_submit_verify_strict`, `*_nested_submit_verify_guard_*`); and `tools/execution_server_rollout_report.sh` now validates/surfaces adapter-final nested submit-verify strict parity in top-level summary. `tools/ops_scripts_smoke_test.sh` assertions were expanded across adapter-rollout, runtime-readiness, and server-rollout pass/skip/profile/bundle/mock paths.
 531. refactor phase-gate strict submit-verify parity closure (continuing accelerated loops from `4cc86fc`): `tools/refactor_phase_gate.sh` now supports fail-closed `REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT` parsing, propagates `GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT` to all three nested stages (`execution_go_nogo_report.sh`, `execution_devnet_rehearsal.sh`, `adapter_rollout_evidence_report.sh`), validates submit-verify strict parity at each stage (`go_nogo_require_submit_verify_strict`, `submit_verify_guard_*`, `go_nogo_submit_verify_guard_*`, `rehearsal_nested_submit_verify_guard_*`) with contract (`required=true => PASS`, `required=false => SKIP`, reason-code `gate_disabled` in relaxed mode), and exports normalized summary field `go_nogo_require_submit_verify_strict`; `tools/ops_scripts_smoke_test.sh` `refactor_phase_gate` full path now pins relaxed SKIP propagation, strict fail-close against baseline submit-verify config (`WARN/submit_verify_strict_not_enabled` at go-no-go stage), and invalid-bool reject for `REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT`.
 532. refactor phase-gate strict submit-verify matrix expansion (completing strict PASS/negative topology coverage after slice 531): `tools/refactor_baseline_prepare.sh` now supports deterministic submit-verify fixture overrides (`REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_STRICT`, `REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_RPC_URL`, `REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL`) appended into generated `executor.env`; `tools/ops_scripts_smoke_test.sh` `run_refactor_phase_gate_case` full path now adds strict submit-verify PASS chain assertions across normalized go-no-go/rehearsal/rollout outputs (`submit_verify_guard_*`, `go_nogo_submit_verify_guard_*`, `rehearsal_nested_submit_verify_guard_*` all `PASS/submit_verify_strict_enabled`), plus strict fail-close negative matrices for normalized fallback identity collision (`WARN/submit_verify_fallback_same_as_primary`) and invalid primary verify URL (`UNKNOWN/submit_verify_primary_invalid`) with go-no-go stage fail-fast marker.
+533. runtime/e2e followlist observability + strict gate hardening (ordering policy checkpoint: `N=0` from `ops/executor_ordering_coverage_policy.md`; slice type = runtime/e2e, non-coverage; keeps accelerated targeted smoke loop behavior introduced in `4cc86fc`): `tools/runtime_snapshot.sh` now parses `discovery cycle completed` journal samples and emits `eligible_wallets_last`, `active_follow_wallets_last`, `discovery_cycle_duration_ms_last`, `swaps_delta_fetched_last`, `swaps_evicted_due_cap_last`, and `swaps_fetch_limit_reached_last`; `tools/execution_go_nogo_report.sh` adds fail-closed strict gate `GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY` with explicit `PASS/WARN/UNKNOWN` taxonomy (`followlist_active`, `followlist_inactive`, `followlist_metric_missing|invalid|inconsistent`) and integrates it into overall `NO_GO` precedence/all-pass contract. `tools/ops_scripts_smoke_test.sh` extends fake journal fixtures and adds targeted pins for strict followlist `PASS` (active fixture), strict followlist `WARN` (zero activity), strict followlist `UNKNOWN` (missing discovery metrics), and invalid bool reject for `GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY`.
 
 Остается в next-code-queue:
 
@@ -1516,3 +1517,35 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 1. Ночной прогон стабильный, без OOM/restart regressions.
 2. Discovery backlog/cap давление продолжает спадать.
 3. Главная незакрытая бизнес-метрика — выход `eligible/active follow wallets` из нуля.
+
+### 2026-03-05 — afternoon post-patch follow-up (snapshot 14:47 UTC / 16:47 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-05_afternoon_post_patch_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-05_post_patch_followup_1447_snapshot/computed_summary.json`
+
+Итог дневного окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Ingestion gates: PASS (`rpc_429 delta=0`, `rpc_5xx delta=0`, `parse_rejected delta=0`; throughput ~`376.87 msg/s`).
+3. Discovery pressure: IMPROVED further
+   1. `swaps_fetch_limit_reached_ratio=0.1970` (`104/528`) vs утренних `0.2687` (`104/387`).
+4. Discovery duration: overall stable with better p95
+   1. `duration_ms_p50=6052.5`,
+   2. `duration_ms_p95=22817.65` (лучше утреннего `26121.8`),
+   3. `duration_ms_last=12693`,
+   4. `duration_ms_max=96516` (редкий хвост сохраняется).
+5. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+6. Process memory remains stable:
+   1. `VmRSS ~303 MB`,
+   2. `VmHWM ~599 MB`,
+   3. признаков RSS-утечки нет (cgroup memory по-прежнему cache-dominated).
+
+Операционный вывод:
+
+1. Пост-патч стабильность сохраняется >26h без OOM/restart regressions.
+2. Discovery saturation продолжает снижаться.
+3. Единственный открытый бизнес-gap — нулевые `eligible/active follow wallets`.
