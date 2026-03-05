@@ -61,6 +61,13 @@ struct WalletSnapshot {
     eligible: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct RugMetrics {
+    evaluated: u32,
+    rugged: u32,
+    unevaluated: u32,
+}
+
 #[derive(Debug, Clone)]
 struct Lot {
     qty: f64,
@@ -168,7 +175,8 @@ impl DiscoveryService {
                     slot: cursor.slot,
                     signature: cursor.signature,
                 });
-                state.cursor = Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
+                state.cursor =
+                    Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
             }
 
             let mut cursor = state
@@ -180,7 +188,8 @@ impl DiscoveryService {
             }
 
             if state.swaps.is_empty() && cursor_restored_from_store {
-                match store.load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
+                match store
+                    .load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
                 {
                     Ok(swaps) => {
                         for swap in swaps {
@@ -422,10 +431,9 @@ impl DiscoveryService {
         } else {
             0.0
         };
-        let (rug_evaluated, rugged_buys) =
-            self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
-        let rug_ratio = if rug_evaluated > 0 {
-            rugged_buys as f64 / rug_evaluated as f64
+        let rug_metrics = self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
+        let rug_ratio = if buy_total > 0 {
+            (rug_metrics.rugged.saturating_add(rug_metrics.unevaluated)) as f64 / buy_total as f64
         } else {
             0.0
         };
@@ -499,22 +507,22 @@ impl DiscoveryService {
         buys: &[BuyObservation],
         token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
         now: DateTime<Utc>,
-    ) -> (u32, u32) {
+    ) -> RugMetrics {
         if buys.is_empty() {
-            return (0, 0);
+            return RugMetrics::default();
         }
         let lookahead = Duration::seconds(self.config.rug_lookahead_seconds.max(1) as i64);
-        let mut evaluated = 0u32;
-        let mut rugged = 0u32;
+        let mut metrics = RugMetrics::default();
 
         for buy in buys {
             let window_end = buy.ts + lookahead;
             if window_end > now {
+                metrics.unevaluated = metrics.unevaluated.saturating_add(1);
                 continue;
             }
-            evaluated = evaluated.saturating_add(1);
+            metrics.evaluated = metrics.evaluated.saturating_add(1);
             let Some(trades) = token_sol_history.get(&buy.token) else {
-                rugged = rugged.saturating_add(1);
+                metrics.rugged = metrics.rugged.saturating_add(1);
                 continue;
             };
 
@@ -531,11 +539,11 @@ impl DiscoveryService {
             let thin_traders =
                 unique_traders.len() < self.config.thin_market_min_unique_traders as usize;
             if thin_volume || thin_traders {
-                rugged = rugged.saturating_add(1);
+                metrics.rugged = metrics.rugged.saturating_add(1);
             }
         }
 
-        (evaluated, rugged)
+        metrics
     }
 }
 
@@ -885,7 +893,8 @@ mod tests {
         config.max_window_swaps_in_memory = 100;
         config.max_fetch_swaps_per_cycle = 4;
 
-        let discovery_first = DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
+        let discovery_first =
+            DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
         let _ = discovery_first.run_cycle(&store, now)?;
         let cursor_after_first = store
             .load_discovery_runtime_cursor()?
@@ -970,7 +979,8 @@ mod tests {
         config.thin_market_min_unique_traders = 1;
         config.max_window_swaps_in_memory = 200;
         config.max_fetch_swaps_per_cycle = 200;
-        let discovery = DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
+        let discovery =
+            DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
         let summary = discovery.run_cycle(&store, now)?;
         assert!(summary.follow_promoted >= 1);
         let active_before = store.list_active_follow_wallets()?;
@@ -1063,6 +1073,132 @@ mod tests {
             "cache must keep latest swaps after ordering normalization + cap eviction"
         );
         Ok(())
+    }
+
+    #[test]
+    fn rug_ratio_treats_unevaluated_buys_as_risky_until_they_mature() {
+        let now = DateTime::parse_from_rfc3339("2026-03-05T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let buy_ts = now - Duration::seconds(30);
+
+        let mut config = DiscoveryConfig::default();
+        config.min_trades = 1;
+        config.min_active_days = 1;
+        config.min_leader_notional_sol = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 0.60;
+        config.rug_lookahead_seconds = 300;
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+
+        let mut acc = WalletAccumulator::default();
+        acc.first_seen = Some(buy_ts);
+        acc.last_seen = Some(buy_ts);
+        acc.trades = 1;
+        acc.max_buy_notional_sol = 1.0;
+        acc.active_days.insert(buy_ts.date_naive());
+        acc.buy_observations.push(BuyObservation {
+            token: "TokenRecent11111111111111111111111111111111".to_string(),
+            ts: buy_ts,
+            tradable: true,
+        });
+
+        let snapshot = discovery.snapshot_from_accumulator(
+            "wallet_recent".to_string(),
+            acc,
+            now,
+            &HashMap::new(),
+        );
+
+        assert!(
+            (snapshot.rug_ratio - 1.0).abs() < 1e-9,
+            "fresh unevaluated buys must count as risky until lookahead matures"
+        );
+        assert!(
+            !snapshot.eligible,
+            "wallet with only unevaluated buys must not pass rug gating as safe"
+        );
+    }
+
+    #[test]
+    fn rug_ratio_uses_total_buy_count_when_some_buys_are_still_unevaluated() {
+        let now = DateTime::parse_from_rfc3339("2026-03-05T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let mut config = DiscoveryConfig::default();
+        config.min_trades = 5;
+        config.min_active_days = 1;
+        config.min_leader_notional_sol = 0.1;
+        config.min_buy_count = 5;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 0.60;
+        config.rug_lookahead_seconds = 300;
+        config.thin_market_min_volume_sol = 1.0;
+        config.thin_market_min_unique_traders = 1;
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+
+        let mut acc = WalletAccumulator::default();
+        acc.trades = 5;
+        acc.max_buy_notional_sol = 1.0;
+
+        let mut token_sol_history = HashMap::new();
+        for idx in 0..4 {
+            let buy_ts = now - Duration::minutes(20 + idx as i64);
+            let token = format!("TokenMature{idx:02}");
+            if acc.first_seen.is_none() {
+                acc.first_seen = Some(buy_ts);
+            }
+            acc.last_seen = Some(
+                acc.last_seen
+                    .map(|current| current.max(buy_ts))
+                    .unwrap_or(buy_ts),
+            );
+            acc.active_days.insert(buy_ts.date_naive());
+            acc.buy_observations.push(BuyObservation {
+                token: token.clone(),
+                ts: buy_ts,
+                tradable: true,
+            });
+            token_sol_history.insert(
+                token,
+                vec![SolLegTrade {
+                    ts: buy_ts + Duration::seconds(30),
+                    wallet_id: format!("wallet-{idx}"),
+                    sol_notional: 2.0,
+                }],
+            );
+        }
+
+        let fresh_buy_ts = now - Duration::seconds(60);
+        acc.last_seen = Some(
+            acc.last_seen
+                .map(|current| current.max(fresh_buy_ts))
+                .unwrap_or(fresh_buy_ts),
+        );
+        acc.active_days.insert(fresh_buy_ts.date_naive());
+        acc.buy_observations.push(BuyObservation {
+            token: "TokenFresh999999999999999999999999999999999".to_string(),
+            ts: fresh_buy_ts,
+            tradable: true,
+        });
+
+        let snapshot = discovery.snapshot_from_accumulator(
+            "wallet_mixed".to_string(),
+            acc,
+            now,
+            &token_sol_history,
+        );
+
+        assert!(
+            (snapshot.rug_ratio - 0.2).abs() < 1e-9,
+            "one fresh buy out of five total buys must contribute to rug_ratio denominator"
+        );
+        assert!(
+            snapshot.eligible,
+            "a mostly healthy wallet should remain eligible when unevaluated buys stay below max_rug_ratio"
+        );
     }
 
     fn swap(
