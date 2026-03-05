@@ -471,6 +471,10 @@ fn append_internal_submit_fee_hint_fields(payload: &mut Value, instruction_plan:
     else {
         return;
     };
+    let max_signed_hint = i64::MAX as u64;
+    if priority_fee_lamports > max_signed_hint || network_fee_lamports > max_signed_hint {
+        return;
+    }
     payload["network_fee_lamports"] = json!(network_fee_lamports);
     payload["base_fee_lamports"] = json!(crate::DEFAULT_BASE_FEE_LAMPORTS);
     payload["priority_fee_lamports"] = json!(priority_fee_lamports);
@@ -1033,6 +1037,7 @@ mod tests {
     use crate::Reject;
     use crate::route_executor::{RouteActionPayloadExpectations, RouteExecutorKind};
     use crate::tx_build::SubmitInstructionPlan;
+    use serde_json::json;
     use serde_json::Map;
     use serde_json::Value;
 
@@ -1474,6 +1479,35 @@ mod tests {
         assert_eq!(
             payload.get("token").and_then(Value::as_str),
             Some("11111111111111111111111111111111")
+        );
+    }
+
+    #[test]
+    fn append_internal_submit_fee_hint_fields_skips_values_outside_i64_range() {
+        let mut payload = json!({
+            "status": "ok",
+            "ok": true,
+            "accepted": true
+        });
+        super::append_internal_submit_fee_hint_fields(
+            &mut payload,
+            SubmitInstructionPlan {
+                compute_budget_cu_limit: u32::MAX,
+                compute_budget_cu_price_micro_lamports: 3_000_000_000_000_000,
+                tip_instruction_lamports: None,
+            },
+        );
+        assert!(
+            payload.get("base_fee_lamports").is_none(),
+            "base_fee_lamports must be omitted when derived hints exceed signed range"
+        );
+        assert!(
+            payload.get("priority_fee_lamports").is_none(),
+            "priority_fee_lamports must be omitted when derived hints exceed signed range"
+        );
+        assert!(
+            payload.get("network_fee_lamports").is_none(),
+            "network_fee_lamports must be omitted when derived hints exceed signed range"
         );
     }
 
