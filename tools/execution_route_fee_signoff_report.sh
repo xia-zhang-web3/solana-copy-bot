@@ -15,6 +15,7 @@ GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
+GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
 GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}"
 ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
@@ -45,6 +46,7 @@ parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQU
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE_INGESTION_GRPC" go_nogo_require_ingestion_grpc
+parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" go_nogo_require_non_bootstrap_signer
 parse_signoff_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
 parse_signoff_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
 
@@ -163,6 +165,9 @@ declare -a window_executor_upstream_endpoint_guard_reason_codes=()
 declare -a window_go_nogo_require_ingestion_grpc=()
 declare -a window_ingestion_grpc_guard_verdicts=()
 declare -a window_ingestion_grpc_guard_reason_codes=()
+declare -a window_go_nogo_require_non_bootstrap_signer=()
+declare -a window_non_bootstrap_signer_guard_verdicts=()
+declare -a window_non_bootstrap_signer_guard_reason_codes=()
 
 window_total=0
 go_nogo_go_count=0
@@ -205,6 +210,7 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream" \
       GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc" \
+      GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
@@ -309,6 +315,28 @@ if ((${#input_errors[@]} == 0)); then
       input_errors+=("window ${window_hours}h nested go/no-go ingestion_grpc_guard_reason_code must be non-empty")
       ingestion_grpc_guard_reason_code="n/a"
     fi
+    go_nogo_require_non_bootstrap_signer_raw="$(trim_string "$(extract_field "go_nogo_require_non_bootstrap_signer" "$go_nogo_output")")"
+    if ! go_nogo_require_non_bootstrap_signer_nested="$(extract_bool_field_strict "go_nogo_require_non_bootstrap_signer" "$go_nogo_output")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_non_bootstrap_signer must be boolean token, got: ${go_nogo_require_non_bootstrap_signer_raw:-<empty>}")
+      go_nogo_require_non_bootstrap_signer_nested="unknown"
+    elif [[ "$go_nogo_require_non_bootstrap_signer_nested" != "$go_nogo_require_non_bootstrap_signer" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_non_bootstrap_signer mismatch: nested=${go_nogo_require_non_bootstrap_signer_nested} expected=${go_nogo_require_non_bootstrap_signer}")
+    fi
+    non_bootstrap_signer_guard_verdict_raw="$(trim_string "$(extract_field "non_bootstrap_signer_guard_verdict" "$go_nogo_output")")"
+    non_bootstrap_signer_guard_verdict_raw_upper="$(printf '%s' "$non_bootstrap_signer_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    non_bootstrap_signer_guard_verdict="$(normalize_strict_guard_verdict "$non_bootstrap_signer_guard_verdict_raw")"
+    if [[ -z "$non_bootstrap_signer_guard_verdict_raw" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go non_bootstrap_signer_guard_verdict must be non-empty")
+      non_bootstrap_signer_guard_verdict="UNKNOWN"
+    elif [[ "$non_bootstrap_signer_guard_verdict_raw_upper" != "PASS" && "$non_bootstrap_signer_guard_verdict_raw_upper" != "WARN" && "$non_bootstrap_signer_guard_verdict_raw_upper" != "UNKNOWN" && "$non_bootstrap_signer_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go non_bootstrap_signer_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${non_bootstrap_signer_guard_verdict_raw})")
+      non_bootstrap_signer_guard_verdict="UNKNOWN"
+    fi
+    non_bootstrap_signer_guard_reason_code="$(trim_string "$(extract_field "non_bootstrap_signer_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$non_bootstrap_signer_guard_reason_code" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go non_bootstrap_signer_guard_reason_code must be non-empty")
+      non_bootstrap_signer_guard_reason_code="n/a"
+    fi
     if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
       if [[ "$executor_backend_mode_guard_verdict" == "SKIP" ]]; then
         input_errors+=("window ${window_hours}h nested go/no-go executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -331,6 +359,15 @@ if ((${#input_errors[@]} == 0)); then
     else
       if [[ "$ingestion_grpc_guard_verdict" != "SKIP" ]]; then
         input_errors+=("window ${window_hours}h nested go/no-go ingestion_grpc_guard_verdict must be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=false (got: ${ingestion_grpc_guard_verdict})")
+      fi
+    fi
+    if [[ "$go_nogo_require_non_bootstrap_signer" == "true" ]]; then
+      if [[ "$non_bootstrap_signer_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go non_bootstrap_signer_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER=true")
+      fi
+    else
+      if [[ "$non_bootstrap_signer_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go non_bootstrap_signer_guard_verdict must be SKIP when GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER=false (got: ${non_bootstrap_signer_guard_verdict})")
       fi
     fi
 
@@ -415,6 +452,9 @@ if ((${#input_errors[@]} == 0)); then
     window_go_nogo_require_ingestion_grpc+=("${go_nogo_require_ingestion_grpc_nested:-unknown}")
     window_ingestion_grpc_guard_verdicts+=("${ingestion_grpc_guard_verdict:-UNKNOWN}")
     window_ingestion_grpc_guard_reason_codes+=("${ingestion_grpc_guard_reason_code:-n/a}")
+    window_go_nogo_require_non_bootstrap_signer+=("${go_nogo_require_non_bootstrap_signer_nested:-unknown}")
+    window_non_bootstrap_signer_guard_verdicts+=("${non_bootstrap_signer_guard_verdict:-UNKNOWN}")
+    window_non_bootstrap_signer_guard_reason_codes+=("${non_bootstrap_signer_guard_reason_code:-n/a}")
 
     if route_is_value "$primary_route"; then
       if [[ "$primary_route_seen" == "false" ]]; then
@@ -554,6 +594,7 @@ go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
 go_nogo_require_executor_upstream: $go_nogo_require_executor_upstream
 go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc
+go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer
 executor_env_path: $EXECUTOR_ENV_PATH
 go_nogo_test_mode: $go_nogo_test_mode_norm
 route_fee_signoff_test_verdict_override: ${route_fee_signoff_test_verdict_override_raw:-n/a}
@@ -604,6 +645,9 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_go_nogo_require_ingestion_grpc: ${window_go_nogo_require_ingestion_grpc[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_ingestion_grpc_guard_verdict: ${window_ingestion_grpc_guard_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_ingestion_grpc_guard_reason_code: ${window_ingestion_grpc_guard_reason_codes[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_go_nogo_require_non_bootstrap_signer: ${window_go_nogo_require_non_bootstrap_signer[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_non_bootstrap_signer_guard_verdict: ${window_non_bootstrap_signer_guard_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_non_bootstrap_signer_guard_reason_code: ${window_non_bootstrap_signer_guard_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_summary_sha256: ${window_go_nogo_summary_sha256[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_calibration_sha256: ${window_go_nogo_calibration_sha256[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_capture_path: ${window_go_nogo_capture_paths[$idx]}"
