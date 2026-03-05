@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tracing::debug;
 #[cfg(test)]
 use std::{
@@ -128,6 +129,12 @@ impl RouteAdapter {
             payload_expectations.side,
             payload_expectations.token,
         )?;
+        if is_internal_paper_route(route) {
+            return Ok(build_paper_simulate_backend_response(
+                route,
+                state.config.contract_version.as_str(),
+            ));
+        }
         if state.config.backend_mode == ExecutorBackendMode::Mock {
             return Ok(build_mock_simulate_backend_response(
                 route,
@@ -214,6 +221,13 @@ impl RouteAdapter {
             tip_instruction_lamports = ?plan.tip_instruction_lamports,
             "route adapter received submit instruction plan"
         );
+        if is_internal_paper_route(route) {
+            return Ok(build_paper_submit_backend_response(
+                route,
+                state.config.contract_version.as_str(),
+                payload_expectations,
+            ));
+        }
         if state.config.backend_mode == ExecutorBackendMode::Mock {
             return Ok(build_mock_submit_backend_response(
                 route,
@@ -234,6 +248,68 @@ impl RouteAdapter {
 
 fn mock_submit_signature() -> String {
     bs58::encode([7u8; 64]).into_string()
+}
+
+fn paper_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_>) -> String {
+    let request_id = payload_expectations.request_id.unwrap_or("");
+    let client_order_id = payload_expectations.client_order_id.unwrap_or("");
+
+    let mut first = Sha256::new();
+    first.update(b"executor-paper-submit-signature:v1:");
+    first.update(request_id.as_bytes());
+    first.update(b":");
+    first.update(client_order_id.as_bytes());
+    let first_digest = first.finalize();
+
+    let mut second = Sha256::new();
+    second.update(b"executor-paper-submit-signature:v2:");
+    second.update(client_order_id.as_bytes());
+    second.update(b":");
+    second.update(request_id.as_bytes());
+    let second_digest = second.finalize();
+
+    let mut signature_bytes = [0u8; 64];
+    signature_bytes[..32].copy_from_slice(first_digest.as_slice());
+    signature_bytes[32..].copy_from_slice(second_digest.as_slice());
+    bs58::encode(signature_bytes).into_string()
+}
+
+fn is_internal_paper_route(route: &str) -> bool {
+    route == "paper"
+}
+
+fn build_paper_simulate_backend_response(route: &str, contract_version: &str) -> Value {
+    json!({
+        "status": "ok",
+        "ok": true,
+        "accepted": true,
+        "route": route,
+        "contract_version": contract_version,
+        "detail": "executor_paper_simulation_ok"
+    })
+}
+
+fn build_paper_submit_backend_response(
+    route: &str,
+    contract_version: &str,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
+) -> Value {
+    let mut payload = json!({
+        "status": "ok",
+        "ok": true,
+        "accepted": true,
+        "route": route,
+        "contract_version": contract_version,
+        "detail": "executor_paper_submit_ok",
+        "tx_signature": paper_submit_signature(payload_expectations),
+    });
+    if let Some(request_id) = payload_expectations.request_id {
+        payload["request_id"] = Value::String(request_id.to_string());
+    }
+    if let Some(client_order_id) = payload_expectations.client_order_id {
+        payload["client_order_id"] = Value::String(client_order_id.to_string());
+    }
+    payload
 }
 
 fn build_mock_simulate_backend_response(route: &str, contract_version: &str) -> Value {
@@ -980,6 +1056,76 @@ mod tests {
             .and_then(Value::as_str)
             .expect("tx_signature should be present");
         assert!(signature.len() > 40, "signature should look like base58");
+    }
+
+    #[test]
+    fn build_paper_simulate_backend_response_includes_contract_fields() {
+        let payload = super::build_paper_simulate_backend_response("paper", "v1");
+        assert_eq!(payload.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(payload.get("route").and_then(Value::as_str), Some("paper"));
+        assert_eq!(
+            payload.get("contract_version").and_then(Value::as_str),
+            Some("v1")
+        );
+        assert_eq!(
+            payload.get("detail").and_then(Value::as_str),
+            Some("executor_paper_simulation_ok")
+        );
+    }
+
+    #[test]
+    fn build_paper_submit_backend_response_includes_deterministic_signature_and_identity() {
+        let payload = super::build_paper_submit_backend_response(
+            "paper",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("paper"),
+                request_id: Some("request-paper-1"),
+                signal_id: Some("signal-paper-1"),
+                client_order_id: Some("client-order-paper-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        assert_eq!(payload.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(
+            payload.get("request_id").and_then(Value::as_str),
+            Some("request-paper-1")
+        );
+        assert_eq!(
+            payload.get("client_order_id").and_then(Value::as_str),
+            Some("client-order-paper-1")
+        );
+        assert_eq!(
+            payload.get("detail").and_then(Value::as_str),
+            Some("executor_paper_submit_ok")
+        );
+        let signature = payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("tx_signature should be present");
+        assert!(signature.len() > 40, "signature should look like base58");
+
+        let second_payload = super::build_paper_submit_backend_response(
+            "paper",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("paper"),
+                request_id: Some("request-paper-1"),
+                signal_id: Some("signal-paper-1"),
+                client_order_id: Some("client-order-paper-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let second_signature = second_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("second tx_signature should be present");
+        assert_eq!(
+            signature, second_signature,
+            "paper signature must be deterministic for the same request identity"
+        );
     }
 
     #[test]

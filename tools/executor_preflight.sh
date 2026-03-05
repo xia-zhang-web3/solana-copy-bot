@@ -73,6 +73,12 @@ default_executor_mock_backend_url() {
   printf 'https://executor.mock.local/%s/%s' "$route" "$action"
 }
 
+default_executor_internal_paper_backend_url() {
+  local route="$1"
+  local action="$2"
+  printf 'https://executor.paper.local/%s/%s' "$route" "$action"
+}
+
 cfg_or_env_bool_into() {
   local section="$1"
   local key="$2"
@@ -931,6 +937,12 @@ while IFS= read -r route; do
   fi
   if [[ -z "$route_simulate" && "$executor_backend_mode" == "mock" ]]; then
     route_simulate="$(default_executor_mock_backend_url "$route" "simulate")"
+  fi
+  if [[ -z "$route_submit" && "$executor_backend_mode" == "upstream" && "$route" == "paper" ]]; then
+    route_submit="$(default_executor_internal_paper_backend_url "$route" "submit")"
+  fi
+  if [[ -z "$route_simulate" && "$executor_backend_mode" == "upstream" && "$route" == "paper" ]]; then
+    route_simulate="$(default_executor_internal_paper_backend_url "$route" "simulate")"
   fi
   if [[ -z "$route_submit" ]]; then
     errors+=("missing submit backend URL for executor route=$route (set COPYBOT_EXECUTOR_ROUTE_${route_upper}_SUBMIT_URL or COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL)")

@@ -240,12 +240,15 @@ impl ExecutorConfig {
                 "COPYBOT_EXECUTOR_ROUTE_{}_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE",
                 route_upper
             );
+            let route_internal_paper_backend = route == "paper";
 
             let submit_url = optional_non_empty_env(submit_key.as_str())?
                 .or_else(|| default_submit.clone())
                 .or_else(|| {
                     if backend_mode == ExecutorBackendMode::Mock {
                         Some(format!("https://executor.mock.local/{}/submit", route))
+                    } else if route_internal_paper_backend {
+                        Some(default_executor_internal_paper_backend_url(route, "submit"))
                     } else {
                         None
                     }
@@ -262,6 +265,8 @@ impl ExecutorConfig {
                 .or_else(|| {
                     if backend_mode == ExecutorBackendMode::Mock {
                         Some(format!("https://executor.mock.local/{}/simulate", route))
+                    } else if route_internal_paper_backend {
+                        Some(default_executor_internal_paper_backend_url(route, "simulate"))
                     } else {
                         None
                     }
@@ -706,6 +711,10 @@ fn validate_route_backend_allowlist_consistency(
         ));
     }
     Ok(())
+}
+
+fn default_executor_internal_paper_backend_url(route: &str, action: &str) -> String {
+    format!("https://executor.paper.local/{}/{}", route, action)
 }
 
 fn reject_placeholder_route_endpoint_in_upstream_mode(
@@ -1595,6 +1604,33 @@ mod tests {
                 assert_eq!(
                     backend.simulate_url,
                     "https://executor.mock.local/rpc/simulate"
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_allows_upstream_mode_with_paper_route_without_upstream_urls() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "paper");
+                env::remove_var("COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL");
+                env::remove_var("COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL");
+                env::remove_var("COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL");
+                env::remove_var("COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL");
+
+                let config =
+                    crate::ExecutorConfig::from_env().expect("config should parse from env");
+                assert_eq!(config.backend_mode, ExecutorBackendMode::Upstream);
+                let backend = config
+                    .route_backends
+                    .get("paper")
+                    .expect("paper backend must be configured");
+                assert_eq!(backend.submit_url, "https://executor.paper.local/paper/submit");
+                assert_eq!(
+                    backend.simulate_url,
+                    "https://executor.paper.local/paper/simulate"
                 );
             });
         });

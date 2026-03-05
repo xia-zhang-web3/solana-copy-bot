@@ -196,6 +196,12 @@ normalized_route_lines() {
   done <<<"$csv"
 }
 
+default_executor_internal_paper_backend_url() {
+  local route="$1"
+  local action="$2"
+  printf 'https://executor.paper.local/%s/%s' "$route" "$action"
+}
+
 endpoint_placeholder_host() {
   local endpoint="$1"
   python3 - "$endpoint" <<'PY'
@@ -569,6 +575,12 @@ if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
       route_simulate_for_topology="$(first_non_empty \
         "$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_ROUTE_${route_upper}_SIMULATE_URL")")" \
         "$executor_upstream_simulate_default_for_topology")"
+      if [[ -z "$route_submit_for_topology" && "$route" == "paper" ]]; then
+        route_submit_for_topology="$(default_executor_internal_paper_backend_url "$route" "submit")"
+      fi
+      if [[ -z "$route_simulate_for_topology" && "$route" == "paper" ]]; then
+        route_simulate_for_topology="$(default_executor_internal_paper_backend_url "$route" "simulate")"
+      fi
       if [[ -z "$route_submit_for_topology" && -z "$missing_executor_endpoint_label" ]]; then
         missing_executor_endpoint_label="submit"
         missing_executor_endpoint_route="$route"

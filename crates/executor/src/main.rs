@@ -5662,6 +5662,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_route_action_uses_internal_paper_backend_for_simulate_in_upstream_mode() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.route_allowlist.insert("paper".to_string());
+        state.config.route_backends.insert(
+            "paper".to_string(),
+            RouteBackend {
+                submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "simulate",
+            "request_id": "request-simulate-paper-internal-1",
+            "signal_id": "signal-simulate-paper-internal-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "paper",
+            "dry_run": true
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+
+        let response = execute_route_action(
+            &state,
+            "paper",
+            UpstreamAction::Simulate,
+            raw_body_bytes.as_slice(),
+            None,
+            RouteActionPayloadExpectations {
+                route_hint: Some("paper"),
+                request_id: Some("request-simulate-paper-internal-1"),
+                signal_id: Some("signal-simulate-paper-internal-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext::default(),
+        )
+        .await
+        .expect("simulate should use internal paper backend");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(response.get("route").and_then(Value::as_str), Some("paper"));
+        assert_eq!(
+            response.get("detail").and_then(Value::as_str),
+            Some("executor_paper_simulation_ok")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_route_action_uses_internal_paper_backend_for_submit_in_upstream_mode() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.route_allowlist.insert("paper".to_string());
+        state.config.route_backends.insert(
+            "paper".to_string(),
+            RouteBackend {
+                submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "action": "submit",
+            "request_id": "request-submit-paper-internal-1",
+            "signal_id": "signal-submit-paper-internal-1",
+            "client_order_id": "client-order-submit-paper-internal-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "route": "paper",
+            "tip_lamports": 0,
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+
+        let response = execute_route_action(
+            &state,
+            "paper",
+            UpstreamAction::Submit,
+            raw_body_bytes.as_slice(),
+            Some(&submit_deadline),
+            RouteActionPayloadExpectations {
+                route_hint: Some("paper"),
+                request_id: Some("request-submit-paper-internal-1"),
+                signal_id: Some("signal-submit-paper-internal-1"),
+                client_order_id: Some("client-order-submit-paper-internal-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+            RouteSubmitExecutionContext {
+                instruction_plan: Some(crate::tx_build::SubmitInstructionPlan {
+                    compute_budget_cu_limit: 300_000,
+                    compute_budget_cu_price_micro_lamports: 1_000,
+                    tip_instruction_lamports: None,
+                }),
+                expected_slippage_bps: Some(10.0),
+                expected_route_slippage_cap_bps: Some(20.0),
+            },
+        )
+        .await
+        .expect("submit should use internal paper backend");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(response.get("route").and_then(Value::as_str), Some("paper"));
+        assert_eq!(
+            response.get("detail").and_then(Value::as_str),
+            Some("executor_paper_submit_ok")
+        );
+        assert!(response.get("tx_signature").and_then(Value::as_str).is_some());
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_submit_route_payload_hint_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
