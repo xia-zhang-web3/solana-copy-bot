@@ -111,6 +111,7 @@ impl ExecutionRuntime {
                     &config.rpc_http_url,
                     &config.rpc_fallback_http_url,
                     config.poll_interval_ms.max(500),
+                    &config.execution_signer_pubkey,
                 ) {
                     Some(value) => Box::new(value),
                     None => {
@@ -149,6 +150,7 @@ impl ExecutionRuntime {
                     &config.rpc_http_url,
                     &config.rpc_fallback_http_url,
                     config.poll_interval_ms.max(500),
+                    &config.execution_signer_pubkey,
                 ) {
                     Some(value) => Box::new(value),
                     None => {
@@ -225,6 +227,7 @@ impl ExecutionRuntime {
                     &config.rpc_http_url,
                     &config.rpc_fallback_http_url,
                     config.poll_interval_ms.max(500),
+                    &config.execution_signer_pubkey,
                 ) {
                     Some(value) => Box::new(value),
                     None => Box::new(FailClosedOrderConfirmer::new(
@@ -796,6 +799,7 @@ mod tests {
         fn confirm(
             &self,
             _tx_signature: &str,
+            _token_mint: &str,
             _deadline: DateTime<Utc>,
         ) -> Result<confirm::ConfirmationResult> {
             Ok(confirm::ConfirmationResult {
@@ -803,6 +807,7 @@ mod tests {
                 confirmed_at: None,
                 network_fee_lamports: None,
                 network_fee_lookup_error: None,
+                observed_fill: None,
                 detail: "forced_failed_confirmation".to_string(),
             })
         }
@@ -814,6 +819,7 @@ mod tests {
         fn confirm(
             &self,
             _tx_signature: &str,
+            _token_mint: &str,
             _deadline: DateTime<Utc>,
         ) -> Result<confirm::ConfirmationResult> {
             Err(anyhow::anyhow!("forced confirmer rpc error"))
@@ -828,6 +834,7 @@ mod tests {
         fn confirm(
             &self,
             _tx_signature: &str,
+            _token_mint: &str,
             _deadline: DateTime<Utc>,
         ) -> Result<confirm::ConfirmationResult> {
             Ok(confirm::ConfirmationResult {
@@ -835,6 +842,7 @@ mod tests {
                 confirmed_at: Some(Utc::now()),
                 network_fee_lamports: Some(self.network_fee_lamports),
                 network_fee_lookup_error: None,
+                observed_fill: None,
                 detail: "forced_confirmed_with_fee".to_string(),
             })
         }
@@ -856,6 +864,7 @@ mod tests {
         fn confirm(
             &self,
             _tx_signature: &str,
+            _token_mint: &str,
             _deadline: DateTime<Utc>,
         ) -> Result<confirm::ConfirmationResult> {
             let mut outcomes = self
@@ -3183,6 +3192,185 @@ mod tests {
     }
 
     #[test]
+    fn process_batch_buy_prefers_observed_confirmed_fill_over_market_price() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-observed-buy-fill")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-obs-buy", now, "sig-price-obs-buy")?;
+        let client_order_id = seed_submitted_buy_signal(
+            &store,
+            "shadow:obs:wallet:buy:token-obs-buy",
+            "token-obs-buy",
+            0.1,
+            now,
+            "sig-obs-buy",
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let mut route_tip_lamports = BTreeMap::new();
+        route_tip_lamports.insert("paper".to_string(), 0);
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports,
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(SequenceConfirmer::new(vec![confirm::ConfirmationResult {
+                status: ConfirmationStatus::Confirmed,
+                confirmed_at: Some(now + Duration::seconds(1)),
+                network_fee_lamports: Some(5_000),
+                network_fee_lookup_error: None,
+                observed_fill: Some(confirm::ObservedExecutionFill {
+                    signer_balance_delta_lamports: -100_005_000,
+                    token_delta_qty: 2.0,
+                }),
+                detail: "observed_buy_fill".to_string(),
+            }])),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 1);
+        let (qty, cost_sol) = store
+            .live_open_position_qty_cost("token-obs-buy")?
+            .context("open position should exist after observed buy confirm")?;
+        assert!(
+            (qty - 2.0).abs() < 1e-9,
+            "expected observed confirmed qty to win over market-price reconstruction, got {}",
+            qty
+        );
+        assert!(
+            (cost_sol - 0.100005).abs() < 1e-9,
+            "expected observed buy notional + fee to be stored, got {}",
+            cost_sol
+        );
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("observed buy order should remain present after confirm")?;
+        assert_eq!(order.status, "execution_confirmed");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_sell_prefers_observed_confirmed_fill_over_market_price() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-observed-sell-fill")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-obs-sell", now, "sig-price-obs-sell")?;
+        store.apply_execution_fill_to_positions("token-obs-sell", "buy", 4.0, 0.20, now)?;
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:obs:wallet:sell:token-obs-sell".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "sell".to_string(),
+            token: "token-obs-sell".to_string(),
+            notional_sol: 0.10,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-observed-sell-fill-1",
+                &signal.signal_id,
+                &client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-observed-sell-fill-1",
+            "paper",
+            "sig-obs-sell",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let mut route_tip_lamports = BTreeMap::new();
+        route_tip_lamports.insert("paper".to_string(), 0);
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports,
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(SequenceConfirmer::new(vec![confirm::ConfirmationResult {
+                status: ConfirmationStatus::Confirmed,
+                confirmed_at: Some(now + Duration::seconds(1)),
+                network_fee_lamports: Some(5_000),
+                network_fee_lookup_error: None,
+                observed_fill: Some(confirm::ObservedExecutionFill {
+                    signer_balance_delta_lamports: 89_995_000,
+                    token_delta_qty: -1.5,
+                }),
+                detail: "observed_sell_fill".to_string(),
+            }])),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 1);
+        let (qty, cost_sol) = store
+            .live_open_position_qty_cost("token-obs-sell")?
+            .context("open position should remain after partial observed sell confirm")?;
+        assert!(
+            (qty - 2.5).abs() < 1e-9,
+            "expected observed confirmed sell qty to win over market-price reconstruction, got {}",
+            qty
+        );
+        assert!(
+            (cost_sol - 0.125).abs() < 1e-9,
+            "expected remaining cost basis to track observed sell qty, got {}",
+            cost_sol
+        );
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("observed sell order should remain present after confirm")?;
+        assert_eq!(order.status, "execution_confirmed");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_records_post_confirm_total_exposure_risk_breach() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-total-exposure-breach")?;
         let now = Utc::now();
@@ -3398,6 +3586,7 @@ mod tests {
                     confirmed_at: None,
                     network_fee_lamports: None,
                     network_fee_lookup_error: None,
+                    observed_fill: None,
                     detail: "forced_timeout".to_string(),
                 },
                 confirm::ConfirmationResult {
@@ -3405,6 +3594,7 @@ mod tests {
                     confirmed_at: Some(now + Duration::seconds(1)),
                     network_fee_lamports: None,
                     network_fee_lookup_error: None,
+                    observed_fill: None,
                     detail: "late_confirmed".to_string(),
                 },
             ])),

@@ -12,17 +12,29 @@ pub enum ConfirmationStatus {
     Timeout,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObservedExecutionFill {
+    pub signer_balance_delta_lamports: i64,
+    pub token_delta_qty: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConfirmationResult {
     pub status: ConfirmationStatus,
     pub confirmed_at: Option<DateTime<Utc>>,
     pub network_fee_lamports: Option<u64>,
     pub network_fee_lookup_error: Option<String>,
+    pub observed_fill: Option<ObservedExecutionFill>,
     pub detail: String,
 }
 
 pub trait OrderConfirmer {
-    fn confirm(&self, tx_signature: &str, deadline: DateTime<Utc>) -> Result<ConfirmationResult>;
+    fn confirm(
+        &self,
+        tx_signature: &str,
+        token_mint: &str,
+        deadline: DateTime<Utc>,
+    ) -> Result<ConfirmationResult>;
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +51,12 @@ impl FailClosedOrderConfirmer {
 }
 
 impl OrderConfirmer for FailClosedOrderConfirmer {
-    fn confirm(&self, _tx_signature: &str, _deadline: DateTime<Utc>) -> Result<ConfirmationResult> {
+    fn confirm(
+        &self,
+        _tx_signature: &str,
+        _token_mint: &str,
+        _deadline: DateTime<Utc>,
+    ) -> Result<ConfirmationResult> {
         Err(anyhow!("{}", self.detail))
     }
 }
@@ -48,7 +65,12 @@ impl OrderConfirmer for FailClosedOrderConfirmer {
 pub struct PaperOrderConfirmer;
 
 impl OrderConfirmer for PaperOrderConfirmer {
-    fn confirm(&self, _tx_signature: &str, deadline: DateTime<Utc>) -> Result<ConfirmationResult> {
+    fn confirm(
+        &self,
+        _tx_signature: &str,
+        _token_mint: &str,
+        deadline: DateTime<Utc>,
+    ) -> Result<ConfirmationResult> {
         let now = Utc::now();
         if now > deadline {
             return Ok(ConfirmationResult {
@@ -56,6 +78,7 @@ impl OrderConfirmer for PaperOrderConfirmer {
                 confirmed_at: None,
                 network_fee_lamports: None,
                 network_fee_lookup_error: None,
+                observed_fill: None,
                 detail: "paper_confirm_timeout".to_string(),
             });
         }
@@ -64,6 +87,7 @@ impl OrderConfirmer for PaperOrderConfirmer {
             confirmed_at: Some(now),
             network_fee_lamports: None,
             network_fee_lookup_error: None,
+            observed_fill: None,
             detail: "paper_confirm_ok".to_string(),
         })
     }
@@ -72,11 +96,17 @@ impl OrderConfirmer for PaperOrderConfirmer {
 #[derive(Debug, Clone)]
 pub struct RpcOrderConfirmer {
     endpoints: Vec<String>,
+    execution_signer_pubkey: String,
     client: Client,
 }
 
 impl RpcOrderConfirmer {
-    pub fn new(primary_url: &str, fallback_url: &str, timeout_ms: u64) -> Option<Self> {
+    pub fn new(
+        primary_url: &str,
+        fallback_url: &str,
+        timeout_ms: u64,
+        execution_signer_pubkey: &str,
+    ) -> Option<Self> {
         let mut endpoints = Vec::new();
         let primary = primary_url.trim();
         if !primary.is_empty() {
@@ -95,13 +125,18 @@ impl RpcOrderConfirmer {
             Ok(value) => value,
             Err(_) => return None,
         };
-        Some(Self { endpoints, client })
+        Some(Self {
+            endpoints,
+            execution_signer_pubkey: execution_signer_pubkey.trim().to_string(),
+            client,
+        })
     }
 
     fn query_signature_status(
         &self,
         endpoint: &str,
         tx_signature: &str,
+        token_mint: &str,
         now: DateTime<Utc>,
     ) -> Result<ConfirmationResult> {
         let payload = json!({
@@ -119,9 +154,10 @@ impl RpcOrderConfirmer {
         let body: Value = response.json().context("invalid rpc json")?;
         let mut confirmation = parse_confirmation_from_rpc_body(&body, now)?;
         if matches!(confirmation.status, ConfirmationStatus::Confirmed) {
-            match self.query_transaction_fee_lamports(endpoint, tx_signature) {
+            match self.query_confirmed_transaction_observation(endpoint, tx_signature, token_mint) {
                 Ok(value) => {
-                    confirmation.network_fee_lamports = value;
+                    confirmation.network_fee_lamports = value.network_fee_lamports;
+                    confirmation.observed_fill = value.observed_fill;
                     confirmation.network_fee_lookup_error = None;
                 }
                 Err(error_class) => {
@@ -129,9 +165,10 @@ impl RpcOrderConfirmer {
                         endpoint = %redacted_endpoint_label(endpoint),
                         tx_signature,
                         error_class = error_class.as_str(),
-                        "fee lookup failed for confirmed signature; proceeding without network fee"
+                        "confirmed transaction observation lookup failed; proceeding without on-chain fill details"
                     );
                     confirmation.network_fee_lamports = None;
+                    confirmation.observed_fill = None;
                     confirmation.network_fee_lookup_error = Some(error_class.as_str().to_string());
                 }
             }
@@ -139,11 +176,12 @@ impl RpcOrderConfirmer {
         Ok(confirmation)
     }
 
-    fn query_transaction_fee_lamports(
+    fn query_confirmed_transaction_observation(
         &self,
         endpoint: &str,
         tx_signature: &str,
-    ) -> std::result::Result<Option<u64>, FeeLookupErrorClass> {
+        token_mint: &str,
+    ) -> std::result::Result<ConfirmedTransactionObservation, FeeLookupErrorClass> {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -166,12 +204,21 @@ impl RpcOrderConfirmer {
         let body: Value = response
             .json()
             .map_err(|_| FeeLookupErrorClass::InvalidJson)?;
-        parse_transaction_fee_lamports_from_rpc_body(&body)
+        parse_confirmed_transaction_observation_from_rpc_body(
+            &body,
+            &self.execution_signer_pubkey,
+            token_mint,
+        )
     }
 }
 
 impl OrderConfirmer for RpcOrderConfirmer {
-    fn confirm(&self, tx_signature: &str, deadline: DateTime<Utc>) -> Result<ConfirmationResult> {
+    fn confirm(
+        &self,
+        tx_signature: &str,
+        token_mint: &str,
+        deadline: DateTime<Utc>,
+    ) -> Result<ConfirmationResult> {
         let now = Utc::now();
         if tx_signature.trim().is_empty() {
             return Err(anyhow!("empty tx signature for confirmation"));
@@ -182,13 +229,14 @@ impl OrderConfirmer for RpcOrderConfirmer {
                 confirmed_at: None,
                 network_fee_lamports: None,
                 network_fee_lookup_error: None,
+                observed_fill: None,
                 detail: "deadline_exceeded_before_rpc_query".to_string(),
             });
         }
 
         let mut last_error: Option<anyhow::Error> = None;
         for endpoint in &self.endpoints {
-            match self.query_signature_status(endpoint, tx_signature, now) {
+            match self.query_signature_status(endpoint, tx_signature, token_mint, now) {
                 Ok(result) => return Ok(result),
                 Err(error) => last_error = Some(error),
             }
@@ -216,6 +264,7 @@ fn parse_confirmation_from_rpc_body(
             confirmed_at: None,
             network_fee_lamports: None,
             network_fee_lookup_error: None,
+            observed_fill: None,
             detail: "signature_not_found_yet".to_string(),
         });
     };
@@ -226,6 +275,7 @@ fn parse_confirmation_from_rpc_body(
             confirmed_at: None,
             network_fee_lamports: None,
             network_fee_lookup_error: None,
+            observed_fill: None,
             detail: "signature_pending".to_string(),
         });
     }
@@ -237,6 +287,7 @@ fn parse_confirmation_from_rpc_body(
                 confirmed_at: None,
                 network_fee_lamports: None,
                 network_fee_lookup_error: None,
+                observed_fill: None,
                 detail: format!("signature_failed err={}", err_payload),
             });
         }
@@ -252,6 +303,7 @@ fn parse_confirmation_from_rpc_body(
             confirmed_at: Some(now),
             network_fee_lamports: None,
             network_fee_lookup_error: None,
+            observed_fill: None,
             detail: format!("signature_{}", confirmation_status),
         });
     }
@@ -261,6 +313,7 @@ fn parse_confirmation_from_rpc_body(
         confirmed_at: None,
         network_fee_lamports: None,
         network_fee_lookup_error: None,
+        observed_fill: None,
         detail: format!(
             "signature_not_confirmed_yet confirmation_status={}",
             if confirmation_status.is_empty() {
@@ -272,18 +325,32 @@ fn parse_confirmation_from_rpc_body(
     })
 }
 
-fn parse_transaction_fee_lamports_from_rpc_body(
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ConfirmedTransactionObservation {
+    network_fee_lamports: Option<u64>,
+    observed_fill: Option<ObservedExecutionFill>,
+}
+
+fn parse_confirmed_transaction_observation_from_rpc_body(
     body: &Value,
-) -> std::result::Result<Option<u64>, FeeLookupErrorClass> {
+    execution_signer_pubkey: &str,
+    token_mint: &str,
+) -> std::result::Result<ConfirmedTransactionObservation, FeeLookupErrorClass> {
     if let Some(error_payload) = body.get("error") {
         let _ = error_payload;
         return Err(FeeLookupErrorClass::RpcErrorPayload);
     }
     let Some(result) = body.get("result") else {
-        return Ok(None);
+        return Ok(ConfirmedTransactionObservation {
+            network_fee_lamports: None,
+            observed_fill: None,
+        });
     };
     if result.is_null() {
-        return Ok(None);
+        return Ok(ConfirmedTransactionObservation {
+            network_fee_lamports: None,
+            observed_fill: None,
+        });
     }
     let fee = result
         .get("meta")
@@ -292,7 +359,172 @@ fn parse_transaction_fee_lamports_from_rpc_body(
     if fee.map(|value| value > i64::MAX as u64).unwrap_or(false) {
         return Err(FeeLookupErrorClass::OutOfRange);
     }
-    Ok(fee)
+
+    let observed_fill = if execution_signer_pubkey.is_empty() || token_mint.is_empty() {
+        None
+    } else {
+        match (
+            parse_signer_balance_delta_lamports(result, execution_signer_pubkey)?,
+            parse_owned_token_delta_qty(result, execution_signer_pubkey, token_mint)?,
+        ) {
+            (Some(signer_balance_delta_lamports), Some(token_delta_qty))
+                if token_delta_qty.abs() > 1e-12 =>
+            {
+                Some(ObservedExecutionFill {
+                    signer_balance_delta_lamports,
+                    token_delta_qty,
+                })
+            }
+            _ => None,
+        }
+    };
+
+    Ok(ConfirmedTransactionObservation {
+        network_fee_lamports: fee,
+        observed_fill,
+    })
+}
+
+fn parse_signer_balance_delta_lamports(
+    result: &Value,
+    execution_signer_pubkey: &str,
+) -> std::result::Result<Option<i64>, FeeLookupErrorClass> {
+    let Some(account_keys) = result
+        .get("transaction")
+        .and_then(|tx| tx.get("message"))
+        .and_then(|message| message.get("accountKeys"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
+    let Some(signer_index) = account_keys
+        .iter()
+        .position(|value| account_key_matches(value, execution_signer_pubkey))
+    else {
+        return Ok(None);
+    };
+    let Some(pre_balance) = result
+        .get("meta")
+        .and_then(|meta| meta.get("preBalances"))
+        .and_then(Value::as_array)
+        .and_then(|balances| balances.get(signer_index))
+        .and_then(Value::as_u64)
+    else {
+        return Ok(None);
+    };
+    let Some(post_balance) = result
+        .get("meta")
+        .and_then(|meta| meta.get("postBalances"))
+        .and_then(Value::as_array)
+        .and_then(|balances| balances.get(signer_index))
+        .and_then(Value::as_u64)
+    else {
+        return Ok(None);
+    };
+
+    let delta = i128::from(post_balance) - i128::from(pre_balance);
+    if delta < i128::from(i64::MIN) || delta > i128::from(i64::MAX) {
+        return Err(FeeLookupErrorClass::OutOfRange);
+    }
+    Ok(Some(delta as i64))
+}
+
+fn parse_owned_token_delta_qty(
+    result: &Value,
+    execution_signer_pubkey: &str,
+    token_mint: &str,
+) -> std::result::Result<Option<f64>, FeeLookupErrorClass> {
+    let pre_qty = sum_owned_token_balance(
+        result
+            .get("meta")
+            .and_then(|meta| meta.get("preTokenBalances")),
+        execution_signer_pubkey,
+        token_mint,
+    )?;
+    let post_qty = sum_owned_token_balance(
+        result
+            .get("meta")
+            .and_then(|meta| meta.get("postTokenBalances")),
+        execution_signer_pubkey,
+        token_mint,
+    )?;
+
+    match (pre_qty, post_qty) {
+        (None, None) => Ok(None),
+        (Some(pre), Some(post)) => Ok(Some(post - pre)),
+        (Some(pre), None) => Ok(Some(-pre)),
+        (None, Some(post)) => Ok(Some(post)),
+    }
+}
+
+fn sum_owned_token_balance(
+    entries: Option<&Value>,
+    execution_signer_pubkey: &str,
+    token_mint: &str,
+) -> std::result::Result<Option<f64>, FeeLookupErrorClass> {
+    let Some(entries) = entries.and_then(Value::as_array) else {
+        return Ok(None);
+    };
+
+    let mut matched = false;
+    let mut total = 0.0;
+    for entry in entries {
+        if entry.get("mint").and_then(Value::as_str) != Some(token_mint) {
+            continue;
+        }
+        if entry.get("owner").and_then(Value::as_str) != Some(execution_signer_pubkey) {
+            continue;
+        }
+        let qty = parse_ui_token_amount(
+            entry
+                .get("uiTokenAmount")
+                .ok_or(FeeLookupErrorClass::InvalidJson)?,
+        )?;
+        matched = true;
+        total += qty;
+    }
+
+    Ok(matched.then_some(total))
+}
+
+fn parse_ui_token_amount(value: &Value) -> std::result::Result<f64, FeeLookupErrorClass> {
+    if let Some(text) = value.get("uiAmountString").and_then(Value::as_str) {
+        let parsed = text
+            .parse::<f64>()
+            .map_err(|_| FeeLookupErrorClass::InvalidJson)?;
+        if parsed.is_finite() {
+            return Ok(parsed);
+        }
+        return Err(FeeLookupErrorClass::InvalidJson);
+    }
+    if let Some(parsed) = value.get("uiAmount").and_then(Value::as_f64) {
+        if parsed.is_finite() {
+            return Ok(parsed);
+        }
+        return Err(FeeLookupErrorClass::InvalidJson);
+    }
+    let Some(amount_raw) = value.get("amount").and_then(Value::as_str) else {
+        return Err(FeeLookupErrorClass::InvalidJson);
+    };
+    let Some(decimals_raw) = value.get("decimals").and_then(Value::as_u64) else {
+        return Err(FeeLookupErrorClass::InvalidJson);
+    };
+    let raw_amount = amount_raw
+        .parse::<f64>()
+        .map_err(|_| FeeLookupErrorClass::InvalidJson)?;
+    if !raw_amount.is_finite() {
+        return Err(FeeLookupErrorClass::InvalidJson);
+    }
+    let decimals = i32::try_from(decimals_raw).map_err(|_| FeeLookupErrorClass::OutOfRange)?;
+    let normalized = raw_amount / 10f64.powi(decimals);
+    if !normalized.is_finite() {
+        return Err(FeeLookupErrorClass::InvalidJson);
+    }
+    Ok(normalized)
+}
+
+fn account_key_matches(value: &Value, pubkey: &str) -> bool {
+    value.as_str() == Some(pubkey) || value.get("pubkey").and_then(Value::as_str) == Some(pubkey)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,6 +597,7 @@ mod tests {
         assert_eq!(result.status, ConfirmationStatus::Confirmed);
         assert_eq!(result.network_fee_lamports, None);
         assert_eq!(result.network_fee_lookup_error, None);
+        assert_eq!(result.observed_fill, None);
         Ok(())
     }
 
@@ -384,6 +617,7 @@ mod tests {
         assert_eq!(result.status, ConfirmationStatus::Failed);
         assert_eq!(result.network_fee_lamports, None);
         assert_eq!(result.network_fee_lookup_error, None);
+        assert_eq!(result.observed_fill, None);
         Ok(())
     }
 
@@ -400,11 +634,12 @@ mod tests {
         assert_eq!(result.status, ConfirmationStatus::Timeout);
         assert_eq!(result.network_fee_lamports, None);
         assert_eq!(result.network_fee_lookup_error, None);
+        assert_eq!(result.observed_fill, None);
         Ok(())
     }
 
     #[test]
-    fn parse_transaction_fee_lamports_from_rpc_body_returns_fee() -> Result<()> {
+    fn parse_confirmed_transaction_observation_from_rpc_body_returns_fee() -> Result<()> {
         let body = json!({
             "jsonrpc": "2.0",
             "result": {
@@ -414,39 +649,53 @@ mod tests {
             },
             "id": 1
         });
-        let fee = parse_transaction_fee_lamports_from_rpc_body(&body)
-            .map_err(|value| anyhow!("unexpected fee parser error: {:?}", value))?;
-        assert_eq!(fee, Some(5000));
+        let observed = parse_confirmed_transaction_observation_from_rpc_body(
+            &body,
+            "signer-pubkey",
+            "token-a",
+        )
+        .map_err(|value| anyhow!("unexpected fee parser error: {:?}", value))?;
+        assert_eq!(observed.network_fee_lamports, Some(5000));
+        assert_eq!(observed.observed_fill, None);
         Ok(())
     }
 
     #[test]
-    fn parse_transaction_fee_lamports_from_rpc_body_handles_not_found() -> Result<()> {
+    fn parse_confirmed_transaction_observation_from_rpc_body_handles_not_found() -> Result<()> {
         let body = json!({
             "jsonrpc": "2.0",
             "result": null,
             "id": 1
         });
-        let fee = parse_transaction_fee_lamports_from_rpc_body(&body)
-            .map_err(|value| anyhow!("unexpected fee parser error: {:?}", value))?;
-        assert_eq!(fee, None);
+        let observed = parse_confirmed_transaction_observation_from_rpc_body(
+            &body,
+            "signer-pubkey",
+            "token-a",
+        )
+        .map_err(|value| anyhow!("unexpected fee parser error: {:?}", value))?;
+        assert_eq!(observed.network_fee_lamports, None);
+        assert_eq!(observed.observed_fill, None);
         Ok(())
     }
 
     #[test]
-    fn parse_transaction_fee_lamports_from_rpc_body_classifies_rpc_error_payload() {
+    fn parse_confirmed_transaction_observation_from_rpc_body_classifies_rpc_error_payload() {
         let body = json!({
             "jsonrpc": "2.0",
             "error": {"code": -32000, "message": "rpc error"},
             "id": 1
         });
-        let error = parse_transaction_fee_lamports_from_rpc_body(&body)
-            .expect_err("rpc error payload should return classified error");
+        let error = parse_confirmed_transaction_observation_from_rpc_body(
+            &body,
+            "signer-pubkey",
+            "token-a",
+        )
+        .expect_err("rpc error payload should return classified error");
         assert_eq!(error, FeeLookupErrorClass::RpcErrorPayload);
     }
 
     #[test]
-    fn parse_transaction_fee_lamports_from_rpc_body_rejects_fee_above_i64_max() {
+    fn parse_confirmed_transaction_observation_from_rpc_body_rejects_fee_above_i64_max() {
         let body = json!({
             "jsonrpc": "2.0",
             "result": {
@@ -456,9 +705,103 @@ mod tests {
             },
             "id": 1
         });
-        let error = parse_transaction_fee_lamports_from_rpc_body(&body)
-            .expect_err("fee above i64::MAX should return classified error");
+        let error = parse_confirmed_transaction_observation_from_rpc_body(
+            &body,
+            "signer-pubkey",
+            "token-a",
+        )
+        .expect_err("fee above i64::MAX should return classified error");
         assert_eq!(error, FeeLookupErrorClass::OutOfRange);
+    }
+
+    #[test]
+    fn parse_confirmed_transaction_observation_from_rpc_body_extracts_buy_fill() -> Result<()> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "transaction": {
+                    "message": {
+                        "accountKeys": ["signer-pubkey", "other-account"]
+                    }
+                },
+                "meta": {
+                    "fee": 5000,
+                    "preBalances": [1_000_000_000_u64, 0],
+                    "postBalances": [899_995_000_u64, 0],
+                    "preTokenBalances": [],
+                    "postTokenBalances": [{
+                        "mint": "token-a",
+                        "owner": "signer-pubkey",
+                        "uiTokenAmount": {
+                            "uiAmountString": "2.5"
+                        }
+                    }]
+                }
+            },
+            "id": 1
+        });
+        let observed = parse_confirmed_transaction_observation_from_rpc_body(
+            &body,
+            "signer-pubkey",
+            "token-a",
+        )
+        .map_err(|value| anyhow!("unexpected parser error: {:?}", value))?;
+        assert_eq!(observed.network_fee_lamports, Some(5000));
+        assert_eq!(
+            observed.observed_fill,
+            Some(ObservedExecutionFill {
+                signer_balance_delta_lamports: -100_005_000,
+                token_delta_qty: 2.5,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_confirmed_transaction_observation_from_rpc_body_extracts_sell_fill() -> Result<()> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "transaction": {
+                    "message": {
+                        "accountKeys": [
+                            {"pubkey": "signer-pubkey"},
+                            {"pubkey": "other-account"}
+                        ]
+                    }
+                },
+                "meta": {
+                    "fee": 5000,
+                    "preBalances": [500_000_000_u64, 0],
+                    "postBalances": [619_995_000_u64, 0],
+                    "preTokenBalances": [{
+                        "mint": "token-a",
+                        "owner": "signer-pubkey",
+                        "uiTokenAmount": {
+                            "amount": "2500000",
+                            "decimals": 6
+                        }
+                    }],
+                    "postTokenBalances": []
+                }
+            },
+            "id": 1
+        });
+        let observed = parse_confirmed_transaction_observation_from_rpc_body(
+            &body,
+            "signer-pubkey",
+            "token-a",
+        )
+        .map_err(|value| anyhow!("unexpected parser error: {:?}", value))?;
+        assert_eq!(observed.network_fee_lamports, Some(5000));
+        assert_eq!(
+            observed.observed_fill,
+            Some(ObservedExecutionFill {
+                signer_balance_delta_lamports: 119_995_000,
+                token_delta_qty: -2.5,
+            })
+        );
+        Ok(())
     }
 
     #[test]
