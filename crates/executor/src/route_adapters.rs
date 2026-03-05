@@ -400,11 +400,11 @@ fn build_paper_submit_backend_response(
         "detail": "executor_paper_submit_ok",
         "tx_signature": paper_submit_signature(payload_expectations),
     });
-    if let Some(request_id) = payload_expectations.request_id {
-        payload["request_id"] = Value::String(request_id.to_string());
-    }
     if let Some(client_order_id) = payload_expectations.client_order_id {
-        payload["client_order_id"] = Value::String(client_order_id.to_string());
+        let normalized_client_order_id = client_order_id.trim();
+        if !normalized_client_order_id.is_empty() {
+            payload["client_order_id"] = Value::String(normalized_client_order_id.to_string());
+        }
     }
     append_optional_identity_echo_fields(&mut payload, payload_expectations);
     payload
@@ -441,11 +441,11 @@ fn build_mock_submit_backend_response(
         "detail": "executor_mock_submit_ok",
         "tx_signature": mock_submit_signature(payload_expectations),
     });
-    if let Some(request_id) = payload_expectations.request_id {
-        payload["request_id"] = Value::String(request_id.to_string());
-    }
     if let Some(client_order_id) = payload_expectations.client_order_id {
-        payload["client_order_id"] = Value::String(client_order_id.to_string());
+        let normalized_client_order_id = client_order_id.trim();
+        if !normalized_client_order_id.is_empty() {
+            payload["client_order_id"] = Value::String(normalized_client_order_id.to_string());
+        }
     }
     append_optional_identity_echo_fields(&mut payload, payload_expectations);
     payload
@@ -456,10 +456,16 @@ fn append_optional_identity_echo_fields(
     payload_expectations: RouteActionPayloadExpectations<'_>,
 ) {
     if let Some(request_id) = payload_expectations.request_id {
-        payload["request_id"] = Value::String(request_id.to_string());
+        let normalized_request_id = request_id.trim();
+        if !normalized_request_id.is_empty() {
+            payload["request_id"] = Value::String(normalized_request_id.to_string());
+        }
     }
     if let Some(signal_id) = payload_expectations.signal_id {
-        payload["signal_id"] = Value::String(signal_id.to_string());
+        let normalized_signal_id = signal_id.trim();
+        if !normalized_signal_id.is_empty() {
+            payload["signal_id"] = Value::String(normalized_signal_id.to_string());
+        }
     }
     if let Some(side) = payload_expectations.side {
         let normalized_side = side.trim().to_ascii_lowercase();
@@ -1205,6 +1211,30 @@ mod tests {
     }
 
     #[test]
+    fn build_mock_simulate_backend_response_trims_request_and_signal_identity_echo() {
+        let payload = super::build_mock_simulate_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some(" request-1 "),
+                signal_id: Some("\tsignal-1\t"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        assert_eq!(
+            payload.get("request_id").and_then(Value::as_str),
+            Some("request-1")
+        );
+        assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+    }
+
+    #[test]
     fn build_mock_submit_backend_response_includes_signature_and_identity() {
         let payload = super::build_mock_submit_backend_response(
             "rpc",
@@ -1241,6 +1271,34 @@ mod tests {
             .and_then(Value::as_str)
             .expect("tx_signature should be present");
         assert!(signature.len() > 40, "signature should look like base58");
+    }
+
+    #[test]
+    fn build_mock_submit_backend_response_trims_request_signal_and_client_order_identity_echo() {
+        let payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some(" request-1 "),
+                signal_id: Some("\tsignal-1\t"),
+                client_order_id: Some(" client-order-1 "),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        assert_eq!(
+            payload.get("request_id").and_then(Value::as_str),
+            Some("request-1")
+        );
+        assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+        assert_eq!(
+            payload.get("client_order_id").and_then(Value::as_str),
+            Some("client-order-1")
+        );
     }
 
     #[test]

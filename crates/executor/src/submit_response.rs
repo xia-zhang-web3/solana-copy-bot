@@ -66,13 +66,16 @@ pub(crate) fn validate_submit_response_request_identity(
     expected_client_order_id: &str,
     expected_request_id: &str,
 ) -> Result<(), SubmitResponseValidationError> {
+    let normalized_expected_client_order_id = expected_client_order_id.trim();
+    let normalized_expected_request_id = expected_request_id.trim();
+
     if let Some(response_client_order_id) =
         parse_optional_non_empty_string_field(backend_response, "client_order_id")?
     {
-        if response_client_order_id.as_str() != expected_client_order_id {
+        if response_client_order_id.as_str() != normalized_expected_client_order_id {
             return Err(SubmitResponseValidationError::ClientOrderIdMismatch {
                 response_client_order_id,
-                expected_client_order_id: expected_client_order_id.to_string(),
+                expected_client_order_id: normalized_expected_client_order_id.to_string(),
             });
         }
     }
@@ -80,10 +83,10 @@ pub(crate) fn validate_submit_response_request_identity(
     if let Some(response_request_id) =
         parse_optional_non_empty_string_field(backend_response, "request_id")?
     {
-        if response_request_id.as_str() != expected_request_id {
+        if response_request_id.as_str() != normalized_expected_request_id {
             return Err(SubmitResponseValidationError::RequestIdMismatch {
                 response_request_id,
-                expected_request_id: expected_request_id.to_string(),
+                expected_request_id: normalized_expected_request_id.to_string(),
             });
         }
     }
@@ -178,6 +181,26 @@ mod tests {
             error,
             SubmitResponseValidationError::RequestIdMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn submit_response_validate_request_identity_accepts_trimmed_expected_values() {
+        let backend = json!({
+            "client_order_id": "client-1",
+            "request_id": "request-1"
+        });
+        validate_submit_response_request_identity(&backend, " client-1 ", " request-1 ")
+            .expect("trimmed expected identity should be accepted");
+    }
+
+    #[test]
+    fn submit_response_validate_request_identity_accepts_trimmed_response_values() {
+        let backend = json!({
+            "client_order_id": " client-1 ",
+            "request_id": "\trequest-1\t"
+        });
+        validate_submit_response_request_identity(&backend, "client-1", "request-1")
+            .expect("trimmed response identity should be accepted");
     }
 
     #[test]
