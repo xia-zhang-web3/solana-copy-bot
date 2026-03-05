@@ -20,6 +20,7 @@ use crate::route_executor::{
     execute_route_action, RouteActionPayloadExpectations, RouteSubmitExecutionContext,
 };
 use crate::route_normalization::normalize_route;
+use crate::route_policy::{classify_normalized_route, RouteKind};
 use crate::submit_claim_guard::SubmitClaimGuard;
 use crate::submit_deadline::SubmitDeadline;
 use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
@@ -29,7 +30,7 @@ use crate::submit_response::{
 };
 use crate::send_rpc::send_signed_transaction_via_rpc;
 use crate::submit_transport::{extract_submit_transport_artifact, SubmitTransportArtifact};
-use crate::submit_verify::verify_submitted_signature_visibility;
+use crate::submit_verify::{verify_submitted_signature_visibility, SubmitSignatureVerification};
 use crate::submit_verify_payload::submit_signature_verification_to_json;
 use crate::tx_build::{
     build_submit_plan, ComputeBudgetBounds, SubmitBuildPlanError, SubmitBuildPlanInputs,
@@ -194,7 +195,17 @@ pub(crate) async fn handle_submit(
         match extract_submit_transport_artifact(&backend_response)
             .map_err(map_submit_transport_artifact_error_to_reject)?
         {
-            SubmitTransportArtifact::UpstreamSignature(value) => (value, "upstream_signature"),
+            SubmitTransportArtifact::UpstreamSignature(value) => {
+                let submit_transport = if matches!(
+                    classify_normalized_route(route.as_str()),
+                    RouteKind::Paper
+                ) {
+                    "executor_paper_internal"
+                } else {
+                    "upstream_signature"
+                };
+                (value, submit_transport)
+            }
             SubmitTransportArtifact::SignedTransactionBase64(value) => {
                 let signature = send_signed_transaction_via_rpc(
                     state,
@@ -207,13 +218,20 @@ pub(crate) async fn handle_submit(
             }
         };
 
-    let submit_signature_verify = verify_submitted_signature_visibility(
-        state,
-        route.as_str(),
-        tx_signature.as_str(),
-        Some(&submit_deadline),
-    )
-    .await?;
+    let submit_signature_verify = if matches!(
+        classify_normalized_route(route.as_str()),
+        RouteKind::Paper
+    ) {
+        SubmitSignatureVerification::Skipped
+    } else {
+        verify_submitted_signature_visibility(
+            state,
+            route.as_str(),
+            tx_signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await?
+    };
 
     let submitted_at = resolve_submit_response_submitted_at(&backend_response, Utc::now())
         .map_err(map_submit_response_validation_error_to_reject)?;
