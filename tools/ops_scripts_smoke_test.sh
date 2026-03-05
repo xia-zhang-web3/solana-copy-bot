@@ -1674,6 +1674,8 @@ run_go_nogo_executor_backend_mode_guard_case() {
   local config_path="$2"
   local executor_env_mock="$TMP_DIR/go-nogo-executor-mock.env"
   local executor_env_upstream="$TMP_DIR/go-nogo-executor-upstream.env"
+  local executor_env_upstream_non_bootstrap="$TMP_DIR/go-nogo-executor-upstream-non-bootstrap.env"
+  local executor_env_upstream_bootstrap="$TMP_DIR/go-nogo-executor-upstream-bootstrap.env"
   local executor_env_upstream_placeholder="$TMP_DIR/go-nogo-executor-upstream-placeholder.env"
   local executor_env_upstream_missing_topology="$TMP_DIR/go-nogo-executor-upstream-missing-topology.env"
   local executor_env_invalid="$TMP_DIR/go-nogo-executor-invalid.env"
@@ -1686,6 +1688,18 @@ COPYBOT_EXECUTOR_BACKEND_MODE=upstream
 COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
 COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
 EOF_EXECUTOR_UPSTREAM
+  cat >"$executor_env_upstream_non_bootstrap" <<'EOF_EXECUTOR_UPSTREAM_NON_BOOTSTRAP'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+COPYBOT_EXECUTOR_SIGNER_PUBKEY=TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+EOF_EXECUTOR_UPSTREAM_NON_BOOTSTRAP
+  cat >"$executor_env_upstream_bootstrap" <<'EOF_EXECUTOR_UPSTREAM_BOOTSTRAP'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+COPYBOT_EXECUTOR_SIGNER_PUBKEY=11111111111111111111111111111111
+EOF_EXECUTOR_UPSTREAM_BOOTSTRAP
   cat >"$executor_env_upstream_placeholder" <<'EOF_EXECUTOR_UPSTREAM_PLACEHOLDER'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
 COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=https://example.com/submit
@@ -1744,8 +1758,77 @@ EOF_EXECUTOR_INVALID
   assert_field_equals "$upstream_output" "go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$upstream_output" "ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$upstream_output" "ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$upstream_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$upstream_output" "non_bootstrap_signer_guard_verdict" "SKIP"
+  assert_field_equals "$upstream_output" "non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$upstream_output" "overall_go_nogo_verdict" "GO"
   assert_field_equals "$upstream_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local strict_signer_pass_output
+  strict_signer_pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream_non_bootstrap" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_signer_pass_output" "go_nogo_require_non_bootstrap_signer" "true"
+  assert_field_equals "$strict_signer_pass_output" "non_bootstrap_signer_guard_verdict" "PASS"
+  assert_field_equals "$strict_signer_pass_output" "non_bootstrap_signer_guard_reason_code" "signer_pubkey_non_bootstrap"
+  assert_field_equals "$strict_signer_pass_output" "overall_go_nogo_verdict" "GO"
+  assert_field_equals "$strict_signer_pass_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local strict_signer_bootstrap_output
+  strict_signer_bootstrap_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream_bootstrap" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_signer_bootstrap_output" "go_nogo_require_non_bootstrap_signer" "true"
+  assert_field_equals "$strict_signer_bootstrap_output" "non_bootstrap_signer_guard_verdict" "WARN"
+  assert_field_equals "$strict_signer_bootstrap_output" "non_bootstrap_signer_guard_reason_code" "signer_pubkey_bootstrap_default"
+  assert_field_equals "$strict_signer_bootstrap_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_signer_bootstrap_output" "overall_go_nogo_reason_code" "signer_guard_not_pass"
+
+  local strict_signer_missing_output
+  strict_signer_missing_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_signer_missing_output" "go_nogo_require_non_bootstrap_signer" "true"
+  assert_field_equals "$strict_signer_missing_output" "non_bootstrap_signer_guard_verdict" "UNKNOWN"
+  assert_field_equals "$strict_signer_missing_output" "non_bootstrap_signer_guard_reason_code" "signer_pubkey_missing"
+  assert_field_equals "$strict_signer_missing_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_signer_missing_output" "overall_go_nogo_reason_code" "signer_guard_unknown"
 
   local ingestion_grpc_pass_output
   ingestion_grpc_pass_output="$(
@@ -1970,6 +2053,28 @@ EOF_EXECUTOR_INVALID
   fi
   assert_contains "$invalid_ingestion_bool_output" "GO_NOGO_REQUIRE_INGESTION_GRPC must be a boolean token"
   assert_contains "$invalid_ingestion_bool_output" "got: sometimes"
+
+  local invalid_signer_bool_output=""
+  if invalid_signer_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="sometimes" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER token" >&2
+    exit 1
+  else
+    local invalid_signer_bool_exit_code=$?
+    if [[ "$invalid_signer_bool_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER token, got $invalid_signer_bool_exit_code" >&2
+      echo "$invalid_signer_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_signer_bool_output" "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token"
+  assert_contains "$invalid_signer_bool_output" "got: sometimes"
   echo "[ok] go-no-go strict executor backend-mode and topology gate"
 }
 
@@ -6211,6 +6316,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "go_nogo_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
   assert_field_equals "$output" "go_nogo_executor_upstream_endpoint_guard_verdict" "PASS"
   assert_field_equals "$output" "go_nogo_executor_upstream_endpoint_guard_reason_code" "topology_pass"
+  assert_field_equals "$output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
+  assert_field_equals "$output" "go_nogo_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "go_nogo_artifacts_written" "true"
   assert_field_equals "$output" "rehearsal_artifacts_written" "true"
   assert_field_equals "$output" "executor_final_artifacts_written" "true"
@@ -6316,6 +6424,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$skip_direct_output" "go_nogo_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "go_nogo_ingestion_grpc_guard_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$skip_direct_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "stage_disabled"
   assert_field_equals "$skip_direct_output" "executor_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "adapter_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_executor_upstream" "true"
@@ -6394,6 +6505,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$profile_skip_output" "go_nogo_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "go_nogo_ingestion_grpc_guard_reason_code" "stage_disabled"
+  assert_field_equals "$profile_skip_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$profile_skip_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "stage_disabled"
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$profile_skip_output" "executor_final_executor_env_path" "$executor_env_path"
@@ -6464,6 +6578,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$bundle_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$bundle_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
+  assert_field_equals "$bundle_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
   assert_field_equals "$bundle_output" "go_nogo_artifacts_written" "true"
@@ -6563,6 +6680,70 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$invalid_ingestion_bool_output" "server_rollout_verdict" "NO_GO"
   assert_field_equals "$invalid_ingestion_bool_output" "server_rollout_reason_code" "input_error"
 
+  local strict_signer_output=""
+  if strict_signer_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-strict-signer" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="true" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail when strict non-bootstrap signer guard is enabled with bootstrap signer pubkey" >&2
+    exit 1
+  else
+    local strict_signer_exit_code=$?
+    if [[ "$strict_signer_exit_code" -ne 3 ]]; then
+      echo "expected server rollout strict signer guard exit code 3, got $strict_signer_exit_code" >&2
+      echo "$strict_signer_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$strict_signer_output" "go_nogo_require_non_bootstrap_signer" "true"
+  assert_field_equals "$strict_signer_output" "go_nogo_non_bootstrap_signer_guard_verdict" "WARN"
+  assert_field_equals "$strict_signer_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "signer_pubkey_bootstrap_default"
+  assert_field_equals "$strict_signer_output" "go_nogo_reason_code" "signer_guard_not_pass"
+  assert_field_equals "$strict_signer_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$strict_signer_output" "server_rollout_reason_code" "adapter_final_not_go"
+
+  local invalid_signer_bool_output=""
+  if invalid_signer_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="sometimes" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail for invalid GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER token" >&2
+    exit 1
+  else
+    local invalid_signer_bool_exit_code=$?
+    if [[ "$invalid_signer_bool_exit_code" -ne 3 ]]; then
+      echo "expected server rollout invalid signer bool exit code 3, got $invalid_signer_bool_exit_code" >&2
+      echo "$invalid_signer_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_signer_bool_output" "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token"
+  assert_field_equals "$invalid_signer_bool_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$invalid_signer_bool_output" "server_rollout_reason_code" "input_error"
+
   local invalid_profile_output=""
   if invalid_profile_output="$(
     PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
@@ -6657,6 +6838,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_executor_upstream" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_executor_env_path" "$mock_backend_env_path"

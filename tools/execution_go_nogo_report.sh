@@ -35,6 +35,7 @@ go_nogo_require_jito_rpc_policy_raw="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 go_nogo_require_executor_upstream_raw="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 go_nogo_require_ingestion_grpc_raw="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
+go_nogo_require_non_bootstrap_signer_raw="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
 if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
   echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2
@@ -50,6 +51,10 @@ if ! go_nogo_require_executor_upstream="$(parse_bool_token_strict "$go_nogo_requ
 fi
 if ! go_nogo_require_ingestion_grpc="$(parse_bool_token_strict "$go_nogo_require_ingestion_grpc_raw")"; then
   echo "GO_NOGO_REQUIRE_INGESTION_GRPC must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_ingestion_grpc_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_require_non_bootstrap_signer="$(parse_bool_token_strict "$go_nogo_require_non_bootstrap_signer_raw")"; then
+  echo "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_non_bootstrap_signer_raw}" >&2
   exit 1
 fi
 if ! go_nogo_test_mode="$(parse_bool_token_strict "$go_nogo_test_mode_raw")"; then
@@ -209,6 +214,25 @@ else:
 PY
 }
 
+signer_pubkey_placeholder_kind() {
+  local signer_pubkey="$1"
+  python3 - "$signer_pubkey" <<'PY'
+import sys
+
+value = (sys.argv[1] if len(sys.argv) > 1 else "").strip().lower()
+if not value:
+    print("")
+    raise SystemExit(0)
+
+if "replace_me" in value or "replace-with" in value or "placeholder" in value or "changeme" in value:
+    print("placeholder_token")
+elif value.startswith("signer111"):
+    print("placeholder_prefix")
+else:
+    print("")
+PY
+}
+
 sum_route_map_values() {
   local raw_map="$1"
   python3 - "$raw_map" <<'PY'
@@ -345,6 +369,37 @@ if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
     executor_backend_mode_guard_verdict="PASS"
     executor_backend_mode_guard_reason="executor backend_mode=upstream"
     executor_backend_mode_guard_reason_code="backend_mode_upstream"
+  fi
+fi
+
+executor_signer_pubkey_observed="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_SIGNER_PUBKEY")")"
+non_bootstrap_signer_guard_verdict="SKIP"
+non_bootstrap_signer_guard_reason="strict non-bootstrap signer guard disabled"
+non_bootstrap_signer_guard_reason_code="gate_disabled"
+if [[ "$go_nogo_require_non_bootstrap_signer" == "true" ]]; then
+  if [[ ! -f "$EXECUTOR_ENV_PATH" ]]; then
+    non_bootstrap_signer_guard_verdict="UNKNOWN"
+    non_bootstrap_signer_guard_reason="executor env file not found: $EXECUTOR_ENV_PATH"
+    non_bootstrap_signer_guard_reason_code="executor_env_missing"
+  elif [[ -z "$executor_signer_pubkey_observed" ]]; then
+    non_bootstrap_signer_guard_verdict="UNKNOWN"
+    non_bootstrap_signer_guard_reason="COPYBOT_EXECUTOR_SIGNER_PUBKEY missing in $EXECUTOR_ENV_PATH"
+    non_bootstrap_signer_guard_reason_code="signer_pubkey_missing"
+  elif [[ "$executor_signer_pubkey_observed" == "11111111111111111111111111111111" ]]; then
+    non_bootstrap_signer_guard_verdict="WARN"
+    non_bootstrap_signer_guard_reason="COPYBOT_EXECUTOR_SIGNER_PUBKEY uses bootstrap pubkey 11111111111111111111111111111111"
+    non_bootstrap_signer_guard_reason_code="signer_pubkey_bootstrap_default"
+  else
+    signer_pubkey_placeholder_kind_value="$(signer_pubkey_placeholder_kind "$executor_signer_pubkey_observed")"
+    if [[ -n "$signer_pubkey_placeholder_kind_value" ]]; then
+      non_bootstrap_signer_guard_verdict="WARN"
+      non_bootstrap_signer_guard_reason="COPYBOT_EXECUTOR_SIGNER_PUBKEY appears placeholder-like (${signer_pubkey_placeholder_kind_value})"
+      non_bootstrap_signer_guard_reason_code="signer_pubkey_placeholder"
+    else
+      non_bootstrap_signer_guard_verdict="PASS"
+      non_bootstrap_signer_guard_reason="COPYBOT_EXECUTOR_SIGNER_PUBKEY is non-bootstrap and non-placeholder"
+      non_bootstrap_signer_guard_reason_code="signer_pubkey_non_bootstrap"
+    fi
   fi
 fi
 
@@ -699,6 +754,14 @@ elif [[ "$go_nogo_require_ingestion_grpc" == "true" && "$ingestion_grpc_guard_ve
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict ingestion grpc guard not PASS: ${ingestion_grpc_guard_reason:-n/a}"
   overall_go_nogo_reason_code="ingestion_grpc_not_pass"
+elif [[ "$go_nogo_require_non_bootstrap_signer" == "true" && "$non_bootstrap_signer_guard_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict non-bootstrap signer guard verdict: ${non_bootstrap_signer_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="signer_guard_unknown"
+elif [[ "$go_nogo_require_non_bootstrap_signer" == "true" && "$non_bootstrap_signer_guard_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict non-bootstrap signer guard not PASS: ${non_bootstrap_signer_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="signer_guard_not_pass"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
@@ -707,7 +770,7 @@ elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_fla
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
   overall_go_nogo_reason_code="fastlane_policy_unknown"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
   overall_go_nogo_reason_code="all_required_gates_pass"
@@ -849,6 +912,11 @@ ingestion_source: ${ingestion_source_for_go_nogo:-unknown}
 ingestion_grpc_guard_verdict: $ingestion_grpc_guard_verdict
 ingestion_grpc_guard_reason: $ingestion_grpc_guard_reason
 ingestion_grpc_guard_reason_code: $ingestion_grpc_guard_reason_code
+go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer
+executor_signer_pubkey_observed: ${executor_signer_pubkey_observed:-n/a}
+non_bootstrap_signer_guard_verdict: $non_bootstrap_signer_guard_verdict
+non_bootstrap_signer_guard_reason: $non_bootstrap_signer_guard_reason
+non_bootstrap_signer_guard_reason_code: $non_bootstrap_signer_guard_reason_code
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 jito_rpc_policy_verdict: $jito_rpc_policy_verdict
 jito_rpc_policy_reason: $jito_rpc_policy_reason
