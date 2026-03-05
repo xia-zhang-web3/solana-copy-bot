@@ -10854,6 +10854,57 @@ run_refactor_phase_gate_case() {
   assert_contains "$phase_strict_submit_verify_output" "submit_verify_guard_verdict: WARN"
   assert_contains "$phase_strict_submit_verify_output" "submit_verify_guard_reason_code: submit_verify_strict_not_enabled"
 
+  local phase_strict_submit_verify_pass_output=""
+  phase_strict_submit_verify_pass_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
+      REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_STRICT="true" \
+      REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_RPC_URL="https://verify-primary.integration.test/rpc" \
+      REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL="https://verify-fallback.integration.test/rpc" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-submit-verify-pass" --fixture-dir "$phase_fixture_dir.strict-submit-verify-pass"
+  )"
+  assert_field_equals "$phase_strict_submit_verify_pass_output" "go_nogo_require_submit_verify_strict" "true"
+  local phase_strict_submit_verify_pass_norm_go_nogo=""
+  local phase_strict_submit_verify_pass_norm_rehearsal=""
+  local phase_strict_submit_verify_pass_norm_rollout=""
+  phase_strict_submit_verify_pass_norm_go_nogo="$(extract_field_value "$phase_strict_submit_verify_pass_output" "normalized_go_nogo")"
+  phase_strict_submit_verify_pass_norm_rehearsal="$(extract_field_value "$phase_strict_submit_verify_pass_output" "normalized_rehearsal")"
+  phase_strict_submit_verify_pass_norm_rollout="$(extract_field_value "$phase_strict_submit_verify_pass_output" "normalized_rollout")"
+  assert_contains "$(cat "$phase_strict_submit_verify_pass_norm_go_nogo")" "submit_verify_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_submit_verify_pass_norm_go_nogo")" "submit_verify_guard_reason_code: submit_verify_strict_enabled"
+  assert_contains "$(cat "$phase_strict_submit_verify_pass_norm_rehearsal")" "go_nogo_submit_verify_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_submit_verify_pass_norm_rehearsal")" "go_nogo_submit_verify_guard_reason_code: submit_verify_strict_enabled"
+  assert_contains "$(cat "$phase_strict_submit_verify_pass_norm_rollout")" "rehearsal_nested_submit_verify_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_submit_verify_pass_norm_rollout")" "rehearsal_nested_submit_verify_guard_reason_code: submit_verify_strict_enabled"
+
+  local phase_strict_submit_verify_collision_output_path="$phase_output_dir.strict-submit-verify-collision.out"
+  local phase_strict_submit_verify_collision_output=""
+  if REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
+    REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_STRICT="true" \
+    REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_RPC_URL="https://verify.integration.test" \
+    REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL="https://VERIFY.integration.test:443/" \
+    bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-submit-verify-collision" --fixture-dir "$phase_fixture_dir.strict-submit-verify-collision" >"$phase_strict_submit_verify_collision_output_path" 2>&1; then
+    echo "expected refactor_phase_gate to fail-close when strict submit-verify fallback resolves to primary identity" >&2
+    exit 1
+  fi
+  phase_strict_submit_verify_collision_output="$(cat "$phase_strict_submit_verify_collision_output_path")"
+  assert_contains "$phase_strict_submit_verify_collision_output" "phase-gate error: execution_go_nogo_report.sh failed for stage=go_nogo"
+  assert_contains "$phase_strict_submit_verify_collision_output" "submit_verify_guard_verdict: WARN"
+  assert_contains "$phase_strict_submit_verify_collision_output" "submit_verify_guard_reason_code: submit_verify_fallback_same_as_primary"
+
+  local phase_strict_submit_verify_invalid_primary_output_path="$phase_output_dir.strict-submit-verify-invalid-primary.out"
+  local phase_strict_submit_verify_invalid_primary_output=""
+  if REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
+    REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_STRICT="true" \
+    REFACTOR_BASELINE_EXECUTOR_SUBMIT_VERIFY_RPC_URL="not-a-url" \
+    bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-submit-verify-invalid-primary" --fixture-dir "$phase_fixture_dir.strict-submit-verify-invalid-primary" >"$phase_strict_submit_verify_invalid_primary_output_path" 2>&1; then
+    echo "expected refactor_phase_gate to fail-close for invalid strict submit-verify primary URL" >&2
+    exit 1
+  fi
+  phase_strict_submit_verify_invalid_primary_output="$(cat "$phase_strict_submit_verify_invalid_primary_output_path")"
+  assert_contains "$phase_strict_submit_verify_invalid_primary_output" "phase-gate error: execution_go_nogo_report.sh failed for stage=go_nogo"
+  assert_contains "$phase_strict_submit_verify_invalid_primary_output" "submit_verify_guard_verdict: UNKNOWN"
+  assert_contains "$phase_strict_submit_verify_invalid_primary_output" "submit_verify_guard_reason_code: submit_verify_primary_invalid"
+
   local phase_invalid_ingestion_source_output=""
   if phase_invalid_ingestion_source_output="$(
     REFACTOR_PHASE_GATE_INGESTION_SOURCE="helius_ws" \
