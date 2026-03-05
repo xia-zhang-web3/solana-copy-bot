@@ -219,6 +219,37 @@ else:
 PY
 }
 
+endpoint_identity() {
+  local endpoint="$1"
+  python3 - "$endpoint" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+endpoint = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
+if not endpoint:
+    raise SystemExit(1)
+parsed = urlsplit(endpoint)
+scheme = (parsed.scheme or "").lower()
+if scheme not in {"http", "https"}:
+    raise SystemExit(1)
+host = (parsed.hostname or "").strip().lower()
+if not host:
+    raise SystemExit(1)
+if parsed.username or parsed.password:
+    raise SystemExit(1)
+if parsed.query or parsed.fragment:
+    raise SystemExit(1)
+if parsed.port is not None:
+    port = parsed.port
+elif scheme == "http":
+    port = 80
+else:
+    port = 443
+path = parsed.path if parsed.path else "/"
+print(f"{scheme}://{host}:{port}{path}")
+PY
+}
+
 signer_pubkey_placeholder_kind() {
   local signer_pubkey="$1"
   python3 - "$signer_pubkey" <<'PY'
@@ -424,6 +455,8 @@ if [[ "$go_nogo_require_submit_verify_strict" == "true" ]]; then
     executor_submit_verify_strict_raw="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT")")"
     executor_submit_verify_primary_url="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL")")"
     executor_submit_verify_fallback_url="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL")")"
+    executor_submit_verify_primary_identity=""
+    executor_submit_verify_fallback_identity=""
 
     if [[ -n "$executor_submit_verify_primary_url" ]]; then
       executor_submit_verify_configured="true"
@@ -454,30 +487,44 @@ if [[ "$go_nogo_require_submit_verify_strict" == "true" ]]; then
         submit_verify_guard_verdict="UNKNOWN"
         submit_verify_guard_reason="COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"
         submit_verify_guard_reason_code="submit_verify_fallback_without_primary"
-      elif [[ "$executor_submit_verify_fallback_configured" == "true" && "$executor_submit_verify_fallback_url" == "$executor_submit_verify_primary_url" ]]; then
-        submit_verify_guard_verdict="WARN"
-        submit_verify_guard_reason="submit-verify primary and fallback endpoints must differ when strict submit-verify guard is enabled"
-        submit_verify_guard_reason_code="submit_verify_fallback_same_as_primary"
       else
-        if [[ "$executor_backend_mode" == "upstream" ]]; then
-          endpoint_placeholder_host_value="$(endpoint_placeholder_host "$executor_submit_verify_primary_url")"
-          if [[ -n "$endpoint_placeholder_host_value" ]]; then
+        if ! executor_submit_verify_primary_identity="$(endpoint_identity "$executor_submit_verify_primary_url" 2>/dev/null)"; then
+          submit_verify_guard_verdict="UNKNOWN"
+          submit_verify_guard_reason="COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL is invalid for strict submit-verify guard"
+          submit_verify_guard_reason_code="submit_verify_primary_invalid"
+        elif [[ "$executor_submit_verify_fallback_configured" == "true" ]]; then
+          if ! executor_submit_verify_fallback_identity="$(endpoint_identity "$executor_submit_verify_fallback_url" 2>/dev/null)"; then
+            submit_verify_guard_verdict="UNKNOWN"
+            submit_verify_guard_reason="COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL is invalid for strict submit-verify guard"
+            submit_verify_guard_reason_code="submit_verify_fallback_invalid"
+          elif [[ "$executor_submit_verify_fallback_identity" == "$executor_submit_verify_primary_identity" ]]; then
             submit_verify_guard_verdict="WARN"
-            submit_verify_guard_reason="submit-verify primary endpoint uses placeholder host=${endpoint_placeholder_host_value}"
-            submit_verify_guard_reason_code="submit_verify_endpoint_placeholder"
-          elif [[ "$executor_submit_verify_fallback_configured" == "true" ]]; then
-            endpoint_placeholder_host_value="$(endpoint_placeholder_host "$executor_submit_verify_fallback_url")"
-            if [[ -n "$endpoint_placeholder_host_value" ]]; then
-              submit_verify_guard_verdict="WARN"
-              submit_verify_guard_reason="submit-verify fallback endpoint uses placeholder host=${endpoint_placeholder_host_value}"
-              submit_verify_guard_reason_code="submit_verify_endpoint_placeholder"
-            fi
+            submit_verify_guard_reason="submit-verify primary and fallback endpoints must differ when strict submit-verify guard is enabled"
+            submit_verify_guard_reason_code="submit_verify_fallback_same_as_primary"
           fi
         fi
+
         if [[ "$submit_verify_guard_verdict" == "SKIP" ]]; then
-          submit_verify_guard_verdict="PASS"
-          submit_verify_guard_reason="strict submit-verify guard confirms enabled+configured non-placeholder topology"
-          submit_verify_guard_reason_code="submit_verify_strict_enabled"
+          if [[ "$executor_backend_mode" == "upstream" ]]; then
+            endpoint_placeholder_host_value="$(endpoint_placeholder_host "$executor_submit_verify_primary_url")"
+            if [[ -n "$endpoint_placeholder_host_value" ]]; then
+              submit_verify_guard_verdict="WARN"
+              submit_verify_guard_reason="submit-verify primary endpoint uses placeholder host=${endpoint_placeholder_host_value}"
+              submit_verify_guard_reason_code="submit_verify_endpoint_placeholder"
+            elif [[ "$executor_submit_verify_fallback_configured" == "true" ]]; then
+              endpoint_placeholder_host_value="$(endpoint_placeholder_host "$executor_submit_verify_fallback_url")"
+              if [[ -n "$endpoint_placeholder_host_value" ]]; then
+                submit_verify_guard_verdict="WARN"
+                submit_verify_guard_reason="submit-verify fallback endpoint uses placeholder host=${endpoint_placeholder_host_value}"
+                submit_verify_guard_reason_code="submit_verify_endpoint_placeholder"
+              fi
+            fi
+          fi
+          if [[ "$submit_verify_guard_verdict" == "SKIP" ]]; then
+            submit_verify_guard_verdict="PASS"
+            submit_verify_guard_reason="strict submit-verify guard confirms enabled+configured non-placeholder topology"
+            submit_verify_guard_reason_code="submit_verify_strict_enabled"
+          fi
         fi
       fi
     fi

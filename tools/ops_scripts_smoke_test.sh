@@ -1678,6 +1678,8 @@ run_go_nogo_executor_backend_mode_guard_case() {
   local executor_env_upstream_bootstrap="$TMP_DIR/go-nogo-executor-upstream-bootstrap.env"
   local executor_env_upstream_submit_verify_strict="$TMP_DIR/go-nogo-executor-upstream-submit-verify-strict.env"
   local executor_env_upstream_submit_verify_invalid="$TMP_DIR/go-nogo-executor-upstream-submit-verify-invalid.env"
+  local executor_env_upstream_submit_verify_identity_collision="$TMP_DIR/go-nogo-executor-upstream-submit-verify-identity-collision.env"
+  local executor_env_upstream_submit_verify_invalid_primary="$TMP_DIR/go-nogo-executor-upstream-submit-verify-invalid-primary.env"
   local executor_env_upstream_placeholder="$TMP_DIR/go-nogo-executor-upstream-placeholder.env"
   local executor_env_upstream_missing_topology="$TMP_DIR/go-nogo-executor-upstream-missing-topology.env"
   local executor_env_invalid="$TMP_DIR/go-nogo-executor-invalid.env"
@@ -1716,6 +1718,21 @@ COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
 COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT=sometimes
 COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL=http://127.0.0.1:18080/verify
 EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_INVALID
+  cat >"$executor_env_upstream_submit_verify_identity_collision" <<'EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_IDENTITY_COLLISION'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT=true
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL=https://verify.integration.test
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL=https://VERIFY.integration.test:443/
+EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_IDENTITY_COLLISION
+  cat >"$executor_env_upstream_submit_verify_invalid_primary" <<'EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_INVALID_PRIMARY'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT=true
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL=not_a_url
+EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_INVALID_PRIMARY
   cat >"$executor_env_upstream_placeholder" <<'EOF_EXECUTOR_UPSTREAM_PLACEHOLDER'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
 COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=https://example.com/submit
@@ -1852,6 +1869,50 @@ EOF_EXECUTOR_INVALID
   assert_field_equals "$strict_submit_verify_invalid_output" "submit_verify_guard_reason_code" "submit_verify_strict_invalid"
   assert_field_equals "$strict_submit_verify_invalid_output" "overall_go_nogo_verdict" "NO_GO"
   assert_field_equals "$strict_submit_verify_invalid_output" "overall_go_nogo_reason_code" "submit_verify_guard_unknown"
+
+  local strict_submit_verify_identity_collision_output
+  strict_submit_verify_identity_collision_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream_submit_verify_identity_collision" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_submit_verify_identity_collision_output" "go_nogo_require_submit_verify_strict" "true"
+  assert_field_equals "$strict_submit_verify_identity_collision_output" "submit_verify_guard_verdict" "WARN"
+  assert_field_equals "$strict_submit_verify_identity_collision_output" "submit_verify_guard_reason_code" "submit_verify_fallback_same_as_primary"
+  assert_field_equals "$strict_submit_verify_identity_collision_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_submit_verify_identity_collision_output" "overall_go_nogo_reason_code" "submit_verify_guard_not_pass"
+
+  local strict_submit_verify_primary_invalid_output
+  strict_submit_verify_primary_invalid_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream_submit_verify_invalid_primary" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_submit_verify_primary_invalid_output" "go_nogo_require_submit_verify_strict" "true"
+  assert_field_equals "$strict_submit_verify_primary_invalid_output" "submit_verify_guard_verdict" "UNKNOWN"
+  assert_field_equals "$strict_submit_verify_primary_invalid_output" "submit_verify_guard_reason_code" "submit_verify_primary_invalid"
+  assert_field_equals "$strict_submit_verify_primary_invalid_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_submit_verify_primary_invalid_output" "overall_go_nogo_reason_code" "submit_verify_guard_unknown"
 
   local strict_signer_pass_output
   strict_signer_pass_output="$(
