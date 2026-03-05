@@ -250,7 +250,7 @@ impl RouteAdapter {
     }
 }
 
-fn deterministic_submit_signature_from_fields(
+fn deterministic_submit_signature_from_legacy_fields(
     signature_namespace: &str,
     primary_fields: &[&str],
     secondary_fields: &[&str],
@@ -284,6 +284,37 @@ fn deterministic_submit_signature_from_fields(
     bs58::encode(signature_bytes).into_string()
 }
 
+fn hash_tagged_fields(hasher: &mut Sha256, fields: &[&str]) {
+    for field in fields.iter() {
+        let field_len = u64::try_from(field.len()).unwrap_or(u64::MAX);
+        hasher.update(field_len.to_be_bytes());
+        hasher.update(field.as_bytes());
+    }
+}
+
+fn deterministic_submit_signature_from_tagged_fields(
+    signature_namespace: &str,
+    primary_fields: &[&str],
+    secondary_fields: &[&str],
+) -> String {
+    let mut first = Sha256::new();
+    first.update(signature_namespace.as_bytes());
+    first.update(b":v1:");
+    hash_tagged_fields(&mut first, primary_fields);
+    let first_digest = first.finalize();
+
+    let mut second = Sha256::new();
+    second.update(signature_namespace.as_bytes());
+    second.update(b":v2:");
+    hash_tagged_fields(&mut second, secondary_fields);
+    let second_digest = second.finalize();
+
+    let mut signature_bytes = [0u8; 64];
+    signature_bytes[..32].copy_from_slice(first_digest.as_slice());
+    signature_bytes[32..].copy_from_slice(second_digest.as_slice());
+    bs58::encode(signature_bytes).into_string()
+}
+
 fn mock_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_>) -> String {
     let request_id = payload_expectations.request_id.unwrap_or("");
     let client_order_id = payload_expectations.client_order_id.unwrap_or("");
@@ -294,17 +325,17 @@ fn mock_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    let token = payload_expectations.token.unwrap_or("");
+    let normalized_token = payload_expectations.token.unwrap_or("").trim();
     let primary_fields = [
         request_id,
         client_order_id,
         signal_id,
         normalized_route_hint.as_str(),
         normalized_side.as_str(),
-        token,
+        normalized_token,
     ];
     let secondary_fields = [
-        token,
+        normalized_token,
         normalized_side.as_str(),
         normalized_route_hint.as_str(),
         signal_id,
@@ -312,7 +343,7 @@ fn mock_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_
         request_id,
     ];
 
-    deterministic_submit_signature_from_fields(
+    deterministic_submit_signature_from_tagged_fields(
         "executor-mock-submit-signature",
         &primary_fields,
         &secondary_fields,
@@ -325,7 +356,7 @@ fn paper_submit_signature(payload_expectations: RouteActionPayloadExpectations<'
     let primary_fields = [request_id, client_order_id];
     let secondary_fields = [client_order_id, request_id];
 
-    deterministic_submit_signature_from_fields(
+    deterministic_submit_signature_from_legacy_fields(
         "executor-paper-submit-signature",
         &primary_fields,
         &secondary_fields,
@@ -1264,6 +1295,18 @@ mod tests {
                 token: Some("11111111111111111111111111111111"),
             },
         );
+        let different_token_payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some("buy"),
+                token: Some("22222222222222222222222222222222"),
+            },
+        );
         let base_signature = base_payload
             .get("tx_signature")
             .and_then(Value::as_str)
@@ -1276,6 +1319,10 @@ mod tests {
             .get("tx_signature")
             .and_then(Value::as_str)
             .expect("side tx_signature should be present");
+        let different_token_signature = different_token_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("token tx_signature should be present");
         assert_ne!(
             base_signature, different_signal_signature,
             "mock signature must change when signal_id changes with same request/client_order_id"
@@ -1283,6 +1330,10 @@ mod tests {
         assert_ne!(
             base_signature, different_side_signature,
             "mock signature must change when side changes with same request/client_order_id"
+        );
+        assert_ne!(
+            base_signature, different_token_signature,
+            "mock signature must change when token changes with same request/client_order_id"
         );
     }
 
@@ -1309,7 +1360,7 @@ mod tests {
                 signal_id: Some("signal-1"),
                 client_order_id: Some("client-order-1"),
                 side: Some(" BUY "),
-                token: Some("11111111111111111111111111111111"),
+                token: Some(" 11111111111111111111111111111111 "),
             },
         );
         let normalized_signature = normalized_payload
@@ -1481,6 +1532,30 @@ mod tests {
         assert_ne!(
             mock_signature, paper_signature,
             "mock and paper namespaces must produce distinct deterministic signatures"
+        );
+    }
+
+    #[test]
+    fn mock_submit_signature_avoids_delimiter_collision_with_tagged_fields() {
+        let first_signature = super::mock_submit_signature(RouteActionPayloadExpectations {
+            route_hint: Some("rpc"),
+            request_id: Some("request-id:part"),
+            signal_id: Some("signal-1"),
+            client_order_id: Some("client-order-1"),
+            side: Some("buy"),
+            token: Some("11111111111111111111111111111111"),
+        });
+        let second_signature = super::mock_submit_signature(RouteActionPayloadExpectations {
+            route_hint: Some("rpc"),
+            request_id: Some("request-id"),
+            signal_id: Some("signal-1"),
+            client_order_id: Some("part:client-order-1"),
+            side: Some("buy"),
+            token: Some("11111111111111111111111111111111"),
+        });
+        assert_ne!(
+            first_signature, second_signature,
+            "tagged-field hashing must keep signatures distinct when delimiters appear in identity fields"
         );
     }
 
