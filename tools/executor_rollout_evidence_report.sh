@@ -27,6 +27,7 @@ GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
 GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
+GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-$GO_NOGO_TEST_MODE}"
@@ -115,6 +116,7 @@ parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_RE
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE_INGESTION_GRPC" go_nogo_require_ingestion_grpc_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" go_nogo_require_non_bootstrap_signer_norm
+parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" "$GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" go_nogo_require_submit_verify_strict_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_rollout_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
@@ -126,6 +128,9 @@ if [[ "$windowed_signoff_required_norm" == "true" && "$executor_rollout_run_rehe
 fi
 if [[ "$route_fee_signoff_required_norm" == "true" && "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
   input_errors+=("ROUTE_FEE_SIGNOFF_REQUIRED=true requires EXECUTOR_ROLLOUT_RUN_REHEARSAL=true")
+fi
+if [[ "$go_nogo_require_submit_verify_strict_norm" == "true" && "$executor_rollout_run_preflight_norm" != "true" ]]; then
+  input_errors+=("GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=true requires EXECUTOR_ROLLOUT_RUN_PREFLIGHT=true")
 fi
 if [[ "$package_bundle_enabled_norm" == "true" && -z "$OUTPUT_DIR" ]]; then
   input_errors+=("PACKAGE_BUNDLE_ENABLED=true requires OUTPUT_DIR to be set")
@@ -256,6 +261,12 @@ elif ((${#input_errors[@]} == 0)) && [[ -f "$CONFIG_PATH" && -f "$EXECUTOR_ENV_P
   fi
   if [[ "$preflight_executor_submit_verify_fallback_configured" == "true" && "$preflight_executor_submit_verify_configured" != "true" ]]; then
     input_errors+=("preflight helper executor_submit_verify_fallback_configured=true requires executor_submit_verify_configured=true")
+  fi
+  if [[ "$go_nogo_require_submit_verify_strict_norm" == "true" && "$preflight_executor_submit_verify_strict" != "true" ]]; then
+    input_errors+=("GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=true requires preflight_executor_submit_verify_strict=true")
+  fi
+  if [[ "$go_nogo_require_submit_verify_strict_norm" == "true" && "$preflight_executor_submit_verify_configured" != "true" ]]; then
+    input_errors+=("GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=true requires preflight_executor_submit_verify_configured=true")
   fi
   preflight_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$preflight_output")")"
   if ! preflight_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$preflight_output")"; then
@@ -623,6 +634,7 @@ executor_rollout_run_rehearsal: $executor_rollout_run_rehearsal_norm
 go_nogo_require_executor_upstream: $go_nogo_require_executor_upstream_norm
 go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc_norm
 go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer_norm
+go_nogo_require_submit_verify_strict: $go_nogo_require_submit_verify_strict_norm
 executor_env_path: $EXECUTOR_ENV_PATH
 
 rotation_readiness_verdict: $rotation_verdict

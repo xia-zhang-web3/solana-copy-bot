@@ -1676,6 +1676,8 @@ run_go_nogo_executor_backend_mode_guard_case() {
   local executor_env_upstream="$TMP_DIR/go-nogo-executor-upstream.env"
   local executor_env_upstream_non_bootstrap="$TMP_DIR/go-nogo-executor-upstream-non-bootstrap.env"
   local executor_env_upstream_bootstrap="$TMP_DIR/go-nogo-executor-upstream-bootstrap.env"
+  local executor_env_upstream_submit_verify_strict="$TMP_DIR/go-nogo-executor-upstream-submit-verify-strict.env"
+  local executor_env_upstream_submit_verify_invalid="$TMP_DIR/go-nogo-executor-upstream-submit-verify-invalid.env"
   local executor_env_upstream_placeholder="$TMP_DIR/go-nogo-executor-upstream-placeholder.env"
   local executor_env_upstream_missing_topology="$TMP_DIR/go-nogo-executor-upstream-missing-topology.env"
   local executor_env_invalid="$TMP_DIR/go-nogo-executor-invalid.env"
@@ -1700,6 +1702,20 @@ COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
 COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
 COPYBOT_EXECUTOR_SIGNER_PUBKEY=11111111111111111111111111111111
 EOF_EXECUTOR_UPSTREAM_BOOTSTRAP
+  cat >"$executor_env_upstream_submit_verify_strict" <<'EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_STRICT'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT=true
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL=http://127.0.0.1:18080/verify
+EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_STRICT
+  cat >"$executor_env_upstream_submit_verify_invalid" <<'EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_INVALID'
+COPYBOT_EXECUTOR_BACKEND_MODE=upstream
+COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
+COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT=sometimes
+COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL=http://127.0.0.1:18080/verify
+EOF_EXECUTOR_UPSTREAM_SUBMIT_VERIFY_INVALID
   cat >"$executor_env_upstream_placeholder" <<'EOF_EXECUTOR_UPSTREAM_PLACEHOLDER'
 COPYBOT_EXECUTOR_BACKEND_MODE=upstream
 COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=https://example.com/submit
@@ -1761,8 +1777,81 @@ EOF_EXECUTOR_INVALID
   assert_field_equals "$upstream_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$upstream_output" "non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$upstream_output" "non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$upstream_output" "go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$upstream_output" "submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$upstream_output" "submit_verify_guard_reason_code" "gate_disabled"
   assert_field_equals "$upstream_output" "overall_go_nogo_verdict" "GO"
   assert_field_equals "$upstream_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local strict_submit_verify_pass_output
+  strict_submit_verify_pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream_submit_verify_strict" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_submit_verify_pass_output" "go_nogo_require_submit_verify_strict" "true"
+  assert_field_equals "$strict_submit_verify_pass_output" "executor_submit_verify_strict_observed" "true"
+  assert_field_equals "$strict_submit_verify_pass_output" "executor_submit_verify_configured" "true"
+  assert_field_equals "$strict_submit_verify_pass_output" "submit_verify_guard_verdict" "PASS"
+  assert_field_equals "$strict_submit_verify_pass_output" "submit_verify_guard_reason_code" "submit_verify_strict_enabled"
+  assert_field_equals "$strict_submit_verify_pass_output" "overall_go_nogo_verdict" "GO"
+  assert_field_equals "$strict_submit_verify_pass_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local strict_submit_verify_disabled_output
+  strict_submit_verify_disabled_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_submit_verify_disabled_output" "go_nogo_require_submit_verify_strict" "true"
+  assert_field_equals "$strict_submit_verify_disabled_output" "executor_submit_verify_strict_observed" "false"
+  assert_field_equals "$strict_submit_verify_disabled_output" "submit_verify_guard_verdict" "WARN"
+  assert_field_equals "$strict_submit_verify_disabled_output" "submit_verify_guard_reason_code" "submit_verify_strict_not_enabled"
+  assert_field_equals "$strict_submit_verify_disabled_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_submit_verify_disabled_output" "overall_go_nogo_reason_code" "submit_verify_guard_not_pass"
+
+  local strict_submit_verify_invalid_output
+  strict_submit_verify_invalid_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream_submit_verify_invalid" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_submit_verify_invalid_output" "go_nogo_require_submit_verify_strict" "true"
+  assert_field_equals "$strict_submit_verify_invalid_output" "executor_submit_verify_strict_observed" "unknown"
+  assert_field_equals "$strict_submit_verify_invalid_output" "submit_verify_guard_verdict" "UNKNOWN"
+  assert_field_equals "$strict_submit_verify_invalid_output" "submit_verify_guard_reason_code" "submit_verify_strict_invalid"
+  assert_field_equals "$strict_submit_verify_invalid_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_submit_verify_invalid_output" "overall_go_nogo_reason_code" "submit_verify_guard_unknown"
 
   local strict_signer_pass_output
   strict_signer_pass_output="$(
@@ -2075,6 +2164,28 @@ EOF_EXECUTOR_INVALID
   fi
   assert_contains "$invalid_signer_bool_output" "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token"
   assert_contains "$invalid_signer_bool_output" "got: sometimes"
+
+  local invalid_submit_verify_bool_output=""
+  if invalid_submit_verify_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="sometimes" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected execution_go_nogo_report.sh to fail for invalid GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT token" >&2
+    exit 1
+  else
+    local invalid_submit_verify_bool_exit_code=$?
+    if [[ "$invalid_submit_verify_bool_exit_code" -ne 1 ]]; then
+      echo "expected exit code 1 for invalid GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT token, got $invalid_submit_verify_bool_exit_code" >&2
+      echo "$invalid_submit_verify_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_submit_verify_bool_output" "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT must be a boolean token"
+  assert_contains "$invalid_submit_verify_bool_output" "got: sometimes"
   echo "[ok] go-no-go strict executor backend-mode and topology gate"
 }
 
@@ -2231,6 +2342,9 @@ EOF_WINDOWED_EXECUTOR_ENV
   assert_field_equals "$strict_hold_output" "window_24h_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$strict_hold_output" "window_24h_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$strict_hold_output" "window_24h_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_hold_output" "window_24h_go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$strict_hold_output" "window_24h_submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$strict_hold_output" "window_24h_submit_verify_guard_reason_code" "gate_disabled"
   assert_contains "$strict_hold_output" "window_hard_block_count: 0"
   assert_contains "$strict_hold_output" "artifacts_written: false"
   assert_contains "$strict_hold_output" "signoff_verdict: HOLD"
@@ -2273,6 +2387,9 @@ EOF_WINDOWED_EXECUTOR_ENV
   assert_field_equals "$go_output" "window_24h_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$go_output" "window_24h_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$go_output" "window_24h_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$go_output" "window_24h_go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$go_output" "window_24h_submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$go_output" "window_24h_submit_verify_guard_reason_code" "gate_disabled"
   assert_field_equals "$go_output" "window_24h_go_nogo_artifacts_written" "true"
   assert_field_equals "$go_output" "window_24h_go_nogo_nested_package_bundle_enabled" "false"
   assert_sha256_field "$go_output" "summary_sha256"
@@ -2511,6 +2628,9 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$hold_output" "window_24h_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$hold_output" "window_24h_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$hold_output" "window_24h_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$hold_output" "window_24h_go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$hold_output" "window_24h_submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$hold_output" "window_24h_submit_verify_guard_reason_code" "gate_disabled"
   assert_field_equals "$hold_output" "window_24h_go_nogo_artifacts_written" "false"
   assert_field_equals "$hold_output" "window_24h_go_nogo_nested_package_bundle_enabled" "false"
   assert_contains "$hold_output" "go_nogo_require_jito_rpc_policy: false"
@@ -2826,6 +2946,10 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$final_hold_output" "signoff_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$final_hold_output" "signoff_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$final_hold_output" "signoff_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$final_hold_output" "go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$final_hold_output" "signoff_nested_go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$final_hold_output" "signoff_nested_submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$final_hold_output" "signoff_nested_submit_verify_guard_reason_code" "gate_disabled"
   assert_sha256_field "$final_hold_output" "summary_sha256"
   assert_sha256_field "$final_hold_output" "signoff_capture_sha256"
   assert_sha256_field "$final_hold_output" "manifest_sha256"
@@ -2887,6 +3011,10 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$final_go_output" "signoff_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$final_go_output" "signoff_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$final_go_output" "signoff_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$final_go_output" "go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$final_go_output" "signoff_nested_go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$final_go_output" "signoff_nested_submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$final_go_output" "signoff_nested_submit_verify_guard_reason_code" "gate_disabled"
   assert_contains "$final_go_output" "final_route_fee_package_verdict: GO"
   assert_field_equals "$final_go_output" "final_route_fee_package_reason_code" "test_override"
 
@@ -2918,6 +3046,10 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$final_go_windows_1_6_output" "go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$final_go_windows_1_6_output" "signoff_nested_submit_verify_guard_reason_code" "gate_disabled"
   assert_field_equals "$final_go_windows_1_6_output" "final_route_fee_package_verdict" "GO"
 
   local final_bundle_output
@@ -2949,6 +3081,9 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$final_bundle_output" "signoff_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$final_bundle_output" "signoff_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$final_bundle_output" "signoff_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$final_bundle_output" "signoff_nested_go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$final_bundle_output" "signoff_nested_submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$final_bundle_output" "signoff_nested_submit_verify_guard_reason_code" "gate_disabled"
   assert_sha256_field "$final_bundle_output" "package_bundle_sha256"
   assert_sha256_field "$final_bundle_output" "summary_sha256"
   assert_sha256_field "$final_bundle_output" "manifest_sha256"
@@ -5013,6 +5148,9 @@ EOF_DEVNET_EXECUTOR_ENV
   assert_field_equals "$output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$output" "go_nogo_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$output" "go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$output" "go_nogo_submit_verify_guard_verdict" "SKIP"
+  assert_field_equals "$output" "go_nogo_submit_verify_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "submit_fastlane_enabled" "false"
   assert_contains "$output" "fastlane_feature_flag_verdict: SKIP"
   assert_field_equals "$output" "fastlane_feature_flag_reason_code" "gate_disabled"
@@ -5660,6 +5798,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$pass_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$pass_output" "go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$pass_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$pass_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "rotation_readiness_verdict" "PASS"
   assert_field_equals "$pass_output" "preflight_verdict" "PASS"
@@ -5748,6 +5887,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$rollout_bundle_output" "package_bundle_exit_code" "0"
   assert_field_equals "$rollout_bundle_output" "rotation_artifacts_written" "true"
   assert_field_equals "$rollout_bundle_output" "preflight_artifacts_written" "true"
+  assert_field_equals "$rollout_bundle_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$rollout_bundle_output" "preflight_executor_submit_verify_strict" "false"
   assert_field_equals "$rollout_bundle_output" "preflight_executor_submit_verify_configured" "false"
   assert_field_equals "$rollout_bundle_output" "preflight_executor_submit_verify_fallback_configured" "false"
@@ -5836,6 +5976,29 @@ run_executor_rollout_evidence_case() {
   fi
   assert_contains "$invalid_executor_upstream_bool_output" "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token"
   assert_field_equals "$invalid_executor_upstream_bool_output" "executor_rollout_reason_code" "input_error"
+
+  local invalid_submit_verify_bool_output=""
+  if invalid_submit_verify_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$TMP_DIR/missing-executor.env" \
+      ADAPTER_ENV_PATH="$TMP_DIR/missing-adapter.env" \
+      CONFIG_PATH="$TMP_DIR/missing-config.toml" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="sometimes" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor rollout helper when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT token is invalid" >&2
+    exit 1
+  else
+    local invalid_submit_verify_bool_exit_code=$?
+    if [[ "$invalid_submit_verify_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for invalid executor rollout submit-verify bool token, got $invalid_submit_verify_bool_exit_code" >&2
+      echo "$invalid_submit_verify_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_submit_verify_bool_output" "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT must be a boolean token"
+  assert_field_equals "$invalid_submit_verify_bool_output" "executor_rollout_reason_code" "input_error"
 
   write_adapter_env_preflight "$adapter_env_path" "$port" "mismatch-token"
   local preflight_fail_output=""
@@ -5934,6 +6097,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$precheck_profile_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$precheck_profile_output" "go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$precheck_profile_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$precheck_profile_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$precheck_profile_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$precheck_profile_output" "rotation_readiness_verdict" "PASS"
   assert_field_equals "$precheck_profile_output" "preflight_verdict" "PASS"
@@ -5980,6 +6144,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$rehearsal_only_profile_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$rehearsal_only_profile_output" "go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$rehearsal_only_profile_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$rehearsal_only_profile_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$rehearsal_only_profile_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$rehearsal_only_profile_output" "rotation_readiness_verdict" "SKIP"
   assert_field_equals "$rehearsal_only_profile_output" "preflight_verdict" "SKIP"
@@ -6118,6 +6283,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$final_output" "go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$final_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$final_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$final_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$final_output" "rollout_verdict" "GO"
   assert_field_equals "$final_output" "rollout_reason_code" "gates_pass"
@@ -6125,6 +6291,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_output" "rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$final_output" "rollout_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$final_output" "rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$final_output" "rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$final_output" "rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$final_output" "rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$final_output" "rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -6195,6 +6362,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_bundle_output" "rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$final_bundle_output" "rollout_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$final_bundle_output" "rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$final_bundle_output" "rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$final_bundle_output" "rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$final_bundle_output" "rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$final_bundle_output" "rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -6254,9 +6422,11 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_upstream_override_output" "go_nogo_require_executor_upstream" "false"
   assert_field_equals "$final_upstream_override_output" "go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$final_upstream_override_output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$final_upstream_override_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$final_upstream_override_output" "rollout_nested_go_nogo_require_executor_upstream" "false"
   assert_field_equals "$final_upstream_override_output" "rollout_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$final_upstream_override_output" "rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$final_upstream_override_output" "rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$final_upstream_override_output" "rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$final_upstream_override_output" "rollout_nested_executor_backend_mode_guard_verdict" "SKIP"
   assert_field_equals "$final_upstream_override_output" "rollout_nested_executor_backend_mode_guard_reason_code" "gate_disabled"
@@ -6393,6 +6563,31 @@ run_executor_rollout_evidence_case() {
   fi
   assert_contains "$final_invalid_executor_upstream_bool_output" "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM must be a boolean token"
   assert_field_equals "$final_invalid_executor_upstream_bool_output" "final_executor_package_reason_code" "input_error"
+
+  local final_invalid_submit_verify_bool_output=""
+  if final_invalid_submit_verify_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/executor-final-package-invalid-submit-verify-bool" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="sometimes" \
+      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor final package helper when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT token is invalid" >&2
+    exit 1
+  else
+    local final_invalid_submit_verify_bool_exit_code=$?
+    if [[ "$final_invalid_submit_verify_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for executor final invalid submit-verify bool token, got $final_invalid_submit_verify_bool_exit_code" >&2
+      echo "$final_invalid_submit_verify_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$final_invalid_submit_verify_bool_output" "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT must be a boolean token"
+  assert_field_equals "$final_invalid_submit_verify_bool_output" "final_executor_package_reason_code" "input_error"
   echo "[ok] executor rollout/final evidence helpers"
 }
 
@@ -6473,10 +6668,12 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "executor_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$output" "executor_final_go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$output" "executor_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$output" "executor_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$output" "executor_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -6585,15 +6782,18 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$skip_direct_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "executor_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "adapter_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -6761,6 +6961,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$bundle_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$bundle_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$bundle_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$bundle_output" "package_bundle_artifacts_written" "true"
   assert_field_equals "$bundle_output" "package_bundle_exit_code" "0"
   assert_field_equals "$bundle_output" "go_nogo_artifacts_written" "true"
@@ -6774,10 +6975,12 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "executor_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$bundle_output" "executor_final_go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$bundle_output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$bundle_output" "executor_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$bundle_output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$bundle_output" "executor_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -6934,6 +7137,30 @@ run_execution_server_rollout_report_case() {
   assert_contains "$invalid_signer_bool_output" "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token"
   assert_field_equals "$invalid_signer_bool_output" "server_rollout_verdict" "NO_GO"
   assert_field_equals "$invalid_signer_bool_output" "server_rollout_reason_code" "input_error"
+
+  local invalid_submit_verify_bool_output=""
+  if invalid_submit_verify_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="sometimes" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail for invalid GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT token" >&2
+    exit 1
+  else
+    local invalid_submit_verify_bool_exit_code=$?
+    if [[ "$invalid_submit_verify_bool_exit_code" -ne 3 ]]; then
+      echo "expected server rollout invalid submit-verify bool exit code 3, got $invalid_submit_verify_bool_exit_code" >&2
+      echo "$invalid_submit_verify_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_submit_verify_bool_output" "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT must be a boolean token"
+  assert_field_equals "$invalid_submit_verify_bool_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$invalid_submit_verify_bool_output" "server_rollout_reason_code" "input_error"
 
   local invalid_profile_output=""
   if invalid_profile_output="$(

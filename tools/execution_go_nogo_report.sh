@@ -36,6 +36,7 @@ go_nogo_require_fastlane_disabled_raw="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-fals
 go_nogo_require_executor_upstream_raw="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 go_nogo_require_ingestion_grpc_raw="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
 go_nogo_require_non_bootstrap_signer_raw="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
+go_nogo_require_submit_verify_strict_raw="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
 if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
   echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2
@@ -55,6 +56,10 @@ if ! go_nogo_require_ingestion_grpc="$(parse_bool_token_strict "$go_nogo_require
 fi
 if ! go_nogo_require_non_bootstrap_signer="$(parse_bool_token_strict "$go_nogo_require_non_bootstrap_signer_raw")"; then
   echo "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_non_bootstrap_signer_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_require_submit_verify_strict="$(parse_bool_token_strict "$go_nogo_require_submit_verify_strict_raw")"; then
+  echo "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_submit_verify_strict_raw}" >&2
   exit 1
 fi
 if ! go_nogo_test_mode="$(parse_bool_token_strict "$go_nogo_test_mode_raw")"; then
@@ -399,6 +404,82 @@ if [[ "$go_nogo_require_non_bootstrap_signer" == "true" ]]; then
       non_bootstrap_signer_guard_verdict="PASS"
       non_bootstrap_signer_guard_reason="COPYBOT_EXECUTOR_SIGNER_PUBKEY is non-bootstrap and non-placeholder"
       non_bootstrap_signer_guard_reason_code="signer_pubkey_non_bootstrap"
+    fi
+  fi
+fi
+
+executor_submit_verify_strict_observed="false"
+executor_submit_verify_configured="false"
+executor_submit_verify_fallback_configured="false"
+submit_verify_guard_verdict="SKIP"
+submit_verify_guard_reason="strict submit-verify guard disabled"
+submit_verify_guard_reason_code="gate_disabled"
+if [[ "$go_nogo_require_submit_verify_strict" == "true" ]]; then
+  if [[ ! -f "$EXECUTOR_ENV_PATH" ]]; then
+    executor_submit_verify_strict_observed="unknown"
+    submit_verify_guard_verdict="UNKNOWN"
+    submit_verify_guard_reason="executor env file not found: $EXECUTOR_ENV_PATH"
+    submit_verify_guard_reason_code="executor_env_missing"
+  else
+    executor_submit_verify_strict_raw="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT")")"
+    executor_submit_verify_primary_url="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL")")"
+    executor_submit_verify_fallback_url="$(trim_string "$(read_env_file_key "$EXECUTOR_ENV_PATH" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL")")"
+
+    if [[ -n "$executor_submit_verify_primary_url" ]]; then
+      executor_submit_verify_configured="true"
+    fi
+    if [[ -n "$executor_submit_verify_fallback_url" ]]; then
+      executor_submit_verify_fallback_configured="true"
+    fi
+
+    if [[ -z "$executor_submit_verify_strict_raw" ]]; then
+      executor_submit_verify_strict_observed="false"
+    elif ! executor_submit_verify_strict_observed="$(parse_bool_token_strict "$executor_submit_verify_strict_raw")"; then
+      executor_submit_verify_strict_observed="unknown"
+      submit_verify_guard_verdict="UNKNOWN"
+      submit_verify_guard_reason="COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT must be a boolean token (got: ${executor_submit_verify_strict_raw})"
+      submit_verify_guard_reason_code="submit_verify_strict_invalid"
+    fi
+
+    if [[ "$submit_verify_guard_verdict" == "SKIP" ]]; then
+      if [[ "$executor_submit_verify_strict_observed" != "true" ]]; then
+        submit_verify_guard_verdict="WARN"
+        submit_verify_guard_reason="COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT is not enabled in $EXECUTOR_ENV_PATH"
+        submit_verify_guard_reason_code="submit_verify_strict_not_enabled"
+      elif [[ "$executor_submit_verify_configured" != "true" ]]; then
+        submit_verify_guard_verdict="UNKNOWN"
+        submit_verify_guard_reason="COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL missing while strict submit-verify guard is enabled"
+        submit_verify_guard_reason_code="submit_verify_primary_missing"
+      elif [[ "$executor_submit_verify_fallback_configured" == "true" && "$executor_submit_verify_configured" != "true" ]]; then
+        submit_verify_guard_verdict="UNKNOWN"
+        submit_verify_guard_reason="COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"
+        submit_verify_guard_reason_code="submit_verify_fallback_without_primary"
+      elif [[ "$executor_submit_verify_fallback_configured" == "true" && "$executor_submit_verify_fallback_url" == "$executor_submit_verify_primary_url" ]]; then
+        submit_verify_guard_verdict="WARN"
+        submit_verify_guard_reason="submit-verify primary and fallback endpoints must differ when strict submit-verify guard is enabled"
+        submit_verify_guard_reason_code="submit_verify_fallback_same_as_primary"
+      else
+        if [[ "$executor_backend_mode" == "upstream" ]]; then
+          endpoint_placeholder_host_value="$(endpoint_placeholder_host "$executor_submit_verify_primary_url")"
+          if [[ -n "$endpoint_placeholder_host_value" ]]; then
+            submit_verify_guard_verdict="WARN"
+            submit_verify_guard_reason="submit-verify primary endpoint uses placeholder host=${endpoint_placeholder_host_value}"
+            submit_verify_guard_reason_code="submit_verify_endpoint_placeholder"
+          elif [[ "$executor_submit_verify_fallback_configured" == "true" ]]; then
+            endpoint_placeholder_host_value="$(endpoint_placeholder_host "$executor_submit_verify_fallback_url")"
+            if [[ -n "$endpoint_placeholder_host_value" ]]; then
+              submit_verify_guard_verdict="WARN"
+              submit_verify_guard_reason="submit-verify fallback endpoint uses placeholder host=${endpoint_placeholder_host_value}"
+              submit_verify_guard_reason_code="submit_verify_endpoint_placeholder"
+            fi
+          fi
+        fi
+        if [[ "$submit_verify_guard_verdict" == "SKIP" ]]; then
+          submit_verify_guard_verdict="PASS"
+          submit_verify_guard_reason="strict submit-verify guard confirms enabled+configured non-placeholder topology"
+          submit_verify_guard_reason_code="submit_verify_strict_enabled"
+        fi
+      fi
     fi
   fi
 fi
@@ -762,6 +843,14 @@ elif [[ "$go_nogo_require_non_bootstrap_signer" == "true" && "$non_bootstrap_sig
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict non-bootstrap signer guard not PASS: ${non_bootstrap_signer_guard_reason:-n/a}"
   overall_go_nogo_reason_code="signer_guard_not_pass"
+elif [[ "$go_nogo_require_submit_verify_strict" == "true" && "$submit_verify_guard_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict submit-verify guard verdict: ${submit_verify_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="submit_verify_guard_unknown"
+elif [[ "$go_nogo_require_submit_verify_strict" == "true" && "$submit_verify_guard_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict submit-verify guard not PASS: ${submit_verify_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="submit_verify_guard_not_pass"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
@@ -770,7 +859,7 @@ elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_fla
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
   overall_go_nogo_reason_code="fastlane_policy_unknown"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_submit_verify_strict" != "true" || "$submit_verify_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
   overall_go_nogo_reason_code="all_required_gates_pass"
@@ -917,6 +1006,13 @@ executor_signer_pubkey_observed: ${executor_signer_pubkey_observed:-n/a}
 non_bootstrap_signer_guard_verdict: $non_bootstrap_signer_guard_verdict
 non_bootstrap_signer_guard_reason: $non_bootstrap_signer_guard_reason
 non_bootstrap_signer_guard_reason_code: $non_bootstrap_signer_guard_reason_code
+go_nogo_require_submit_verify_strict: $go_nogo_require_submit_verify_strict
+executor_submit_verify_strict_observed: $executor_submit_verify_strict_observed
+executor_submit_verify_configured: $executor_submit_verify_configured
+executor_submit_verify_fallback_configured: $executor_submit_verify_fallback_configured
+submit_verify_guard_verdict: $submit_verify_guard_verdict
+submit_verify_guard_reason: $submit_verify_guard_reason
+submit_verify_guard_reason_code: $submit_verify_guard_reason_code
 go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 jito_rpc_policy_verdict: $jito_rpc_policy_verdict
 jito_rpc_policy_reason: $jito_rpc_policy_reason
