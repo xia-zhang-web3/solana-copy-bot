@@ -11487,6 +11487,7 @@ run_targeted_smoke_cases() {
 run_ops_smoke_targeted_dispatch_case() {
   local targeted_output=""
   targeted_output="$(
+    OPS_SMOKE_PROFILE="auto" \
     OPS_SMOKE_TARGET_CASES="common_strict_bool_parser,common_timeout_parser" \
       bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
   )"
@@ -11502,6 +11503,7 @@ run_ops_smoke_targeted_dispatch_case() {
 
   local targeted_group_output=""
   targeted_group_output="$(
+    OPS_SMOKE_PROFILE="auto" \
     OPS_SMOKE_TARGET_CASES="common_parsers" \
       bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
   )"
@@ -11512,6 +11514,7 @@ run_ops_smoke_targeted_dispatch_case() {
 
   local targeted_default_heavy_output=""
   targeted_default_heavy_output="$(
+    OPS_SMOKE_PROFILE="auto" \
     OPS_SMOKE_TARGET_CASES="executor_preflight" \
       bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
   )"
@@ -11528,7 +11531,7 @@ run_ops_smoke_targeted_dispatch_case() {
   assert_contains "$targeted_auto_non_heavy_output" "[ok] common timeout parser"
 
   local invalid_output_path="$TMP_DIR/ops-smoke-target-invalid.out"
-  if OPS_SMOKE_TARGET_CASES="unknown_case" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_output_path" 2>&1; then
+  if OPS_SMOKE_PROFILE="auto" OPS_SMOKE_TARGET_CASES="unknown_case" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_output_path" 2>&1; then
     echo "expected targeted smoke mode to fail on unknown case entry" >&2
     exit 1
   fi
