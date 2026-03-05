@@ -16,6 +16,7 @@ use crate::reject_mapping::{
 use crate::request_types::SubmitRequest;
 use crate::request_validation::validate_submit_request_identity;
 use crate::route_backend::UpstreamAction;
+use crate::backend_mode::ExecutorBackendMode;
 use crate::route_executor::{
     execute_route_action, RouteActionPayloadExpectations, RouteSubmitExecutionContext,
 };
@@ -63,6 +64,9 @@ pub(crate) async fn handle_submit(
     )
     .map_err(map_request_validation_error_to_reject)?;
     let route = normalize_route(request.route.as_str());
+    let route_kind = classify_normalized_route(route.as_str());
+    let bypass_submit_verify = matches!(route_kind, RouteKind::Paper)
+        || state.config.backend_mode == ExecutorBackendMode::Mock;
     let submit_plan = build_submit_plan(SubmitBuildPlanInputs {
         route: route.as_str(),
         raw_body,
@@ -196,10 +200,9 @@ pub(crate) async fn handle_submit(
             .map_err(map_submit_transport_artifact_error_to_reject)?
         {
             SubmitTransportArtifact::UpstreamSignature(value) => {
-                let submit_transport = if matches!(
-                    classify_normalized_route(route.as_str()),
-                    RouteKind::Paper
-                ) {
+                let submit_transport = if state.config.backend_mode == ExecutorBackendMode::Mock {
+                    "executor_mock_internal"
+                } else if matches!(route_kind, RouteKind::Paper) {
                     "executor_paper_internal"
                 } else {
                     "upstream_signature"
@@ -218,10 +221,7 @@ pub(crate) async fn handle_submit(
             }
         };
 
-    let submit_signature_verify = if matches!(
-        classify_normalized_route(route.as_str()),
-        RouteKind::Paper
-    ) {
+    let submit_signature_verify = if bypass_submit_verify {
         SubmitSignatureVerification::Skipped
     } else {
         verify_submitted_signature_visibility(

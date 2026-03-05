@@ -5871,6 +5871,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_skips_signature_verify_for_mock_backend_in_strict_mode() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.backend_mode = ExecutorBackendMode::Mock;
+        state.config.submit_signature_verify = Some(SubmitSignatureVerifyConfig {
+            endpoints: vec!["http://127.0.0.1:1/verify".to_string()],
+            attempts: 1,
+            interval_ms: 1,
+            strict: true,
+        });
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-mock-submit-verify-skip-1",
+            "client_order_id": "client-order-mock-submit-verify-skip-1",
+            "request_id": "request-mock-submit-verify-skip-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("mock submit should bypass strict submit verify network check");
+        assert_eq!(
+            response.get("submit_transport").and_then(Value::as_str),
+            Some("executor_mock_internal")
+        );
+        assert_eq!(
+            response
+                .get("submit_signature_verify")
+                .and_then(|value| value.get("enabled"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_submit_route_payload_hint_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
