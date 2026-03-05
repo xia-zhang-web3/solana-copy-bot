@@ -29,6 +29,19 @@ pub(crate) fn validate_endpoint_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn endpoint_placeholder_host(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.trim().to_ascii_lowercase();
+    if host == "example.com"
+        || host.ends_with(".example.com")
+        || host == "executor.mock.local"
+        || host.ends_with(".executor.mock.local")
+    {
+        return Some(host);
+    }
+    None
+}
+
 pub(crate) fn endpoint_identity(url: &str) -> Result<String> {
     let parsed = reqwest::Url::parse(url).context("invalid URL parse")?;
     let scheme = parsed.scheme().to_ascii_lowercase();
@@ -165,7 +178,7 @@ pub(crate) async fn read_response_body_limited(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_response_body_limited, truncate_detail_chars};
+    use super::{endpoint_placeholder_host, read_response_body_limited, truncate_detail_chars};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -188,6 +201,35 @@ mod tests {
         let input = "a🙂b🙂c";
         let output = truncate_detail_chars(input, 3);
         assert_eq!(output, "a🙂b...[truncated]");
+    }
+
+    #[test]
+    fn endpoint_placeholder_host_detects_known_placeholder_hosts() {
+        assert_eq!(
+            endpoint_placeholder_host("https://example.com/submit"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            endpoint_placeholder_host("https://api.example.com/v1"),
+            Some("api.example.com".to_string())
+        );
+        assert_eq!(
+            endpoint_placeholder_host("https://executor.mock.local/rpc/submit"),
+            Some("executor.mock.local".to_string())
+        );
+        assert_eq!(
+            endpoint_placeholder_host("https://route.executor.mock.local/rpc/simulate"),
+            Some("route.executor.mock.local".to_string())
+        );
+    }
+
+    #[test]
+    fn endpoint_placeholder_host_ignores_non_placeholder_hosts() {
+        assert_eq!(
+            endpoint_placeholder_host("https://upstream.integration.test/submit"),
+            None
+        );
+        assert_eq!(endpoint_placeholder_host("not-a-url"), None);
     }
 
     #[tokio::test]

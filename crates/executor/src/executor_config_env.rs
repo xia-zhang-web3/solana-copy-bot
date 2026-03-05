@@ -9,7 +9,7 @@ use crate::env_parsing::{
     non_empty_env, optional_non_empty_env, parse_bool_env, parse_f64_env, parse_socket_addr_str,
     parse_u64_env,
 };
-use crate::http_utils::{endpoint_identity, validate_endpoint_url};
+use crate::http_utils::{endpoint_identity, endpoint_placeholder_host, validate_endpoint_url};
 use crate::key_validation::validate_pubkey_like;
 use crate::route_allowlist::{parse_route_allowlist, validate_fastlane_route_policy};
 use crate::route_backend::RouteBackend;
@@ -290,12 +290,30 @@ impl ExecutorConfig {
             any_send_rpc_fallback_endpoint |= has_send_rpc_fallback_endpoint;
             validate_endpoint_url(submit_url.as_str())
                 .map_err(|error| anyhow!("invalid submit URL for route={}: {}", route, error))?;
+            reject_placeholder_route_endpoint_in_upstream_mode(
+                route.as_str(),
+                "submit URL",
+                submit_url.as_str(),
+                backend_mode,
+            )?;
             validate_endpoint_url(simulate_url.as_str())
                 .map_err(|error| anyhow!("invalid simulate URL for route={}: {}", route, error))?;
+            reject_placeholder_route_endpoint_in_upstream_mode(
+                route.as_str(),
+                "simulate URL",
+                simulate_url.as_str(),
+                backend_mode,
+            )?;
             if let Some(url) = submit_fallback_url.as_deref() {
                 validate_endpoint_url(url).map_err(|error| {
                     anyhow!("invalid submit fallback URL for route={}: {}", route, error)
                 })?;
+                reject_placeholder_route_endpoint_in_upstream_mode(
+                    route.as_str(),
+                    "submit fallback URL",
+                    url,
+                    backend_mode,
+                )?;
                 if endpoint_identity(url)? == endpoint_identity(submit_url.as_str())? {
                     return Err(anyhow!(
                         "submit fallback URL for route={} must resolve to distinct endpoint",
@@ -311,6 +329,12 @@ impl ExecutorConfig {
                         error
                     )
                 })?;
+                reject_placeholder_route_endpoint_in_upstream_mode(
+                    route.as_str(),
+                    "simulate fallback URL",
+                    url,
+                    backend_mode,
+                )?;
                 if endpoint_identity(url)? == endpoint_identity(simulate_url.as_str())? {
                     return Err(anyhow!(
                         "simulate fallback URL for route={} must resolve to distinct endpoint",
@@ -328,6 +352,12 @@ impl ExecutorConfig {
                 validate_endpoint_url(url).map_err(|error| {
                     anyhow!("invalid send RPC URL for route={}: {}", route, error)
                 })?;
+                reject_placeholder_route_endpoint_in_upstream_mode(
+                    route.as_str(),
+                    "send RPC URL",
+                    url,
+                    backend_mode,
+                )?;
             }
             if let Some(url) = send_rpc_fallback_url.as_deref() {
                 validate_endpoint_url(url).map_err(|error| {
@@ -337,6 +367,12 @@ impl ExecutorConfig {
                         error
                     )
                 })?;
+                reject_placeholder_route_endpoint_in_upstream_mode(
+                    route.as_str(),
+                    "send RPC fallback URL",
+                    url,
+                    backend_mode,
+                )?;
                 if endpoint_identity(url)?
                     == endpoint_identity(
                         send_rpc_url
@@ -581,6 +617,20 @@ impl ExecutorConfig {
         }
         let allow_nonzero_tip = parse_bool_env("COPYBOT_EXECUTOR_ALLOW_NONZERO_TIP", true)?;
         let submit_signature_verify = parse_submit_signature_verify_config()?;
+        if let Some(config) = submit_signature_verify.as_ref() {
+            for (idx, endpoint) in config.endpoints.iter().enumerate() {
+                let endpoint_label = if idx == 0 {
+                    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"
+                } else {
+                    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL"
+                };
+                reject_placeholder_submit_verify_endpoint_in_upstream_mode(
+                    endpoint_label,
+                    endpoint.as_str(),
+                    backend_mode,
+                )?;
+            }
+        }
         let min_claim_ttl_sec = min_claim_ttl_sec_for_submit_path(
             request_timeout_ms,
             submit_total_budget_ms,
@@ -653,6 +703,44 @@ fn validate_route_backend_allowlist_consistency(
         return Err(anyhow!(
             "route backend map has routes outside allowlist: {}",
             extra_routes.join(",")
+        ));
+    }
+    Ok(())
+}
+
+fn reject_placeholder_route_endpoint_in_upstream_mode(
+    route: &str,
+    endpoint_label: &str,
+    endpoint_url: &str,
+    backend_mode: ExecutorBackendMode,
+) -> Result<()> {
+    if backend_mode != ExecutorBackendMode::Upstream {
+        return Ok(());
+    }
+    if let Some(host) = endpoint_placeholder_host(endpoint_url) {
+        return Err(anyhow!(
+            "{} for route={} must not use placeholder host={} when COPYBOT_EXECUTOR_BACKEND_MODE=upstream",
+            endpoint_label,
+            route,
+            host
+        ));
+    }
+    Ok(())
+}
+
+fn reject_placeholder_submit_verify_endpoint_in_upstream_mode(
+    endpoint_label: &str,
+    endpoint_url: &str,
+    backend_mode: ExecutorBackendMode,
+) -> Result<()> {
+    if backend_mode != ExecutorBackendMode::Upstream {
+        return Ok(());
+    }
+    if let Some(host) = endpoint_placeholder_host(endpoint_url) {
+        return Err(anyhow!(
+            "{} must not use placeholder host={} when COPYBOT_EXECUTOR_BACKEND_MODE=upstream",
+            endpoint_label,
+            host
         ));
     }
     Ok(())
@@ -1133,20 +1221,20 @@ mod tests {
         env::set_var("COPYBOT_EXECUTOR_ROUTE_ALLOWLIST", "rpc");
         env::set_var(
             "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
-            "https://submit.example.com",
+            "https://submit.integration.test",
         );
         env::set_var(
             "COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL",
-            "https://simulate.example.com",
+            "https://simulate.integration.test",
         );
         env::set_var("COPYBOT_EXECUTOR_ALLOW_UNAUTHENTICATED", "true");
     }
 
     fn route_backend_fixture() -> RouteBackend {
         RouteBackend {
-            submit_url: "https://submit.example.com".to_string(),
+            submit_url: "https://submit.integration.test".to_string(),
             submit_fallback_url: None,
-            simulate_url: "https://simulate.example.com".to_string(),
+            simulate_url: "https://simulate.integration.test".to_string(),
             simulate_fallback_url: None,
             primary_auth_token: None,
             fallback_auth_token: None,
@@ -1229,7 +1317,7 @@ mod tests {
         with_clean_executor_env(|| {
             env::set_var(
                 "COPYBOT_EXECUTOR_ROUTE_JITO_SUBMIT_URL",
-                "https://submit-jito.example.com",
+                "https://submit-jito.integration.test",
             );
             let allowlist = HashSet::from([String::from("rpc")]);
             let error = validate_route_scoped_env_targets_allowlist(&allowlist)
@@ -1244,7 +1332,7 @@ mod tests {
         with_clean_executor_env(|| {
             env::set_var(
                 "COPYBOT_EXECUTOR_ROUTE_RCP_SUBMIT_URL",
-                "https://submit-rcp.example.com",
+                "https://submit-rcp.integration.test",
             );
             let allowlist = HashSet::from([String::from("rpc")]);
             let error = validate_route_scoped_env_targets_allowlist(&allowlist)
@@ -1260,7 +1348,7 @@ mod tests {
         with_clean_executor_env(|| {
             env::set_var(
                 "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
-                "https://submit-rpc.example.com",
+                "https://submit-rpc.integration.test",
             );
             let allowlist = HashSet::from([String::from("rpc")]);
             validate_route_scoped_env_targets_allowlist(&allowlist)
@@ -1273,7 +1361,7 @@ mod tests {
         with_clean_executor_env(|| {
             env::set_var(
                 "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMITURL",
-                "https://submit-rpc.example.com",
+                "https://submit-rpc.integration.test",
             );
             let allowlist = HashSet::from([String::from("rpc")]);
             let error = validate_route_scoped_env_targets_allowlist(&allowlist)
@@ -1333,7 +1421,7 @@ mod tests {
         with_clean_executor_env(|| {
             let mut key = b"COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL".to_vec();
             key.push(0xff);
-            env::set_var(OsString::from_vec(key), "https://submit-rpc.example.com");
+            env::set_var(OsString::from_vec(key), "https://submit-rpc.integration.test");
             let allowlist = HashSet::from([String::from("rpc")]);
             let error = validate_route_scoped_env_targets_allowlist(&allowlist)
                 .expect_err("non-UTF8 route-scoped env key must reject");
@@ -1513,6 +1601,78 @@ mod tests {
     }
 
     #[test]
+    fn executor_config_from_env_rejects_placeholder_route_endpoint_in_upstream_mode() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
+                    "https://submit.example.com",
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("placeholder route endpoint must reject in upstream mode"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.to_string().contains(
+                        "submit URL for route=rpc must not use placeholder host=submit.example.com",
+                    ),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_rejects_placeholder_submit_verify_endpoint_in_upstream_mode() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var(
+                    "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL",
+                    "https://verify.example.com",
+                );
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("placeholder submit-verify endpoint must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.to_string().contains(
+                        "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL must not use placeholder host=verify.example.com",
+                    ),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn executor_config_from_env_accepts_placeholder_route_endpoint_in_mock_mode() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_BACKEND_MODE", "mock");
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_URL",
+                    "https://submit.example.com",
+                );
+                env::set_var(
+                    "COPYBOT_EXECUTOR_ROUTE_RPC_SIMULATE_URL",
+                    "https://simulate.example.com",
+                );
+
+                let config =
+                    crate::ExecutorConfig::from_env().expect("config should parse in mock mode");
+                assert_eq!(config.backend_mode, ExecutorBackendMode::Mock);
+            });
+        });
+    }
+
+    #[test]
     fn executor_config_from_env_rejects_invalid_submit_fastlane_enabled_token() {
         with_clean_executor_env(|| {
             with_temp_signer_keypair_file(|keypair_path| {
@@ -1635,7 +1795,7 @@ mod tests {
                 set_minimal_executor_env_for_from_env(keypair_path);
                 env::set_var(
                     "COPYBOT_EXECUTOR_ROUTE_JITO_SUBMIT_URL",
-                    "https://submit-jito.example.com",
+                    "https://submit-jito.integration.test",
                 );
 
                 let error = match crate::ExecutorConfig::from_env() {
@@ -1660,7 +1820,7 @@ mod tests {
                 set_minimal_executor_env_for_from_env(keypair_path);
                 env::set_var(
                     "COPYBOT_EXECUTOR_ROUTE_RCP_SUBMIT_URL",
-                    "https://submit-rcp.example.com",
+                    "https://submit-rcp.integration.test",
                 );
 
                 let error = match crate::ExecutorConfig::from_env() {
@@ -1690,7 +1850,7 @@ mod tests {
                 set_minimal_executor_env_for_from_env(keypair_path);
                 env::set_var(
                     "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMITURL",
-                    "https://submit-rpc.example.com",
+                    "https://submit-rpc.integration.test",
                 );
 
                 let error = match crate::ExecutorConfig::from_env() {
@@ -1769,7 +1929,7 @@ mod tests {
             with_temp_signer_keypair_file(|keypair_path| {
                 set_minimal_executor_env_for_from_env(keypair_path);
                 env::set_var("copybot_executor_submit_fastlane_enabled", "true");
-                env::set_var("copybot_executor_route_rpc_submit_url", "https://submit.example.com");
+                env::set_var("copybot_executor_route_rpc_submit_url", "https://submit.integration.test");
 
                 let error = match crate::ExecutorConfig::from_env() {
                     Ok(_) => panic!("mixed-case COPYBOT_EXECUTOR keys must reject"),
@@ -1860,7 +2020,7 @@ mod tests {
                 env::set_var("COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN", "primary-upstream-token");
                 env::set_var(
                     "COPYBOT_EXECUTOR_ROUTE_RPC_SUBMIT_FALLBACK_URL",
-                    "https://submit-fallback.example.com",
+                    "https://submit-fallback.integration.test",
                 );
 
                 let config = crate::ExecutorConfig::from_env()
@@ -1882,7 +2042,7 @@ mod tests {
         with_clean_executor_env(|| {
             with_temp_signer_keypair_file(|keypair_path| {
                 set_minimal_executor_env_for_from_env(keypair_path);
-                env::set_var("COPYBOT_EXECUTOR_SEND_RPC_URL", "https://send-rpc.example.com");
+                env::set_var("COPYBOT_EXECUTOR_SEND_RPC_URL", "https://send-rpc.integration.test");
                 env::set_var("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN", "primary-send-rpc-token");
 
                 let config = crate::ExecutorConfig::from_env()
@@ -1911,10 +2071,10 @@ mod tests {
         with_clean_executor_env(|| {
             with_temp_signer_keypair_file(|keypair_path| {
                 set_minimal_executor_env_for_from_env(keypair_path);
-                env::set_var("COPYBOT_EXECUTOR_SEND_RPC_URL", "https://send-rpc.example.com");
+                env::set_var("COPYBOT_EXECUTOR_SEND_RPC_URL", "https://send-rpc.integration.test");
                 env::set_var(
                     "COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL",
-                    "https://send-rpc-fallback.example.com",
+                    "https://send-rpc-fallback.integration.test",
                 );
                 env::set_var("COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN", "primary-send-rpc-token");
 
