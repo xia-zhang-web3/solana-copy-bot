@@ -363,6 +363,7 @@ fn build_paper_submit_backend_response(
     if let Some(client_order_id) = payload_expectations.client_order_id {
         payload["client_order_id"] = Value::String(client_order_id.to_string());
     }
+    append_optional_submit_identity_echo_fields(&mut payload, payload_expectations);
     payload
 }
 
@@ -397,7 +398,29 @@ fn build_mock_submit_backend_response(
     if let Some(client_order_id) = payload_expectations.client_order_id {
         payload["client_order_id"] = Value::String(client_order_id.to_string());
     }
+    append_optional_submit_identity_echo_fields(&mut payload, payload_expectations);
     payload
+}
+
+fn append_optional_submit_identity_echo_fields(
+    payload: &mut Value,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
+) {
+    if let Some(signal_id) = payload_expectations.signal_id {
+        payload["signal_id"] = Value::String(signal_id.to_string());
+    }
+    if let Some(side) = payload_expectations.side {
+        let normalized_side = side.trim().to_ascii_lowercase();
+        if !normalized_side.is_empty() {
+            payload["side"] = Value::String(normalized_side);
+        }
+    }
+    if let Some(token) = payload_expectations.token {
+        let trimmed_token = token.trim();
+        if !trimmed_token.is_empty() {
+            payload["token"] = Value::String(trimmed_token.to_string());
+        }
+    }
 }
 
 fn parse_payload_object_for_action(
@@ -1105,6 +1128,15 @@ mod tests {
             payload.get("client_order_id").and_then(Value::as_str),
             Some("client-order-1")
         );
+        assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
+        );
         let signature = payload
             .get("tx_signature")
             .and_then(Value::as_str)
@@ -1311,6 +1343,15 @@ mod tests {
             Some("client-order-paper-1")
         );
         assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-paper-1")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(
             payload.get("detail").and_then(Value::as_str),
             Some("executor_paper_submit_ok")
         );
@@ -1339,6 +1380,27 @@ mod tests {
         assert_eq!(
             signature, second_signature,
             "paper signature must be deterministic for the same request identity"
+        );
+    }
+
+    #[test]
+    fn build_mock_submit_backend_response_normalizes_side_and_trims_token_identity_echo() {
+        let payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some(" BUY "),
+                token: Some(" 11111111111111111111111111111111 "),
+            },
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
         );
     }
 
