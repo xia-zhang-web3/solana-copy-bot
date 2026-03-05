@@ -246,27 +246,32 @@ impl RouteAdapter {
     }
 }
 
-fn deterministic_submit_signature(
+fn deterministic_submit_signature_from_fields(
     signature_namespace: &str,
-    payload_expectations: RouteActionPayloadExpectations<'_>,
+    primary_fields: &[&str],
+    secondary_fields: &[&str],
 ) -> String {
-    let request_id = payload_expectations.request_id.unwrap_or("");
-    let client_order_id = payload_expectations.client_order_id.unwrap_or("");
 
     let mut first = Sha256::new();
     first.update(signature_namespace.as_bytes());
     first.update(b":v1:");
-    first.update(request_id.as_bytes());
-    first.update(b":");
-    first.update(client_order_id.as_bytes());
+    for (index, field) in primary_fields.iter().enumerate() {
+        if index > 0 {
+            first.update(b":");
+        }
+        first.update(field.as_bytes());
+    }
     let first_digest = first.finalize();
 
     let mut second = Sha256::new();
     second.update(signature_namespace.as_bytes());
     second.update(b":v2:");
-    second.update(client_order_id.as_bytes());
-    second.update(b":");
-    second.update(request_id.as_bytes());
+    for (index, field) in secondary_fields.iter().enumerate() {
+        if index > 0 {
+            second.update(b":");
+        }
+        second.update(field.as_bytes());
+    }
     let second_digest = second.finalize();
 
     let mut signature_bytes = [0u8; 64];
@@ -276,11 +281,33 @@ fn deterministic_submit_signature(
 }
 
 fn mock_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_>) -> String {
-    deterministic_submit_signature("executor-mock-submit-signature", payload_expectations)
+    let request_id = payload_expectations.request_id.unwrap_or("");
+    let client_order_id = payload_expectations.client_order_id.unwrap_or("");
+    let signal_id = payload_expectations.signal_id.unwrap_or("");
+    let route_hint = payload_expectations.route_hint.unwrap_or("");
+    let side = payload_expectations.side.unwrap_or("");
+    let token = payload_expectations.token.unwrap_or("");
+    let primary_fields = [request_id, client_order_id, signal_id, route_hint, side, token];
+    let secondary_fields = [token, side, route_hint, signal_id, client_order_id, request_id];
+
+    deterministic_submit_signature_from_fields(
+        "executor-mock-submit-signature",
+        &primary_fields,
+        &secondary_fields,
+    )
 }
 
 fn paper_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_>) -> String {
-    deterministic_submit_signature("executor-paper-submit-signature", payload_expectations)
+    let request_id = payload_expectations.request_id.unwrap_or("");
+    let client_order_id = payload_expectations.client_order_id.unwrap_or("");
+    let primary_fields = [request_id, client_order_id];
+    let secondary_fields = [client_order_id, request_id];
+
+    deterministic_submit_signature_from_fields(
+        "executor-paper-submit-signature",
+        &primary_fields,
+        &secondary_fields,
+    )
 }
 
 fn is_internal_paper_route(route: &str) -> bool {
@@ -1128,6 +1155,66 @@ mod tests {
     }
 
     #[test]
+    fn build_mock_submit_backend_response_signature_changes_for_extended_identity_fields() {
+        let base_payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let different_signal_payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-2"),
+                client_order_id: Some("client-order-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let different_side_payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some("sell"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let base_signature = base_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("base tx_signature should be present");
+        let different_signal_signature = different_signal_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("signal tx_signature should be present");
+        let different_side_signature = different_side_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("side tx_signature should be present");
+        assert_ne!(
+            base_signature, different_signal_signature,
+            "mock signature must change when signal_id changes with same request/client_order_id"
+        );
+        assert_ne!(
+            base_signature, different_side_signature,
+            "mock signature must change when side changes with same request/client_order_id"
+        );
+    }
+
+    #[test]
     fn build_paper_simulate_backend_response_includes_contract_fields() {
         let payload = super::build_paper_simulate_backend_response("paper", "v1");
         assert_eq!(payload.get("status").and_then(Value::as_str), Some("ok"));
@@ -1194,6 +1281,64 @@ mod tests {
         assert_eq!(
             signature, second_signature,
             "paper signature must be deterministic for the same request identity"
+        );
+    }
+
+    #[test]
+    fn build_paper_submit_backend_response_keeps_legacy_signature_inputs_only() {
+        let base_payload = super::build_paper_submit_backend_response(
+            "paper",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("paper"),
+                request_id: Some("request-paper-1"),
+                signal_id: Some("signal-paper-1"),
+                client_order_id: Some("client-order-paper-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let changed_optional_fields_payload = super::build_paper_submit_backend_response(
+            "paper",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("paper-alt"),
+                request_id: Some("request-paper-1"),
+                signal_id: Some("signal-paper-2"),
+                client_order_id: Some("client-order-paper-1"),
+                side: Some("sell"),
+                token: Some("22222222222222222222222222222222"),
+            },
+        );
+        let base_signature = base_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("base tx_signature should be present");
+        let changed_signature = changed_optional_fields_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("changed tx_signature should be present");
+        assert_eq!(
+            base_signature, changed_signature,
+            "paper signature should remain stable for same request/client_order_id"
+        );
+    }
+
+    #[test]
+    fn mock_and_paper_signatures_use_distinct_namespaces() {
+        let payload_expectations = RouteActionPayloadExpectations {
+            route_hint: Some("paper"),
+            request_id: Some("request-1"),
+            signal_id: Some("signal-1"),
+            client_order_id: Some("client-order-1"),
+            side: Some("buy"),
+            token: Some("11111111111111111111111111111111"),
+        };
+        let mock_signature = super::mock_submit_signature(payload_expectations);
+        let paper_signature = super::paper_submit_signature(payload_expectations);
+        assert_ne!(
+            mock_signature, paper_signature,
+            "mock and paper namespaces must produce distinct deterministic signatures"
         );
     }
 
