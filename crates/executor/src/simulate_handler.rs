@@ -98,6 +98,9 @@ pub(crate) async fn handle_simulate(
         route.as_str(),
         state.config.contract_version.as_str(),
         request.request_id.as_str(),
+        request.signal_id.as_str(),
+        request.side.as_str(),
+        request.token.as_str(),
         detail.as_str(),
     ))
 }

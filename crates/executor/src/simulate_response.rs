@@ -155,15 +155,25 @@ pub(crate) fn build_simulate_success_payload(
     route: &str,
     contract_version: &str,
     request_id: &str,
+    signal_id: &str,
+    side: &str,
+    token: &str,
     detail: &str,
 ) -> Value {
+    let normalized_request_id = request_id.trim();
+    let normalized_signal_id = signal_id.trim();
+    let normalized_side = side.trim().to_ascii_lowercase();
+    let normalized_token = token.trim();
     json!({
         "status": "ok",
         "ok": true,
         "accepted": true,
         "route": route,
         "contract_version": contract_version,
-        "request_id": request_id,
+        "request_id": normalized_request_id,
+        "signal_id": normalized_signal_id,
+        "side": normalized_side,
+        "token": normalized_token,
         "detail": detail
     })
 }
@@ -350,15 +360,58 @@ mod tests {
 
     #[test]
     fn simulate_response_payload_contains_expected_fields() {
-        let payload = build_simulate_success_payload("rpc", "v1", "request-1", "ok-detail");
+        let payload = build_simulate_success_payload(
+            "rpc",
+            "v1",
+            "request-1",
+            "signal-1",
+            "buy",
+            "11111111111111111111111111111111",
+            "ok-detail",
+        );
         assert_eq!(payload.get("route").and_then(Value::as_str), Some("rpc"));
         assert_eq!(
             payload.get("request_id").and_then(Value::as_str),
             Some("request-1")
         );
         assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(
             payload.get("detail").and_then(Value::as_str),
             Some("ok-detail")
+        );
+    }
+
+    #[test]
+    fn simulate_response_payload_canonicalizes_identity_fields() {
+        let payload = build_simulate_success_payload(
+            "rpc",
+            "v1",
+            " request-1 ",
+            "\tsignal-1\t",
+            " BUY ",
+            " 11111111111111111111111111111111 ",
+            "ok-detail",
+        );
+        assert_eq!(
+            payload.get("request_id").and_then(Value::as_str),
+            Some("request-1")
+        );
+        assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
         );
     }
 }

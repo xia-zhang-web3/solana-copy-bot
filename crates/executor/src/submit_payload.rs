@@ -6,6 +6,9 @@ pub(crate) struct SubmitSuccessPayloadInputs<'a> {
     pub(crate) contract_version: &'a str,
     pub(crate) client_order_id: &'a str,
     pub(crate) request_id: &'a str,
+    pub(crate) signal_id: &'a str,
+    pub(crate) side: &'a str,
+    pub(crate) token: &'a str,
     pub(crate) tx_signature: &'a str,
     pub(crate) submit_transport: &'a str,
     pub(crate) submitted_at_rfc3339: &'a str,
@@ -20,14 +23,22 @@ pub(crate) struct SubmitSuccessPayloadInputs<'a> {
 }
 
 pub(crate) fn build_submit_success_payload(inputs: SubmitSuccessPayloadInputs<'_>) -> Value {
+    let normalized_request_id = inputs.request_id.trim();
+    let normalized_client_order_id = inputs.client_order_id.trim();
+    let normalized_signal_id = inputs.signal_id.trim();
+    let normalized_side = inputs.side.trim().to_ascii_lowercase();
+    let normalized_token = inputs.token.trim();
     let mut response = json!({
         "status": "ok",
         "ok": true,
         "accepted": true,
         "route": inputs.route,
         "contract_version": inputs.contract_version,
-        "client_order_id": inputs.client_order_id,
-        "request_id": inputs.request_id,
+        "client_order_id": normalized_client_order_id,
+        "request_id": normalized_request_id,
+        "signal_id": normalized_signal_id,
+        "side": normalized_side,
+        "token": normalized_token,
         "tx_signature": inputs.tx_signature,
         "submit_transport": inputs.submit_transport,
         "submitted_at": inputs.submitted_at_rfc3339,
@@ -67,6 +78,9 @@ mod tests {
             contract_version: "v1",
             client_order_id: "client-1",
             request_id: "request-1",
+            signal_id: "signal-1",
+            side: "buy",
+            token: "11111111111111111111111111111111",
             tx_signature: "sig-1",
             submit_transport: "upstream_signature",
             submitted_at_rfc3339: "2026-02-24T00:00:00+00:00",
@@ -126,6 +140,34 @@ mod tests {
                 .get("ata_create_rent_lamports")
                 .and_then(Value::as_u64),
             Some(2_039_280)
+        );
+    }
+
+    #[test]
+    fn submit_payload_includes_canonical_identity_echo_fields() {
+        let mut inputs = sample_inputs(None);
+        inputs.request_id = " request-1 ";
+        inputs.client_order_id = "\tclient-1\t";
+        inputs.signal_id = " signal-1 ";
+        inputs.side = " BUY ";
+        inputs.token = " 11111111111111111111111111111111 ";
+        let payload = build_submit_success_payload(inputs);
+        assert_eq!(
+            payload.get("request_id").and_then(Value::as_str),
+            Some("request-1")
+        );
+        assert_eq!(
+            payload.get("client_order_id").and_then(Value::as_str),
+            Some("client-1")
+        );
+        assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
         );
     }
 }
