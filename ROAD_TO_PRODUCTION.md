@@ -1042,6 +1042,8 @@ Artifacts: signed handoff note, ownership matrix, residual risk register
 514. refactor phase-gate relaxed-mode parity coverage completion: `tools/refactor_phase_gate.sh` now fail-closes strict-guard reason-code contracts alongside verdict contracts (`required=true => reason_code != gate_disabled`, `required=false => reason_code = gate_disabled`) across go-no-go/rehearsal/rollout outputs; `tools/ops_scripts_smoke_test.sh` expands `refactor_phase_gate` full profile with positive relaxed-mode matrices (`REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC=false` + non-yellowstone source, `REFACTOR_PHASE_GATE_REQUIRE_EXECUTOR_UPSTREAM=false`) and asserts `SKIP/gate_disabled` propagation on all nested guard fields, while preserving dedicated negative pins for invalid source/invalid bool tokens.
 515. refactor phase-gate fastlane strict-gate propagation/parity closure: `tools/refactor_phase_gate.sh` now supports strict fastlane gate control (`REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED`) with fail-closed bool parsing, propagates it into nested go-no-go/rehearsal/rollout calls, validates `go_nogo_require_fastlane_disabled` parity and `fastlane_feature_flag_*` contracts at every stage (`required=true => PASS`, `required=false => SKIP`, reason-code gate-disabled parity), and emits normalized summary flag; `tools/ops_scripts_smoke_test.sh` extends `refactor_phase_gate` full profile with positive strict-fastlane matrix (`REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED=true` -> PASS/fastlane_disabled across go-no-go/rehearsal/rollout) plus invalid-bool fail-closed pin.
 516. refactor phase-gate jito strict-policy parity closure: `tools/refactor_phase_gate.sh` now supports strict jito-policy control (`REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY`) with fail-closed bool parsing, propagates it into nested go-no-go/rehearsal/rollout calls, validates `go_nogo_require_jito_rpc_policy` parity and `jito_rpc_policy_*` contracts at every stage (`required=true => verdict must be non-SKIP`, `required=false => verdict=SKIP`, reason-code gate-disabled parity), and emits normalized summary flag; `tools/ops_scripts_smoke_test.sh` extends `refactor_phase_gate` full profile with strict-jito negative matrix (`true` against baseline non-jito profile => fail-closed stage error with jito WARN reason) plus invalid-bool fail-closed pin.
+517. strict non-bootstrap signer gate for go/no-go + rollout parity chain: `tools/execution_go_nogo_report.sh` now supports `GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER` (strict bool, fail-closed) and enforces signer pubkey guard (`COPYBOT_EXECUTOR_SIGNER_PUBKEY`) with explicit verdicts (`PASS` for non-bootstrap signer, `WARN` for bootstrap/placeholder signer, `UNKNOWN` for missing env/signer), while `tools/execution_server_rollout_report.sh` now propagates and fail-closed validates nested signer guard parity fields (`go_nogo_require_non_bootstrap_signer`, `non_bootstrap_signer_guard_*`) and surfaces them in summary; `tools/ops_scripts_smoke_test.sh` adds strict signer pass/fail/missing/invalid-bool pins for go-no-go and rollout, plus rollout reason-code assertion alignment with final-stage precedence (`adapter_final_not_go`).
+518. strict non-bootstrap signer parity closure for nested final/readiness chains: `tools/execution_server_rollout_report.sh` now surfaces full executor/adapter final signer parity fields in top-level summary (`*_go_nogo_require_non_bootstrap_signer`, `*_rollout_nested_go_nogo_require_non_bootstrap_signer`, `*_rollout_nested_non_bootstrap_signer_guard_*`), and `tools/execution_runtime_readiness_report.sh` now extracts/validates/fail-closes adapter-final signer parity (`rollout_nested_go_nogo_require_non_bootstrap_signer`, `rollout_nested_non_bootstrap_signer_guard_*`) with summary export as `adapter_final_nested_*`; `tools/ops_scripts_smoke_test.sh` assertions were expanded across devnet/executor-rollout/adapter-rollout/server-rollout/runtime-readiness paths (pass/skip/profile/bundle/mock/override) to pin non-bootstrap signer nested parity end-to-end.
 
 Остается в next-code-queue:
 
@@ -1412,3 +1414,91 @@ NO-GO для server rollout (остаемся на текущем этапе, з
    2. `TX` переведен в `fill_container`,
    3. унифицированы межколоночные отступы в header/data-rows,
    4. текстовые ячейки переведены в `textGrowth=fixed-width` для жесткой сетки.
+
+### 2026-03-04 — full Pencil UI audit vs monitoring brief (Codex)
+
+Сделано:
+
+1. Проведен полный аудит всех desktop/mobile окон в активном `.pen` против `UI_MONITORING_DESIGN_BRIEF_2026-03-04.md`.
+2. Добавлен отдельный audit-артефакт: `ops/ui_monitoring_windows_audit_2026-03-04.md`.
+3. Desktop расширен до полного набора из 8 секций брифа:
+   1. добавлен отдельный экран `Desktop - Actions` (`vFwV3`),
+   2. в `Desktop - Execution` добавлены блоки `Pipeline Funnel` / `Failure Taxonomy` / `Transport Path`,
+   3. в `Desktop - Discovery Quality` добавлены блоки `Cycle Health` / `Followlist Effectiveness` / `Quality Cache`,
+   4. в `Desktop - Risk & Exposure` добавлен блок `Policy Gates`,
+   5. в `Desktop - Incidents` добавлен `Incident Details Drawer`,
+   6. в `Desktop - Runtime Config` добавлен блок `Effective Config & Data Sources`,
+   7. в `Desktop - Overview` добавлен блок `Reports & Metrics`.
+4. Mobile IA приведена к triage-формату брифа:
+   1. bottom nav обновлен до `Overview / Actions / Incidents`,
+   2. `Mobile - Orders Terminal` переименован в `Mobile - Actions` и заполнен action-oriented контентом + trade-event блоком.
+5. В интерфейсе явно зафиксирована политика нагрузки:
+   1. `read-only monitoring`,
+   2. `no direct Solana RPC from UI`,
+   3. источники данных: существующие service metrics, локальная БД и snapshot/report artifacts.
+6. Micro-fix layout (desktop overview):
+   1. карточка `Reports & Metrics` получила fixed-width текстовые строки и сокращенные подписи путей,
+   2. убрано переполнение текста за границы карточки.
+
+Итог:
+
+1. UI теперь покрывает обязательные информационные секции из брифа для desktop/mobile.
+2. Отчеты, сбор метрик и торговая информация представлены в явных блоках.
+3. По дизайну UI не должен создавать дополнительную chain RPC-нагрузку и не должен влиять на runtime бота, если реализация следует зафиксированной query-policy.
+
+### 2026-03-04 — post-patch follow-up (T+~8h43m, snapshot 21:08 UTC)
+
+Источник:
+
+1. `ops/server_reports/2026-03-04_post_patch_followup_2108_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-04_post_patch_followup_2108_snapshot/computed_summary.json`
+
+Итог третьего окна после патча:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Ingestion gates: PASS (`~419.82 msg/s`, `~419.62 tx-updates/s`, `rpc_429 delta=0`, `rpc_5xx delta=0`, `parse_rejected delta=0`).
+3. Discovery liveness: PASS (`completed=175`, `still_running=0`).
+4. Discovery pressure: IMPROVED
+   1. `swaps_fetch_limit_reached_ratio=0.5943` (`104/175`) vs `1.0` (`95/95`) в срезе `17:10`.
+   2. `swaps_delta_fetched_last=31192`, `swaps_evicted_due_cap_last=31192` (раньше оба были `120000`).
+5. Discovery latency: IMPROVED
+   1. `duration_ms_p50=8197` (было `12425`),
+   2. `duration_ms_last=4231` (было `51556`),
+   3. `duration_ms_max=96516` (без изменений, редкий хвост сохраняется).
+6. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+
+Операционный вывод:
+
+1. Runtime устойчив, OOM/restart regression не наблюдается.
+2. Discovery выходит из режима постоянного cap saturation, но контроль за zero-output followlist остается ключевой точкой наблюдения.
+
+### 2026-03-05 — morning post-patch follow-up (snapshot 07:45 UTC / 09:45 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-05_morning_post_patch_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-05_post_patch_followup_0744_snapshot/computed_summary.json`
+
+Итог утреннего окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Ingestion gates: PASS (`~396.13 msg/s`, `~395.93 tx-updates/s`, `rpc_429 delta=0`, `rpc_5xx delta=0`, `parse_rejected delta=0`).
+3. Discovery pressure: IMPROVED further
+   1. `swaps_fetch_limit_reached_ratio=0.2687` (`104/387`) vs `0.5943` (`104/175`) в срезе `2026-03-04 21:08 UTC`.
+   2. `swaps_delta_fetched_last=22019`, `swaps_evicted_due_cap_last=22019` (дополнительное снижение от вечернего `31192`).
+4. Discovery latency:
+   1. `duration_ms_p50=5612` (улучшение от `8197`),
+   2. `duration_ms_p95=26121.8` (около вечернего уровня `25870.8`, хвост сохраняется),
+   3. `duration_ms_last=5042`,
+   4. `duration_ms_max=96516` (без изменений).
+5. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+
+Операционный вывод:
+
+1. Ночной прогон стабильный, без OOM/restart regressions.
+2. Discovery backlog/cap давление продолжает спадать.
+3. Главная незакрытая бизнес-метрика — выход `eligible/active follow wallets` из нуля.
