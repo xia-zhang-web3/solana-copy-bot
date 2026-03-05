@@ -5924,6 +5924,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_uses_paper_transport_label_when_route_is_paper_in_mock_mode() {
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        state.config.backend_mode = ExecutorBackendMode::Mock;
+        state.config.route_allowlist.insert("paper".to_string());
+        state.config.route_backends.insert(
+            "paper".to_string(),
+            RouteBackend {
+                submit_url: "http://127.0.0.1:1/upstream".to_string(),
+                submit_fallback_url: None,
+                simulate_url: "http://127.0.0.1:1/upstream".to_string(),
+                simulate_fallback_url: None,
+                primary_auth_token: None,
+                fallback_auth_token: None,
+                send_rpc_url: None,
+                send_rpc_fallback_url: None,
+                send_rpc_primary_auth_token: None,
+                send_rpc_fallback_auth_token: None,
+            },
+        );
+        state.config.submit_signature_verify = Some(SubmitSignatureVerifyConfig {
+            endpoints: vec!["http://127.0.0.1:1/verify".to_string()],
+            attempts: 1,
+            interval_ms: 1,
+            strict: true,
+        });
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-paper-mock-transport-label-1",
+            "client_order_id": "client-order-paper-mock-transport-label-1",
+            "request_id": "request-paper-mock-transport-label-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "paper",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("paper+mock submit should keep paper transport label");
+        assert_eq!(
+            response.get("submit_transport").and_then(Value::as_str),
+            Some("executor_paper_internal")
+        );
+        assert_eq!(
+            response
+                .get("submit_signature_verify")
+                .and_then(|value| value.get("enabled"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
     async fn execute_route_action_rejects_submit_route_payload_hint_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",

@@ -200,10 +200,10 @@ pub(crate) async fn handle_submit(
             .map_err(map_submit_transport_artifact_error_to_reject)?
         {
             SubmitTransportArtifact::UpstreamSignature(value) => {
-                let submit_transport = if state.config.backend_mode == ExecutorBackendMode::Mock {
-                    "executor_mock_internal"
-                } else if matches!(route_kind, RouteKind::Paper) {
+                let submit_transport = if matches!(route_kind, RouteKind::Paper) {
                     "executor_paper_internal"
+                } else if state.config.backend_mode == ExecutorBackendMode::Mock {
+                    "executor_mock_internal"
                 } else {
                     "upstream_signature"
                 };
