@@ -2,6 +2,7 @@ use chrono::Utc;
 use serde_json::Value;
 use tracing::{debug, warn};
 
+use crate::backend_mode::ExecutorBackendMode;
 use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
 use crate::fee_hints::{parse_response_fee_hint_fields, resolve_fee_hints, FeeHintInputs};
 use crate::idempotency::SubmitClaimOutcome;
@@ -16,21 +17,19 @@ use crate::reject_mapping::{
 use crate::request_types::SubmitRequest;
 use crate::request_validation::validate_submit_request_identity;
 use crate::route_backend::UpstreamAction;
-use crate::backend_mode::ExecutorBackendMode;
 use crate::route_executor::{
     execute_route_action, RouteActionPayloadExpectations, RouteSubmitExecutionContext,
 };
 use crate::route_normalization::normalize_route;
 use crate::route_policy::{classify_normalized_route, RouteKind};
+use crate::send_rpc::send_signed_transaction_via_rpc;
 use crate::submit_claim_guard::SubmitClaimGuard;
 use crate::submit_deadline::SubmitDeadline;
 use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_response::{
     resolve_submit_response_submitted_at, validate_submit_response_extended_identity,
-    validate_submit_response_request_identity,
-    validate_submit_response_route_and_contract,
+    validate_submit_response_request_identity, validate_submit_response_route_and_contract,
 };
-use crate::send_rpc::send_signed_transaction_via_rpc;
 use crate::submit_transport::{extract_submit_transport_artifact, SubmitTransportArtifact};
 use crate::submit_verify::{verify_submitted_signature_visibility, SubmitSignatureVerification};
 use crate::submit_verify_payload::submit_signature_verification_to_json;
@@ -126,7 +125,7 @@ pub(crate) async fn handle_submit(
         "handling submit request"
     );
     let submit_deadline = SubmitDeadline::new(state.config.submit_total_budget_ms);
-    let _submit_claim_guard = match state.idempotency.load_cached_or_claim_submit(
+    let mut submit_claim_guard = match state.idempotency.load_cached_or_claim_submit(
         request.client_order_id.as_str(),
         request.request_id.as_str(),
         state.config.idempotency_claim_ttl_sec,
@@ -182,6 +181,16 @@ pub(crate) async fn handle_submit(
         UpstreamOutcome::Success => {}
     }
 
+    let submit_transport_artifact = extract_submit_transport_artifact(&backend_response)
+        .map_err(map_submit_transport_artifact_error_to_reject)?;
+
+    if matches!(
+        submit_transport_artifact,
+        SubmitTransportArtifact::UpstreamSignature(_)
+    ) {
+        submit_claim_guard.retain_claim_on_drop();
+    }
+
     validate_submit_response_route_and_contract(
         &backend_response,
         route.as_str(),
@@ -204,31 +213,29 @@ pub(crate) async fn handle_submit(
     )
     .map_err(map_submit_response_validation_error_to_reject)?;
 
-    let (tx_signature, submit_transport) =
-        match extract_submit_transport_artifact(&backend_response)
-            .map_err(map_submit_transport_artifact_error_to_reject)?
-        {
-            SubmitTransportArtifact::UpstreamSignature(value) => {
-                let submit_transport = if matches!(route_kind, RouteKind::Paper) {
-                    "executor_paper_internal"
-                } else if state.config.backend_mode == ExecutorBackendMode::Mock {
-                    "executor_mock_internal"
-                } else {
-                    "upstream_signature"
-                };
-                (value, submit_transport)
-            }
-            SubmitTransportArtifact::SignedTransactionBase64(value) => {
-                let signature = send_signed_transaction_via_rpc(
-                    state,
-                    route.as_str(),
-                    value.as_str(),
-                    Some(&submit_deadline),
-                )
-                .await?;
-                (signature, "adapter_send_rpc")
-            }
-        };
+    let (tx_signature, submit_transport) = match submit_transport_artifact {
+        SubmitTransportArtifact::UpstreamSignature(value) => {
+            let submit_transport = if matches!(route_kind, RouteKind::Paper) {
+                "executor_paper_internal"
+            } else if state.config.backend_mode == ExecutorBackendMode::Mock {
+                "executor_mock_internal"
+            } else {
+                "upstream_signature"
+            };
+            (value, submit_transport)
+        }
+        SubmitTransportArtifact::SignedTransactionBase64(value) => {
+            let signature = send_signed_transaction_via_rpc(
+                state,
+                route.as_str(),
+                value.as_str(),
+                Some(&submit_deadline),
+            )
+            .await?;
+            submit_claim_guard.retain_claim_on_drop();
+            (signature, "adapter_send_rpc")
+        }
+    };
 
     let submit_signature_verify = if bypass_submit_verify {
         SubmitSignatureVerification::Skipped
@@ -316,7 +323,9 @@ pub(crate) async fn handle_submit(
                     "idempotency conflict detected but canonical response missing",
                 )
             })?;
+        submit_claim_guard.release_claim_on_drop();
         return Ok(canonical);
     }
+    submit_claim_guard.release_claim_on_drop();
     Ok(response)
 }

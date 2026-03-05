@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Context, Result};
+#[cfg(test)]
+use axum::http::{HeaderMap, StatusCode};
 use axum::{
     extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
-#[cfg(test)]
-use axum::http::{HeaderMap, StatusCode};
 use reqwest::Client;
 #[cfg(test)]
 use serde_json::{json, Value};
@@ -26,8 +26,8 @@ mod auth_verifier;
 mod backend_mode;
 mod common_contract;
 mod contract_version;
-mod executor_config_env;
 mod env_parsing;
+mod executor_config_env;
 mod fee_hints;
 mod healthz_endpoint;
 mod healthz_payload;
@@ -35,16 +35,16 @@ mod http_utils;
 mod idempotency;
 mod idempotency_cleanup_worker;
 mod key_validation;
-mod request_ingress;
-mod request_endpoints;
 mod reject;
 mod reject_mapping;
-mod request_validation;
+mod request_endpoints;
+mod request_ingress;
 mod request_types;
+mod request_validation;
 mod response_envelope;
 mod rfc3339_time;
-mod route_allowlist;
 mod route_adapters;
+mod route_allowlist;
 mod route_backend;
 mod route_executor;
 mod route_normalization;
@@ -77,33 +77,32 @@ use crate::common_contract::{validate_common_contract_inputs, CommonContractInpu
 use crate::env_parsing::parse_bool_env;
 use crate::healthz_endpoint::healthz;
 use crate::idempotency::SubmitIdempotencyStore;
-use crate::idempotency_cleanup_worker::spawn_response_cleanup_worker;
 #[cfg(test)]
 use crate::idempotency::{
     DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
 };
 #[cfg(test)]
 use crate::idempotency_cleanup_worker::response_cleanup_worker_tick_sec;
+use crate::idempotency_cleanup_worker::spawn_response_cleanup_worker;
 #[cfg(test)]
 use crate::key_validation::{validate_pubkey_like, validate_signature_like};
-use crate::request_endpoints::simulate;
-use crate::request_endpoints::submit;
 pub(crate) use crate::reject::Reject;
 #[cfg(test)]
 use crate::reject_mapping::map_common_contract_validation_error_to_reject;
 #[cfg(test)]
 use crate::reject_mapping::simulate_http_status_for_reject;
+use crate::request_endpoints::simulate;
+use crate::request_endpoints::submit;
 #[cfg(test)]
 use crate::request_types::{ComputeBudgetRequest, SimulateRequest, SubmitRequest};
+#[cfg(test)]
+use crate::route_adapters::{
+    clear_submit_instruction_plan_presence_for_test, take_submit_instruction_plan_presence_for_test,
+};
 use crate::route_allowlist::sorted_routes;
 use crate::route_backend::RouteBackend;
 #[cfg(test)]
 use crate::route_backend::UpstreamAction;
-#[cfg(test)]
-use crate::route_adapters::{
-    clear_submit_instruction_plan_presence_for_test,
-    take_submit_instruction_plan_presence_for_test,
-};
 #[cfg(test)]
 use crate::route_executor::{
     execute_route_action, RouteActionPayloadExpectations, RouteSubmitExecutionContext,
@@ -127,9 +126,9 @@ use crate::submit_budget::default_submit_total_budget_ms;
 #[cfg(test)]
 use crate::submit_handler::handle_submit;
 #[cfg(test)]
-use crate::submit_verify::SubmitSignatureVerification;
-#[cfg(test)]
 use crate::submit_verify::verify_submitted_signature_visibility;
+#[cfg(test)]
+use crate::submit_verify::SubmitSignatureVerification;
 #[cfg(test)]
 use crate::submit_verify_config::build_submit_signature_verify_config;
 use crate::submit_verify_config::SubmitSignatureVerifyConfig;
@@ -825,7 +824,10 @@ mod tests {
             Some(path.to_str().expect("utf8 path")),
         )
         .expect("file-backed secret must resolve");
-        assert_eq!(resolved.as_ref().map(SecretValue::as_str), Some("secret-value"));
+        assert_eq!(
+            resolved.as_ref().map(SecretValue::as_str),
+            Some("secret-value")
+        );
         cleanup_temp_secret_file(path);
     }
 
@@ -1113,7 +1115,9 @@ mod tests {
         let raw_body = br#"{"action":"simulate","contract_version":123,"request_id":"request-sim-contract-type-mismatch-1","signal_id":"signal-sim-contract-type-mismatch-1","side":"buy","token":"11111111111111111111111111111111","notional_sol":1.0,"signal_ts":"2026-02-24T12:00:00Z","route":"rpc","dry_run":true}"#;
         let reject = handle_simulate(&state, &request, raw_body.as_slice())
             .await
-            .expect_err("simulate non-string contract_version payload must reject before forwarding");
+            .expect_err(
+                "simulate non-string contract_version payload must reject before forwarding",
+            );
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("contract_version must be string"));
@@ -1441,7 +1445,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_simulate_rejects_upstream_signal_id_mismatch() {
-        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"signal_id":"signal-other-1"}"#;
+        let upstream_body =
+            r#"{"status":"ok","ok":true,"accepted":true,"signal_id":"signal-other-1"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -1467,9 +1472,9 @@ mod tests {
             .expect_err("upstream signal_id mismatch must reject");
         assert_eq!(reject.code, "simulation_signal_id_mismatch");
         assert!(
-            reject
-                .detail
-                .contains("signal_id=signal-other-1 does not match expected signal_id=signal-expected-1"),
+            reject.detail.contains(
+                "signal_id=signal-other-1 does not match expected signal_id=signal-expected-1"
+            ),
             "unexpected detail: {}",
             reject.detail
         );
@@ -1478,7 +1483,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_simulate_accepts_upstream_side_echo_with_case_difference() {
-        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"side":"BUY","detail":"upstream_sim_ok"}"#;
+        let upstream_body =
+            r#"{"status":"ok","ok":true,"accepted":true,"side":"BUY","detail":"upstream_sim_ok"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -1626,8 +1632,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_simulate_rejects_upstream_reject_code_type_invalid() {
-        let upstream_body =
-            r#"{"status":"reject","ok":false,"accepted":false,"retryable":true,"code":123,"detail":"upstream busy"}"#;
+        let upstream_body = r#"{"status":"reject","ok":false,"accepted":false,"retryable":true,"code":123,"detail":"upstream busy"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -1665,8 +1670,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_simulate_rejects_upstream_retryable_type_invalid() {
-        let upstream_body =
-            r#"{"status":"reject","ok":false,"accepted":false,"retryable":"true","code":"upstream_busy","detail":"upstream busy"}"#;
+        let upstream_body = r#"{"status":"reject","ok":false,"accepted":false,"retryable":"true","code":"upstream_busy","detail":"upstream busy"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -1704,8 +1708,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_simulate_rejects_upstream_retryable_null() {
-        let upstream_body =
-            r#"{"status":"reject","ok":false,"accepted":false,"retryable":null,"code":"upstream_busy","detail":"upstream busy"}"#;
+        let upstream_body = r#"{"status":"reject","ok":false,"accepted":false,"retryable":null,"code":"upstream_busy","detail":"upstream busy"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -1971,8 +1974,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_simulate_rejects_unknown_upstream_status_even_with_reject_flags() {
-        let upstream_body =
-            r#"{"status":"pending","ok":false,"accepted":false,"code":"busy","detail":"backpressure"}"#;
+        let upstream_body = r#"{"status":"pending","ok":false,"accepted":false,"code":"busy","detail":"backpressure"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -2080,7 +2082,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_simulate_rejects_unknown_upstream_status_before_retryable_type_validation() {
-        let upstream_body = r#"{"status":"pending","ok":false,"accepted":false,"retryable":"true"}"#;
+        let upstream_body =
+            r#"{"status":"pending","ok":false,"accepted":false,"retryable":"true"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -2116,8 +2119,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_simulate_rejects_unknown_upstream_status_before_reject_code_type_validation() {
-        let upstream_body =
-            r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":123,"detail":"busy"}"#;
+        let upstream_body = r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":123,"detail":"busy"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -2152,9 +2154,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_simulate_rejects_unknown_upstream_status_before_reject_detail_type_validation() {
-        let upstream_body =
-            r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":"busy","detail":null}"#;
+    async fn handle_simulate_rejects_unknown_upstream_status_before_reject_detail_type_validation()
+    {
+        let upstream_body = r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":"busy","detail":null}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -2165,7 +2167,8 @@ mod tests {
         let request = SimulateRequest {
             action: Some("simulate".to_string()),
             contract_version: Some("v1".to_string()),
-            request_id: "request-invalid-upstream-unknown-status-invalid-reject-detail-1".to_string(),
+            request_id: "request-invalid-upstream-unknown-status-invalid-reject-detail-1"
+                .to_string(),
             signal_id: "signal-invalid-upstream-unknown-status-invalid-reject-detail-1".to_string(),
             side: "buy".to_string(),
             token: "11111111111111111111111111111111".to_string(),
@@ -2189,14 +2192,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_simulate_uses_upstream_fallback_after_primary_declared_oversized_content_length()
-    {
-        let Some((upstream_primary_url, upstream_primary_handle)) = spawn_one_shot_upstream_incomplete_body(
-            200,
-            "application/json",
-            br#"{"status":"ok","ok":true,"accepted":true,"detail":"x"}"#,
-            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
-        ) else {
+    async fn handle_simulate_uses_upstream_fallback_after_primary_declared_oversized_content_length(
+    ) {
+        let Some((upstream_primary_url, upstream_primary_handle)) =
+            spawn_one_shot_upstream_incomplete_body(
+                200,
+                "application/json",
+                br#"{"status":"ok","ok":true,"accepted":true,"detail":"x"}"#,
+                crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+            )
+        else {
             return;
         };
         let upstream_fallback_detail = "fallback simulation detail";
@@ -2259,11 +2264,13 @@ mod tests {
         let upstream_primary_body = build_truncated_valid_json_prefix_body(
             r#"{"status":"ok","ok":true,"accepted":true,"detail":"primary"}"#,
         );
-        let Some((upstream_primary_url, upstream_primary_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            upstream_primary_body.as_bytes(),
-        ) else {
+        let Some((upstream_primary_url, upstream_primary_handle)) =
+            spawn_one_shot_upstream_chunked_raw(
+                200,
+                "application/json",
+                upstream_primary_body.as_bytes(),
+            )
+        else {
             return;
         };
         let upstream_fallback_detail = "fallback simulation detail truncated";
@@ -2383,11 +2390,9 @@ mod tests {
         let upstream_body = build_truncated_valid_json_prefix_body(
             r#"{"status":"ok","ok":true,"accepted":true,"detail":"x"}"#,
         );
-        let Some((upstream_url, upstream_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            upstream_body.as_bytes(),
-        ) else {
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_chunked_raw(200, "application/json", upstream_body.as_bytes())
+        else {
             return;
         };
 
@@ -2496,7 +2501,8 @@ mod tests {
             "x".repeat(crate::http_utils::MAX_HTTP_ERROR_BODY_READ_BYTES + 512),
             tail_marker
         );
-        let Some((url, handle)) = spawn_one_shot_upstream_raw(503, "text/plain", long_body.as_str())
+        let Some((url, handle)) =
+            spawn_one_shot_upstream_raw(503, "text/plain", long_body.as_str())
         else {
             return;
         };
@@ -2581,7 +2587,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_to_upstream_uses_fallback_after_primary_declared_oversized_content_length() {
+    async fn forward_to_upstream_simulate_uses_fallback_after_primary_declared_oversized_content_length(
+    ) {
         let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
             200,
             "application/json",
@@ -2604,31 +2611,22 @@ mod tests {
             primary_url.as_str(),
             Some(fallback_url.as_str()),
         );
-        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let body = forward_to_upstream(
-            &state,
-            "rpc",
-            UpstreamAction::Submit,
-            b"{}",
-            Some(&submit_deadline),
-        )
-        .await
-        .expect("fallback should succeed after primary declared-oversized response");
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect("fallback should succeed after primary declared-oversized response");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
     }
 
     #[tokio::test]
-    async fn forward_to_upstream_uses_fallback_after_primary_truncated_success_body() {
+    async fn forward_to_upstream_simulate_uses_fallback_after_primary_truncated_success_body() {
         let primary_body = build_truncated_valid_json_prefix_body(
             r#"{"status":"ok","accepted":true,"source":"primary"}"#,
         );
-        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            primary_body.as_bytes(),
-        ) else {
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_chunked_raw(200, "application/json", primary_body.as_bytes())
+        else {
             return;
         };
         let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
@@ -2645,16 +2643,9 @@ mod tests {
             primary_url.as_str(),
             Some(fallback_url.as_str()),
         );
-        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let body = forward_to_upstream(
-            &state,
-            "rpc",
-            UpstreamAction::Submit,
-            b"{}",
-            Some(&submit_deadline),
-        )
-        .await
-        .expect("fallback should succeed after primary truncated oversized success body");
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect("fallback should succeed after primary truncated oversized success body");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
         assert_eq!(body.get("source").and_then(Value::as_str), Some("fallback"));
         let _ = primary_handle.join();
@@ -2750,7 +2741,9 @@ mod tests {
         let state = test_state(url.as_str());
         let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
             .await
-            .expect_err("transport-incomplete body must reject even if partial bytes are valid JSON");
+            .expect_err(
+                "transport-incomplete body must reject even if partial bytes are valid JSON",
+            );
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_unavailable");
         assert!(
@@ -2762,7 +2755,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_to_upstream_uses_fallback_after_primary_response_read_failure() {
+    async fn forward_to_upstream_simulate_uses_fallback_after_primary_response_read_failure() {
         let partial_valid_json = br#"{"status":"ok","accepted":true}"#;
         let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
             200,
@@ -2786,16 +2779,9 @@ mod tests {
             primary_url.as_str(),
             Some(fallback_url.as_str()),
         );
-        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let body = forward_to_upstream(
-            &state,
-            "rpc",
-            UpstreamAction::Submit,
-            b"{}",
-            Some(&submit_deadline),
-        )
-        .await
-        .expect("fallback should succeed after primary response-read failure");
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect("fallback should succeed after primary response-read failure");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
@@ -2853,7 +2839,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_to_upstream_uses_fallback_after_primary_retryable_status() {
+    async fn forward_to_upstream_simulate_uses_fallback_after_primary_retryable_status() {
         let Some((primary_url, primary_handle)) =
             spawn_one_shot_upstream_raw(503, "text/plain", "temporary outage")
         else {
@@ -2873,14 +2859,7 @@ mod tests {
             primary_url.as_str(),
             Some(fallback_url.as_str()),
         );
-        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let body = forward_to_upstream(
-            &state,
-            "rpc",
-            UpstreamAction::Submit,
-            b"{}",
-            Some(&submit_deadline),
-        )
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
             .await
             .expect("fallback should succeed after retryable status");
         assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
@@ -2918,7 +2897,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_to_upstream_uses_fallback_auth_token_when_retrying() {
+    async fn forward_to_upstream_simulate_uses_fallback_auth_token_when_retrying() {
         let fallback_token = "FallBack-Token-123";
         let Some((primary_url, primary_handle)) =
             spawn_one_shot_upstream_raw(503, "text/plain", "temporary outage")
@@ -2944,17 +2923,119 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
+        let body = forward_to_upstream(&state, "rpc", UpstreamAction::Simulate, b"{}", None)
+            .await
+            .expect("fallback with dedicated token should succeed");
+        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_submit_rejects_primary_send_error_without_using_fallback() {
+        let Some((fallback_url, handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            "{\"status\":\"ok\",\"accepted\":true}",
+        ) else {
+            return;
+        };
+        let state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            Some(fallback_url.as_str()),
+            "http://127.0.0.1:1/upstream",
+            Some(fallback_url.as_str()),
+        );
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let body = forward_to_upstream(
+        let reject = forward_to_upstream(
             &state,
             "rpc",
             UpstreamAction::Submit,
             b"{}",
             Some(&submit_deadline),
         )
-            .await
-            .expect("fallback with dedicated token should succeed");
-        assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+        .await
+        .expect_err("submit must fail closed after primary send error");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_unavailable");
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_submit_rejects_primary_retryable_status_without_using_fallback() {
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_raw(503, "text/plain", "temporary outage")
+        else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            "{\"status\":\"ok\",\"accepted\":true}",
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{}",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("submit must fail closed after retryable status");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_http_unavailable");
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn forward_to_upstream_submit_rejects_primary_response_read_failure_without_using_fallback(
+    ) {
+        let partial_valid_json = br#"{"status":"ok","accepted":true}"#;
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            partial_valid_json,
+            partial_valid_json.len() + 64,
+        ) else {
+            return;
+        };
+        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
+            200,
+            "application/json",
+            "{\"status\":\"ok\",\"accepted\":true}",
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends(
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+            primary_url.as_str(),
+            Some(fallback_url.as_str()),
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = forward_to_upstream(
+            &state,
+            "rpc",
+            UpstreamAction::Submit,
+            b"{}",
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("submit must fail closed after primary response-read failure");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_unavailable");
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
     }
@@ -2970,9 +3051,10 @@ mod tests {
             None,
         );
 
-        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-            .await
-            .expect_err("send RPC without deadline must fail closed before request");
+        let reject =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
+                .await
+                .expect_err("send RPC without deadline must fail closed before request");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing deadline"));
@@ -3020,9 +3102,10 @@ mod tests {
             panic!("rpc backend must exist");
         }
 
-        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
-            .await
-            .expect_err("deadline guard must reject before topology checks");
+        let reject =
+            send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str(), None)
+                .await
+                .expect_err("deadline guard must reject before topology checks");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing deadline"));
@@ -3296,11 +3379,9 @@ mod tests {
         let primary_body = build_truncated_valid_json_prefix_body(
             format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, primary_signature).as_str(),
         );
-        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            primary_body.as_bytes(),
-        ) else {
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_chunked_raw(200, "application/json", primary_body.as_bytes())
+        else {
             return;
         };
         let fallback_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, expected_signature);
@@ -3338,7 +3419,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_signed_transaction_via_rpc_keeps_invalid_json_classification_with_marker_suffix() {
+    async fn send_signed_transaction_via_rpc_keeps_invalid_json_classification_with_marker_suffix()
+    {
         let (signed_tx_base64, _expected_signature) =
             test_signed_tx_base64_with_signature([58u8; 64]);
         let rpc_body = r#"{"jsonrpc":"2.0","result":"abc"}...[truncated]"#;
@@ -3466,10 +3548,8 @@ mod tests {
     ) {
         let (signed_tx_base64, expected_signature) =
             test_signed_tx_base64_with_signature([61u8; 64]);
-        let partial_valid_json = format!(
-            r#"{{"jsonrpc":"2.0","result":"{}"}}"#,
-            expected_signature
-        );
+        let partial_valid_json =
+            format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, expected_signature);
         let Some((send_rpc_url, send_rpc_handle)) = spawn_one_shot_upstream_incomplete_body(
             200,
             "application/json",
@@ -3515,10 +3595,8 @@ mod tests {
         let (signed_tx_base64, expected_signature) =
             test_signed_tx_base64_with_signature([62u8; 64]);
         let fallback_token = "Send-Rpc-Fallback-Token-Read-Failure";
-        let partial_valid_json = format!(
-            r#"{{"jsonrpc":"2.0","result":"{}"}}"#,
-            expected_signature
-        );
+        let partial_valid_json =
+            format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, expected_signature);
         let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
             200,
             "application/json",
@@ -3584,15 +3662,14 @@ mod tests {
         }
 
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let signature =
-            send_signed_transaction_via_rpc(
-                &state,
-                "rpc",
-                signed_tx_base64.as_str(),
-                Some(&submit_deadline),
-            )
-                .await
-                .expect("send RPC should return tx signature");
+        let signature = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("send RPC should return tx signature");
         assert_eq!(signature, rpc_signature);
         let _ = send_rpc_handle.join();
     }
@@ -3623,15 +3700,14 @@ mod tests {
         }
 
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let reject =
-            send_signed_transaction_via_rpc(
-                &state,
-                "rpc",
-                signed_tx_base64.as_str(),
-                Some(&submit_deadline),
-            )
-            .await
-            .expect_err("mismatched send RPC signature must fail");
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("mismatched send RPC signature must fail");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "send_rpc_signature_mismatch");
         let _ = send_rpc_handle.join();
@@ -3662,23 +3738,21 @@ mod tests {
         if let Some(backend) = state.config.route_backends.get_mut("rpc") {
             backend.send_rpc_url = Some(primary_url);
             backend.send_rpc_fallback_url = Some(fallback_url);
-            backend.send_rpc_primary_auth_token =
-                Some("send-rpc-primary-token".to_string().into());
+            backend.send_rpc_primary_auth_token = Some("send-rpc-primary-token".to_string().into());
             backend.send_rpc_fallback_auth_token = Some(fallback_token.to_string().into());
         } else {
             panic!("rpc backend must exist");
         }
 
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let signature =
-            send_signed_transaction_via_rpc(
-                &state,
-                "rpc",
-                signed_tx_base64.as_str(),
-                Some(&submit_deadline),
-            )
-            .await
-            .expect("fallback send RPC with dedicated auth token should succeed");
+        let signature = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback send RPC with dedicated auth token should succeed");
         assert_eq!(signature, expected_signature);
         let _ = primary_handle.join();
         let _ = fallback_handle.join();
@@ -3704,15 +3778,14 @@ mod tests {
         }
 
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let reject =
-            send_signed_transaction_via_rpc(
-                &state,
-                "rpc",
-                signed_tx_base64.as_str(),
-                Some(&submit_deadline),
-            )
-            .await
-            .expect_err("fallback-only send RPC topology must fail closed");
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("fallback-only send RPC topology must fail closed");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "adapter_send_rpc_not_configured");
         assert!(
@@ -3748,15 +3821,14 @@ mod tests {
         }
 
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let signature =
-            send_signed_transaction_via_rpc(
-                &state,
-                "rpc",
-                signed_tx_base64.as_str(),
-                Some(&submit_deadline),
-            )
-            .await
-            .expect("already processed error should resolve to expected signature");
+        let signature = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("already processed error should resolve to expected signature");
         assert_eq!(signature, expected_signature);
         let _ = send_rpc_handle.join();
     }
@@ -3788,15 +3860,14 @@ mod tests {
         }
 
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let reject =
-            send_signed_transaction_via_rpc(
-                &state,
-                "rpc",
-                signed_tx_base64.as_str(),
-                Some(&submit_deadline),
-            )
-            .await
-            .expect_err("blockhash-expired send RPC payload should be terminal");
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("blockhash-expired send RPC payload should be terminal");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "executor_blockhash_expired");
         let _ = primary_handle.join();
@@ -3865,15 +3936,14 @@ mod tests {
         }
 
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
-        let reject =
-            send_signed_transaction_via_rpc(
-                &state,
-                "rpc",
-                signed_tx_base64.as_str(),
-                Some(&submit_deadline),
-            )
-            .await
-            .expect_err("unknown send RPC error payload should be terminal");
+        let reject = send_signed_transaction_via_rpc(
+            &state,
+            "rpc",
+            signed_tx_base64.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("unknown send RPC error payload should be terminal");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "send_rpc_error_payload_terminal");
         let _ = primary_handle.join();
@@ -4074,15 +4144,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_submit_uses_upstream_fallback_after_primary_declared_oversized_content_length() {
+    async fn handle_submit_rejects_primary_declared_oversized_even_with_fallback_configured() {
         let (fallback_signed_tx_base64, rpc_signature) =
             test_signed_tx_base64_with_signature([82u8; 64]);
-        let Some((upstream_primary_url, upstream_primary_handle)) = spawn_one_shot_upstream_incomplete_body(
-            200,
-            "application/json",
-            br#"{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"x"}"#,
-            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
-        ) else {
+        let Some((upstream_primary_url, upstream_primary_handle)) =
+            spawn_one_shot_upstream_incomplete_body(
+                200,
+                "application/json",
+                br#"{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"x"}"#,
+                crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+            )
+        else {
             return;
         };
         let upstream_fallback_body = format!(
@@ -4135,24 +4207,18 @@ mod tests {
         let request: SubmitRequest =
             serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
 
-        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
             .await
-            .expect("submit should use upstream fallback after declared oversized primary");
-        assert_eq!(
-            response.get("tx_signature").and_then(Value::as_str),
-            Some(rpc_signature.as_str())
-        );
-        assert_eq!(
-            response.get("submit_transport").and_then(Value::as_str),
-            Some("adapter_send_rpc")
-        );
+            .expect_err("submit must fail closed after declared oversized primary");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
         let _ = upstream_primary_handle.join();
         let _ = upstream_fallback_handle.join();
         let _ = send_rpc_handle.join();
     }
 
     #[tokio::test]
-    async fn handle_submit_uses_upstream_fallback_after_primary_truncated_success_body() {
+    async fn handle_submit_rejects_primary_truncated_body_even_with_fallback_configured() {
         let (primary_signed_tx_base64, _primary_signature) =
             test_signed_tx_base64_with_signature([83u8; 64]);
         let (fallback_signed_tx_base64, rpc_signature) =
@@ -4164,11 +4230,13 @@ mod tests {
             )
             .as_str(),
         );
-        let Some((upstream_primary_url, upstream_primary_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            upstream_primary_body.as_bytes(),
-        ) else {
+        let Some((upstream_primary_url, upstream_primary_handle)) =
+            spawn_one_shot_upstream_chunked_raw(
+                200,
+                "application/json",
+                upstream_primary_body.as_bytes(),
+            )
+        else {
             return;
         };
         let upstream_fallback_body = format!(
@@ -4221,20 +4289,69 @@ mod tests {
         let request: SubmitRequest =
             serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
 
-        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
             .await
-            .expect("submit should use upstream fallback after truncated primary success body");
-        assert_eq!(
-            response.get("tx_signature").and_then(Value::as_str),
-            Some(rpc_signature.as_str())
-        );
-        assert_eq!(
-            response.get("submit_transport").and_then(Value::as_str),
-            Some("adapter_send_rpc")
-        );
+            .expect_err("submit must fail closed after truncated primary body");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
         let _ = upstream_primary_handle.join();
         let _ = upstream_fallback_handle.join();
         let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_keeps_claim_in_flight_when_idempotency_persist_fails_after_live_submit()
+    {
+        let signature = bs58::encode([23u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}"}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-idempotent-store-fail-1",
+            "client_order_id": "client-order-idempotent-store-fail-1",
+            "request_id": "request-idempotent-store-fail-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.3,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        crate::idempotency::fail_next_store_submit_response_for_test(
+            "client-order-idempotent-store-fail-1",
+        );
+        let first_reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("submit should fail if idempotency persistence fails after live submit");
+        assert!(first_reject.retryable);
+        assert_eq!(first_reject.code, "idempotency_store_unavailable");
+
+        let second_reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("second submit should stay in-flight instead of re-submitting");
+        assert!(second_reject.retryable);
+        assert_eq!(second_reject.code, "submit_in_flight");
+        let _ = upstream_handle.join();
     }
 
     #[tokio::test]
@@ -4248,12 +4365,8 @@ mod tests {
             return;
         };
 
-        let state = test_state_with_backends(
-            upstream_url.as_str(),
-            None,
-            upstream_url.as_str(),
-            None,
-        );
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
 
         let raw_body = json!({
             "contract_version": "v1",
@@ -4300,20 +4413,14 @@ mod tests {
         let upstream_body = build_truncated_valid_json_prefix_body(
             r#"{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"1111111111111111111111111111111111111111111111111111111111111111"}"#,
         );
-        let Some((upstream_url, upstream_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            upstream_body.as_bytes(),
-        ) else {
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_chunked_raw(200, "application/json", upstream_body.as_bytes())
+        else {
             return;
         };
 
-        let state = test_state_with_backends(
-            upstream_url.as_str(),
-            None,
-            upstream_url.as_str(),
-            None,
-        );
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
 
         let raw_body = json!({
             "contract_version": "v1",
@@ -4363,16 +4470,17 @@ mod tests {
         else {
             return;
         };
-        let Some((send_rpc_primary_url, send_rpc_primary_handle)) = spawn_one_shot_upstream_incomplete_body(
-            200,
-            "application/json",
-            br#"{"jsonrpc":"2.0","result":"x"}"#,
-            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
-        ) else {
+        let Some((send_rpc_primary_url, send_rpc_primary_handle)) =
+            spawn_one_shot_upstream_incomplete_body(
+                200,
+                "application/json",
+                br#"{"jsonrpc":"2.0","result":"x"}"#,
+                crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+            )
+        else {
             return;
         };
-        let send_rpc_fallback_body =
-            format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
+        let send_rpc_fallback_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
         let Some((send_rpc_fallback_url, send_rpc_fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", send_rpc_fallback_body.as_str())
         else {
@@ -4443,15 +4551,16 @@ mod tests {
         let send_rpc_primary_body = build_truncated_valid_json_prefix_body(
             format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, primary_signature).as_str(),
         );
-        let Some((send_rpc_primary_url, send_rpc_primary_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            send_rpc_primary_body.as_bytes(),
-        ) else {
+        let Some((send_rpc_primary_url, send_rpc_primary_handle)) =
+            spawn_one_shot_upstream_chunked_raw(
+                200,
+                "application/json",
+                send_rpc_primary_body.as_bytes(),
+            )
+        else {
             return;
         };
-        let send_rpc_fallback_body =
-            format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
+        let send_rpc_fallback_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
         let Some((send_rpc_fallback_url, send_rpc_fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", send_rpc_fallback_body.as_str())
         else {
@@ -4593,11 +4702,9 @@ mod tests {
         let send_rpc_body = build_truncated_valid_json_prefix_body(
             r#"{"jsonrpc":"2.0","result":"1111111111111111111111111111111111111111111111111111111111111111"}"#,
         );
-        let Some((send_rpc_url, send_rpc_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            send_rpc_body.as_bytes(),
-        ) else {
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_chunked_raw(200, "application/json", send_rpc_body.as_bytes())
+        else {
             return;
         };
 
@@ -4774,16 +4881,17 @@ mod tests {
         else {
             return;
         };
-        let Some((verify_primary_url, verify_primary_handle)) = spawn_one_shot_upstream_incomplete_body(
-            200,
-            "application/json",
-            br#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
-            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
-        ) else {
+        let Some((verify_primary_url, verify_primary_handle)) =
+            spawn_one_shot_upstream_incomplete_body(
+                200,
+                "application/json",
+                br#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
+                crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+            )
+        else {
             return;
         };
-        let verify_fallback_body =
-            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let verify_fallback_body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
         let Some((verify_fallback_url, verify_fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", verify_fallback_body)
         else {
@@ -4888,8 +4996,7 @@ mod tests {
         ) else {
             return;
         };
-        let verify_fallback_body =
-            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"finalized"}]}}"#;
+        let verify_fallback_body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"finalized"}]}}"#;
         let Some((verify_fallback_url, verify_fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", verify_fallback_body)
         else {
@@ -5074,11 +5181,9 @@ mod tests {
         let verify_body = build_truncated_valid_json_prefix_body(
             r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
         );
-        let Some((verify_url, verify_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            verify_body.as_bytes(),
-        ) else {
+        let Some((verify_url, verify_handle)) =
+            spawn_one_shot_upstream_chunked_raw(200, "application/json", verify_body.as_bytes())
+        else {
             return;
         };
 
@@ -5432,9 +5537,7 @@ mod tests {
             .expect_err("route_slippage_cap payload mismatch must reject before forwarding");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
-        assert!(reject
-            .detail
-            .contains("route_slippage_cap_bps mismatch"));
+        assert!(reject.detail.contains("route_slippage_cap_bps mismatch"));
     }
 
     #[tokio::test]
@@ -5742,13 +5845,18 @@ mod tests {
             response.get("detail").and_then(Value::as_str),
             Some("executor_mock_submit_ok")
         );
-        assert!(response.get("tx_signature").and_then(Value::as_str).is_some());
+        assert!(response
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .is_some());
         assert_eq!(
             response.get("base_fee_lamports").and_then(Value::as_u64),
             Some(5_000)
         );
         assert_eq!(
-            response.get("priority_fee_lamports").and_then(Value::as_u64),
+            response
+                .get("priority_fee_lamports")
+                .and_then(Value::as_u64),
             Some(300)
         );
         assert_eq!(
@@ -5908,13 +6016,18 @@ mod tests {
             response.get("detail").and_then(Value::as_str),
             Some("executor_paper_submit_ok")
         );
-        assert!(response.get("tx_signature").and_then(Value::as_str).is_some());
+        assert!(response
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .is_some());
         assert_eq!(
             response.get("base_fee_lamports").and_then(Value::as_u64),
             Some(5_000)
         );
         assert_eq!(
-            response.get("priority_fee_lamports").and_then(Value::as_u64),
+            response
+                .get("priority_fee_lamports")
+                .and_then(Value::as_u64),
             Some(300)
         );
         assert_eq!(
@@ -8162,7 +8275,9 @@ mod tests {
         .expect_err("submit missing client_order_id expectation must reject before forward");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
-        assert!(reject.detail.contains("missing client_order_id expectation"));
+        assert!(reject
+            .detail
+            .contains("missing client_order_id expectation"));
     }
 
     #[tokio::test]
@@ -8265,7 +8380,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_route_action_rejects_simulate_with_empty_request_id_expectation_before_forward() {
+    async fn execute_route_action_rejects_simulate_with_empty_request_id_expectation_before_forward(
+    ) {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
             None,
@@ -8354,7 +8470,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_route_action_rejects_submit_allowlisted_route_without_backend_before_forward() {
+    async fn execute_route_action_rejects_submit_allowlisted_route_without_backend_before_forward()
+    {
         let mut state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
             None,
@@ -8600,7 +8717,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_route_action_rejects_submit_missing_route_slippage_cap_expectation_before_forward() {
+    async fn execute_route_action_rejects_submit_missing_route_slippage_cap_expectation_before_forward(
+    ) {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
             None,
@@ -8639,7 +8757,9 @@ mod tests {
                 route_hint: Some("rpc"),
                 request_id: Some("request-submit-missing-route-slippage-cap-expectation-1"),
                 signal_id: Some("signal-submit-missing-route-slippage-cap-expectation-1"),
-                client_order_id: Some("client-order-submit-missing-route-slippage-cap-expectation-1"),
+                client_order_id: Some(
+                    "client-order-submit-missing-route-slippage-cap-expectation-1",
+                ),
                 side: Some("buy"),
                 token: Some("11111111111111111111111111111111"),
             },
@@ -8654,9 +8774,7 @@ mod tests {
             },
         )
         .await
-        .expect_err(
-            "submit missing route_slippage_cap expectation must reject before forward",
-        );
+        .expect_err("submit missing route_slippage_cap expectation must reject before forward");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject
@@ -8728,7 +8846,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_route_action_rejects_submit_non_finite_route_slippage_cap_expectation_before_forward() {
+    async fn execute_route_action_rejects_submit_non_finite_route_slippage_cap_expectation_before_forward(
+    ) {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
             None,
@@ -8767,7 +8886,9 @@ mod tests {
                 route_hint: Some("rpc"),
                 request_id: Some("request-submit-non-finite-route-slippage-cap-expectation-1"),
                 signal_id: Some("signal-submit-non-finite-route-slippage-cap-expectation-1"),
-                client_order_id: Some("client-order-submit-non-finite-route-slippage-cap-expectation-1"),
+                client_order_id: Some(
+                    "client-order-submit-non-finite-route-slippage-cap-expectation-1",
+                ),
                 side: Some("buy"),
                 token: Some("11111111111111111111111111111111"),
             },
@@ -8782,9 +8903,7 @@ mod tests {
             },
         )
         .await
-        .expect_err(
-            "submit non-finite route slippage cap expectation must reject before forward",
-        );
+        .expect_err("submit non-finite route slippage cap expectation must reject before forward");
         assert!(!reject.retryable);
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject
@@ -8840,7 +8959,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_route_action_rejects_simulate_with_route_slippage_cap_expectation_before_forward() {
+    async fn execute_route_action_rejects_simulate_with_route_slippage_cap_expectation_before_forward(
+    ) {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
             None,
@@ -9956,7 +10076,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_submit_rejects_unknown_upstream_status_before_retryable_type_validation() {
-        let upstream_body = r#"{"status":"pending","ok":false,"accepted":false,"retryable":"true"}"#;
+        let upstream_body =
+            r#"{"status":"pending","ok":false,"accepted":false,"retryable":"true"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -10002,8 +10123,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_submit_rejects_unknown_upstream_status_before_reject_code_type_validation() {
-        let upstream_body =
-            r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":123,"detail":"busy"}"#;
+        let upstream_body = r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":123,"detail":"busy"}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -10049,8 +10169,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_submit_rejects_unknown_upstream_status_before_reject_detail_type_validation() {
-        let upstream_body =
-            r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":"busy","detail":null}"#;
+        let upstream_body = r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":"busy","detail":null}"#;
         let Some((upstream_url, upstream_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
         else {
@@ -10534,9 +10653,9 @@ mod tests {
         assert!(!reject.retryable);
         assert_eq!(reject.code, "submit_adapter_signal_id_mismatch");
         assert!(
-            reject
-                .detail
-                .contains("signal_id=signal-other-1 does not match expected signal_id=signal-expected-1"),
+            reject.detail.contains(
+                "signal_id=signal-other-1 does not match expected signal_id=signal-expected-1"
+            ),
             "unexpected detail: {}",
             reject.detail
         );
@@ -11791,8 +11910,7 @@ mod tests {
         ) else {
             return;
         };
-        let fallback_body =
-            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let fallback_body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
         let Some((fallback_url, fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
         else {
@@ -11817,7 +11935,9 @@ mod tests {
         .await
         .expect("fallback verify endpoint should succeed after primary declared oversize");
         match verification {
-            SubmitSignatureVerification::Seen { confirmation_status } => {
+            SubmitSignatureVerification::Seen {
+                confirmation_status,
+            } => {
                 assert_eq!(confirmation_status, "confirmed");
             }
             other => panic!("expected Seen verification, got {:?}", other),
@@ -11832,15 +11952,12 @@ mod tests {
         let primary_body = build_truncated_valid_json_prefix_body(
             r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
         );
-        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            primary_body.as_bytes(),
-        ) else {
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_chunked_raw(200, "application/json", primary_body.as_bytes())
+        else {
             return;
         };
-        let fallback_body =
-            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"finalized"}]}}"#;
+        let fallback_body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"finalized"}]}}"#;
         let Some((fallback_url, fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
         else {
@@ -11865,7 +11982,9 @@ mod tests {
         .await
         .expect("fallback verify endpoint should succeed after primary truncated oversized body");
         match verification {
-            SubmitSignatureVerification::Seen { confirmation_status } => {
+            SubmitSignatureVerification::Seen {
+                confirmation_status,
+            } => {
                 assert_eq!(confirmation_status, "finalized");
             }
             other => panic!("expected Seen verification, got {:?}", other),
@@ -11875,16 +11994,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verify_submit_signature_classifies_truncated_valid_json_prefix_as_response_too_large() {
+    async fn verify_submit_signature_classifies_truncated_valid_json_prefix_as_response_too_large()
+    {
         let signature = bs58::encode([67u8; 64]).into_string();
         let primary_body = build_truncated_valid_json_prefix_body(
             r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
         );
-        let Some((verify_url, handle)) = spawn_one_shot_upstream_chunked_raw(
-            200,
-            "application/json",
-            primary_body.as_bytes(),
-        ) else {
+        let Some((verify_url, handle)) =
+            spawn_one_shot_upstream_chunked_raw(200, "application/json", primary_body.as_bytes())
+        else {
             return;
         };
 
@@ -11919,8 +12037,7 @@ mod tests {
     async fn verify_submit_signature_keeps_invalid_json_classification_with_marker_suffix() {
         let signature = bs58::encode([56u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[null]}}...[truncated]"#;
-        let Some((verify_url, handle)) =
-            spawn_one_shot_upstream_raw(200, "application/json", body)
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
         else {
             return;
         };
@@ -12190,7 +12307,10 @@ mod tests {
 
     fn build_truncated_valid_json_prefix_body(prefix_json: &str) -> String {
         let max_bytes = crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES;
-        assert!(prefix_json.len() < max_bytes, "prefix_json must fit into max body bytes");
+        assert!(
+            prefix_json.len() < max_bytes,
+            "prefix_json must fit into max body bytes"
+        );
         let whitespace_len = max_bytes.saturating_sub(prefix_json.len()) + 512;
         format!(
             "{}{}TRUNCATED_SUFFIX_MUST_NOT_BE_READ",

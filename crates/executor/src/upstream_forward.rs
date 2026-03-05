@@ -1,6 +1,7 @@
 use serde_json::Value;
 use tracing::{debug, warn};
 
+use crate::route_backend::UpstreamAction;
 use crate::{
     http_utils::{
         classify_request_error, read_response_body_limited, redacted_endpoint_label,
@@ -10,7 +11,6 @@ use crate::{
     submit_deadline::SubmitDeadline,
     AppState, Reject,
 };
-use crate::route_backend::UpstreamAction;
 
 fn validate_upstream_forward_deadline_context(
     action: UpstreamAction,
@@ -27,6 +27,10 @@ fn validate_upstream_forward_deadline_context(
         )),
         _ => Ok(()),
     }
+}
+
+fn can_try_fallback(action: UpstreamAction, attempt_idx: usize, total_endpoints: usize) -> bool {
+    matches!(action, UpstreamAction::Simulate) && attempt_idx + 1 < total_endpoints
 }
 
 pub(crate) async fn forward_to_upstream(
@@ -92,7 +96,7 @@ pub(crate) async fn forward_to_upstream(
                         classify_request_error(&error)
                     ),
                 );
-                if attempt_idx + 1 < endpoints.len() {
+                if can_try_fallback(action, attempt_idx, endpoints.len()) {
                     warn!(
                         route = %route,
                         action = %action.as_str(),
@@ -112,8 +116,7 @@ pub(crate) async fn forward_to_upstream(
         let status = response.status();
 
         if !status.is_success() {
-            let body =
-                read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
+            let body = read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
             let body_detail =
                 truncate_detail_chars(body.text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
             let retryable = status.as_u16() == 429 || status.is_server_error();
@@ -122,7 +125,10 @@ pub(crate) async fn forward_to_upstream(
                     "upstream_http_unavailable",
                     format!(
                         "upstream {} status={} endpoint={} body={}",
-                        action.as_str(), status, endpoint_label, body_detail
+                        action.as_str(),
+                        status,
+                        endpoint_label,
+                        body_detail
                     ),
                 )
             } else {
@@ -130,11 +136,14 @@ pub(crate) async fn forward_to_upstream(
                     "upstream_http_rejected",
                     format!(
                         "upstream {} status={} endpoint={} body={}",
-                        action.as_str(), status, endpoint_label, body_detail
+                        action.as_str(),
+                        status,
+                        endpoint_label,
+                        body_detail
                     ),
                 )
             };
-            if reject.retryable && attempt_idx + 1 < endpoints.len() {
+            if reject.retryable && can_try_fallback(action, attempt_idx, endpoints.len()) {
                 warn!(
                     route = %route,
                     action = %action.as_str(),
@@ -162,7 +171,7 @@ pub(crate) async fn forward_to_upstream(
                         endpoint_label
                     ),
                 );
-                if attempt_idx + 1 < endpoints.len() {
+                if can_try_fallback(action, attempt_idx, endpoints.len()) {
                     warn!(
                         route = %route,
                         action = %action.as_str(),
@@ -188,7 +197,7 @@ pub(crate) async fn forward_to_upstream(
                     read_error_class
                 ),
             );
-            if attempt_idx + 1 < endpoints.len() {
+            if can_try_fallback(action, attempt_idx, endpoints.len()) {
                 warn!(
                     route = %route,
                     action = %action.as_str(),
@@ -212,7 +221,7 @@ pub(crate) async fn forward_to_upstream(
                     MAX_HTTP_JSON_BODY_READ_BYTES
                 ),
             );
-            if attempt_idx + 1 < endpoints.len() {
+            if can_try_fallback(action, attempt_idx, endpoints.len()) {
                 warn!(
                     route = %route,
                     action = %action.as_str(),
