@@ -7,7 +7,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 source "$ROOT_DIR/tools/lib/common.sh"
 
 OPS_SMOKE_TARGET_CASES="${OPS_SMOKE_TARGET_CASES:-}"
-OPS_SMOKE_PROFILE="${OPS_SMOKE_PROFILE:-full}"
+OPS_SMOKE_PROFILE="${OPS_SMOKE_PROFILE:-auto}"
 
 require_bin() {
   local bin="$1"
@@ -10417,7 +10417,7 @@ is_ops_smoke_heavy_case() {
 
 run_targeted_smoke_cases() {
   local target_cases_raw="$1"
-  local targeted_case_profile_raw="${OPS_SMOKE_PROFILE:-full}"
+  local targeted_case_profile_raw="${OPS_SMOKE_PROFILE:-auto}"
   local requested_targeted_case_profile
   local targeted_case_profile
   requested_targeted_case_profile="$(printf '%s' "$(trim_string "$targeted_case_profile_raw")" | tr '[:upper:]' '[:lower:]')"
@@ -10672,14 +10672,13 @@ run_ops_smoke_targeted_dispatch_case() {
   assert_contains "$targeted_group_output" "[ok] common timeout parser"
   assert_contains "$targeted_group_output" "ops smoke targeted expanded cases: common_strict_bool_parser,common_bool_compat_wrapper,common_timeout_parser"
 
-  local targeted_fast_profile_output=""
-  targeted_fast_profile_output="$(
-    OPS_SMOKE_PROFILE="auto" \
-      OPS_SMOKE_TARGET_CASES="executor_preflight" \
+  local targeted_default_heavy_output=""
+  targeted_default_heavy_output="$(
+    OPS_SMOKE_TARGET_CASES="executor_preflight" \
       bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh"
   )"
-  assert_contains "$targeted_fast_profile_output" "ops smoke targeted profile: fast"
-  assert_contains "$targeted_fast_profile_output" "[ok] executor preflight helper (fast)"
+  assert_contains "$targeted_default_heavy_output" "ops smoke targeted profile: fast"
+  assert_contains "$targeted_default_heavy_output" "[ok] executor preflight helper (fast)"
 
   local targeted_auto_non_heavy_output=""
   targeted_auto_non_heavy_output="$(
