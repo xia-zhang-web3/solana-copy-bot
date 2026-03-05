@@ -2,8 +2,16 @@ use crate::intent::{ExecutionIntent, ExecutionSide};
 use crate::ExecutionRuntime;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use copybot_storage::SqliteStore;
+use copybot_storage::{ExecutionConfirmStateSnapshot, SqliteStore};
 use tracing::debug;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ConfirmedBuyRiskBreach {
+    pub total_exposure_sol: f64,
+    pub token_exposure_sol: f64,
+    pub open_positions: u64,
+    pub reasons: Vec<String>,
+}
 
 impl ExecutionRuntime {
     pub(crate) fn should_pause_buy_submission(
@@ -147,6 +155,50 @@ impl ExecutionRuntime {
                 Ok(None)
             }
         }
+    }
+
+    pub(crate) fn confirmed_buy_risk_breach(
+        &self,
+        intent: &ExecutionIntent,
+        snapshot: ExecutionConfirmStateSnapshot,
+    ) -> Option<ConfirmedBuyRiskBreach> {
+        if !matches!(intent.side, ExecutionSide::Buy) {
+            return None;
+        }
+
+        let mut reasons = Vec::new();
+
+        if snapshot.total_exposure_sol > self.risk.max_total_exposure_sol + 1e-9 {
+            reasons.push(format!(
+                "max_total_exposure_exceeded current={:.6} max_total={:.6}",
+                snapshot.total_exposure_sol, self.risk.max_total_exposure_sol
+            ));
+        }
+
+        if snapshot.token_exposure_sol > self.risk.max_exposure_per_token_sol + 1e-9 {
+            reasons.push(format!(
+                "max_exposure_per_token_exceeded token={} current={:.6} max_token={:.6}",
+                intent.token, snapshot.token_exposure_sol, self.risk.max_exposure_per_token_sol
+            ));
+        }
+
+        if snapshot.open_positions > self.risk.max_concurrent_positions as u64 {
+            reasons.push(format!(
+                "max_concurrent_positions_exceeded open_count={} max={}",
+                snapshot.open_positions, self.risk.max_concurrent_positions
+            ));
+        }
+
+        if reasons.is_empty() {
+            return None;
+        }
+
+        Some(ConfirmedBuyRiskBreach {
+            total_exposure_sol: snapshot.total_exposure_sol,
+            token_exposure_sol: snapshot.token_exposure_sol,
+            open_positions: snapshot.open_positions,
+            reasons,
+        })
     }
 
     pub(crate) fn daily_loss_limit_sol(&self) -> Option<f64> {

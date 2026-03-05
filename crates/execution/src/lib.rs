@@ -870,6 +870,62 @@ mod tests {
         Ok(())
     }
 
+    fn make_paper_runtime(mut risk: RiskConfig) -> ExecutionRuntime {
+        risk.max_copy_delay_sec = risk.max_copy_delay_sec.max(1);
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 10;
+        execution.mode = "paper".to_string();
+        ExecutionRuntime::from_config(execution, risk)
+    }
+
+    fn seed_submitted_buy_signal(
+        store: &SqliteStore,
+        signal_id: &str,
+        token: &str,
+        notional_sol: f64,
+        submit_ts: DateTime<Utc>,
+        tx_signature: &str,
+    ) -> Result<String> {
+        let signal = CopySignalRow {
+            signal_id: signal_id.to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: token.to_string(),
+            notional_sol,
+            ts: submit_ts,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(signal_id, 1);
+        let order_id = format!("ord-{}", signal_id.replace(':', "-"));
+        assert_eq!(
+            store.insert_execution_order_pending(
+                &order_id,
+                signal_id,
+                &client_order_id,
+                "paper",
+                submit_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            &order_id,
+            "paper",
+            tx_signature,
+            submit_ts,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        Ok(client_order_id)
+    }
+
     #[test]
     fn build_submit_route_order_prefers_configured_fallback_sequence() {
         let order = build_submit_route_order(
@@ -3089,6 +3145,147 @@ mod tests {
             .execution_order_by_client_order_id(&client_order_id)?
             .context("sell order should remain present after fallback confirm")?;
         assert_eq!(order.status, "execution_confirmed");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_records_post_confirm_total_exposure_risk_breach() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-total-exposure-breach")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-risk-a", now, "sig-price-risk-a")?;
+        seed_token_price(&store, "token-risk-b", now, "sig-price-risk-b")?;
+        seed_submitted_buy_signal(
+            &store,
+            "shadow:risk-total:wallet:buy:token-risk-a",
+            "token-risk-a",
+            0.1,
+            now,
+            "paper:tx-risk-total-a",
+        )?;
+        seed_submitted_buy_signal(
+            &store,
+            "shadow:risk-total:wallet:buy:token-risk-b",
+            "token-risk-b",
+            0.1,
+            now,
+            "paper:tx-risk-total-b",
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 0.15;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 10;
+        let runtime = make_paper_runtime(risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 2);
+        assert_eq!(
+            store.risk_event_count_by_type("execution_confirm_risk_breach")?,
+            1
+        );
+        assert_eq!(
+            store
+                .list_copy_signals_by_status("execution_confirmed", 10)?
+                .len(),
+            2
+        );
+        let exposure = store.live_open_exposure_sol()?;
+        assert!(
+            exposure > runtime.risk.max_total_exposure_sol,
+            "expected live exposure to exceed configured max after confirms, got {}",
+            exposure
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_records_post_confirm_token_exposure_risk_breach() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-token-exposure-breach")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-risk-shared", now, "sig-price-risk-shared")?;
+        seed_submitted_buy_signal(
+            &store,
+            "shadow:risk-token:wallet:buy:token-risk-shared:a",
+            "token-risk-shared",
+            0.1,
+            now,
+            "paper:tx-risk-token-a",
+        )?;
+        seed_submitted_buy_signal(
+            &store,
+            "shadow:risk-token:wallet:buy:token-risk-shared:b",
+            "token-risk-shared",
+            0.1,
+            now,
+            "paper:tx-risk-token-b",
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 10.0;
+        risk.max_exposure_per_token_sol = 0.15;
+        risk.max_concurrent_positions = 10;
+        let runtime = make_paper_runtime(risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 2);
+        assert_eq!(
+            store.risk_event_count_by_type("execution_confirm_risk_breach")?,
+            1
+        );
+        let token_exposure = store.live_open_exposure_sol_for_token("token-risk-shared")?;
+        assert!(
+            token_exposure > runtime.risk.max_exposure_per_token_sol,
+            "expected token exposure to exceed configured max after confirms, got {}",
+            token_exposure
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_records_post_confirm_concurrent_position_risk_breach() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-concurrent-position-breach")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-risk-open-a", now, "sig-price-risk-open-a")?;
+        seed_token_price(&store, "token-risk-open-b", now, "sig-price-risk-open-b")?;
+        seed_submitted_buy_signal(
+            &store,
+            "shadow:risk-open:wallet:buy:token-risk-open-a",
+            "token-risk-open-a",
+            0.1,
+            now,
+            "paper:tx-risk-open-a",
+        )?;
+        seed_submitted_buy_signal(
+            &store,
+            "shadow:risk-open:wallet:buy:token-risk-open-b",
+            "token-risk-open-b",
+            0.1,
+            now,
+            "paper:tx-risk-open-b",
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 10.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 1;
+        let runtime = make_paper_runtime(risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 2);
+        assert_eq!(
+            store.risk_event_count_by_type("execution_confirm_risk_breach")?,
+            1
+        );
+        assert_eq!(store.live_open_positions_count()?, 2);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

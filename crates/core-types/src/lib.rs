@@ -113,9 +113,16 @@ pub enum InsertExecutionOrderPendingOutcome {
     Duplicate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExecutionConfirmStateSnapshot {
+    pub total_exposure_sol: f64,
+    pub token_exposure_sol: f64,
+    pub open_positions: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FinalizeExecutionConfirmOutcome {
-    Applied,
+    Applied(ExecutionConfirmStateSnapshot),
     AlreadyConfirmed,
 }
 

@@ -242,6 +242,7 @@ impl ExecutionRuntime {
                     self.slippage_bps,
                     execution_fee_sol,
                 )?;
+                let mut post_confirm_risk_breach = None;
                 match store.finalize_execution_confirmed_order(
                     &fill.order_id,
                     &intent.signal_id,
@@ -254,11 +255,49 @@ impl ExecutionRuntime {
                     fill.slippage_bps,
                     confirmed_at,
                 )? {
-                    FinalizeExecutionConfirmOutcome::Applied => {}
+                    FinalizeExecutionConfirmOutcome::Applied(snapshot) => {
+                        post_confirm_risk_breach =
+                            self.confirmed_buy_risk_breach(intent, snapshot);
+                    }
                     FinalizeExecutionConfirmOutcome::AlreadyConfirmed => {
                         store
                             .update_copy_signal_status(&intent.signal_id, "execution_confirmed")?;
                     }
+                }
+                if let Some(breach) = post_confirm_risk_breach {
+                    let details = json!({
+                        "signal_id": intent.signal_id,
+                        "order_id": order_id,
+                        "token": intent.token,
+                        "route": route,
+                        "reason": "post_confirm_risk_recheck_breach",
+                        "breaches": breach.reasons,
+                        "total_exposure_sol": breach.total_exposure_sol,
+                        "max_total_exposure_sol": self.risk.max_total_exposure_sol,
+                        "token_exposure_sol": breach.token_exposure_sol,
+                        "max_exposure_per_token_sol": self.risk.max_exposure_per_token_sol,
+                        "open_positions": breach.open_positions,
+                        "max_concurrent_positions": self.risk.max_concurrent_positions,
+                        "confirmed_at": confirmed_at.to_rfc3339(),
+                    })
+                    .to_string();
+                    let _ = store.insert_risk_event(
+                        "execution_confirm_risk_breach",
+                        "error",
+                        confirmed_at,
+                        Some(&details),
+                    );
+                    warn!(
+                        signal_id = %intent.signal_id,
+                        order_id,
+                        token = %intent.token,
+                        route,
+                        total_exposure_sol = breach.total_exposure_sol,
+                        token_exposure_sol = breach.token_exposure_sol,
+                        open_positions = breach.open_positions,
+                        reasons = ?breach.reasons,
+                        "confirmed BUY breached runtime risk limits after finalize"
+                    );
                 }
                 if confirm.network_fee_lamports.is_none() && self.mode == "adapter_submit_confirm" {
                     let network_fee_lookup_error = confirm

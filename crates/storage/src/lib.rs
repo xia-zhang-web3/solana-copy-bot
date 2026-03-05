@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
-    CopySignalRow, ExecutionOrderRow, FinalizeExecutionConfirmOutcome,
+    CopySignalRow, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
+    FinalizeExecutionConfirmOutcome,
     InsertExecutionOrderPendingOutcome, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow,
     WalletUpsertRow,
 };
@@ -103,6 +104,50 @@ pub struct DiscoveryRuntimeCursor {
 }
 
 impl SqliteStore {
+    fn live_execution_state_snapshot_on_conn(
+        conn: &Connection,
+        token: &str,
+    ) -> Result<ExecutionConfirmStateSnapshot> {
+        let total_exposure_sol: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(cost_sol), 0.0)
+                 FROM positions
+                 WHERE state = 'open'",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed querying live open exposure in finalize confirm transaction")?;
+        let token_exposure_sol: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(cost_sol), 0.0)
+                 FROM positions
+                 WHERE state = 'open'
+                   AND token = ?1",
+                params![token],
+                |row| row.get(0),
+            )
+            .context(
+                "failed querying live open exposure by token in finalize confirm transaction",
+            )?;
+        let open_positions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM positions
+                 WHERE state = 'open'",
+                [],
+                |row| row.get(0),
+            )
+            .context(
+                "failed querying live open positions count in finalize confirm transaction",
+            )?;
+
+        Ok(ExecutionConfirmStateSnapshot {
+            total_exposure_sol: total_exposure_sol.max(0.0),
+            token_exposure_sol: token_exposure_sol.max(0.0),
+            open_positions: open_positions.max(0) as u64,
+        })
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -241,7 +286,8 @@ impl SqliteStore {
                     ));
                 }
 
-                Ok(FinalizeExecutionConfirmOutcome::Applied)
+                let snapshot = Self::live_execution_state_snapshot_on_conn(&self.conn, token)?;
+                Ok(FinalizeExecutionConfirmOutcome::Applied(snapshot))
             })();
 
             match tx_result {
@@ -845,7 +891,12 @@ mod tests {
             50.0,
             now + Duration::seconds(1),
         )?;
-        assert_eq!(first, FinalizeExecutionConfirmOutcome::Applied);
+        let FinalizeExecutionConfirmOutcome::Applied(snapshot) = first else {
+            panic!("expected applied outcome, got {:?}", first);
+        };
+        assert!((snapshot.total_exposure_sol - 0.25).abs() < 1e-9);
+        assert!((snapshot.token_exposure_sol - 0.25).abs() < 1e-9);
+        assert_eq!(snapshot.open_positions, 1);
 
         let order = store
             .execution_order_by_client_order_id(client_order_id)?
@@ -927,21 +978,24 @@ mod tests {
             None,
             None,
         )?;
-        assert_eq!(
-            store.finalize_execution_confirmed_order(
-                "ord-fee-buy-1",
-                &buy_signal.signal_id,
-                "token-fee",
-                "buy",
-                1.0,
-                0.20,
-                0.20,
-                0.01,
-                50.0,
-                now + Duration::seconds(1),
-            )?,
-            FinalizeExecutionConfirmOutcome::Applied
-        );
+        let buy_outcome = store.finalize_execution_confirmed_order(
+            "ord-fee-buy-1",
+            &buy_signal.signal_id,
+            "token-fee",
+            "buy",
+            1.0,
+            0.20,
+            0.20,
+            0.01,
+            50.0,
+            now + Duration::seconds(1),
+        )?;
+        let FinalizeExecutionConfirmOutcome::Applied(buy_snapshot) = buy_outcome else {
+            panic!("expected applied buy outcome, got {:?}", buy_outcome);
+        };
+        assert!((buy_snapshot.total_exposure_sol - 0.21).abs() < 1e-9);
+        assert!((buy_snapshot.token_exposure_sol - 0.21).abs() < 1e-9);
+        assert_eq!(buy_snapshot.open_positions, 1);
 
         let exposure_after_buy = store.live_open_exposure_sol()?;
         assert!(
@@ -981,21 +1035,24 @@ mod tests {
             None,
             None,
         )?;
-        assert_eq!(
-            store.finalize_execution_confirmed_order(
-                "ord-fee-sell-1",
-                &sell_signal.signal_id,
-                "token-fee",
-                "sell",
-                1.0,
-                0.25,
-                0.25,
-                0.02,
-                50.0,
-                now + Duration::seconds(3),
-            )?,
-            FinalizeExecutionConfirmOutcome::Applied
-        );
+        let sell_outcome = store.finalize_execution_confirmed_order(
+            "ord-fee-sell-1",
+            &sell_signal.signal_id,
+            "token-fee",
+            "sell",
+            1.0,
+            0.25,
+            0.25,
+            0.02,
+            50.0,
+            now + Duration::seconds(3),
+        )?;
+        let FinalizeExecutionConfirmOutcome::Applied(sell_snapshot) = sell_outcome else {
+            panic!("expected applied sell outcome, got {:?}", sell_outcome);
+        };
+        assert!(sell_snapshot.total_exposure_sol <= 1e-9);
+        assert!(sell_snapshot.token_exposure_sol <= 1e-9);
+        assert_eq!(sell_snapshot.open_positions, 0);
 
         let exposure_after_sell = store.live_open_exposure_sol()?;
         assert!(exposure_after_sell <= 1e-9);
