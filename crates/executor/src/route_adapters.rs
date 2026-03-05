@@ -246,23 +246,24 @@ impl RouteAdapter {
     }
 }
 
-fn mock_submit_signature() -> String {
-    bs58::encode([7u8; 64]).into_string()
-}
-
-fn paper_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_>) -> String {
+fn deterministic_submit_signature(
+    signature_namespace: &str,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
+) -> String {
     let request_id = payload_expectations.request_id.unwrap_or("");
     let client_order_id = payload_expectations.client_order_id.unwrap_or("");
 
     let mut first = Sha256::new();
-    first.update(b"executor-paper-submit-signature:v1:");
+    first.update(signature_namespace.as_bytes());
+    first.update(b":v1:");
     first.update(request_id.as_bytes());
     first.update(b":");
     first.update(client_order_id.as_bytes());
     let first_digest = first.finalize();
 
     let mut second = Sha256::new();
-    second.update(b"executor-paper-submit-signature:v2:");
+    second.update(signature_namespace.as_bytes());
+    second.update(b":v2:");
     second.update(client_order_id.as_bytes());
     second.update(b":");
     second.update(request_id.as_bytes());
@@ -272,6 +273,14 @@ fn paper_submit_signature(payload_expectations: RouteActionPayloadExpectations<'
     signature_bytes[..32].copy_from_slice(first_digest.as_slice());
     signature_bytes[32..].copy_from_slice(second_digest.as_slice());
     bs58::encode(signature_bytes).into_string()
+}
+
+fn mock_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_>) -> String {
+    deterministic_submit_signature("executor-mock-submit-signature", payload_expectations)
+}
+
+fn paper_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_>) -> String {
+    deterministic_submit_signature("executor-paper-submit-signature", payload_expectations)
 }
 
 fn is_internal_paper_route(route: &str) -> bool {
@@ -335,7 +344,7 @@ fn build_mock_submit_backend_response(
         "route": route,
         "contract_version": contract_version,
         "detail": "executor_mock_submit_ok",
-        "tx_signature": mock_submit_signature(),
+        "tx_signature": mock_submit_signature(payload_expectations),
     });
     if let Some(request_id) = payload_expectations.request_id {
         payload["request_id"] = Value::String(request_id.to_string());
@@ -1056,6 +1065,66 @@ mod tests {
             .and_then(Value::as_str)
             .expect("tx_signature should be present");
         assert!(signature.len() > 40, "signature should look like base58");
+    }
+
+    #[test]
+    fn build_mock_submit_backend_response_uses_deterministic_signature_per_identity() {
+        let payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let same_payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let different_payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-2"),
+                signal_id: Some("signal-2"),
+                client_order_id: Some("client-order-2"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let signature = payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("tx_signature should be present");
+        let same_signature = same_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("same tx_signature should be present");
+        let different_signature = different_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("different tx_signature should be present");
+        assert_eq!(
+            signature, same_signature,
+            "mock signature must be deterministic for same request identity"
+        );
+        assert_ne!(
+            signature, different_signature,
+            "mock signature should differ for different request identity"
+        );
     }
 
     #[test]
