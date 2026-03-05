@@ -9,6 +9,7 @@ source "$ROOT_DIR/tools/lib/common.sh"
 OPS_SMOKE_TARGET_CASES="${OPS_SMOKE_TARGET_CASES:-}"
 OPS_SMOKE_PROFILE="${OPS_SMOKE_PROFILE:-auto}"
 OPS_SMOKE_ALLOW_HEAVY_FULL="${OPS_SMOKE_ALLOW_HEAVY_FULL:-false}"
+OPS_SMOKE_CASE_TIMEOUT_SEC="${OPS_SMOKE_CASE_TIMEOUT_SEC:-120}"
 
 require_bin() {
   local bin="$1"
@@ -11566,13 +11567,41 @@ is_ops_smoke_heavy_case() {
   esac
 }
 
+run_target_case_with_timeout() {
+  local timeout_sec="$1"
+  local case_name="$2"
+  shift 2
+
+  (
+    "$@"
+  ) &
+  local case_pid=$!
+  local elapsed_sec=0
+  while kill -0 "$case_pid" 2>/dev/null; do
+    if ((elapsed_sec >= timeout_sec)); then
+      kill "$case_pid" 2>/dev/null || true
+      sleep 1
+      kill -9 "$case_pid" 2>/dev/null || true
+      wait "$case_pid" 2>/dev/null || true
+      echo "targeted smoke case timed out after ${timeout_sec}s: $case_name" >&2
+      return 124
+    fi
+    sleep 1
+    elapsed_sec=$((elapsed_sec + 1))
+  done
+
+  wait "$case_pid"
+}
+
 run_targeted_smoke_cases() {
   local target_cases_raw="$1"
   local targeted_case_profile_raw="${OPS_SMOKE_PROFILE:-auto}"
   local allow_heavy_full_raw="${OPS_SMOKE_ALLOW_HEAVY_FULL:-false}"
+  local case_timeout_sec_raw="${OPS_SMOKE_CASE_TIMEOUT_SEC:-120}"
   local requested_targeted_case_profile
   local targeted_case_profile
   local allow_heavy_full
+  local case_timeout_sec
   requested_targeted_case_profile="$(printf '%s' "$(trim_string "$targeted_case_profile_raw")" | tr '[:upper:]' '[:lower:]')"
   if [[ "$requested_targeted_case_profile" != "full" && "$requested_targeted_case_profile" != "fast" && "$requested_targeted_case_profile" != "auto" ]]; then
     echo "OPS_SMOKE_PROFILE must be one of: full,fast,auto (got: ${targeted_case_profile_raw:-<empty>})" >&2
@@ -11580,6 +11609,15 @@ run_targeted_smoke_cases() {
   fi
   if ! allow_heavy_full="$(parse_bool_token_strict "$allow_heavy_full_raw")"; then
     echo "OPS_SMOKE_ALLOW_HEAVY_FULL must be a boolean token (got: ${allow_heavy_full_raw:-<empty>})" >&2
+    exit 1
+  fi
+  case_timeout_sec="$(trim_string "$case_timeout_sec_raw")"
+  if ! [[ "$case_timeout_sec" =~ ^[0-9]+$ ]]; then
+    echo "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..120 (got: ${case_timeout_sec_raw:-<empty>})" >&2
+    exit 1
+  fi
+  if ((case_timeout_sec < 1 || case_timeout_sec > 120)); then
+    echo "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..120 (got: $case_timeout_sec)" >&2
     exit 1
   fi
   local -a raw_target_tokens=()
@@ -11720,11 +11758,11 @@ run_targeted_smoke_cases() {
       executed_cases=$((executed_cases + 1))
       ;;
     refactor_phase_gate | run_refactor_phase_gate_case)
-      run_refactor_phase_gate_case "$targeted_case_profile"
+      run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_refactor_phase_gate_case "$targeted_case_profile"
       executed_cases=$((executed_cases + 1))
       ;;
     refactor_phase_gate_fast | run_refactor_phase_gate_case_fast)
-      run_refactor_phase_gate_case "fast"
+      run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_refactor_phase_gate_case "fast"
       executed_cases=$((executed_cases + 1))
       ;;
     executor_preflight | run_executor_preflight_case | executor_preflight_fast | run_executor_preflight_case_fast | windowed_signoff | run_windowed_signoff_report_case | windowed_signoff_fast | run_windowed_signoff_report_case_fast | route_fee_signoff | run_execution_route_fee_signoff_case | route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast | devnet_rehearsal | run_devnet_rehearsal_case | devnet_rehearsal_fast | run_devnet_rehearsal_case_fast | executor_rollout_evidence | run_executor_rollout_evidence_case | executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast | adapter_rollout_evidence | run_adapter_rollout_evidence_case | adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast | execution_server_rollout | run_execution_server_rollout_report_case | execution_server_rollout_fast | run_execution_server_rollout_report_case_fast | execution_runtime_readiness | run_execution_runtime_readiness_report_case | execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast | go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
@@ -11736,71 +11774,71 @@ run_targeted_smoke_cases() {
       fi
       case "$target_case" in
       executor_preflight | run_executor_preflight_case)
-        run_executor_preflight_case "$legacy_db" "$targeted_case_profile"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_executor_preflight_case "$legacy_db" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       executor_preflight_fast | run_executor_preflight_case_fast)
-        run_executor_preflight_case "$legacy_db" "fast"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_executor_preflight_case "$legacy_db" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       windowed_signoff | run_windowed_signoff_report_case)
-        run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "$targeted_case_profile"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       windowed_signoff_fast | run_windowed_signoff_report_case_fast)
-        run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "fast"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_windowed_signoff_report_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       route_fee_signoff | run_execution_route_fee_signoff_case)
-        run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "$targeted_case_profile"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       route_fee_signoff_fast | run_execution_route_fee_signoff_case_fast)
-        run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "fast"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_execution_route_fee_signoff_case "$legacy_db" "$legacy_cfg" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       devnet_rehearsal | run_devnet_rehearsal_case)
-        run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       devnet_rehearsal_fast | run_devnet_rehearsal_case_fast)
-        run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_devnet_rehearsal_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       executor_rollout_evidence | run_executor_rollout_evidence_case)
-        run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       executor_rollout_evidence_fast | run_executor_rollout_evidence_case_fast)
-        run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_executor_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       adapter_rollout_evidence | run_adapter_rollout_evidence_case)
-        run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       adapter_rollout_evidence_fast | run_adapter_rollout_evidence_case_fast)
-        run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_adapter_rollout_evidence_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       execution_server_rollout | run_execution_server_rollout_report_case)
-        run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       execution_server_rollout_fast | run_execution_server_rollout_report_case_fast)
-        run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_execution_server_rollout_report_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       execution_runtime_readiness | run_execution_runtime_readiness_report_case)
-        run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg" "$targeted_case_profile"
         executed_cases=$((executed_cases + 1))
         ;;
       execution_runtime_readiness_fast | run_execution_runtime_readiness_report_case_fast)
-        run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_execution_runtime_readiness_report_case "$legacy_db" "$devnet_rehearsal_cfg" "fast"
         executed_cases=$((executed_cases + 1))
         ;;
       go_nogo_executor_backend_mode_guard | run_go_nogo_executor_backend_mode_guard_case)
-        run_go_nogo_executor_backend_mode_guard_case "$legacy_db" "$devnet_rehearsal_cfg"
+        run_target_case_with_timeout "$case_timeout_sec" "$target_case" run_go_nogo_executor_backend_mode_guard_case "$legacy_db" "$devnet_rehearsal_cfg"
         executed_cases=$((executed_cases + 1))
         ;;
       esac
@@ -11886,6 +11924,33 @@ run_ops_smoke_targeted_dispatch_case() {
   local invalid_profile_output=""
   invalid_profile_output="$(cat "$invalid_profile_output_path")"
   assert_contains "$invalid_profile_output" "OPS_SMOKE_PROFILE must be one of: full,fast,auto"
+
+  local invalid_timeout_token_output_path="$TMP_DIR/ops-smoke-target-invalid-timeout-token.out"
+  if OPS_SMOKE_CASE_TIMEOUT_SEC="turbo" OPS_SMOKE_TARGET_CASES="common_timeout_parser" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_timeout_token_output_path" 2>&1; then
+    echo "expected targeted smoke mode to fail on invalid OPS_SMOKE_CASE_TIMEOUT_SEC token" >&2
+    exit 1
+  fi
+  local invalid_timeout_token_output=""
+  invalid_timeout_token_output="$(cat "$invalid_timeout_token_output_path")"
+  assert_contains "$invalid_timeout_token_output" "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..120"
+
+  local invalid_timeout_range_output_path="$TMP_DIR/ops-smoke-target-invalid-timeout-range.out"
+  if OPS_SMOKE_CASE_TIMEOUT_SEC="121" OPS_SMOKE_TARGET_CASES="common_timeout_parser" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_timeout_range_output_path" 2>&1; then
+    echo "expected targeted smoke mode to fail on out-of-range OPS_SMOKE_CASE_TIMEOUT_SEC value" >&2
+    exit 1
+  fi
+  local invalid_timeout_range_output=""
+  invalid_timeout_range_output="$(cat "$invalid_timeout_range_output_path")"
+  assert_contains "$invalid_timeout_range_output" "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..120"
+
+  local timeout_enforced_output_path="$TMP_DIR/ops-smoke-target-timeout-enforced.out"
+  if OPS_SMOKE_PROFILE="fast" OPS_SMOKE_CASE_TIMEOUT_SEC="1" OPS_SMOKE_TARGET_CASES="executor_preflight_fast" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$timeout_enforced_output_path" 2>&1; then
+    echo "expected targeted smoke mode to time out heavy case when OPS_SMOKE_CASE_TIMEOUT_SEC=1" >&2
+    exit 1
+  fi
+  local timeout_enforced_output=""
+  timeout_enforced_output="$(cat "$timeout_enforced_output_path")"
+  assert_contains "$timeout_enforced_output" "targeted smoke case timed out after 1s: executor_preflight_fast"
 
   local invalid_allow_heavy_full_output_path="$TMP_DIR/ops-smoke-target-invalid-allow-heavy-full.out"
   if OPS_SMOKE_PROFILE="full" OPS_SMOKE_ALLOW_HEAVY_FULL="sometimes" OPS_SMOKE_TARGET_CASES="executor_preflight_fast" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_allow_heavy_full_output_path" 2>&1; then
