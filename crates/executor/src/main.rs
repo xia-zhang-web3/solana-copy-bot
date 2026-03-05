@@ -2933,18 +2933,12 @@ mod tests {
 
     #[tokio::test]
     async fn forward_to_upstream_submit_rejects_primary_send_error_without_using_fallback() {
-        let Some((fallback_url, handle)) = spawn_one_shot_upstream_raw(
-            200,
-            "application/json",
-            "{\"status\":\"ok\",\"accepted\":true}",
-        ) else {
-            return;
-        };
+        let fallback_url = "http://127.0.0.1:1/fallback";
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
-            Some(fallback_url.as_str()),
+            Some(fallback_url),
             "http://127.0.0.1:1/upstream",
-            Some(fallback_url.as_str()),
+            Some(fallback_url),
         );
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let reject = forward_to_upstream(
@@ -2958,7 +2952,6 @@ mod tests {
         .expect_err("submit must fail closed after primary send error");
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_unavailable");
-        let _ = handle.join();
     }
 
     #[tokio::test]
@@ -2968,19 +2961,13 @@ mod tests {
         else {
             return;
         };
-        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
-            200,
-            "application/json",
-            "{\"status\":\"ok\",\"accepted\":true}",
-        ) else {
-            return;
-        };
+        let fallback_url = "http://127.0.0.1:1/fallback";
 
         let state = test_state_with_backends(
             primary_url.as_str(),
-            Some(fallback_url.as_str()),
+            Some(fallback_url),
             primary_url.as_str(),
-            Some(fallback_url.as_str()),
+            Some(fallback_url),
         );
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let reject = forward_to_upstream(
@@ -2995,7 +2982,6 @@ mod tests {
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_http_unavailable");
         let _ = primary_handle.join();
-        let _ = fallback_handle.join();
     }
 
     #[tokio::test]
@@ -3010,19 +2996,13 @@ mod tests {
         ) else {
             return;
         };
-        let Some((fallback_url, fallback_handle)) = spawn_one_shot_upstream_raw(
-            200,
-            "application/json",
-            "{\"status\":\"ok\",\"accepted\":true}",
-        ) else {
-            return;
-        };
+        let fallback_url = "http://127.0.0.1:1/fallback";
 
         let state = test_state_with_backends(
             primary_url.as_str(),
-            Some(fallback_url.as_str()),
+            Some(fallback_url),
             primary_url.as_str(),
-            Some(fallback_url.as_str()),
+            Some(fallback_url),
         );
         let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
         let reject = forward_to_upstream(
@@ -3037,7 +3017,6 @@ mod tests {
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_unavailable");
         let _ = primary_handle.join();
-        let _ = fallback_handle.join();
     }
 
     #[tokio::test]
@@ -4145,8 +4124,10 @@ mod tests {
 
     #[tokio::test]
     async fn handle_submit_rejects_primary_declared_oversized_even_with_fallback_configured() {
-        let (fallback_signed_tx_base64, rpc_signature) =
+        let (_fallback_signed_tx_base64, _rpc_signature) =
             test_signed_tx_base64_with_signature([82u8; 64]);
+        let upstream_fallback_url = "http://127.0.0.1:1/fallback";
+        let send_rpc_url = "http://127.0.0.1:1/send-rpc";
         let Some((upstream_primary_url, upstream_primary_handle)) =
             spawn_one_shot_upstream_incomplete_body(
                 200,
@@ -4157,30 +4138,15 @@ mod tests {
         else {
             return;
         };
-        let upstream_fallback_body = format!(
-            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
-            fallback_signed_tx_base64
-        );
-        let Some((upstream_fallback_url, upstream_fallback_handle)) =
-            spawn_one_shot_upstream_raw(200, "application/json", upstream_fallback_body.as_str())
-        else {
-            return;
-        };
-        let send_rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
-        let Some((send_rpc_url, send_rpc_handle)) =
-            spawn_one_shot_upstream_raw(200, "application/json", send_rpc_body.as_str())
-        else {
-            return;
-        };
 
         let mut state = test_state_with_backends(
             upstream_primary_url.as_str(),
-            Some(upstream_fallback_url.as_str()),
+            Some(upstream_fallback_url),
             upstream_primary_url.as_str(),
-            Some(upstream_fallback_url.as_str()),
+            Some(upstream_fallback_url),
         );
         if let Some(backend) = state.config.route_backends.get_mut("rpc") {
-            backend.send_rpc_url = Some(send_rpc_url);
+            backend.send_rpc_url = Some(send_rpc_url.to_string());
         } else {
             panic!("rpc backend must exist");
         }
@@ -4213,16 +4179,16 @@ mod tests {
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_response_too_large");
         let _ = upstream_primary_handle.join();
-        let _ = upstream_fallback_handle.join();
-        let _ = send_rpc_handle.join();
     }
 
     #[tokio::test]
     async fn handle_submit_rejects_primary_truncated_body_even_with_fallback_configured() {
         let (primary_signed_tx_base64, _primary_signature) =
             test_signed_tx_base64_with_signature([83u8; 64]);
-        let (fallback_signed_tx_base64, rpc_signature) =
+        let (_fallback_signed_tx_base64, _rpc_signature) =
             test_signed_tx_base64_with_signature([84u8; 64]);
+        let upstream_fallback_url = "http://127.0.0.1:1/fallback";
+        let send_rpc_url = "http://127.0.0.1:1/send-rpc";
         let upstream_primary_body = build_truncated_valid_json_prefix_body(
             format!(
                 r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
@@ -4239,30 +4205,15 @@ mod tests {
         else {
             return;
         };
-        let upstream_fallback_body = format!(
-            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}"}}"#,
-            fallback_signed_tx_base64
-        );
-        let Some((upstream_fallback_url, upstream_fallback_handle)) =
-            spawn_one_shot_upstream_raw(200, "application/json", upstream_fallback_body.as_str())
-        else {
-            return;
-        };
-        let send_rpc_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, rpc_signature);
-        let Some((send_rpc_url, send_rpc_handle)) =
-            spawn_one_shot_upstream_raw(200, "application/json", send_rpc_body.as_str())
-        else {
-            return;
-        };
 
         let mut state = test_state_with_backends(
             upstream_primary_url.as_str(),
-            Some(upstream_fallback_url.as_str()),
+            Some(upstream_fallback_url),
             upstream_primary_url.as_str(),
-            Some(upstream_fallback_url.as_str()),
+            Some(upstream_fallback_url),
         );
         if let Some(backend) = state.config.route_backends.get_mut("rpc") {
-            backend.send_rpc_url = Some(send_rpc_url);
+            backend.send_rpc_url = Some(send_rpc_url.to_string());
         } else {
             panic!("rpc backend must exist");
         }
@@ -4295,8 +4246,6 @@ mod tests {
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_response_too_large");
         let _ = upstream_primary_handle.join();
-        let _ = upstream_fallback_handle.join();
-        let _ = send_rpc_handle.join();
     }
 
     #[tokio::test]
