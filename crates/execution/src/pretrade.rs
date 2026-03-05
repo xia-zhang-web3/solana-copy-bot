@@ -116,6 +116,7 @@ pub struct RpcPreTradeChecker {
     execution_signer_pubkey: String,
     min_sol_reserve: f64,
     require_token_account: bool,
+    allow_missing_token_account_for_buy: bool,
     max_priority_fee_micro_lamports: Option<u64>,
     client: Client,
 }
@@ -128,6 +129,7 @@ impl RpcPreTradeChecker {
         execution_signer_pubkey: &str,
         min_sol_reserve: f64,
         require_token_account: bool,
+        allow_missing_token_account_for_buy: bool,
         pretrade_max_priority_fee_lamports: u64,
     ) -> Option<Self> {
         let mut endpoints = Vec::new();
@@ -158,6 +160,7 @@ impl RpcPreTradeChecker {
             execution_signer_pubkey: signer.to_string(),
             min_sol_reserve,
             require_token_account,
+            allow_missing_token_account_for_buy,
             max_priority_fee_micro_lamports: if pretrade_max_priority_fee_lamports == 0 {
                 None
             } else {
@@ -272,6 +275,36 @@ impl RpcPreTradeChecker {
             crate::intent::ExecutionSide::Sell => self.min_sol_reserve,
         }
     }
+
+    fn evaluate_token_account_policy(
+        &self,
+        intent: &ExecutionIntent,
+        endpoint: &str,
+        token_account_exists: bool,
+        allow_detail: &mut String,
+    ) -> Option<PreTradeDecision> {
+        if !self.require_token_account {
+            return None;
+        }
+        if token_account_exists {
+            allow_detail.push_str(" token_account=present");
+            return None;
+        }
+        if self.allow_missing_token_account_for_buy
+            && matches!(intent.side, crate::intent::ExecutionSide::Buy)
+        {
+            allow_detail.push_str(" token_account=create_on_submit");
+            return None;
+        }
+
+        Some(PreTradeDecision::reject(
+            "pretrade_token_account_missing",
+            format!(
+                "signer_pubkey={} endpoint={} token_mint={}",
+                self.execution_signer_pubkey, endpoint, intent.token
+            ),
+        ))
+    }
 }
 
 impl PreTradeChecker for RpcPreTradeChecker {
@@ -319,16 +352,14 @@ impl PreTradeChecker for RpcPreTradeChecker {
                             continue;
                         }
                     };
-                if !token_account_exists {
-                    return Ok(PreTradeDecision::reject(
-                        "pretrade_token_account_missing",
-                        format!(
-                            "signer_pubkey={} endpoint={} token_mint={}",
-                            self.execution_signer_pubkey, endpoint, intent.token
-                        ),
-                    ));
+                if let Some(decision) = self.evaluate_token_account_policy(
+                    intent,
+                    endpoint,
+                    token_account_exists,
+                    &mut allow_detail,
+                ) {
+                    return Ok(decision);
                 }
-                allow_detail.push_str(" token_account=present");
             }
 
             if let Some(max_priority_fee_micro_lamports) = self.max_priority_fee_micro_lamports {
@@ -449,6 +480,10 @@ mod tests {
     use super::*;
     use crate::intent::ExecutionSide;
     use chrono::Utc;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread::{self, JoinHandle};
+    use std::time::{Duration as StdDuration, Instant};
 
     fn make_intent(side: ExecutionSide, notional_sol: f64) -> ExecutionIntent {
         ExecutionIntent {
@@ -459,6 +494,59 @@ mod tests {
             notional_sol,
             signal_ts: Utc::now(),
         }
+    }
+
+    fn spawn_pretrade_rpc_server(responses: Vec<String>) -> Option<(String, JoinHandle<()>)> {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "skipping pretrade RPC integration test: failed to bind 127.0.0.1:0: {}",
+                    error
+                );
+                return None;
+            }
+        };
+        listener
+            .set_nonblocking(true)
+            .expect("set pretrade rpc server nonblocking");
+        let addr = listener.local_addr().expect("pretrade rpc server addr");
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + StdDuration::from_secs(5);
+            let mut served = 0usize;
+            while served < responses.len() {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(StdDuration::from_secs(1)))
+                            .expect("set read timeout");
+                        let mut request = [0_u8; 4096];
+                        let _ = stream.read(&mut request);
+                        let body = &responses[served];
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        stream
+                            .write_all(response.as_bytes())
+                            .expect("write pretrade rpc response");
+                        served += 1;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "pretrade rpc test server timed out after serving {} of {} responses",
+                            served,
+                            responses.len()
+                        );
+                        thread::sleep(StdDuration::from_millis(10));
+                    }
+                    Err(error) => panic!("pretrade rpc test server accept failed: {error}"),
+                }
+            }
+        });
+        Some((format!("http://{}", addr), handle))
     }
 
     #[test]
@@ -525,6 +613,7 @@ mod tests {
             "11111111111111111111111111111111",
             0.05,
             false,
+            false,
             0,
         )
         .expect("checker should initialize");
@@ -549,6 +638,7 @@ mod tests {
             "11111111111111111111111111111111",
             0.05,
             false,
+            false,
             0,
         )
         .expect("checker should initialize");
@@ -571,6 +661,7 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            false,
             false,
             0,
         )
@@ -616,6 +707,184 @@ mod tests {
         });
         let exists = parse_token_account_exists_from_rpc_body(&body)?;
         assert!(!exists);
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_token_account_policy_allows_buy_when_submit_can_create_ata() -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            true,
+            true,
+            0,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+
+        let decision = checker.evaluate_token_account_policy(
+            &make_intent(ExecutionSide::Buy, 0.1),
+            "https://rpc.primary.example",
+            false,
+            &mut allow_detail,
+        );
+
+        assert!(
+            decision.is_none(),
+            "buy should be allowed via ATA create path"
+        );
+        assert!(
+            allow_detail.contains("token_account=create_on_submit"),
+            "unexpected allow detail: {}",
+            allow_detail
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_token_account_policy_rejects_sell_when_token_account_missing() -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            true,
+            true,
+            0,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+
+        let decision = checker
+            .evaluate_token_account_policy(
+                &make_intent(ExecutionSide::Sell, 0.1),
+                "https://rpc.primary.example",
+                false,
+                &mut allow_detail,
+            )
+            .expect("sell should reject when token account is missing");
+
+        assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
+        assert_eq!(decision.reason_code, "pretrade_token_account_missing");
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_token_account_policy_rejects_buy_when_create_path_disabled() -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            true,
+            false,
+            0,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+
+        let decision = checker
+            .evaluate_token_account_policy(
+                &make_intent(ExecutionSide::Buy, 0.1),
+                "https://rpc.primary.example",
+                false,
+                &mut allow_detail,
+            )
+            .expect("buy should reject when create path is disabled");
+
+        assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
+        assert_eq!(decision.reason_code, "pretrade_token_account_missing");
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_token_account_policy_marks_present_account_in_allow_detail() -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            true,
+            false,
+            0,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+
+        let decision = checker.evaluate_token_account_policy(
+            &make_intent(ExecutionSide::Buy, 0.1),
+            "https://rpc.primary.example",
+            true,
+            &mut allow_detail,
+        );
+
+        assert!(decision.is_none(), "present token account should allow");
+        assert!(
+            allow_detail.contains("token_account=present"),
+            "unexpected allow detail: {}",
+            allow_detail
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_check_allows_missing_buy_token_account_when_submit_can_create_ata() -> Result<()>
+    {
+        let Some((endpoint, handle)) = spawn_pretrade_rpc_server(vec![
+            json!({
+                "jsonrpc": "2.0",
+                "result": {
+                    "value": {
+                        "blockhash": "3Q3swfYxFxYt5m4T9f2xZ2JKeQX2DAX7T5q6YQnM7n8p",
+                        "lastValidBlockHeight": 100
+                    }
+                },
+                "id": 1
+            })
+            .to_string(),
+            json!({
+                "jsonrpc": "2.0",
+                "result": { "value": 2_000_000_000_u64 },
+                "id": 1
+            })
+            .to_string(),
+            json!({
+                "jsonrpc": "2.0",
+                "result": { "value": [] },
+                "id": 1
+            })
+            .to_string(),
+        ]) else {
+            return Ok(());
+        };
+
+        let checker = RpcPreTradeChecker::new(
+            &endpoint,
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            true,
+            true,
+            0,
+        )
+        .expect("checker should initialize");
+
+        let decision = checker.check(&make_intent(ExecutionSide::Buy, 0.1), "rpc")?;
+        assert_eq!(decision.kind, PreTradeDecisionKind::Allow);
+        assert!(
+            decision.detail.contains("token_account=create_on_submit"),
+            "unexpected allow detail: {}",
+            decision.detail
+        );
+
+        handle.join().expect("join pretrade rpc test server");
         Ok(())
     }
 

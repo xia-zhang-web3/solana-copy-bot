@@ -138,6 +138,7 @@ impl ExecutionRuntime {
                     &config.execution_signer_pubkey,
                     config.pretrade_min_sol_reserve,
                     config.pretrade_require_token_account,
+                    false,
                     config.pretrade_max_priority_fee_lamports,
                 ) {
                     Some(value) => Box::new(value),
@@ -177,6 +178,7 @@ impl ExecutionRuntime {
                     &config.execution_signer_pubkey,
                     config.pretrade_min_sol_reserve,
                     config.pretrade_require_token_account,
+                    true,
                     config.pretrade_max_priority_fee_lamports,
                 ) {
                     Some(value) => Box::new(value),
