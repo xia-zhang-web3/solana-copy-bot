@@ -79,6 +79,12 @@ signoff_nested_executor_backend_mode_guard_verdict="unknown"
 signoff_nested_executor_backend_mode_guard_reason_code="n/a"
 signoff_nested_executor_upstream_endpoint_guard_verdict="unknown"
 signoff_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+signoff_nested_go_nogo_require_jito_rpc_policy="unknown"
+signoff_nested_jito_rpc_policy_verdict="unknown"
+signoff_nested_jito_rpc_policy_reason_code="n/a"
+signoff_nested_go_nogo_require_fastlane_disabled="unknown"
+signoff_nested_fastlane_feature_flag_verdict="unknown"
+signoff_nested_fastlane_feature_flag_reason_code="n/a"
 signoff_nested_go_nogo_require_ingestion_grpc="unknown"
 signoff_nested_ingestion_grpc_guard_verdict="unknown"
 signoff_nested_ingestion_grpc_guard_reason_code="n/a"
@@ -167,6 +173,12 @@ if ((${#input_errors[@]} == 0)); then
   signoff_guard_backend_mode_reason_code_key="window_${signoff_guard_window_id}h_executor_backend_mode_guard_reason_code"
   signoff_guard_upstream_endpoint_verdict_key="window_${signoff_guard_window_id}h_executor_upstream_endpoint_guard_verdict"
   signoff_guard_upstream_endpoint_reason_code_key="window_${signoff_guard_window_id}h_executor_upstream_endpoint_guard_reason_code"
+  signoff_guard_require_jito_rpc_policy_key="window_${signoff_guard_window_id}h_go_nogo_require_jito_rpc_policy"
+  signoff_guard_jito_rpc_policy_verdict_key="window_${signoff_guard_window_id}h_jito_rpc_policy_verdict"
+  signoff_guard_jito_rpc_policy_reason_code_key="window_${signoff_guard_window_id}h_jito_rpc_policy_reason_code"
+  signoff_guard_require_fastlane_disabled_key="window_${signoff_guard_window_id}h_go_nogo_require_fastlane_disabled"
+  signoff_guard_fastlane_feature_flag_verdict_key="window_${signoff_guard_window_id}h_fastlane_feature_flag_verdict"
+  signoff_guard_fastlane_feature_flag_reason_code_key="window_${signoff_guard_window_id}h_fastlane_feature_flag_reason_code"
   signoff_guard_require_ingestion_grpc_key="window_${signoff_guard_window_id}h_go_nogo_require_ingestion_grpc"
   signoff_guard_ingestion_grpc_verdict_key="window_${signoff_guard_window_id}h_ingestion_grpc_guard_verdict"
   signoff_guard_ingestion_grpc_reason_code_key="window_${signoff_guard_window_id}h_ingestion_grpc_guard_reason_code"
@@ -206,6 +218,50 @@ if ((${#input_errors[@]} == 0)); then
   if [[ -z "$signoff_nested_executor_upstream_endpoint_guard_reason_code" ]]; then
     input_errors+=("nested route/fee signoff ${signoff_guard_upstream_endpoint_reason_code_key} must be non-empty")
     signoff_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+  fi
+  signoff_nested_go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "$signoff_guard_require_jito_rpc_policy_key" "$signoff_output")")"
+  if ! signoff_nested_go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "$signoff_guard_require_jito_rpc_policy_key" "$signoff_output")"; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_require_jito_rpc_policy_key} must be boolean token, got: ${signoff_nested_go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+    signoff_nested_go_nogo_require_jito_rpc_policy="unknown"
+  elif [[ "$signoff_nested_go_nogo_require_jito_rpc_policy" != "$go_nogo_require_jito_rpc_policy" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_require_jito_rpc_policy_key} mismatch: nested=${signoff_nested_go_nogo_require_jito_rpc_policy} expected=${go_nogo_require_jito_rpc_policy}")
+  fi
+  signoff_nested_jito_rpc_policy_verdict_raw="$(trim_string "$(extract_field "$signoff_guard_jito_rpc_policy_verdict_key" "$signoff_output")")"
+  signoff_nested_jito_rpc_policy_verdict_raw_upper="$(printf '%s' "$signoff_nested_jito_rpc_policy_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  signoff_nested_jito_rpc_policy_verdict="$(normalize_gate_verdict "$signoff_nested_jito_rpc_policy_verdict_raw")"
+  if [[ -z "$signoff_nested_jito_rpc_policy_verdict_raw" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_jito_rpc_policy_verdict_key} must be non-empty")
+    signoff_nested_jito_rpc_policy_verdict="UNKNOWN"
+  elif [[ "$signoff_nested_jito_rpc_policy_verdict_raw_upper" != "PASS" && "$signoff_nested_jito_rpc_policy_verdict_raw_upper" != "WARN" && "$signoff_nested_jito_rpc_policy_verdict_raw_upper" != "NO_DATA" && "$signoff_nested_jito_rpc_policy_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_jito_rpc_policy_verdict_key} must be one of PASS,WARN,NO_DATA,SKIP (got: ${signoff_nested_jito_rpc_policy_verdict_raw})")
+    signoff_nested_jito_rpc_policy_verdict="UNKNOWN"
+  fi
+  signoff_nested_jito_rpc_policy_reason_code="$(trim_string "$(extract_field "$signoff_guard_jito_rpc_policy_reason_code_key" "$signoff_output")")"
+  if [[ -z "$signoff_nested_jito_rpc_policy_reason_code" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_jito_rpc_policy_reason_code_key} must be non-empty")
+    signoff_nested_jito_rpc_policy_reason_code="n/a"
+  fi
+  signoff_nested_go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "$signoff_guard_require_fastlane_disabled_key" "$signoff_output")")"
+  if ! signoff_nested_go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "$signoff_guard_require_fastlane_disabled_key" "$signoff_output")"; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_require_fastlane_disabled_key} must be boolean token, got: ${signoff_nested_go_nogo_require_fastlane_disabled_raw:-<empty>}")
+    signoff_nested_go_nogo_require_fastlane_disabled="unknown"
+  elif [[ "$signoff_nested_go_nogo_require_fastlane_disabled" != "$go_nogo_require_fastlane_disabled" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_require_fastlane_disabled_key} mismatch: nested=${signoff_nested_go_nogo_require_fastlane_disabled} expected=${go_nogo_require_fastlane_disabled}")
+  fi
+  signoff_nested_fastlane_feature_flag_verdict_raw="$(trim_string "$(extract_field "$signoff_guard_fastlane_feature_flag_verdict_key" "$signoff_output")")"
+  signoff_nested_fastlane_feature_flag_verdict_raw_upper="$(printf '%s' "$signoff_nested_fastlane_feature_flag_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  signoff_nested_fastlane_feature_flag_verdict="$(normalize_gate_verdict "$signoff_nested_fastlane_feature_flag_verdict_raw")"
+  if [[ -z "$signoff_nested_fastlane_feature_flag_verdict_raw" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_fastlane_feature_flag_verdict_key} must be non-empty")
+    signoff_nested_fastlane_feature_flag_verdict="UNKNOWN"
+  elif [[ "$signoff_nested_fastlane_feature_flag_verdict_raw_upper" != "PASS" && "$signoff_nested_fastlane_feature_flag_verdict_raw_upper" != "WARN" && "$signoff_nested_fastlane_feature_flag_verdict_raw_upper" != "NO_DATA" && "$signoff_nested_fastlane_feature_flag_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_fastlane_feature_flag_verdict_key} must be one of PASS,WARN,NO_DATA,SKIP (got: ${signoff_nested_fastlane_feature_flag_verdict_raw})")
+    signoff_nested_fastlane_feature_flag_verdict="UNKNOWN"
+  fi
+  signoff_nested_fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "$signoff_guard_fastlane_feature_flag_reason_code_key" "$signoff_output")")"
+  if [[ -z "$signoff_nested_fastlane_feature_flag_reason_code" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_fastlane_feature_flag_reason_code_key} must be non-empty")
+    signoff_nested_fastlane_feature_flag_reason_code="n/a"
   fi
   signoff_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "$signoff_guard_require_ingestion_grpc_key" "$signoff_output")")"
   if ! signoff_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "$signoff_guard_require_ingestion_grpc_key" "$signoff_output")"; then
@@ -286,6 +342,24 @@ if ((${#input_errors[@]} == 0)); then
     fi
     if [[ "$signoff_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested route/fee signoff ${signoff_guard_upstream_endpoint_verdict_key} must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${signoff_nested_executor_upstream_endpoint_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_jito_rpc_policy" == "true" ]]; then
+    if [[ "$signoff_nested_jito_rpc_policy_verdict" == "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff ${signoff_guard_jito_rpc_policy_verdict_key} cannot be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=true")
+    fi
+  else
+    if [[ "$signoff_nested_jito_rpc_policy_verdict" != "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff ${signoff_guard_jito_rpc_policy_verdict_key} must be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=false (got: ${signoff_nested_jito_rpc_policy_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_fastlane_disabled" == "true" ]]; then
+    if [[ "$signoff_nested_fastlane_feature_flag_verdict" == "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff ${signoff_guard_fastlane_feature_flag_verdict_key} cannot be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=true")
+    fi
+  else
+    if [[ "$signoff_nested_fastlane_feature_flag_verdict" != "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff ${signoff_guard_fastlane_feature_flag_verdict_key} must be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=false (got: ${signoff_nested_fastlane_feature_flag_verdict})")
     fi
   fi
   if [[ "$go_nogo_require_ingestion_grpc" == "true" ]]; then
@@ -398,6 +472,12 @@ signoff_nested_executor_backend_mode_guard_verdict: ${signoff_nested_executor_ba
 signoff_nested_executor_backend_mode_guard_reason_code: ${signoff_nested_executor_backend_mode_guard_reason_code:-n/a}
 signoff_nested_executor_upstream_endpoint_guard_verdict: ${signoff_nested_executor_upstream_endpoint_guard_verdict:-unknown}
 signoff_nested_executor_upstream_endpoint_guard_reason_code: ${signoff_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
+signoff_nested_go_nogo_require_jito_rpc_policy: ${signoff_nested_go_nogo_require_jito_rpc_policy:-unknown}
+signoff_nested_jito_rpc_policy_verdict: ${signoff_nested_jito_rpc_policy_verdict:-unknown}
+signoff_nested_jito_rpc_policy_reason_code: ${signoff_nested_jito_rpc_policy_reason_code:-n/a}
+signoff_nested_go_nogo_require_fastlane_disabled: ${signoff_nested_go_nogo_require_fastlane_disabled:-unknown}
+signoff_nested_fastlane_feature_flag_verdict: ${signoff_nested_fastlane_feature_flag_verdict:-unknown}
+signoff_nested_fastlane_feature_flag_reason_code: ${signoff_nested_fastlane_feature_flag_reason_code:-n/a}
 signoff_nested_go_nogo_require_ingestion_grpc: ${signoff_nested_go_nogo_require_ingestion_grpc:-unknown}
 signoff_nested_ingestion_grpc_guard_verdict: ${signoff_nested_ingestion_grpc_guard_verdict:-unknown}
 signoff_nested_ingestion_grpc_guard_reason_code: ${signoff_nested_ingestion_grpc_guard_reason_code:-n/a}

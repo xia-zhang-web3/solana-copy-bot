@@ -306,9 +306,15 @@ rehearsal_go_nogo_sha256=""
 rehearsal_tests_sha256=""
 rehearsal_artifacts_written="false"
 rehearsal_nested_package_bundle_enabled="unknown"
+rehearsal_nested_go_nogo_require_jito_rpc_policy="n/a"
 rehearsal_nested_go_nogo_require_executor_upstream="n/a"
 rehearsal_nested_go_nogo_require_ingestion_grpc="n/a"
 rehearsal_nested_go_nogo_require_non_bootstrap_signer="n/a"
+rehearsal_nested_jito_rpc_policy_verdict="unknown"
+rehearsal_nested_jito_rpc_policy_reason_code="n/a"
+rehearsal_nested_go_nogo_require_fastlane_disabled="n/a"
+rehearsal_nested_fastlane_feature_flag_verdict="unknown"
+rehearsal_nested_fastlane_feature_flag_reason_code="n/a"
 rehearsal_nested_executor_env_path="n/a"
 rehearsal_nested_executor_backend_mode_guard_verdict="unknown"
 rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -328,9 +334,15 @@ if [[ "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_reason_code="stage_disabled"
   rehearsal_artifacts_written="n/a"
   rehearsal_nested_package_bundle_enabled="n/a"
+  rehearsal_nested_go_nogo_require_jito_rpc_policy="n/a"
   rehearsal_nested_go_nogo_require_executor_upstream="n/a"
   rehearsal_nested_go_nogo_require_ingestion_grpc="n/a"
   rehearsal_nested_go_nogo_require_non_bootstrap_signer="n/a"
+  rehearsal_nested_jito_rpc_policy_verdict="n/a"
+  rehearsal_nested_jito_rpc_policy_reason_code="n/a"
+  rehearsal_nested_go_nogo_require_fastlane_disabled="n/a"
+  rehearsal_nested_fastlane_feature_flag_verdict="n/a"
+  rehearsal_nested_fastlane_feature_flag_reason_code="n/a"
   rehearsal_nested_executor_env_path="n/a"
   rehearsal_nested_executor_backend_mode_guard_verdict="n/a"
   rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -442,6 +454,50 @@ else
   elif [[ "$rehearsal_nested_go_nogo_require_non_bootstrap_signer" != "$go_nogo_require_non_bootstrap_signer_norm" ]]; then
     input_errors+=("nested devnet rehearsal go_nogo_require_non_bootstrap_signer mismatch: nested=${rehearsal_nested_go_nogo_require_non_bootstrap_signer} expected=${go_nogo_require_non_bootstrap_signer_norm}")
   fi
+  rehearsal_nested_go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "go_nogo_require_jito_rpc_policy" "$rehearsal_output")")"
+  if ! rehearsal_nested_go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "go_nogo_require_jito_rpc_policy" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal go_nogo_require_jito_rpc_policy must be boolean token, got: ${rehearsal_nested_go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+    rehearsal_nested_go_nogo_require_jito_rpc_policy="unknown"
+  elif [[ "$rehearsal_nested_go_nogo_require_jito_rpc_policy" != "$go_nogo_require_jito_rpc_policy_norm" ]]; then
+    input_errors+=("nested devnet rehearsal go_nogo_require_jito_rpc_policy mismatch: nested=${rehearsal_nested_go_nogo_require_jito_rpc_policy} expected=${go_nogo_require_jito_rpc_policy_norm}")
+  fi
+  rehearsal_nested_jito_rpc_policy_verdict_raw="$(trim_string "$(extract_field "jito_rpc_policy_verdict" "$rehearsal_output")")"
+  rehearsal_nested_jito_rpc_policy_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_jito_rpc_policy_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rehearsal_nested_jito_rpc_policy_verdict="$(normalize_gate_verdict "$rehearsal_nested_jito_rpc_policy_verdict_raw")"
+  if [[ -z "$rehearsal_nested_jito_rpc_policy_verdict_raw" ]]; then
+    input_errors+=("nested devnet rehearsal jito_rpc_policy_verdict must be non-empty")
+    rehearsal_nested_jito_rpc_policy_verdict="UNKNOWN"
+  elif [[ "$rehearsal_nested_jito_rpc_policy_verdict_raw_upper" != "PASS" && "$rehearsal_nested_jito_rpc_policy_verdict_raw_upper" != "WARN" && "$rehearsal_nested_jito_rpc_policy_verdict_raw_upper" != "NO_DATA" && "$rehearsal_nested_jito_rpc_policy_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested devnet rehearsal jito_rpc_policy_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${rehearsal_nested_jito_rpc_policy_verdict_raw})")
+    rehearsal_nested_jito_rpc_policy_verdict="UNKNOWN"
+  fi
+  rehearsal_nested_jito_rpc_policy_reason_code="$(trim_string "$(extract_field "jito_rpc_policy_reason_code" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_jito_rpc_policy_reason_code" ]]; then
+    input_errors+=("nested devnet rehearsal jito_rpc_policy_reason_code must be non-empty")
+    rehearsal_nested_jito_rpc_policy_reason_code="n/a"
+  fi
+  rehearsal_nested_go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "go_nogo_require_fastlane_disabled" "$rehearsal_output")")"
+  if ! rehearsal_nested_go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "go_nogo_require_fastlane_disabled" "$rehearsal_output")"; then
+    input_errors+=("nested devnet rehearsal go_nogo_require_fastlane_disabled must be boolean token, got: ${rehearsal_nested_go_nogo_require_fastlane_disabled_raw:-<empty>}")
+    rehearsal_nested_go_nogo_require_fastlane_disabled="unknown"
+  elif [[ "$rehearsal_nested_go_nogo_require_fastlane_disabled" != "$go_nogo_require_fastlane_disabled_norm" ]]; then
+    input_errors+=("nested devnet rehearsal go_nogo_require_fastlane_disabled mismatch: nested=${rehearsal_nested_go_nogo_require_fastlane_disabled} expected=${go_nogo_require_fastlane_disabled_norm}")
+  fi
+  rehearsal_nested_fastlane_feature_flag_verdict_raw="$(trim_string "$(extract_field "fastlane_feature_flag_verdict" "$rehearsal_output")")"
+  rehearsal_nested_fastlane_feature_flag_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_fastlane_feature_flag_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rehearsal_nested_fastlane_feature_flag_verdict="$(normalize_gate_verdict "$rehearsal_nested_fastlane_feature_flag_verdict_raw")"
+  if [[ -z "$rehearsal_nested_fastlane_feature_flag_verdict_raw" ]]; then
+    input_errors+=("nested devnet rehearsal fastlane_feature_flag_verdict must be non-empty")
+    rehearsal_nested_fastlane_feature_flag_verdict="UNKNOWN"
+  elif [[ "$rehearsal_nested_fastlane_feature_flag_verdict_raw_upper" != "PASS" && "$rehearsal_nested_fastlane_feature_flag_verdict_raw_upper" != "WARN" && "$rehearsal_nested_fastlane_feature_flag_verdict_raw_upper" != "NO_DATA" && "$rehearsal_nested_fastlane_feature_flag_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested devnet rehearsal fastlane_feature_flag_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${rehearsal_nested_fastlane_feature_flag_verdict_raw})")
+    rehearsal_nested_fastlane_feature_flag_verdict="UNKNOWN"
+  fi
+  rehearsal_nested_fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_fastlane_feature_flag_reason_code" ]]; then
+    input_errors+=("nested devnet rehearsal fastlane_feature_flag_reason_code must be non-empty")
+    rehearsal_nested_fastlane_feature_flag_reason_code="n/a"
+  fi
   rehearsal_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$rehearsal_output")")"
   if [[ -z "$rehearsal_nested_executor_env_path" ]]; then
     input_errors+=("nested devnet rehearsal executor_env_path must be non-empty")
@@ -540,6 +596,24 @@ else
   else
     if [[ "$rehearsal_nested_non_bootstrap_signer_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested devnet rehearsal go_nogo_non_bootstrap_signer_guard_verdict must be SKIP when GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER=false (got: ${rehearsal_nested_non_bootstrap_signer_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_jito_rpc_policy_norm" == "true" ]]; then
+    if [[ "$rehearsal_nested_jito_rpc_policy_verdict" == "SKIP" ]]; then
+      input_errors+=("nested devnet rehearsal jito_rpc_policy_verdict cannot be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=true")
+    fi
+  else
+    if [[ "$rehearsal_nested_jito_rpc_policy_verdict" != "SKIP" ]]; then
+      input_errors+=("nested devnet rehearsal jito_rpc_policy_verdict must be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=false (got: ${rehearsal_nested_jito_rpc_policy_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_fastlane_disabled_norm" == "true" ]]; then
+    if [[ "$rehearsal_nested_fastlane_feature_flag_verdict" == "SKIP" ]]; then
+      input_errors+=("nested devnet rehearsal fastlane_feature_flag_verdict cannot be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=true")
+    fi
+  else
+    if [[ "$rehearsal_nested_fastlane_feature_flag_verdict" != "SKIP" ]]; then
+      input_errors+=("nested devnet rehearsal fastlane_feature_flag_verdict must be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=false (got: ${rehearsal_nested_fastlane_feature_flag_verdict})")
     fi
   fi
   tests_run="$(trim_string "$(extract_field "tests_run" "$rehearsal_output")")"
@@ -682,9 +756,15 @@ rehearsal_go_nogo_sha256: ${rehearsal_go_nogo_sha256:-n/a}
 rehearsal_tests_sha256: ${rehearsal_tests_sha256:-n/a}
 rehearsal_artifacts_written: $rehearsal_artifacts_written
 rehearsal_nested_package_bundle_enabled: ${rehearsal_nested_package_bundle_enabled:-unknown}
+rehearsal_nested_go_nogo_require_jito_rpc_policy: ${rehearsal_nested_go_nogo_require_jito_rpc_policy:-n/a}
 rehearsal_nested_go_nogo_require_executor_upstream: ${rehearsal_nested_go_nogo_require_executor_upstream:-n/a}
 rehearsal_nested_go_nogo_require_ingestion_grpc: ${rehearsal_nested_go_nogo_require_ingestion_grpc:-n/a}
 rehearsal_nested_go_nogo_require_non_bootstrap_signer: ${rehearsal_nested_go_nogo_require_non_bootstrap_signer:-n/a}
+rehearsal_nested_jito_rpc_policy_verdict: ${rehearsal_nested_jito_rpc_policy_verdict:-unknown}
+rehearsal_nested_jito_rpc_policy_reason_code: ${rehearsal_nested_jito_rpc_policy_reason_code:-n/a}
+rehearsal_nested_go_nogo_require_fastlane_disabled: ${rehearsal_nested_go_nogo_require_fastlane_disabled:-n/a}
+rehearsal_nested_fastlane_feature_flag_verdict: ${rehearsal_nested_fastlane_feature_flag_verdict:-unknown}
+rehearsal_nested_fastlane_feature_flag_reason_code: ${rehearsal_nested_fastlane_feature_flag_reason_code:-n/a}
 rehearsal_nested_executor_env_path: ${rehearsal_nested_executor_env_path:-n/a}
 rehearsal_nested_executor_backend_mode_guard_verdict: ${rehearsal_nested_executor_backend_mode_guard_verdict:-unknown}
 rehearsal_nested_executor_backend_mode_guard_reason_code: ${rehearsal_nested_executor_backend_mode_guard_reason_code:-n/a}

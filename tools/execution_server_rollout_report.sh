@@ -235,11 +235,19 @@ executor_final_capture="$step_root/executor_final_capture_${now_compact}.txt"
 executor_final_artifacts_written="n/a"
 executor_final_nested_package_bundle_enabled="n/a"
 executor_final_go_nogo_require_executor_upstream="n/a"
+executor_final_go_nogo_require_jito_rpc_policy="n/a"
+executor_final_go_nogo_require_fastlane_disabled="n/a"
 executor_final_go_nogo_require_ingestion_grpc="n/a"
 executor_final_go_nogo_require_non_bootstrap_signer="n/a"
 executor_final_go_nogo_require_submit_verify_strict="n/a"
 executor_final_executor_env_path="n/a"
 executor_final_rollout_nested_go_nogo_require_executor_upstream="n/a"
+executor_final_rollout_nested_go_nogo_require_jito_rpc_policy="n/a"
+executor_final_rollout_nested_jito_rpc_policy_verdict="n/a"
+executor_final_rollout_nested_jito_rpc_policy_reason_code="n/a"
+executor_final_rollout_nested_go_nogo_require_fastlane_disabled="n/a"
+executor_final_rollout_nested_fastlane_feature_flag_verdict="n/a"
+executor_final_rollout_nested_fastlane_feature_flag_reason_code="n/a"
 executor_final_rollout_nested_go_nogo_require_ingestion_grpc="n/a"
 executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer="n/a"
 executor_final_rollout_nested_go_nogo_require_submit_verify_strict="n/a"
@@ -266,11 +274,19 @@ adapter_final_capture="$step_root/adapter_final_capture_${now_compact}.txt"
 adapter_final_artifacts_written="n/a"
 adapter_final_nested_package_bundle_enabled="n/a"
 adapter_final_go_nogo_require_executor_upstream="n/a"
+adapter_final_go_nogo_require_jito_rpc_policy="n/a"
+adapter_final_go_nogo_require_fastlane_disabled="n/a"
 adapter_final_go_nogo_require_ingestion_grpc="n/a"
 adapter_final_go_nogo_require_non_bootstrap_signer="n/a"
 adapter_final_go_nogo_require_submit_verify_strict="n/a"
 adapter_final_executor_env_path="n/a"
 adapter_final_rollout_nested_go_nogo_require_executor_upstream="n/a"
+adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy="n/a"
+adapter_final_rollout_nested_jito_rpc_policy_verdict="n/a"
+adapter_final_rollout_nested_jito_rpc_policy_reason_code="n/a"
+adapter_final_rollout_nested_go_nogo_require_fastlane_disabled="n/a"
+adapter_final_rollout_nested_fastlane_feature_flag_verdict="n/a"
+adapter_final_rollout_nested_fastlane_feature_flag_reason_code="n/a"
 adapter_final_rollout_nested_go_nogo_require_ingestion_grpc="n/a"
 adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer="n/a"
 adapter_final_rollout_nested_go_nogo_require_submit_verify_strict="n/a"
@@ -597,6 +613,20 @@ package_bundle_enabled: false"
   elif [[ "$executor_final_go_nogo_require_executor_upstream" != "$server_rollout_require_executor_upstream_norm" ]]; then
     input_errors+=("nested executor final go_nogo_require_executor_upstream mismatch: nested=${executor_final_go_nogo_require_executor_upstream} expected=${server_rollout_require_executor_upstream_norm}")
   fi
+  executor_final_go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "go_nogo_require_jito_rpc_policy" "$executor_final_output")")"
+  if ! executor_final_go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "go_nogo_require_jito_rpc_policy" "$executor_final_output")"; then
+    input_errors+=("nested executor final go_nogo_require_jito_rpc_policy must be boolean token, got: ${executor_final_go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+    executor_final_go_nogo_require_jito_rpc_policy="unknown"
+  elif [[ "$executor_final_go_nogo_require_jito_rpc_policy" != "$go_nogo_require_jito_rpc_policy_norm" ]]; then
+    input_errors+=("nested executor final go_nogo_require_jito_rpc_policy mismatch: nested=${executor_final_go_nogo_require_jito_rpc_policy} expected=${go_nogo_require_jito_rpc_policy_norm}")
+  fi
+  executor_final_go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "go_nogo_require_fastlane_disabled" "$executor_final_output")")"
+  if ! executor_final_go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "go_nogo_require_fastlane_disabled" "$executor_final_output")"; then
+    input_errors+=("nested executor final go_nogo_require_fastlane_disabled must be boolean token, got: ${executor_final_go_nogo_require_fastlane_disabled_raw:-<empty>}")
+    executor_final_go_nogo_require_fastlane_disabled="unknown"
+  elif [[ "$executor_final_go_nogo_require_fastlane_disabled" != "$go_nogo_require_fastlane_disabled_norm" ]]; then
+    input_errors+=("nested executor final go_nogo_require_fastlane_disabled mismatch: nested=${executor_final_go_nogo_require_fastlane_disabled} expected=${go_nogo_require_fastlane_disabled_norm}")
+  fi
   executor_final_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "go_nogo_require_ingestion_grpc" "$executor_final_output")")"
   if ! executor_final_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "go_nogo_require_ingestion_grpc" "$executor_final_output")"; then
     input_errors+=("nested executor final go_nogo_require_ingestion_grpc must be boolean token, got: ${executor_final_go_nogo_require_ingestion_grpc_raw:-<empty>}")
@@ -631,6 +661,50 @@ package_bundle_enabled: false"
     executor_final_rollout_nested_go_nogo_require_executor_upstream="unknown"
   elif [[ "$executor_final_rollout_nested_go_nogo_require_executor_upstream" != "$server_rollout_require_executor_upstream_norm" ]]; then
     input_errors+=("nested executor final rollout_nested_go_nogo_require_executor_upstream mismatch: nested=${executor_final_rollout_nested_go_nogo_require_executor_upstream} expected=${server_rollout_require_executor_upstream_norm}")
+  fi
+  executor_final_rollout_nested_go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_jito_rpc_policy" "$executor_final_output")")"
+  if ! executor_final_rollout_nested_go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "rollout_nested_go_nogo_require_jito_rpc_policy" "$executor_final_output")"; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_require_jito_rpc_policy must be boolean token, got: ${executor_final_rollout_nested_go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+    executor_final_rollout_nested_go_nogo_require_jito_rpc_policy="unknown"
+  elif [[ "$executor_final_rollout_nested_go_nogo_require_jito_rpc_policy" != "$go_nogo_require_jito_rpc_policy_norm" ]]; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_require_jito_rpc_policy mismatch: nested=${executor_final_rollout_nested_go_nogo_require_jito_rpc_policy} expected=${go_nogo_require_jito_rpc_policy_norm}")
+  fi
+  executor_final_rollout_nested_jito_rpc_policy_verdict_raw="$(trim_string "$(extract_field "rollout_nested_jito_rpc_policy_verdict" "$executor_final_output")")"
+  executor_final_rollout_nested_jito_rpc_policy_verdict_raw_upper="$(printf '%s' "$executor_final_rollout_nested_jito_rpc_policy_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  executor_final_rollout_nested_jito_rpc_policy_verdict="$(normalize_gate_verdict "$executor_final_rollout_nested_jito_rpc_policy_verdict_raw")"
+  if [[ -z "$executor_final_rollout_nested_jito_rpc_policy_verdict_raw" ]]; then
+    input_errors+=("nested executor final rollout_nested_jito_rpc_policy_verdict must be non-empty")
+    executor_final_rollout_nested_jito_rpc_policy_verdict="UNKNOWN"
+  elif [[ "$executor_final_rollout_nested_jito_rpc_policy_verdict_raw_upper" != "PASS" && "$executor_final_rollout_nested_jito_rpc_policy_verdict_raw_upper" != "WARN" && "$executor_final_rollout_nested_jito_rpc_policy_verdict_raw_upper" != "NO_DATA" && "$executor_final_rollout_nested_jito_rpc_policy_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested executor final rollout_nested_jito_rpc_policy_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${executor_final_rollout_nested_jito_rpc_policy_verdict_raw})")
+    executor_final_rollout_nested_jito_rpc_policy_verdict="UNKNOWN"
+  fi
+  executor_final_rollout_nested_jito_rpc_policy_reason_code="$(trim_string "$(extract_field "rollout_nested_jito_rpc_policy_reason_code" "$executor_final_output")")"
+  if [[ -z "$executor_final_rollout_nested_jito_rpc_policy_reason_code" ]]; then
+    input_errors+=("nested executor final rollout_nested_jito_rpc_policy_reason_code must be non-empty")
+    executor_final_rollout_nested_jito_rpc_policy_reason_code="n/a"
+  fi
+  executor_final_rollout_nested_go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_fastlane_disabled" "$executor_final_output")")"
+  if ! executor_final_rollout_nested_go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "rollout_nested_go_nogo_require_fastlane_disabled" "$executor_final_output")"; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_require_fastlane_disabled must be boolean token, got: ${executor_final_rollout_nested_go_nogo_require_fastlane_disabled_raw:-<empty>}")
+    executor_final_rollout_nested_go_nogo_require_fastlane_disabled="unknown"
+  elif [[ "$executor_final_rollout_nested_go_nogo_require_fastlane_disabled" != "$go_nogo_require_fastlane_disabled_norm" ]]; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_require_fastlane_disabled mismatch: nested=${executor_final_rollout_nested_go_nogo_require_fastlane_disabled} expected=${go_nogo_require_fastlane_disabled_norm}")
+  fi
+  executor_final_rollout_nested_fastlane_feature_flag_verdict_raw="$(trim_string "$(extract_field "rollout_nested_fastlane_feature_flag_verdict" "$executor_final_output")")"
+  executor_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper="$(printf '%s' "$executor_final_rollout_nested_fastlane_feature_flag_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  executor_final_rollout_nested_fastlane_feature_flag_verdict="$(normalize_gate_verdict "$executor_final_rollout_nested_fastlane_feature_flag_verdict_raw")"
+  if [[ -z "$executor_final_rollout_nested_fastlane_feature_flag_verdict_raw" ]]; then
+    input_errors+=("nested executor final rollout_nested_fastlane_feature_flag_verdict must be non-empty")
+    executor_final_rollout_nested_fastlane_feature_flag_verdict="UNKNOWN"
+  elif [[ "$executor_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper" != "PASS" && "$executor_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper" != "WARN" && "$executor_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper" != "NO_DATA" && "$executor_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested executor final rollout_nested_fastlane_feature_flag_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${executor_final_rollout_nested_fastlane_feature_flag_verdict_raw})")
+    executor_final_rollout_nested_fastlane_feature_flag_verdict="UNKNOWN"
+  fi
+  executor_final_rollout_nested_fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "rollout_nested_fastlane_feature_flag_reason_code" "$executor_final_output")")"
+  if [[ -z "$executor_final_rollout_nested_fastlane_feature_flag_reason_code" ]]; then
+    input_errors+=("nested executor final rollout_nested_fastlane_feature_flag_reason_code must be non-empty")
+    executor_final_rollout_nested_fastlane_feature_flag_reason_code="n/a"
   fi
   executor_final_rollout_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_ingestion_grpc" "$executor_final_output")")"
   if ! executor_final_rollout_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "rollout_nested_go_nogo_require_ingestion_grpc" "$executor_final_output")"; then
@@ -762,6 +836,24 @@ package_bundle_enabled: false"
       input_errors+=("nested executor final rollout_nested_executor_upstream_endpoint_guard_verdict must be SKIP when SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${executor_final_rollout_nested_executor_upstream_endpoint_guard_verdict})")
     fi
   fi
+  if [[ "$go_nogo_require_jito_rpc_policy_norm" == "true" ]]; then
+    if [[ "$executor_final_rollout_nested_jito_rpc_policy_verdict" == "SKIP" ]]; then
+      input_errors+=("nested executor final rollout_nested_jito_rpc_policy_verdict cannot be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=true")
+    fi
+  else
+    if [[ "$executor_final_rollout_nested_jito_rpc_policy_verdict" != "SKIP" ]]; then
+      input_errors+=("nested executor final rollout_nested_jito_rpc_policy_verdict must be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=false (got: ${executor_final_rollout_nested_jito_rpc_policy_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_fastlane_disabled_norm" == "true" ]]; then
+    if [[ "$executor_final_rollout_nested_fastlane_feature_flag_verdict" == "SKIP" ]]; then
+      input_errors+=("nested executor final rollout_nested_fastlane_feature_flag_verdict cannot be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=true")
+    fi
+  else
+    if [[ "$executor_final_rollout_nested_fastlane_feature_flag_verdict" != "SKIP" ]]; then
+      input_errors+=("nested executor final rollout_nested_fastlane_feature_flag_verdict must be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=false (got: ${executor_final_rollout_nested_fastlane_feature_flag_verdict})")
+    fi
+  fi
   if [[ "$go_nogo_require_ingestion_grpc_norm" == "true" ]]; then
     if [[ "$executor_final_rollout_nested_ingestion_grpc_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested executor final rollout_nested_ingestion_grpc_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=true")
@@ -849,6 +941,20 @@ package_bundle_enabled: false"
   elif [[ "$adapter_final_go_nogo_require_executor_upstream" != "$server_rollout_require_executor_upstream_norm" ]]; then
     input_errors+=("nested adapter final go_nogo_require_executor_upstream mismatch: nested=${adapter_final_go_nogo_require_executor_upstream} expected=${server_rollout_require_executor_upstream_norm}")
   fi
+  adapter_final_go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "go_nogo_require_jito_rpc_policy" "$adapter_final_output")")"
+  if ! adapter_final_go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "go_nogo_require_jito_rpc_policy" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final go_nogo_require_jito_rpc_policy must be boolean token, got: ${adapter_final_go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+    adapter_final_go_nogo_require_jito_rpc_policy="unknown"
+  elif [[ "$adapter_final_go_nogo_require_jito_rpc_policy" != "$go_nogo_require_jito_rpc_policy_norm" ]]; then
+    input_errors+=("nested adapter final go_nogo_require_jito_rpc_policy mismatch: nested=${adapter_final_go_nogo_require_jito_rpc_policy} expected=${go_nogo_require_jito_rpc_policy_norm}")
+  fi
+  adapter_final_go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "go_nogo_require_fastlane_disabled" "$adapter_final_output")")"
+  if ! adapter_final_go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "go_nogo_require_fastlane_disabled" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final go_nogo_require_fastlane_disabled must be boolean token, got: ${adapter_final_go_nogo_require_fastlane_disabled_raw:-<empty>}")
+    adapter_final_go_nogo_require_fastlane_disabled="unknown"
+  elif [[ "$adapter_final_go_nogo_require_fastlane_disabled" != "$go_nogo_require_fastlane_disabled_norm" ]]; then
+    input_errors+=("nested adapter final go_nogo_require_fastlane_disabled mismatch: nested=${adapter_final_go_nogo_require_fastlane_disabled} expected=${go_nogo_require_fastlane_disabled_norm}")
+  fi
   adapter_final_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "go_nogo_require_ingestion_grpc" "$adapter_final_output")")"
   if ! adapter_final_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "go_nogo_require_ingestion_grpc" "$adapter_final_output")"; then
     input_errors+=("nested adapter final go_nogo_require_ingestion_grpc must be boolean token, got: ${adapter_final_go_nogo_require_ingestion_grpc_raw:-<empty>}")
@@ -883,6 +989,50 @@ package_bundle_enabled: false"
     adapter_final_rollout_nested_go_nogo_require_executor_upstream="unknown"
   elif [[ "$adapter_final_rollout_nested_go_nogo_require_executor_upstream" != "$server_rollout_require_executor_upstream_norm" ]]; then
     input_errors+=("nested adapter final rollout_nested_go_nogo_require_executor_upstream mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_executor_upstream} expected=${server_rollout_require_executor_upstream_norm}")
+  fi
+  adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_jito_rpc_policy" "$adapter_final_output")")"
+  if ! adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "rollout_nested_go_nogo_require_jito_rpc_policy" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_jito_rpc_policy must be boolean token, got: ${adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+    adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy="unknown"
+  elif [[ "$adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy" != "$go_nogo_require_jito_rpc_policy_norm" ]]; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_jito_rpc_policy mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy} expected=${go_nogo_require_jito_rpc_policy_norm}")
+  fi
+  adapter_final_rollout_nested_jito_rpc_policy_verdict_raw="$(trim_string "$(extract_field "rollout_nested_jito_rpc_policy_verdict" "$adapter_final_output")")"
+  adapter_final_rollout_nested_jito_rpc_policy_verdict_raw_upper="$(printf '%s' "$adapter_final_rollout_nested_jito_rpc_policy_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  adapter_final_rollout_nested_jito_rpc_policy_verdict="$(normalize_gate_verdict "$adapter_final_rollout_nested_jito_rpc_policy_verdict_raw")"
+  if [[ -z "$adapter_final_rollout_nested_jito_rpc_policy_verdict_raw" ]]; then
+    input_errors+=("nested adapter final rollout_nested_jito_rpc_policy_verdict must be non-empty")
+    adapter_final_rollout_nested_jito_rpc_policy_verdict="UNKNOWN"
+  elif [[ "$adapter_final_rollout_nested_jito_rpc_policy_verdict_raw_upper" != "PASS" && "$adapter_final_rollout_nested_jito_rpc_policy_verdict_raw_upper" != "WARN" && "$adapter_final_rollout_nested_jito_rpc_policy_verdict_raw_upper" != "NO_DATA" && "$adapter_final_rollout_nested_jito_rpc_policy_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested adapter final rollout_nested_jito_rpc_policy_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${adapter_final_rollout_nested_jito_rpc_policy_verdict_raw})")
+    adapter_final_rollout_nested_jito_rpc_policy_verdict="UNKNOWN"
+  fi
+  adapter_final_rollout_nested_jito_rpc_policy_reason_code="$(trim_string "$(extract_field "rollout_nested_jito_rpc_policy_reason_code" "$adapter_final_output")")"
+  if [[ -z "$adapter_final_rollout_nested_jito_rpc_policy_reason_code" ]]; then
+    input_errors+=("nested adapter final rollout_nested_jito_rpc_policy_reason_code must be non-empty")
+    adapter_final_rollout_nested_jito_rpc_policy_reason_code="n/a"
+  fi
+  adapter_final_rollout_nested_go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_fastlane_disabled" "$adapter_final_output")")"
+  if ! adapter_final_rollout_nested_go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "rollout_nested_go_nogo_require_fastlane_disabled" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_fastlane_disabled must be boolean token, got: ${adapter_final_rollout_nested_go_nogo_require_fastlane_disabled_raw:-<empty>}")
+    adapter_final_rollout_nested_go_nogo_require_fastlane_disabled="unknown"
+  elif [[ "$adapter_final_rollout_nested_go_nogo_require_fastlane_disabled" != "$go_nogo_require_fastlane_disabled_norm" ]]; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_fastlane_disabled mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_fastlane_disabled} expected=${go_nogo_require_fastlane_disabled_norm}")
+  fi
+  adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw="$(trim_string "$(extract_field "rollout_nested_fastlane_feature_flag_verdict" "$adapter_final_output")")"
+  adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper="$(printf '%s' "$adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  adapter_final_rollout_nested_fastlane_feature_flag_verdict="$(normalize_gate_verdict "$adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw")"
+  if [[ -z "$adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw" ]]; then
+    input_errors+=("nested adapter final rollout_nested_fastlane_feature_flag_verdict must be non-empty")
+    adapter_final_rollout_nested_fastlane_feature_flag_verdict="UNKNOWN"
+  elif [[ "$adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper" != "PASS" && "$adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper" != "WARN" && "$adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper" != "NO_DATA" && "$adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested adapter final rollout_nested_fastlane_feature_flag_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${adapter_final_rollout_nested_fastlane_feature_flag_verdict_raw})")
+    adapter_final_rollout_nested_fastlane_feature_flag_verdict="UNKNOWN"
+  fi
+  adapter_final_rollout_nested_fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "rollout_nested_fastlane_feature_flag_reason_code" "$adapter_final_output")")"
+  if [[ -z "$adapter_final_rollout_nested_fastlane_feature_flag_reason_code" ]]; then
+    input_errors+=("nested adapter final rollout_nested_fastlane_feature_flag_reason_code must be non-empty")
+    adapter_final_rollout_nested_fastlane_feature_flag_reason_code="n/a"
   fi
   adapter_final_rollout_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_ingestion_grpc" "$adapter_final_output")")"
   if ! adapter_final_rollout_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "rollout_nested_go_nogo_require_ingestion_grpc" "$adapter_final_output")"; then
@@ -1000,6 +1150,24 @@ package_bundle_enabled: false"
     fi
     if [[ "$adapter_final_rollout_nested_executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested adapter final rollout_nested_executor_upstream_endpoint_guard_verdict must be SKIP when SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${adapter_final_rollout_nested_executor_upstream_endpoint_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_jito_rpc_policy_norm" == "true" ]]; then
+    if [[ "$adapter_final_rollout_nested_jito_rpc_policy_verdict" == "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_jito_rpc_policy_verdict cannot be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=true")
+    fi
+  else
+    if [[ "$adapter_final_rollout_nested_jito_rpc_policy_verdict" != "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_jito_rpc_policy_verdict must be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=false (got: ${adapter_final_rollout_nested_jito_rpc_policy_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_fastlane_disabled_norm" == "true" ]]; then
+    if [[ "$adapter_final_rollout_nested_fastlane_feature_flag_verdict" == "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_fastlane_feature_flag_verdict cannot be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=true")
+    fi
+  else
+    if [[ "$adapter_final_rollout_nested_fastlane_feature_flag_verdict" != "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_fastlane_feature_flag_verdict must be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=false (got: ${adapter_final_rollout_nested_fastlane_feature_flag_verdict})")
     fi
   fi
   if [[ "$go_nogo_require_ingestion_grpc_norm" == "true" ]]; then
@@ -1182,11 +1350,19 @@ executor_final_summary_sha256: ${executor_final_summary_sha256:-n/a}
 executor_final_artifacts_written: ${executor_final_artifacts_written:-n/a}
 executor_final_nested_package_bundle_enabled: ${executor_final_nested_package_bundle_enabled:-n/a}
 executor_final_go_nogo_require_executor_upstream: ${executor_final_go_nogo_require_executor_upstream:-n/a}
+executor_final_go_nogo_require_jito_rpc_policy: ${executor_final_go_nogo_require_jito_rpc_policy:-n/a}
+executor_final_go_nogo_require_fastlane_disabled: ${executor_final_go_nogo_require_fastlane_disabled:-n/a}
 executor_final_go_nogo_require_ingestion_grpc: ${executor_final_go_nogo_require_ingestion_grpc:-n/a}
 executor_final_go_nogo_require_non_bootstrap_signer: ${executor_final_go_nogo_require_non_bootstrap_signer:-n/a}
 executor_final_go_nogo_require_submit_verify_strict: ${executor_final_go_nogo_require_submit_verify_strict:-n/a}
 executor_final_executor_env_path: ${executor_final_executor_env_path:-n/a}
 executor_final_rollout_nested_go_nogo_require_executor_upstream: ${executor_final_rollout_nested_go_nogo_require_executor_upstream:-n/a}
+executor_final_rollout_nested_go_nogo_require_jito_rpc_policy: ${executor_final_rollout_nested_go_nogo_require_jito_rpc_policy:-n/a}
+executor_final_rollout_nested_jito_rpc_policy_verdict: ${executor_final_rollout_nested_jito_rpc_policy_verdict:-n/a}
+executor_final_rollout_nested_jito_rpc_policy_reason_code: ${executor_final_rollout_nested_jito_rpc_policy_reason_code:-n/a}
+executor_final_rollout_nested_go_nogo_require_fastlane_disabled: ${executor_final_rollout_nested_go_nogo_require_fastlane_disabled:-n/a}
+executor_final_rollout_nested_fastlane_feature_flag_verdict: ${executor_final_rollout_nested_fastlane_feature_flag_verdict:-n/a}
+executor_final_rollout_nested_fastlane_feature_flag_reason_code: ${executor_final_rollout_nested_fastlane_feature_flag_reason_code:-n/a}
 executor_final_rollout_nested_go_nogo_require_ingestion_grpc: ${executor_final_rollout_nested_go_nogo_require_ingestion_grpc:-n/a}
 executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer: ${executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer:-n/a}
 executor_final_rollout_nested_go_nogo_require_submit_verify_strict: ${executor_final_rollout_nested_go_nogo_require_submit_verify_strict:-n/a}
@@ -1210,11 +1386,19 @@ adapter_final_summary_sha256: ${adapter_final_summary_sha256:-n/a}
 adapter_final_artifacts_written: ${adapter_final_artifacts_written:-n/a}
 adapter_final_nested_package_bundle_enabled: ${adapter_final_nested_package_bundle_enabled:-n/a}
 adapter_final_go_nogo_require_executor_upstream: ${adapter_final_go_nogo_require_executor_upstream:-n/a}
+adapter_final_go_nogo_require_jito_rpc_policy: ${adapter_final_go_nogo_require_jito_rpc_policy:-n/a}
+adapter_final_go_nogo_require_fastlane_disabled: ${adapter_final_go_nogo_require_fastlane_disabled:-n/a}
 adapter_final_go_nogo_require_ingestion_grpc: ${adapter_final_go_nogo_require_ingestion_grpc:-n/a}
 adapter_final_go_nogo_require_non_bootstrap_signer: ${adapter_final_go_nogo_require_non_bootstrap_signer:-n/a}
 adapter_final_go_nogo_require_submit_verify_strict: ${adapter_final_go_nogo_require_submit_verify_strict:-n/a}
 adapter_final_executor_env_path: ${adapter_final_executor_env_path:-n/a}
 adapter_final_rollout_nested_go_nogo_require_executor_upstream: ${adapter_final_rollout_nested_go_nogo_require_executor_upstream:-n/a}
+adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy: ${adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy:-n/a}
+adapter_final_rollout_nested_jito_rpc_policy_verdict: ${adapter_final_rollout_nested_jito_rpc_policy_verdict:-n/a}
+adapter_final_rollout_nested_jito_rpc_policy_reason_code: ${adapter_final_rollout_nested_jito_rpc_policy_reason_code:-n/a}
+adapter_final_rollout_nested_go_nogo_require_fastlane_disabled: ${adapter_final_rollout_nested_go_nogo_require_fastlane_disabled:-n/a}
+adapter_final_rollout_nested_fastlane_feature_flag_verdict: ${adapter_final_rollout_nested_fastlane_feature_flag_verdict:-n/a}
+adapter_final_rollout_nested_fastlane_feature_flag_reason_code: ${adapter_final_rollout_nested_fastlane_feature_flag_reason_code:-n/a}
 adapter_final_rollout_nested_go_nogo_require_ingestion_grpc: ${adapter_final_rollout_nested_go_nogo_require_ingestion_grpc:-n/a}
 adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer: ${adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer:-n/a}
 adapter_final_rollout_nested_go_nogo_require_submit_verify_strict: ${adapter_final_rollout_nested_go_nogo_require_submit_verify_strict:-n/a}

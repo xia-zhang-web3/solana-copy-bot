@@ -164,6 +164,12 @@ declare -a window_executor_backend_mode_guard_verdicts=()
 declare -a window_executor_backend_mode_guard_reason_codes=()
 declare -a window_executor_upstream_endpoint_guard_verdicts=()
 declare -a window_executor_upstream_endpoint_guard_reason_codes=()
+declare -a window_go_nogo_require_jito_rpc_policy=()
+declare -a window_jito_rpc_policy_verdicts=()
+declare -a window_jito_rpc_policy_reason_codes=()
+declare -a window_go_nogo_require_fastlane_disabled=()
+declare -a window_fastlane_feature_flag_verdicts=()
+declare -a window_fastlane_feature_flag_reason_codes=()
 declare -a window_go_nogo_require_ingestion_grpc=()
 declare -a window_ingestion_grpc_guard_verdicts=()
 declare -a window_ingestion_grpc_guard_reason_codes=()
@@ -299,6 +305,50 @@ if ((${#input_errors[@]} == 0)); then
       input_errors+=("window ${window_hours}h nested go/no-go executor_upstream_endpoint_guard_reason_code must be non-empty")
       executor_upstream_endpoint_guard_reason_code="n/a"
     fi
+    go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "go_nogo_require_jito_rpc_policy" "$go_nogo_output")")"
+    if ! go_nogo_require_jito_rpc_policy_nested="$(extract_bool_field_strict "go_nogo_require_jito_rpc_policy" "$go_nogo_output")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_jito_rpc_policy must be boolean token, got: ${go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+      go_nogo_require_jito_rpc_policy_nested="unknown"
+    elif [[ "$go_nogo_require_jito_rpc_policy_nested" != "$go_nogo_require_jito_rpc_policy" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_jito_rpc_policy mismatch: nested=${go_nogo_require_jito_rpc_policy_nested} expected=${go_nogo_require_jito_rpc_policy}")
+    fi
+    jito_rpc_policy_verdict_raw="$(trim_string "$(extract_field "jito_rpc_policy_verdict" "$go_nogo_output")")"
+    jito_rpc_policy_verdict_raw_upper="$(printf '%s' "$jito_rpc_policy_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    jito_rpc_policy_verdict="$(normalize_gate_verdict "$jito_rpc_policy_verdict_raw")"
+    if [[ -z "$jito_rpc_policy_verdict_raw" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go jito_rpc_policy_verdict must be non-empty")
+      jito_rpc_policy_verdict="UNKNOWN"
+    elif [[ "$jito_rpc_policy_verdict_raw_upper" != "PASS" && "$jito_rpc_policy_verdict_raw_upper" != "WARN" && "$jito_rpc_policy_verdict_raw_upper" != "NO_DATA" && "$jito_rpc_policy_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go jito_rpc_policy_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${jito_rpc_policy_verdict_raw})")
+      jito_rpc_policy_verdict="UNKNOWN"
+    fi
+    jito_rpc_policy_reason_code="$(trim_string "$(extract_field "jito_rpc_policy_reason_code" "$go_nogo_output")")"
+    if [[ -z "$jito_rpc_policy_reason_code" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go jito_rpc_policy_reason_code must be non-empty")
+      jito_rpc_policy_reason_code="n/a"
+    fi
+    go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "go_nogo_require_fastlane_disabled" "$go_nogo_output")")"
+    if ! go_nogo_require_fastlane_disabled_nested="$(extract_bool_field_strict "go_nogo_require_fastlane_disabled" "$go_nogo_output")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_fastlane_disabled must be boolean token, got: ${go_nogo_require_fastlane_disabled_raw:-<empty>}")
+      go_nogo_require_fastlane_disabled_nested="unknown"
+    elif [[ "$go_nogo_require_fastlane_disabled_nested" != "$go_nogo_require_fastlane_disabled" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_fastlane_disabled mismatch: nested=${go_nogo_require_fastlane_disabled_nested} expected=${go_nogo_require_fastlane_disabled}")
+    fi
+    fastlane_feature_flag_verdict_raw="$(trim_string "$(extract_field "fastlane_feature_flag_verdict" "$go_nogo_output")")"
+    fastlane_feature_flag_verdict_raw_upper="$(printf '%s' "$fastlane_feature_flag_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    fastlane_feature_flag_verdict="$(normalize_gate_verdict "$fastlane_feature_flag_verdict_raw")"
+    if [[ -z "$fastlane_feature_flag_verdict_raw" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go fastlane_feature_flag_verdict must be non-empty")
+      fastlane_feature_flag_verdict="UNKNOWN"
+    elif [[ "$fastlane_feature_flag_verdict_raw_upper" != "PASS" && "$fastlane_feature_flag_verdict_raw_upper" != "WARN" && "$fastlane_feature_flag_verdict_raw_upper" != "NO_DATA" && "$fastlane_feature_flag_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go fastlane_feature_flag_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${fastlane_feature_flag_verdict_raw})")
+      fastlane_feature_flag_verdict="UNKNOWN"
+    fi
+    fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$go_nogo_output")")"
+    if [[ -z "$fastlane_feature_flag_reason_code" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go fastlane_feature_flag_reason_code must be non-empty")
+      fastlane_feature_flag_reason_code="n/a"
+    fi
     go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "go_nogo_require_ingestion_grpc" "$go_nogo_output")")"
     if ! go_nogo_require_ingestion_grpc_nested="$(extract_bool_field_strict "go_nogo_require_ingestion_grpc" "$go_nogo_output")"; then
       input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_ingestion_grpc must be boolean token, got: ${go_nogo_require_ingestion_grpc_raw:-<empty>}")
@@ -378,6 +428,24 @@ if ((${#input_errors[@]} == 0)); then
       fi
       if [[ "$executor_upstream_endpoint_guard_verdict" != "SKIP" ]]; then
         input_errors+=("window ${window_hours}h nested go/no-go executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${executor_upstream_endpoint_guard_verdict})")
+      fi
+    fi
+    if [[ "$go_nogo_require_jito_rpc_policy" == "true" ]]; then
+      if [[ "$jito_rpc_policy_verdict" == "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go jito_rpc_policy_verdict cannot be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=true")
+      fi
+    else
+      if [[ "$jito_rpc_policy_verdict" != "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go jito_rpc_policy_verdict must be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=false (got: ${jito_rpc_policy_verdict})")
+      fi
+    fi
+    if [[ "$go_nogo_require_fastlane_disabled" == "true" ]]; then
+      if [[ "$fastlane_feature_flag_verdict" == "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go fastlane_feature_flag_verdict cannot be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=true")
+      fi
+    else
+      if [[ "$fastlane_feature_flag_verdict" != "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go fastlane_feature_flag_verdict must be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=false (got: ${fastlane_feature_flag_verdict})")
       fi
     fi
     if [[ "$go_nogo_require_ingestion_grpc" == "true" ]]; then
@@ -486,6 +554,12 @@ if ((${#input_errors[@]} == 0)); then
     window_executor_backend_mode_guard_reason_codes+=("${executor_backend_mode_guard_reason_code:-n/a}")
     window_executor_upstream_endpoint_guard_verdicts+=("${executor_upstream_endpoint_guard_verdict:-UNKNOWN}")
     window_executor_upstream_endpoint_guard_reason_codes+=("${executor_upstream_endpoint_guard_reason_code:-n/a}")
+    window_go_nogo_require_jito_rpc_policy+=("${go_nogo_require_jito_rpc_policy_nested:-unknown}")
+    window_jito_rpc_policy_verdicts+=("${jito_rpc_policy_verdict:-UNKNOWN}")
+    window_jito_rpc_policy_reason_codes+=("${jito_rpc_policy_reason_code:-n/a}")
+    window_go_nogo_require_fastlane_disabled+=("${go_nogo_require_fastlane_disabled_nested:-unknown}")
+    window_fastlane_feature_flag_verdicts+=("${fastlane_feature_flag_verdict:-UNKNOWN}")
+    window_fastlane_feature_flag_reason_codes+=("${fastlane_feature_flag_reason_code:-n/a}")
     window_go_nogo_require_ingestion_grpc+=("${go_nogo_require_ingestion_grpc_nested:-unknown}")
     window_ingestion_grpc_guard_verdicts+=("${ingestion_grpc_guard_verdict:-UNKNOWN}")
     window_ingestion_grpc_guard_reason_codes+=("${ingestion_grpc_guard_reason_code:-n/a}")
@@ -683,6 +757,12 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_executor_backend_mode_guard_reason_code: ${window_executor_backend_mode_guard_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_executor_upstream_endpoint_guard_verdict: ${window_executor_upstream_endpoint_guard_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_executor_upstream_endpoint_guard_reason_code: ${window_executor_upstream_endpoint_guard_reason_codes[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_go_nogo_require_jito_rpc_policy: ${window_go_nogo_require_jito_rpc_policy[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_jito_rpc_policy_verdict: ${window_jito_rpc_policy_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_jito_rpc_policy_reason_code: ${window_jito_rpc_policy_reason_codes[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_go_nogo_require_fastlane_disabled: ${window_go_nogo_require_fastlane_disabled[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_verdict: ${window_fastlane_feature_flag_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_fastlane_feature_flag_reason_code: ${window_fastlane_feature_flag_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_require_ingestion_grpc: ${window_go_nogo_require_ingestion_grpc[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_ingestion_grpc_guard_verdict: ${window_ingestion_grpc_guard_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_ingestion_grpc_guard_reason_code: ${window_ingestion_grpc_guard_reason_codes[$idx]}"

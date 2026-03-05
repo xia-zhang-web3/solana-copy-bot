@@ -139,6 +139,12 @@ adapter_nested_executor_backend_mode_guard_verdict="n/a"
 adapter_nested_executor_backend_mode_guard_reason_code="n/a"
 adapter_nested_executor_upstream_endpoint_guard_verdict="n/a"
 adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+adapter_nested_go_nogo_require_jito_rpc_policy="n/a"
+adapter_nested_jito_rpc_policy_verdict="n/a"
+adapter_nested_jito_rpc_policy_reason_code="n/a"
+adapter_nested_go_nogo_require_fastlane_disabled="n/a"
+adapter_nested_fastlane_feature_flag_verdict="n/a"
+adapter_nested_fastlane_feature_flag_reason_code="n/a"
 adapter_nested_go_nogo_require_ingestion_grpc="n/a"
 adapter_nested_ingestion_grpc_guard_verdict="n/a"
 adapter_nested_ingestion_grpc_guard_reason_code="n/a"
@@ -174,6 +180,12 @@ route_fee_nested_executor_backend_mode_guard_verdict="n/a"
 route_fee_nested_executor_backend_mode_guard_reason_code="n/a"
 route_fee_nested_executor_upstream_endpoint_guard_verdict="n/a"
 route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+route_fee_nested_go_nogo_require_jito_rpc_policy="n/a"
+route_fee_nested_jito_rpc_policy_verdict="n/a"
+route_fee_nested_jito_rpc_policy_reason_code="n/a"
+route_fee_nested_go_nogo_require_fastlane_disabled="n/a"
+route_fee_nested_fastlane_feature_flag_verdict="n/a"
+route_fee_nested_fastlane_feature_flag_reason_code="n/a"
 route_fee_nested_go_nogo_require_ingestion_grpc="n/a"
 route_fee_nested_ingestion_grpc_guard_verdict="n/a"
 route_fee_nested_ingestion_grpc_guard_reason_code="n/a"
@@ -287,6 +299,50 @@ if ((${#input_errors[@]} == 0)); then
       input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
       adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
     fi
+    adapter_nested_go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_jito_rpc_policy" "$adapter_output")")"
+    if ! adapter_nested_go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "rollout_nested_go_nogo_require_jito_rpc_policy" "$adapter_output")"; then
+      input_errors+=("nested adapter rollout final rollout_nested_go_nogo_require_jito_rpc_policy must be boolean token, got: ${adapter_nested_go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+      adapter_nested_go_nogo_require_jito_rpc_policy="unknown"
+    elif [[ "$adapter_nested_go_nogo_require_jito_rpc_policy" != "$go_nogo_require_jito_rpc_policy_norm" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_go_nogo_require_jito_rpc_policy mismatch: nested=${adapter_nested_go_nogo_require_jito_rpc_policy} expected=${go_nogo_require_jito_rpc_policy_norm}")
+    fi
+    adapter_nested_jito_rpc_policy_verdict_raw="$(trim_string "$(extract_field "rollout_nested_jito_rpc_policy_verdict" "$adapter_output")")"
+    adapter_nested_jito_rpc_policy_verdict_raw_upper="$(printf '%s' "$adapter_nested_jito_rpc_policy_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    adapter_nested_jito_rpc_policy_verdict="$(normalize_gate_verdict "$adapter_nested_jito_rpc_policy_verdict_raw")"
+    if [[ -z "$adapter_nested_jito_rpc_policy_verdict_raw" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_jito_rpc_policy_verdict must be non-empty")
+      adapter_nested_jito_rpc_policy_verdict="UNKNOWN"
+    elif [[ "$adapter_nested_jito_rpc_policy_verdict_raw_upper" != "PASS" && "$adapter_nested_jito_rpc_policy_verdict_raw_upper" != "WARN" && "$adapter_nested_jito_rpc_policy_verdict_raw_upper" != "NO_DATA" && "$adapter_nested_jito_rpc_policy_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_jito_rpc_policy_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${adapter_nested_jito_rpc_policy_verdict_raw})")
+      adapter_nested_jito_rpc_policy_verdict="UNKNOWN"
+    fi
+    adapter_nested_jito_rpc_policy_reason_code="$(trim_string "$(extract_field "rollout_nested_jito_rpc_policy_reason_code" "$adapter_output")")"
+    if [[ -z "$adapter_nested_jito_rpc_policy_reason_code" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_jito_rpc_policy_reason_code must be non-empty")
+      adapter_nested_jito_rpc_policy_reason_code="n/a"
+    fi
+    adapter_nested_go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_fastlane_disabled" "$adapter_output")")"
+    if ! adapter_nested_go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "rollout_nested_go_nogo_require_fastlane_disabled" "$adapter_output")"; then
+      input_errors+=("nested adapter rollout final rollout_nested_go_nogo_require_fastlane_disabled must be boolean token, got: ${adapter_nested_go_nogo_require_fastlane_disabled_raw:-<empty>}")
+      adapter_nested_go_nogo_require_fastlane_disabled="unknown"
+    elif [[ "$adapter_nested_go_nogo_require_fastlane_disabled" != "$go_nogo_require_fastlane_disabled_norm" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_go_nogo_require_fastlane_disabled mismatch: nested=${adapter_nested_go_nogo_require_fastlane_disabled} expected=${go_nogo_require_fastlane_disabled_norm}")
+    fi
+    adapter_nested_fastlane_feature_flag_verdict_raw="$(trim_string "$(extract_field "rollout_nested_fastlane_feature_flag_verdict" "$adapter_output")")"
+    adapter_nested_fastlane_feature_flag_verdict_raw_upper="$(printf '%s' "$adapter_nested_fastlane_feature_flag_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    adapter_nested_fastlane_feature_flag_verdict="$(normalize_gate_verdict "$adapter_nested_fastlane_feature_flag_verdict_raw")"
+    if [[ -z "$adapter_nested_fastlane_feature_flag_verdict_raw" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_fastlane_feature_flag_verdict must be non-empty")
+      adapter_nested_fastlane_feature_flag_verdict="UNKNOWN"
+    elif [[ "$adapter_nested_fastlane_feature_flag_verdict_raw_upper" != "PASS" && "$adapter_nested_fastlane_feature_flag_verdict_raw_upper" != "WARN" && "$adapter_nested_fastlane_feature_flag_verdict_raw_upper" != "NO_DATA" && "$adapter_nested_fastlane_feature_flag_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_fastlane_feature_flag_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${adapter_nested_fastlane_feature_flag_verdict_raw})")
+      adapter_nested_fastlane_feature_flag_verdict="UNKNOWN"
+    fi
+    adapter_nested_fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "rollout_nested_fastlane_feature_flag_reason_code" "$adapter_output")")"
+    if [[ -z "$adapter_nested_fastlane_feature_flag_reason_code" ]]; then
+      input_errors+=("nested adapter rollout final rollout_nested_fastlane_feature_flag_reason_code must be non-empty")
+      adapter_nested_fastlane_feature_flag_reason_code="n/a"
+    fi
     adapter_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_ingestion_grpc" "$adapter_output")")"
     if ! adapter_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "rollout_nested_go_nogo_require_ingestion_grpc" "$adapter_output")"; then
       input_errors+=("nested adapter rollout final rollout_nested_go_nogo_require_ingestion_grpc must be boolean token, got: ${adapter_nested_go_nogo_require_ingestion_grpc_raw:-<empty>}")
@@ -368,6 +424,24 @@ if ((${#input_errors[@]} == 0)); then
         input_errors+=("nested adapter rollout final rollout_nested_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${adapter_nested_executor_upstream_endpoint_guard_verdict})")
       fi
     fi
+    if [[ "$go_nogo_require_jito_rpc_policy_norm" == "true" ]]; then
+      if [[ "$adapter_nested_jito_rpc_policy_verdict" == "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_jito_rpc_policy_verdict cannot be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=true")
+      fi
+    else
+      if [[ "$adapter_nested_jito_rpc_policy_verdict" != "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_jito_rpc_policy_verdict must be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=false (got: ${adapter_nested_jito_rpc_policy_verdict})")
+      fi
+    fi
+    if [[ "$go_nogo_require_fastlane_disabled_norm" == "true" ]]; then
+      if [[ "$adapter_nested_fastlane_feature_flag_verdict" == "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_fastlane_feature_flag_verdict cannot be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=true")
+      fi
+    else
+      if [[ "$adapter_nested_fastlane_feature_flag_verdict" != "SKIP" ]]; then
+        input_errors+=("nested adapter rollout final rollout_nested_fastlane_feature_flag_verdict must be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=false (got: ${adapter_nested_fastlane_feature_flag_verdict})")
+      fi
+    fi
     if [[ "$go_nogo_require_ingestion_grpc_norm" == "true" ]]; then
       if [[ "$adapter_nested_ingestion_grpc_guard_verdict" == "SKIP" ]]; then
         input_errors+=("nested adapter rollout final rollout_nested_ingestion_grpc_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=true")
@@ -419,6 +493,12 @@ if ((${#input_errors[@]} == 0)); then
     adapter_nested_executor_backend_mode_guard_reason_code="n/a"
     adapter_nested_executor_upstream_endpoint_guard_verdict="n/a"
     adapter_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+    adapter_nested_go_nogo_require_jito_rpc_policy="n/a"
+    adapter_nested_jito_rpc_policy_verdict="n/a"
+    adapter_nested_jito_rpc_policy_reason_code="n/a"
+    adapter_nested_go_nogo_require_fastlane_disabled="n/a"
+    adapter_nested_fastlane_feature_flag_verdict="n/a"
+    adapter_nested_fastlane_feature_flag_reason_code="n/a"
     adapter_nested_go_nogo_require_ingestion_grpc="n/a"
     adapter_nested_ingestion_grpc_guard_verdict="n/a"
     adapter_nested_ingestion_grpc_guard_reason_code="n/a"
@@ -533,6 +613,50 @@ package_bundle_enabled: false"
       input_errors+=("nested route fee final signoff_nested_executor_upstream_endpoint_guard_reason_code must be non-empty")
       route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
     fi
+    route_fee_nested_go_nogo_require_jito_rpc_policy_raw="$(trim_string "$(extract_field "signoff_nested_go_nogo_require_jito_rpc_policy" "$route_fee_output")")"
+    if ! route_fee_nested_go_nogo_require_jito_rpc_policy="$(extract_bool_field_strict "signoff_nested_go_nogo_require_jito_rpc_policy" "$route_fee_output")"; then
+      input_errors+=("nested route fee final signoff_nested_go_nogo_require_jito_rpc_policy must be boolean token, got: ${route_fee_nested_go_nogo_require_jito_rpc_policy_raw:-<empty>}")
+      route_fee_nested_go_nogo_require_jito_rpc_policy="unknown"
+    elif [[ "$route_fee_nested_go_nogo_require_jito_rpc_policy" != "$go_nogo_require_jito_rpc_policy_norm" ]]; then
+      input_errors+=("nested route fee final signoff_nested_go_nogo_require_jito_rpc_policy mismatch: nested=${route_fee_nested_go_nogo_require_jito_rpc_policy} expected=${go_nogo_require_jito_rpc_policy_norm}")
+    fi
+    route_fee_nested_jito_rpc_policy_verdict_raw="$(trim_string "$(extract_field "signoff_nested_jito_rpc_policy_verdict" "$route_fee_output")")"
+    route_fee_nested_jito_rpc_policy_verdict_raw_upper="$(printf '%s' "$route_fee_nested_jito_rpc_policy_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    route_fee_nested_jito_rpc_policy_verdict="$(normalize_gate_verdict "$route_fee_nested_jito_rpc_policy_verdict_raw")"
+    if [[ -z "$route_fee_nested_jito_rpc_policy_verdict_raw" ]]; then
+      input_errors+=("nested route fee final signoff_nested_jito_rpc_policy_verdict must be non-empty")
+      route_fee_nested_jito_rpc_policy_verdict="UNKNOWN"
+    elif [[ "$route_fee_nested_jito_rpc_policy_verdict_raw_upper" != "PASS" && "$route_fee_nested_jito_rpc_policy_verdict_raw_upper" != "WARN" && "$route_fee_nested_jito_rpc_policy_verdict_raw_upper" != "NO_DATA" && "$route_fee_nested_jito_rpc_policy_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested route fee final signoff_nested_jito_rpc_policy_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${route_fee_nested_jito_rpc_policy_verdict_raw})")
+      route_fee_nested_jito_rpc_policy_verdict="UNKNOWN"
+    fi
+    route_fee_nested_jito_rpc_policy_reason_code="$(trim_string "$(extract_field "signoff_nested_jito_rpc_policy_reason_code" "$route_fee_output")")"
+    if [[ -z "$route_fee_nested_jito_rpc_policy_reason_code" ]]; then
+      input_errors+=("nested route fee final signoff_nested_jito_rpc_policy_reason_code must be non-empty")
+      route_fee_nested_jito_rpc_policy_reason_code="n/a"
+    fi
+    route_fee_nested_go_nogo_require_fastlane_disabled_raw="$(trim_string "$(extract_field "signoff_nested_go_nogo_require_fastlane_disabled" "$route_fee_output")")"
+    if ! route_fee_nested_go_nogo_require_fastlane_disabled="$(extract_bool_field_strict "signoff_nested_go_nogo_require_fastlane_disabled" "$route_fee_output")"; then
+      input_errors+=("nested route fee final signoff_nested_go_nogo_require_fastlane_disabled must be boolean token, got: ${route_fee_nested_go_nogo_require_fastlane_disabled_raw:-<empty>}")
+      route_fee_nested_go_nogo_require_fastlane_disabled="unknown"
+    elif [[ "$route_fee_nested_go_nogo_require_fastlane_disabled" != "$go_nogo_require_fastlane_disabled_norm" ]]; then
+      input_errors+=("nested route fee final signoff_nested_go_nogo_require_fastlane_disabled mismatch: nested=${route_fee_nested_go_nogo_require_fastlane_disabled} expected=${go_nogo_require_fastlane_disabled_norm}")
+    fi
+    route_fee_nested_fastlane_feature_flag_verdict_raw="$(trim_string "$(extract_field "signoff_nested_fastlane_feature_flag_verdict" "$route_fee_output")")"
+    route_fee_nested_fastlane_feature_flag_verdict_raw_upper="$(printf '%s' "$route_fee_nested_fastlane_feature_flag_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    route_fee_nested_fastlane_feature_flag_verdict="$(normalize_gate_verdict "$route_fee_nested_fastlane_feature_flag_verdict_raw")"
+    if [[ -z "$route_fee_nested_fastlane_feature_flag_verdict_raw" ]]; then
+      input_errors+=("nested route fee final signoff_nested_fastlane_feature_flag_verdict must be non-empty")
+      route_fee_nested_fastlane_feature_flag_verdict="UNKNOWN"
+    elif [[ "$route_fee_nested_fastlane_feature_flag_verdict_raw_upper" != "PASS" && "$route_fee_nested_fastlane_feature_flag_verdict_raw_upper" != "WARN" && "$route_fee_nested_fastlane_feature_flag_verdict_raw_upper" != "NO_DATA" && "$route_fee_nested_fastlane_feature_flag_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested route fee final signoff_nested_fastlane_feature_flag_verdict must be one of PASS,WARN,NO_DATA,SKIP (got: ${route_fee_nested_fastlane_feature_flag_verdict_raw})")
+      route_fee_nested_fastlane_feature_flag_verdict="UNKNOWN"
+    fi
+    route_fee_nested_fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "signoff_nested_fastlane_feature_flag_reason_code" "$route_fee_output")")"
+    if [[ -z "$route_fee_nested_fastlane_feature_flag_reason_code" ]]; then
+      input_errors+=("nested route fee final signoff_nested_fastlane_feature_flag_reason_code must be non-empty")
+      route_fee_nested_fastlane_feature_flag_reason_code="n/a"
+    fi
     route_fee_nested_go_nogo_require_ingestion_grpc_raw="$(trim_string "$(extract_field "signoff_nested_go_nogo_require_ingestion_grpc" "$route_fee_output")")"
     if ! route_fee_nested_go_nogo_require_ingestion_grpc="$(extract_bool_field_strict "signoff_nested_go_nogo_require_ingestion_grpc" "$route_fee_output")"; then
       input_errors+=("nested route fee final signoff_nested_go_nogo_require_ingestion_grpc must be boolean token, got: ${route_fee_nested_go_nogo_require_ingestion_grpc_raw:-<empty>}")
@@ -619,6 +743,24 @@ package_bundle_enabled: false"
         input_errors+=("nested route fee final signoff_nested_executor_upstream_endpoint_guard_verdict must be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=false (got: ${route_fee_nested_executor_upstream_endpoint_guard_verdict})")
       fi
     fi
+    if [[ "$go_nogo_require_jito_rpc_policy_norm" == "true" ]]; then
+      if [[ "$route_fee_nested_jito_rpc_policy_verdict" == "SKIP" ]]; then
+        input_errors+=("nested route fee final signoff_nested_jito_rpc_policy_verdict cannot be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=true")
+      fi
+    else
+      if [[ "$route_fee_nested_jito_rpc_policy_verdict" != "SKIP" ]]; then
+        input_errors+=("nested route fee final signoff_nested_jito_rpc_policy_verdict must be SKIP when GO_NOGO_REQUIRE_JITO_RPC_POLICY=false (got: ${route_fee_nested_jito_rpc_policy_verdict})")
+      fi
+    fi
+    if [[ "$go_nogo_require_fastlane_disabled_norm" == "true" ]]; then
+      if [[ "$route_fee_nested_fastlane_feature_flag_verdict" == "SKIP" ]]; then
+        input_errors+=("nested route fee final signoff_nested_fastlane_feature_flag_verdict cannot be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=true")
+      fi
+    else
+      if [[ "$route_fee_nested_fastlane_feature_flag_verdict" != "SKIP" ]]; then
+        input_errors+=("nested route fee final signoff_nested_fastlane_feature_flag_verdict must be SKIP when GO_NOGO_REQUIRE_FASTLANE_DISABLED=false (got: ${route_fee_nested_fastlane_feature_flag_verdict})")
+      fi
+    fi
     if [[ "$go_nogo_require_ingestion_grpc_norm" == "true" ]]; then
       if [[ "$route_fee_nested_ingestion_grpc_guard_verdict" == "SKIP" ]]; then
         input_errors+=("nested route fee final signoff_nested_ingestion_grpc_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=true")
@@ -670,6 +812,12 @@ package_bundle_enabled: false"
     route_fee_nested_executor_backend_mode_guard_reason_code="n/a"
     route_fee_nested_executor_upstream_endpoint_guard_verdict="n/a"
     route_fee_nested_executor_upstream_endpoint_guard_reason_code="n/a"
+    route_fee_nested_go_nogo_require_jito_rpc_policy="n/a"
+    route_fee_nested_jito_rpc_policy_verdict="n/a"
+    route_fee_nested_jito_rpc_policy_reason_code="n/a"
+    route_fee_nested_go_nogo_require_fastlane_disabled="n/a"
+    route_fee_nested_fastlane_feature_flag_verdict="n/a"
+    route_fee_nested_fastlane_feature_flag_reason_code="n/a"
     route_fee_nested_go_nogo_require_ingestion_grpc="n/a"
     route_fee_nested_ingestion_grpc_guard_verdict="n/a"
     route_fee_nested_ingestion_grpc_guard_reason_code="n/a"
@@ -806,6 +954,12 @@ adapter_final_nested_executor_backend_mode_guard_verdict: ${adapter_nested_execu
 adapter_final_nested_executor_backend_mode_guard_reason_code: ${adapter_nested_executor_backend_mode_guard_reason_code:-n/a}
 adapter_final_nested_executor_upstream_endpoint_guard_verdict: ${adapter_nested_executor_upstream_endpoint_guard_verdict:-n/a}
 adapter_final_nested_executor_upstream_endpoint_guard_reason_code: ${adapter_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
+adapter_final_nested_go_nogo_require_jito_rpc_policy: ${adapter_nested_go_nogo_require_jito_rpc_policy:-n/a}
+adapter_final_nested_jito_rpc_policy_verdict: ${adapter_nested_jito_rpc_policy_verdict:-n/a}
+adapter_final_nested_jito_rpc_policy_reason_code: ${adapter_nested_jito_rpc_policy_reason_code:-n/a}
+adapter_final_nested_go_nogo_require_fastlane_disabled: ${adapter_nested_go_nogo_require_fastlane_disabled:-n/a}
+adapter_final_nested_fastlane_feature_flag_verdict: ${adapter_nested_fastlane_feature_flag_verdict:-n/a}
+adapter_final_nested_fastlane_feature_flag_reason_code: ${adapter_nested_fastlane_feature_flag_reason_code:-n/a}
 adapter_final_nested_go_nogo_require_ingestion_grpc: ${adapter_nested_go_nogo_require_ingestion_grpc:-n/a}
 adapter_final_nested_ingestion_grpc_guard_verdict: ${adapter_nested_ingestion_grpc_guard_verdict:-n/a}
 adapter_final_nested_ingestion_grpc_guard_reason_code: ${adapter_nested_ingestion_grpc_guard_reason_code:-n/a}
@@ -831,6 +985,12 @@ route_fee_final_nested_executor_backend_mode_guard_verdict: ${route_fee_nested_e
 route_fee_final_nested_executor_backend_mode_guard_reason_code: ${route_fee_nested_executor_backend_mode_guard_reason_code:-n/a}
 route_fee_final_nested_executor_upstream_endpoint_guard_verdict: ${route_fee_nested_executor_upstream_endpoint_guard_verdict:-n/a}
 route_fee_final_nested_executor_upstream_endpoint_guard_reason_code: ${route_fee_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
+route_fee_final_nested_go_nogo_require_jito_rpc_policy: ${route_fee_nested_go_nogo_require_jito_rpc_policy:-n/a}
+route_fee_final_nested_jito_rpc_policy_verdict: ${route_fee_nested_jito_rpc_policy_verdict:-n/a}
+route_fee_final_nested_jito_rpc_policy_reason_code: ${route_fee_nested_jito_rpc_policy_reason_code:-n/a}
+route_fee_final_nested_go_nogo_require_fastlane_disabled: ${route_fee_nested_go_nogo_require_fastlane_disabled:-n/a}
+route_fee_final_nested_fastlane_feature_flag_verdict: ${route_fee_nested_fastlane_feature_flag_verdict:-n/a}
+route_fee_final_nested_fastlane_feature_flag_reason_code: ${route_fee_nested_fastlane_feature_flag_reason_code:-n/a}
 route_fee_final_nested_go_nogo_require_ingestion_grpc: ${route_fee_nested_go_nogo_require_ingestion_grpc:-n/a}
 route_fee_final_nested_ingestion_grpc_guard_verdict: ${route_fee_nested_ingestion_grpc_guard_verdict:-n/a}
 route_fee_final_nested_ingestion_grpc_guard_reason_code: ${route_fee_nested_ingestion_grpc_guard_reason_code:-n/a}
