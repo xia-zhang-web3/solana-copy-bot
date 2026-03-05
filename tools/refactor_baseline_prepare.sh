@@ -91,6 +91,10 @@ COPYBOT_EXECUTOR_UPSTREAM_SUBMIT_URL=http://127.0.0.1:18080/submit
 COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_URL=http://127.0.0.1:18080/simulate
 EOF_EXECUTOR_ENV
 
+if [[ -n "${REFACTOR_BASELINE_EXECUTOR_SIGNER_PUBKEY:-}" ]]; then
+  printf 'COPYBOT_EXECUTOR_SIGNER_PUBKEY=%s\n' "$REFACTOR_BASELINE_EXECUTOR_SIGNER_PUBKEY" >>"$EXECUTOR_ENV_PATH"
+fi
+
 printf '%s\n' "adapter-bearer" >"$SECRETS_DIR/adapter_bearer.token"
 printf '%s\n' "adapter-hmac-secret" >"$SECRETS_DIR/adapter_hmac.secret"
 printf '%s\n' "upstream-auth" >"$SECRETS_DIR/upstream_auth.token"

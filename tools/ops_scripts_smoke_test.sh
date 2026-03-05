@@ -10337,6 +10337,26 @@ run_refactor_phase_gate_case() {
   assert_contains "$phase_strict_signer_output" "non_bootstrap_signer_guard_verdict: UNKNOWN"
   assert_contains "$phase_strict_signer_output" "non_bootstrap_signer_guard_reason_code: signer_pubkey_missing"
 
+  local phase_strict_signer_pass_output=""
+  phase_strict_signer_pass_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER="true" \
+      REFACTOR_BASELINE_EXECUTOR_SIGNER_PUBKEY="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-signer-pass" --fixture-dir "$phase_fixture_dir.strict-signer-pass"
+  )"
+  assert_field_equals "$phase_strict_signer_pass_output" "go_nogo_require_non_bootstrap_signer" "true"
+  local phase_strict_signer_pass_norm_go_nogo=""
+  local phase_strict_signer_pass_norm_rehearsal=""
+  local phase_strict_signer_pass_norm_rollout=""
+  phase_strict_signer_pass_norm_go_nogo="$(extract_field_value "$phase_strict_signer_pass_output" "normalized_go_nogo")"
+  phase_strict_signer_pass_norm_rehearsal="$(extract_field_value "$phase_strict_signer_pass_output" "normalized_rehearsal")"
+  phase_strict_signer_pass_norm_rollout="$(extract_field_value "$phase_strict_signer_pass_output" "normalized_rollout")"
+  assert_contains "$(cat "$phase_strict_signer_pass_norm_go_nogo")" "non_bootstrap_signer_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_signer_pass_norm_go_nogo")" "non_bootstrap_signer_guard_reason_code: signer_pubkey_non_bootstrap"
+  assert_contains "$(cat "$phase_strict_signer_pass_norm_rehearsal")" "go_nogo_non_bootstrap_signer_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_signer_pass_norm_rehearsal")" "go_nogo_non_bootstrap_signer_guard_reason_code: signer_pubkey_non_bootstrap"
+  assert_contains "$(cat "$phase_strict_signer_pass_norm_rollout")" "rehearsal_nested_non_bootstrap_signer_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_signer_pass_norm_rollout")" "rehearsal_nested_non_bootstrap_signer_guard_reason_code: signer_pubkey_non_bootstrap"
+
   local phase_invalid_ingestion_source_output=""
   if phase_invalid_ingestion_source_output="$(
     REFACTOR_PHASE_GATE_INGESTION_SOURCE="helius_ws" \
