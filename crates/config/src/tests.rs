@@ -281,6 +281,115 @@ fn load_from_env_applies_submit_fastlane_enabled_override() {
     });
 }
 
+#[test]
+fn load_from_env_rejects_follow_top_n_below_shadow_min_active_wallets() {
+    with_temp_config_file(
+        r#"
+[discovery]
+follow_top_n = 10
+
+[risk]
+shadow_universe_min_active_follow_wallets = 15
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("impossible shadow universe config must fail")
+                    .to_string();
+                assert!(
+                    err.contains("discovery.follow_top_n (10) must be >= risk.shadow_universe_min_active_follow_wallets (15)"),
+                    "unexpected error: {err}"
+                );
+            });
+        },
+    );
+}
+
+#[test]
+fn execution_config_debug_redacts_secret_values() {
+    let mut execution = ExecutionConfig::default();
+    execution.submit_adapter_auth_token = "adapter-secret-token".to_string();
+    execution.submit_adapter_hmac_secret = "hmac-secret-value".to_string();
+    execution.submit_dynamic_cu_price_api_auth_token = "priority-fee-secret".to_string();
+    execution.submit_adapter_http_url =
+        "https://adapter.example.com/submit?api-key=adapter-query-secret".to_string();
+
+    let execution_debug = format!("{execution:?}");
+    assert!(
+        !execution_debug.contains("adapter-secret-token"),
+        "debug output leaked adapter token: {execution_debug}"
+    );
+    assert!(
+        !execution_debug.contains("hmac-secret-value"),
+        "debug output leaked hmac secret: {execution_debug}"
+    );
+    assert!(
+        !execution_debug.contains("priority-fee-secret"),
+        "debug output leaked dynamic CU auth token: {execution_debug}"
+    );
+    assert!(
+        execution_debug.contains("[REDACTED]"),
+        "debug output should show redaction marker: {execution_debug}"
+    );
+    assert!(
+        !execution_debug.contains("adapter-query-secret"),
+        "debug output leaked adapter URL query secret: {execution_debug}"
+    );
+    assert!(
+        execution_debug.contains("https://adapter.example.com/submit?<redacted>"),
+        "debug output should redact adapter URL query: {execution_debug}"
+    );
+
+    let mut ingestion = IngestionConfig::default();
+    ingestion.helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=helius-ws-secret".to_string();
+    ingestion.helius_http_url =
+        "https://mainnet.helius-rpc.com/?api-key=helius-http-secret".to_string();
+    ingestion.helius_http_urls =
+        vec!["https://backup.helius.example/?api-key=backup-secret".to_string()];
+    ingestion.yellowstone_x_token = "yellowstone-secret".to_string();
+    let ingestion_debug = format!("{ingestion:?}");
+    for secret in [
+        "helius-ws-secret",
+        "helius-http-secret",
+        "backup-secret",
+        "yellowstone-secret",
+    ] {
+        assert!(
+            !ingestion_debug.contains(secret),
+            "ingestion debug output leaked secret={secret}: {ingestion_debug}"
+        );
+    }
+    assert!(
+        ingestion_debug.contains("wss://mainnet.helius-rpc.com/?<redacted>"),
+        "ingestion debug output should redact ws URL query: {ingestion_debug}"
+    );
+    assert!(
+        ingestion_debug.contains("https://mainnet.helius-rpc.com/?<redacted>"),
+        "ingestion debug output should redact http URL query: {ingestion_debug}"
+    );
+    assert!(
+        ingestion_debug.contains("[REDACTED]"),
+        "ingestion debug output should show redaction marker: {ingestion_debug}"
+    );
+
+    let app_debug = format!(
+        "{:?}",
+        AppConfig {
+            ingestion,
+            execution,
+            ..AppConfig::default()
+        }
+    );
+    assert!(
+        !app_debug.contains("adapter-secret-token"),
+        "AppConfig debug output leaked adapter token: {app_debug}"
+    );
+    assert!(
+        !app_debug.contains("yellowstone-secret"),
+        "AppConfig debug output leaked ingestion token: {app_debug}"
+    );
+}
+
 fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,18 +11,22 @@ use super::AppConfig;
 
 pub fn load_from_path(path: impl AsRef<Path>) -> Result<AppConfig> {
     let path = path.as_ref();
+    let cfg = parse_from_path(path)?;
+    validate_loaded_config(&cfg)?;
+    Ok(cfg)
+}
+
+fn parse_from_path(path: &Path) -> Result<AppConfig> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read config: {}", path.display()))?;
-    let cfg: AppConfig = toml::from_str(&raw)
-        .with_context(|| format!("failed to parse TOML: {}", path.display()))?;
-    Ok(cfg)
+    toml::from_str(&raw).with_context(|| format!("failed to parse TOML: {}", path.display()))
 }
 
 pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathBuf)> {
     let configured = env::var("SOLANA_COPY_BOT_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_path.to_path_buf());
-    let mut config = load_from_path(&configured)?;
+    let mut config = parse_from_path(&configured)?;
 
     if let Ok(source) = env::var("SOLANA_COPY_BOT_INGESTION_SOURCE") {
         config.ingestion.source = source;
@@ -776,7 +780,24 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         }
     }
 
-    validate_adapter_route_policy_completeness(&config.execution)?;
+    validate_loaded_config(&config)?;
 
     Ok((config, configured))
+}
+
+fn validate_loaded_config(config: &AppConfig) -> Result<()> {
+    validate_adapter_route_policy_completeness(&config.execution)?;
+    validate_shadow_universe_config(config)?;
+    Ok(())
+}
+
+fn validate_shadow_universe_config(config: &AppConfig) -> Result<()> {
+    let follow_top_n = u64::from(config.discovery.follow_top_n);
+    let min_active = config.risk.shadow_universe_min_active_follow_wallets;
+    if follow_top_n < min_active {
+        return Err(anyhow!(
+            "discovery.follow_top_n ({follow_top_n}) must be >= risk.shadow_universe_min_active_follow_wallets ({min_active})"
+        ));
+    }
+    Ok(())
 }

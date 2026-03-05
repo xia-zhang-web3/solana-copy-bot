@@ -121,7 +121,7 @@ fn parse_yellowstone_transaction_update(
             Some(value) => value,
             None => return Ok(None),
         };
-    if amount_in <= 0.0 || amount_out <= 0.0 {
+    if !amount_in.is_finite() || !amount_out.is_finite() || amount_in <= 0.0 || amount_out <= 0.0 {
         return Ok(None);
     }
 
@@ -340,11 +340,13 @@ pub(super) fn infer_swap_from_proto_balances(
 fn parse_proto_ui_amount(ui_amount: Option<&UiTokenAmount>) -> Option<f64> {
     let ui_amount = ui_amount?;
     if !ui_amount.ui_amount_string.is_empty() {
-        return ui_amount.ui_amount_string.parse::<f64>().ok();
+        let parsed = ui_amount.ui_amount_string.parse::<f64>().ok()?;
+        return parsed.is_finite().then_some(parsed);
     }
     if !ui_amount.amount.is_empty() {
         let raw = ui_amount.amount.parse::<f64>().ok()?;
-        return Some(raw / 10f64.powi(ui_amount.decimals as i32));
+        let normalized = raw / 10f64.powi(ui_amount.decimals as i32);
+        return normalized.is_finite().then_some(normalized);
     }
     if ui_amount.ui_amount.is_finite() {
         return Some(ui_amount.ui_amount);
@@ -356,4 +358,55 @@ fn signer_sol_delta_from_proto(meta: &TransactionStatusMeta, signer_index: usize
     let pre_sol = *meta.pre_balances.get(signer_index)? as f64 / 1_000_000_000.0;
     let post_sol = *meta.post_balances.get(signer_index)? as f64 / 1_000_000_000.0;
     Some(post_sol - pre_sol)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_proto_ui_amount;
+    use yellowstone_grpc_proto::prelude::UiTokenAmount;
+
+    #[test]
+    fn parse_proto_ui_amount_rejects_non_finite_strings() {
+        let amount = UiTokenAmount {
+            ui_amount: 0.0,
+            decimals: 6,
+            amount: String::new(),
+            ui_amount_string: "NaN".to_string(),
+        };
+
+        assert!(
+            parse_proto_ui_amount(Some(&amount)).is_none(),
+            "NaN ui_amount_string must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_proto_ui_amount_rejects_non_finite_raw_amounts() {
+        let amount = UiTokenAmount {
+            ui_amount: 0.0,
+            decimals: 6,
+            amount: "NaN".to_string(),
+            ui_amount_string: String::new(),
+        };
+
+        assert!(
+            parse_proto_ui_amount(Some(&amount)).is_none(),
+            "NaN raw amount must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_proto_ui_amount_rejects_non_finite_ui_amount_field() {
+        let amount = UiTokenAmount {
+            ui_amount: f64::INFINITY,
+            decimals: 6,
+            amount: String::new(),
+            ui_amount_string: String::new(),
+        };
+
+        assert!(
+            parse_proto_ui_amount(Some(&amount)).is_none(),
+            "non-finite ui_amount field must be rejected"
+        );
+    }
 }

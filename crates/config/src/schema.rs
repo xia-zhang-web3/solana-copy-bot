@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::fmt;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -37,7 +38,7 @@ impl Default for SystemConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct ExecutionConfig {
     pub enabled: bool,
@@ -139,6 +140,152 @@ impl Default for ExecutionConfig {
     }
 }
 
+impl fmt::Debug for ExecutionConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutionConfig")
+            .field("enabled", &self.enabled)
+            .field("mode", &self.mode)
+            .field("poll_interval_ms", &self.poll_interval_ms)
+            .field("batch_size", &self.batch_size)
+            .field("default_route", &self.default_route)
+            .field(
+                "rpc_http_url",
+                &redacted_url_debug_value(&self.rpc_http_url),
+            )
+            .field(
+                "rpc_fallback_http_url",
+                &redacted_url_debug_value(&self.rpc_fallback_http_url),
+            )
+            .field(
+                "rpc_devnet_http_url",
+                &redacted_url_debug_value(&self.rpc_devnet_http_url),
+            )
+            .field(
+                "submit_adapter_http_url",
+                &redacted_url_debug_value(&self.submit_adapter_http_url),
+            )
+            .field(
+                "submit_adapter_fallback_http_url",
+                &redacted_url_debug_value(&self.submit_adapter_fallback_http_url),
+            )
+            .field(
+                "submit_adapter_auth_token",
+                &redacted_secret_debug_value(&self.submit_adapter_auth_token),
+            )
+            .field(
+                "submit_adapter_auth_token_file",
+                &self.submit_adapter_auth_token_file,
+            )
+            .field(
+                "submit_adapter_hmac_key_id",
+                &self.submit_adapter_hmac_key_id,
+            )
+            .field(
+                "submit_adapter_hmac_secret",
+                &redacted_secret_debug_value(&self.submit_adapter_hmac_secret),
+            )
+            .field(
+                "submit_adapter_hmac_secret_file",
+                &self.submit_adapter_hmac_secret_file,
+            )
+            .field(
+                "submit_adapter_hmac_ttl_sec",
+                &self.submit_adapter_hmac_ttl_sec,
+            )
+            .field(
+                "submit_adapter_contract_version",
+                &self.submit_adapter_contract_version,
+            )
+            .field(
+                "submit_adapter_require_policy_echo",
+                &self.submit_adapter_require_policy_echo,
+            )
+            .field("submit_fastlane_enabled", &self.submit_fastlane_enabled)
+            .field("submit_allowed_routes", &self.submit_allowed_routes)
+            .field("submit_route_order", &self.submit_route_order)
+            .field(
+                "submit_route_max_slippage_bps",
+                &self.submit_route_max_slippage_bps,
+            )
+            .field("submit_route_tip_lamports", &self.submit_route_tip_lamports)
+            .field(
+                "submit_route_compute_unit_limit",
+                &self.submit_route_compute_unit_limit,
+            )
+            .field(
+                "submit_route_compute_unit_price_micro_lamports",
+                &self.submit_route_compute_unit_price_micro_lamports,
+            )
+            .field(
+                "submit_dynamic_cu_price_enabled",
+                &self.submit_dynamic_cu_price_enabled,
+            )
+            .field(
+                "submit_dynamic_cu_price_percentile",
+                &self.submit_dynamic_cu_price_percentile,
+            )
+            .field(
+                "submit_dynamic_cu_price_api_primary_url",
+                &redacted_url_debug_value(&self.submit_dynamic_cu_price_api_primary_url),
+            )
+            .field(
+                "submit_dynamic_cu_price_api_fallback_url",
+                &redacted_url_debug_value(&self.submit_dynamic_cu_price_api_fallback_url),
+            )
+            .field(
+                "submit_dynamic_cu_price_api_auth_token",
+                &redacted_secret_debug_value(&self.submit_dynamic_cu_price_api_auth_token),
+            )
+            .field(
+                "submit_dynamic_cu_price_api_auth_token_file",
+                &self.submit_dynamic_cu_price_api_auth_token_file,
+            )
+            .field(
+                "submit_dynamic_tip_lamports_enabled",
+                &self.submit_dynamic_tip_lamports_enabled,
+            )
+            .field(
+                "submit_dynamic_tip_lamports_multiplier_bps",
+                &self.submit_dynamic_tip_lamports_multiplier_bps,
+            )
+            .field("submit_timeout_ms", &self.submit_timeout_ms)
+            .field("execution_signer_pubkey", &self.execution_signer_pubkey)
+            .field("pretrade_min_sol_reserve", &self.pretrade_min_sol_reserve)
+            .field(
+                "pretrade_require_token_account",
+                &self.pretrade_require_token_account,
+            )
+            .field(
+                "pretrade_max_priority_fee_lamports",
+                &self.pretrade_max_priority_fee_lamports,
+            )
+            .field("slippage_bps", &self.slippage_bps)
+            .field("max_confirm_seconds", &self.max_confirm_seconds)
+            .field("max_submit_attempts", &self.max_submit_attempts)
+            .field("simulate_before_submit", &self.simulate_before_submit)
+            .finish()
+    }
+}
+
+fn redacted_secret_debug_value(value: &str) -> &str {
+    if value.trim().is_empty() {
+        ""
+    } else {
+        "[REDACTED]"
+    }
+}
+
+fn redacted_url_debug_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else if let Some((prefix, _)) = trimmed.split_once('?') {
+        format!("{prefix}?<redacted>")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SqliteConfig {
@@ -153,7 +300,7 @@ impl Default for SqliteConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct IngestionConfig {
     pub source: String,
@@ -235,6 +382,80 @@ impl Default for IngestionConfig {
             seen_signatures_limit: 5_000,
             mock_interval_ms: 1000,
         }
+    }
+}
+
+impl fmt::Debug for IngestionConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let helius_http_urls = self
+            .helius_http_urls
+            .iter()
+            .map(|url| redacted_url_debug_value(url))
+            .collect::<Vec<_>>();
+        f.debug_struct("IngestionConfig")
+            .field("source", &self.source)
+            .field(
+                "helius_ws_url",
+                &redacted_url_debug_value(&self.helius_ws_url),
+            )
+            .field(
+                "helius_http_url",
+                &redacted_url_debug_value(&self.helius_http_url),
+            )
+            .field("helius_http_urls", &helius_http_urls)
+            .field("yellowstone_grpc_url", &self.yellowstone_grpc_url)
+            .field(
+                "yellowstone_x_token",
+                &redacted_secret_debug_value(&self.yellowstone_x_token),
+            )
+            .field(
+                "yellowstone_connect_timeout_ms",
+                &self.yellowstone_connect_timeout_ms,
+            )
+            .field(
+                "yellowstone_subscribe_timeout_ms",
+                &self.yellowstone_subscribe_timeout_ms,
+            )
+            .field(
+                "yellowstone_stream_buffer_capacity",
+                &self.yellowstone_stream_buffer_capacity,
+            )
+            .field(
+                "yellowstone_reconnect_initial_ms",
+                &self.yellowstone_reconnect_initial_ms,
+            )
+            .field(
+                "yellowstone_reconnect_max_ms",
+                &self.yellowstone_reconnect_max_ms,
+            )
+            .field("yellowstone_program_ids", &self.yellowstone_program_ids)
+            .field("fetch_concurrency", &self.fetch_concurrency)
+            .field("ws_queue_capacity", &self.ws_queue_capacity)
+            .field("output_queue_capacity", &self.output_queue_capacity)
+            .field("prefetch_stale_drop_ms", &self.prefetch_stale_drop_ms)
+            .field("seen_signatures_ttl_ms", &self.seen_signatures_ttl_ms)
+            .field("queue_overflow_policy", &self.queue_overflow_policy)
+            .field("reorder_hold_ms", &self.reorder_hold_ms)
+            .field("reorder_max_buffer", &self.reorder_max_buffer)
+            .field("telemetry_report_seconds", &self.telemetry_report_seconds)
+            .field("subscribe_program_ids", &self.subscribe_program_ids)
+            .field("raydium_program_ids", &self.raydium_program_ids)
+            .field("pumpswap_program_ids", &self.pumpswap_program_ids)
+            .field("reconnect_initial_ms", &self.reconnect_initial_ms)
+            .field("reconnect_max_ms", &self.reconnect_max_ms)
+            .field("tx_fetch_retries", &self.tx_fetch_retries)
+            .field("tx_fetch_retry_delay_ms", &self.tx_fetch_retry_delay_ms)
+            .field("tx_fetch_retry_max_ms", &self.tx_fetch_retry_max_ms)
+            .field("tx_fetch_retry_jitter_ms", &self.tx_fetch_retry_jitter_ms)
+            .field("tx_request_timeout_ms", &self.tx_request_timeout_ms)
+            .field("global_rpc_rps_limit", &self.global_rpc_rps_limit)
+            .field(
+                "per_endpoint_rpc_rps_limit",
+                &self.per_endpoint_rpc_rps_limit,
+            )
+            .field("seen_signatures_limit", &self.seen_signatures_limit)
+            .field("mock_interval_ms", &self.mock_interval_ms)
+            .finish()
     }
 }
 

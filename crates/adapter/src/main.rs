@@ -53,6 +53,7 @@ const POLICY_FLOAT_EPSILON: f64 = 1e-6;
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_TIMEOUT_MS: u64 = 8_000;
 const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
+const DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES: usize = 100_000;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
@@ -441,6 +442,7 @@ struct AuthVerifier {
     bearer_token: Option<String>,
     hmac: Option<HmacConfig>,
     nonce_seen_until_epoch: Arc<Mutex<HashMap<String, i64>>>,
+    nonce_cache_max_entries: usize,
 }
 
 #[derive(Clone)]
@@ -471,6 +473,7 @@ impl AuthVerifier {
             bearer_token: config.bearer_token.clone(),
             hmac,
             nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+            nonce_cache_max_entries: DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
         }
     }
 
@@ -543,6 +546,15 @@ impl AuthVerifier {
                 ));
             }
 
+            let payload = hmac_payload_bytes(timestamp, ttl, nonce, raw_body);
+            let expected_signature =
+                compute_hmac_signature_hex(hmac.secret.as_bytes(), payload.as_slice()).map_err(
+                    |_| Reject::terminal("hmac_invalid", "failed computing HMAC signature"),
+                )?;
+            if !constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()) {
+                return Err(Reject::terminal("hmac_invalid", "HMAC signature mismatch"));
+            }
+
             {
                 let mut seen = self.nonce_seen_until_epoch.lock().await;
                 seen.retain(|_, expires_at| *expires_at >= now);
@@ -553,16 +565,16 @@ impl AuthVerifier {
                         "HMAC nonce replay detected",
                     ));
                 }
-                seen.insert(nonce_key, now + max_skew);
-            }
-
-            let payload = hmac_payload_bytes(timestamp, ttl, nonce, raw_body);
-            let expected_signature =
-                compute_hmac_signature_hex(hmac.secret.as_bytes(), payload.as_slice()).map_err(
-                    |_| Reject::terminal("hmac_invalid", "failed computing HMAC signature"),
-                )?;
-            if !constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()) {
-                return Err(Reject::terminal("hmac_invalid", "HMAC signature mismatch"));
+                if seen.len() >= self.nonce_cache_max_entries {
+                    return Err(Reject::retryable(
+                        "hmac_replay_cache_overflow",
+                        format!(
+                            "HMAC nonce replay cache capacity reached (max_entries={})",
+                            self.nonce_cache_max_entries
+                        ),
+                    ));
+                }
+                seen.insert(nonce_key, timestamp.saturating_add(max_skew));
             }
         }
 
@@ -2125,6 +2137,7 @@ mod tests {
             bearer_token: Some("correct-token".to_string()),
             hmac: None,
             nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+            nonce_cache_max_entries: DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2144,6 +2157,7 @@ mod tests {
             bearer_token: Some("correct-token".to_string()),
             hmac: None,
             nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+            nonce_cache_max_entries: DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2166,6 +2180,7 @@ mod tests {
                 ttl_sec: 30,
             }),
             nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+            nonce_cache_max_entries: DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
         };
         let timestamp = Utc::now().timestamp();
         let ttl = 30u64;
@@ -2213,6 +2228,7 @@ mod tests {
                 ttl_sec: 30,
             }),
             nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+            nonce_cache_max_entries: DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
         };
         let timestamp = Utc::now().timestamp();
         let ttl = 30u64;
@@ -2255,6 +2271,133 @@ mod tests {
             .expect_err("lossy-body signature must fail against raw-byte verifier");
         assert_eq!(reject.code, "hmac_invalid");
         assert!(reject.detail.contains("HMAC signature mismatch"));
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_does_not_poison_nonce_cache_after_bad_signature() {
+        let verifier = AuthVerifier {
+            bearer_token: None,
+            hmac: Some(HmacConfig {
+                key_id: "kid-1".to_string(),
+                secret: "test-secret".to_string(),
+                ttl_sec: 30,
+            }),
+            nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+            nonce_cache_max_entries: DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES,
+        };
+        let timestamp = Utc::now().timestamp();
+        let ttl = 30u64;
+        let nonce = "nonce-retry-after-bad-signature";
+        let raw_body = br#"{"ping":true}"#;
+
+        let mut payload = format!("{}\n{}\n{}\n", timestamp, ttl, nonce).into_bytes();
+        payload.extend_from_slice(raw_body);
+        let valid_signature = compute_hmac_signature_hex(b"test-secret", payload.as_slice())
+            .expect("hmac signature must compute");
+
+        let mut bad_headers = HeaderMap::new();
+        bad_headers.insert("x-copybot-key-id", HeaderValue::from_static("kid-1"));
+        bad_headers.insert(
+            "x-copybot-signature-alg",
+            HeaderValue::from_static("hmac-sha256-v1"),
+        );
+        bad_headers.insert(
+            "x-copybot-timestamp",
+            HeaderValue::from_str(timestamp.to_string().as_str()).expect("timestamp header"),
+        );
+        bad_headers.insert("x-copybot-auth-ttl-sec", HeaderValue::from_static("30"));
+        bad_headers.insert(
+            "x-copybot-nonce",
+            HeaderValue::from_static("nonce-retry-after-bad-signature"),
+        );
+        bad_headers.insert("x-copybot-signature", HeaderValue::from_static("deadbeef"));
+
+        let reject = verifier
+            .verify(&bad_headers, raw_body)
+            .await
+            .expect_err("bad signature must fail");
+        assert_eq!(reject.code, "hmac_invalid");
+
+        let mut good_headers = HeaderMap::new();
+        good_headers.insert("x-copybot-key-id", HeaderValue::from_static("kid-1"));
+        good_headers.insert(
+            "x-copybot-signature-alg",
+            HeaderValue::from_static("hmac-sha256-v1"),
+        );
+        good_headers.insert(
+            "x-copybot-timestamp",
+            HeaderValue::from_str(timestamp.to_string().as_str()).expect("timestamp header"),
+        );
+        good_headers.insert("x-copybot-auth-ttl-sec", HeaderValue::from_static("30"));
+        good_headers.insert(
+            "x-copybot-nonce",
+            HeaderValue::from_static("nonce-retry-after-bad-signature"),
+        );
+        good_headers.insert(
+            "x-copybot-signature",
+            HeaderValue::from_str(valid_signature.as_str()).expect("signature header"),
+        );
+
+        verifier
+            .verify(&good_headers, raw_body)
+            .await
+            .expect("valid retry should succeed because bad signature must not poison nonce cache");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_rejects_when_nonce_cache_capacity_is_reached() {
+        let verifier = AuthVerifier {
+            bearer_token: None,
+            hmac: Some(HmacConfig {
+                key_id: "kid-1".to_string(),
+                secret: "test-secret".to_string(),
+                ttl_sec: 30,
+            }),
+            nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
+            nonce_cache_max_entries: 1,
+        };
+        let timestamp = Utc::now().timestamp();
+        let raw_body = br#"{"ping":true}"#;
+
+        for (nonce, should_pass) in [("nonce-cap-1", true), ("nonce-cap-2", false)] {
+            let mut payload = format!("{}\n{}\n{}\n", timestamp, 30u64, nonce).into_bytes();
+            payload.extend_from_slice(raw_body);
+            let signature = compute_hmac_signature_hex(b"test-secret", payload.as_slice())
+                .expect("hmac signature must compute");
+            let mut headers = HeaderMap::new();
+            headers.insert("x-copybot-key-id", HeaderValue::from_static("kid-1"));
+            headers.insert(
+                "x-copybot-signature-alg",
+                HeaderValue::from_static("hmac-sha256-v1"),
+            );
+            headers.insert(
+                "x-copybot-timestamp",
+                HeaderValue::from_str(timestamp.to_string().as_str()).expect("timestamp header"),
+            );
+            headers.insert("x-copybot-auth-ttl-sec", HeaderValue::from_static("30"));
+            headers.insert(
+                "x-copybot-nonce",
+                HeaderValue::from_str(nonce).expect("nonce header"),
+            );
+            headers.insert(
+                "x-copybot-signature",
+                HeaderValue::from_str(signature.as_str()).expect("signature header"),
+            );
+
+            if should_pass {
+                verifier
+                    .verify(&headers, raw_body)
+                    .await
+                    .expect("first nonce should fit into cache");
+            } else {
+                let reject = verifier
+                    .verify(&headers, raw_body)
+                    .await
+                    .expect_err("second nonce should overflow capped cache");
+                assert!(reject.retryable);
+                assert_eq!(reject.code, "hmac_replay_cache_overflow");
+            }
+        }
     }
 
     #[test]
