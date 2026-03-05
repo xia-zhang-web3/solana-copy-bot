@@ -3267,6 +3267,9 @@ run_executor_preflight_case() {
   assert_field_equals "$pass_output" "health_status_field_kind" "string"
   assert_field_equals "$pass_output" "health_contract_version_field_kind" "string"
   assert_field_equals "$pass_output" "executor_backend_mode" "upstream"
+  assert_field_equals "$pass_output" "executor_submit_verify_strict" "false"
+  assert_field_equals "$pass_output" "executor_submit_verify_configured" "false"
+  assert_field_equals "$pass_output" "executor_submit_verify_fallback_configured" "false"
   assert_field_equals "$pass_output" "health_backend_mode" "upstream"
   assert_field_equals "$pass_output" "health_backend_mode_field_kind" "string"
   assert_field_equals "$pass_output" "health_signer_source" "kms"
@@ -3322,6 +3325,71 @@ run_executor_preflight_case() {
   assert_contains "$invalid_backend_mode_output" "preflight_verdict: FAIL"
   assert_field_equals "$invalid_backend_mode_output" "preflight_reason_code" "contract_checks_failed"
   assert_contains "$invalid_backend_mode_output" "COPYBOT_EXECUTOR_BACKEND_MODE must be one of: upstream,mock"
+
+  local submit_verify_strict_missing_primary_output
+  if submit_verify_strict_missing_primary_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT="true" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for strict submit-verify without primary verify URL" >&2
+    exit 1
+  fi
+  assert_contains "$submit_verify_strict_missing_primary_output" "preflight_verdict: FAIL"
+  assert_contains "$submit_verify_strict_missing_primary_output" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"
+
+  local submit_verify_fallback_without_primary_output
+  if submit_verify_fallback_without_primary_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL="https://verify-fallback.integration.test" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for submit-verify fallback URL without primary URL" >&2
+    exit 1
+  fi
+  assert_contains "$submit_verify_fallback_without_primary_output" "preflight_verdict: FAIL"
+  assert_contains "$submit_verify_fallback_without_primary_output" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"
+
+  local submit_verify_placeholder_output
+  if submit_verify_placeholder_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL="https://verify.example.com" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for placeholder submit-verify URL in upstream mode" >&2
+    exit 1
+  fi
+  assert_contains "$submit_verify_placeholder_output" "preflight_verdict: FAIL"
+  assert_contains "$submit_verify_placeholder_output" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL uses placeholder host=example.com in upstream mode"
+
+  local submit_verify_fallback_identity_collision_output
+  if submit_verify_fallback_identity_collision_output="$(
+    PATH="$fake_curl_bin:$PATH" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      HTTP_TIMEOUT_SEC="3" \
+      COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL="https://verify.integration.test" \
+      COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL="https://VERIFY.integration.test:443/" \
+      bash "$ROOT_DIR/tools/executor_preflight.sh" 2>&1
+  )"; then
+    echo "expected executor preflight failure for submit-verify primary/fallback identity collision" >&2
+    exit 1
+  fi
+  assert_contains "$submit_verify_fallback_identity_collision_output" "preflight_verdict: FAIL"
+  assert_contains "$submit_verify_fallback_identity_collision_output" "COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL must resolve to distinct endpoint"
 
   local executor_env_mock_mode_path="$TMP_DIR/executor-preflight-mock-mode.env"
   awk '

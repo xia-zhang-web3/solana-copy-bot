@@ -837,6 +837,9 @@ executor_upstream_simulate_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COP
 executor_upstream_simulate_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_SIMULATE_FALLBACK_URL)"
 executor_send_rpc_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_URL)"
 executor_send_rpc_fallback_default="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_URL)"
+executor_submit_verify_rpc_url="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL)"
+executor_submit_verify_rpc_fallback_url="$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL)"
+executor_submit_verify_strict_raw="$(first_non_empty "$(env_or_file_value "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT)" "false")"
 read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN COPYBOT_EXECUTOR_UPSTREAM_AUTH_TOKEN_FILE "executor upstream auth" executor_upstream_auth_default
 read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN COPYBOT_EXECUTOR_UPSTREAM_FALLBACK_AUTH_TOKEN_FILE "executor upstream fallback auth" executor_upstream_fallback_auth_default
 read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN COPYBOT_EXECUTOR_SEND_RPC_AUTH_TOKEN_FILE "executor send-rpc auth" executor_send_rpc_auth_default
@@ -865,6 +868,11 @@ executor_submit_fastlane_enabled="$(parse_bool_token "$executor_submit_fastlane_
 if [[ -z "$executor_submit_fastlane_enabled" ]]; then
   errors+=("COPYBOT_EXECUTOR_SUBMIT_FASTLANE_ENABLED must be boolean token")
   executor_submit_fastlane_enabled="false"
+fi
+executor_submit_verify_strict="$(parse_bool_token "$executor_submit_verify_strict_raw")"
+if [[ -z "$executor_submit_verify_strict" ]]; then
+  errors+=("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT must be boolean token")
+  executor_submit_verify_strict="false"
 fi
 executor_allow_unauthenticated="$(parse_bool_token "$executor_allow_unauthenticated_raw")"
 if [[ -z "$executor_allow_unauthenticated" ]]; then
@@ -1054,6 +1062,35 @@ if [[ -n "$executor_send_rpc_auth_default" && "$any_send_rpc_primary_endpoint" !
 fi
 if [[ -n "$executor_send_rpc_fallback_auth_default" && "$any_send_rpc_fallback_endpoint" != "true" ]]; then
   errors+=("COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN or COPYBOT_EXECUTOR_SEND_RPC_FALLBACK_AUTH_TOKEN_FILE requires at least one send-rpc fallback endpoint")
+fi
+
+executor_submit_verify_primary_identity=""
+executor_submit_verify_fallback_identity=""
+if [[ "$executor_submit_verify_strict" == "true" && -z "$executor_submit_verify_rpc_url" ]]; then
+  errors+=("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL")
+fi
+if [[ -z "$executor_submit_verify_rpc_url" && -n "$executor_submit_verify_rpc_fallback_url" ]]; then
+  errors+=("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL")
+fi
+if [[ -n "$executor_submit_verify_rpc_url" ]]; then
+  validate_endpoint_identity_into "$executor_submit_verify_rpc_url" "invalid COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL" executor_submit_verify_primary_identity || true
+fi
+if [[ -n "$executor_submit_verify_rpc_fallback_url" ]]; then
+  validate_endpoint_identity_into "$executor_submit_verify_rpc_fallback_url" "invalid COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL" executor_submit_verify_fallback_identity || true
+  if [[ -n "$executor_submit_verify_primary_identity" && -n "$executor_submit_verify_fallback_identity" && "$executor_submit_verify_primary_identity" == "$executor_submit_verify_fallback_identity" ]]; then
+    errors+=("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL must resolve to distinct endpoint")
+  fi
+fi
+if [[ "$executor_backend_mode" == "upstream" ]]; then
+  submit_verify_placeholder_host=""
+  submit_verify_placeholder_host="$(endpoint_placeholder_host "$executor_submit_verify_rpc_url")"
+  if [[ -n "$submit_verify_placeholder_host" ]]; then
+    errors+=("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL uses placeholder host=$submit_verify_placeholder_host in upstream mode: $executor_submit_verify_rpc_url")
+  fi
+  submit_verify_placeholder_host="$(endpoint_placeholder_host "$executor_submit_verify_rpc_fallback_url")"
+  if [[ -n "$submit_verify_placeholder_host" ]]; then
+    errors+=("COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_FALLBACK_URL uses placeholder host=$submit_verify_placeholder_host in upstream mode: $executor_submit_verify_rpc_fallback_url")
+  fi
 fi
 
 read_secret_from_source "$EXECUTOR_ENV_PATH" COPYBOT_EXECUTOR_BEARER_TOKEN COPYBOT_EXECUTOR_BEARER_TOKEN_FILE "executor ingress auth" executor_bearer_token
@@ -1613,6 +1650,8 @@ executor_upstream_auth_configured="false"
 executor_upstream_fallback_auth_configured="false"
 executor_send_rpc_auth_configured="false"
 executor_send_rpc_fallback_auth_configured="false"
+executor_submit_verify_configured="false"
+executor_submit_verify_fallback_configured="false"
 if [[ -n "$executor_upstream_auth_default" ]]; then
   executor_upstream_auth_configured="true"
 fi
@@ -1624,6 +1663,12 @@ if [[ -n "$executor_send_rpc_auth_default" ]]; then
 fi
 if [[ -n "$executor_send_rpc_fallback_auth_default" ]]; then
   executor_send_rpc_fallback_auth_configured="true"
+fi
+if [[ -n "$executor_submit_verify_rpc_url" ]]; then
+  executor_submit_verify_configured="true"
+fi
+if [[ -n "$executor_submit_verify_rpc_fallback_url" ]]; then
+  executor_submit_verify_fallback_configured="true"
 fi
 
 summary="$({
@@ -1649,6 +1694,9 @@ summary="$({
   echo "executor_signer_source_expected: $executor_signer_source_expected"
   echo "executor_signer_pubkey_expected: $executor_signer_pubkey"
   echo "executor_submit_fastlane_enabled: $executor_submit_fastlane_enabled"
+  echo "executor_submit_verify_strict: $executor_submit_verify_strict"
+  echo "executor_submit_verify_configured: $executor_submit_verify_configured"
+  echo "executor_submit_verify_fallback_configured: $executor_submit_verify_fallback_configured"
   echo "executor_upstream_auth_configured: $executor_upstream_auth_configured"
   echo "executor_upstream_fallback_auth_configured: $executor_upstream_fallback_auth_configured"
   echo "executor_send_rpc_auth_configured: $executor_send_rpc_auth_configured"
