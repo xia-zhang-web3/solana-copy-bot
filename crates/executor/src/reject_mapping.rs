@@ -147,6 +147,46 @@ pub(crate) fn map_simulate_response_validation_error_to_reject(
                 response_contract_version, expected_contract_version
             ),
         ),
+        SimulateResponseValidationError::RequestIdMismatch {
+            response_request_id,
+            expected_request_id,
+        } => Reject::terminal(
+            "simulation_request_id_mismatch",
+            format!(
+                "upstream request_id={} does not match expected request_id={}",
+                response_request_id, expected_request_id
+            ),
+        ),
+        SimulateResponseValidationError::SignalIdMismatch {
+            response_signal_id,
+            expected_signal_id,
+        } => Reject::terminal(
+            "simulation_signal_id_mismatch",
+            format!(
+                "upstream signal_id={} does not match expected signal_id={}",
+                response_signal_id, expected_signal_id
+            ),
+        ),
+        SimulateResponseValidationError::SideMismatch {
+            response_side,
+            expected_side,
+        } => Reject::terminal(
+            "simulation_side_mismatch",
+            format!(
+                "upstream side={} does not match expected side={}",
+                response_side, expected_side
+            ),
+        ),
+        SimulateResponseValidationError::TokenMismatch {
+            response_token,
+            expected_token,
+        } => Reject::terminal(
+            "simulation_token_mismatch",
+            format!(
+                "upstream token={} does not match expected token={}",
+                response_token, expected_token
+            ),
+        ),
     }
 }
 

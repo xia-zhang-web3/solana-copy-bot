@@ -14,6 +14,22 @@ pub(crate) enum SimulateResponseValidationError {
         response_contract_version: String,
         expected_contract_version: String,
     },
+    RequestIdMismatch {
+        response_request_id: String,
+        expected_request_id: String,
+    },
+    SignalIdMismatch {
+        response_signal_id: String,
+        expected_signal_id: String,
+    },
+    SideMismatch {
+        response_side: String,
+        expected_side: String,
+    },
+    TokenMismatch {
+        response_token: String,
+        expected_token: String,
+    },
 }
 
 pub(crate) fn validate_simulate_response_route_and_contract(
@@ -40,6 +56,63 @@ pub(crate) fn validate_simulate_response_route_and_contract(
             return Err(SimulateResponseValidationError::ContractVersionMismatch {
                 response_contract_version,
                 expected_contract_version: expected_contract_version.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_simulate_response_identity(
+    backend_response: &Value,
+    expected_request_id: &str,
+    expected_signal_id: &str,
+    expected_side: &str,
+    expected_token: &str,
+) -> Result<(), SimulateResponseValidationError> {
+    let normalized_expected_request_id = expected_request_id.trim();
+    let normalized_expected_signal_id = expected_signal_id.trim();
+    let normalized_expected_side = expected_side.trim().to_ascii_lowercase();
+    let normalized_expected_token = expected_token.trim();
+
+    if let Some(response_request_id) =
+        parse_optional_non_empty_string_field(backend_response, "request_id")?
+    {
+        if response_request_id.as_str() != normalized_expected_request_id {
+            return Err(SimulateResponseValidationError::RequestIdMismatch {
+                response_request_id,
+                expected_request_id: normalized_expected_request_id.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_signal_id) =
+        parse_optional_non_empty_string_field(backend_response, "signal_id")?
+    {
+        if response_signal_id.as_str() != normalized_expected_signal_id {
+            return Err(SimulateResponseValidationError::SignalIdMismatch {
+                response_signal_id,
+                expected_signal_id: normalized_expected_signal_id.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_side) = parse_optional_non_empty_string_field(backend_response, "side")? {
+        let normalized_response_side = response_side.to_ascii_lowercase();
+        if normalized_response_side != normalized_expected_side {
+            return Err(SimulateResponseValidationError::SideMismatch {
+                response_side,
+                expected_side: normalized_expected_side,
+            });
+        }
+    }
+
+    if let Some(response_token) = parse_optional_non_empty_string_field(backend_response, "token")?
+    {
+        if response_token.as_str() != normalized_expected_token {
+            return Err(SimulateResponseValidationError::TokenMismatch {
+                response_token,
+                expected_token: normalized_expected_token.to_string(),
             });
         }
     }
@@ -99,7 +172,8 @@ pub(crate) fn build_simulate_success_payload(
 mod tests {
     use super::{
         build_simulate_success_payload, resolve_simulate_response_detail,
-        validate_simulate_response_route_and_contract, SimulateResponseValidationError,
+        validate_simulate_response_identity, validate_simulate_response_route_and_contract,
+        SimulateResponseValidationError,
     };
     use serde_json::{json, Value};
 
@@ -174,6 +248,59 @@ mod tests {
             error,
             SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name }
             if field_name == "contract_version"
+        ));
+    }
+
+    #[test]
+    fn simulate_response_validation_identity_rejects_signal_id_mismatch() {
+        let backend = json!({
+            "signal_id": "signal-2",
+        });
+        let error = validate_simulate_response_identity(
+            &backend,
+            "request-1",
+            "signal-1",
+            "buy",
+            "11111111111111111111111111111111",
+        )
+        .expect_err("signal_id mismatch must reject");
+        assert!(matches!(
+            error,
+            SimulateResponseValidationError::SignalIdMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn simulate_response_validation_identity_accepts_side_case_insensitive() {
+        let backend = json!({
+            "side": "BUY",
+        });
+        validate_simulate_response_identity(
+            &backend,
+            "request-1",
+            "signal-1",
+            "buy",
+            "11111111111111111111111111111111",
+        )
+        .expect("side case mismatch should be normalized");
+    }
+
+    #[test]
+    fn simulate_response_validation_identity_rejects_token_mismatch() {
+        let backend = json!({
+            "token": "22222222222222222222222222222222",
+        });
+        let error = validate_simulate_response_identity(
+            &backend,
+            "request-1",
+            "signal-1",
+            "buy",
+            "11111111111111111111111111111111",
+        )
+        .expect_err("token mismatch must reject");
+        assert!(matches!(
+            error,
+            SimulateResponseValidationError::TokenMismatch { .. }
         ));
     }
 

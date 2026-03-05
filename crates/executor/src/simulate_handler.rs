@@ -15,7 +15,7 @@ use crate::route_executor::{
 use crate::route_normalization::normalize_route;
 use crate::simulate_response::{
     build_simulate_success_payload, resolve_simulate_response_detail,
-    validate_simulate_response_route_and_contract,
+    validate_simulate_response_identity, validate_simulate_response_route_and_contract,
 };
 use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
 use crate::{AppState, Reject};
@@ -79,6 +79,15 @@ pub(crate) async fn handle_simulate(
         &backend_response,
         route.as_str(),
         state.config.contract_version.as_str(),
+    )
+    .map_err(map_simulate_response_validation_error_to_reject)?;
+
+    validate_simulate_response_identity(
+        &backend_response,
+        request.request_id.as_str(),
+        request.signal_id.as_str(),
+        request.side.as_str(),
+        request.token.as_str(),
     )
     .map_err(map_simulate_response_validation_error_to_reject)?;
 

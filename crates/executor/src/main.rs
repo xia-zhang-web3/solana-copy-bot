@@ -1440,6 +1440,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_simulate_rejects_upstream_signal_id_mismatch() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"signal_id":"signal-other-1"}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-upstream-signal-mismatch-1".to_string(),
+            signal_id: "signal-expected-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = br#"{"action":"simulate","contract_version":"v1","request_id":"request-sim-upstream-signal-mismatch-1","signal_id":"signal-expected-1","side":"buy","token":"11111111111111111111111111111111","notional_sol":1.0,"signal_ts":"2026-02-24T12:00:00Z","route":"rpc","dry_run":true}"#;
+        let reject = handle_simulate(&state, &request, raw_body.as_slice())
+            .await
+            .expect_err("upstream signal_id mismatch must reject");
+        assert_eq!(reject.code, "simulation_signal_id_mismatch");
+        assert!(
+            reject
+                .detail
+                .contains("signal_id=signal-other-1 does not match expected signal_id=signal-expected-1"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_accepts_upstream_side_echo_with_case_difference() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"side":"BUY","detail":"upstream_sim_ok"}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let request = SimulateRequest {
+            action: Some("simulate".to_string()),
+            contract_version: Some("v1".to_string()),
+            request_id: "request-sim-upstream-side-case-1".to_string(),
+            signal_id: "signal-sim-upstream-side-case-1".to_string(),
+            side: "buy".to_string(),
+            token: "11111111111111111111111111111111".to_string(),
+            notional_sol: 1.0,
+            signal_ts: "2026-02-24T12:00:00Z".to_string(),
+            route: "rpc".to_string(),
+            dry_run: Some(true),
+        };
+        let raw_body = br#"{"action":"simulate","contract_version":"v1","request_id":"request-sim-upstream-side-case-1","signal_id":"signal-sim-upstream-side-case-1","side":"buy","token":"11111111111111111111111111111111","notional_sol":1.0,"signal_ts":"2026-02-24T12:00:00Z","route":"rpc","dry_run":true}"#;
+        let response = handle_simulate(&state, &request, raw_body.as_slice())
+            .await
+            .expect("upstream side case-diff should be accepted");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(
+            response.get("request_id").and_then(Value::as_str),
+            Some("request-sim-upstream-side-case-1")
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_simulate_rejects_upstream_contract_version_type_invalid() {
         let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"contract_version":123}"#;
         let Some((upstream_url, upstream_handle)) =
