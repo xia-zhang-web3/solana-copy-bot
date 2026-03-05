@@ -24,6 +24,18 @@ pub(crate) enum SubmitResponseValidationError {
         response_request_id: String,
         expected_request_id: String,
     },
+    SignalIdMismatch {
+        response_signal_id: String,
+        expected_signal_id: String,
+    },
+    SideMismatch {
+        response_side: String,
+        expected_side: String,
+    },
+    TokenMismatch {
+        response_token: String,
+        expected_token: String,
+    },
     SubmittedAtMustBeNonEmptyRfc3339,
     SubmittedAtInvalidRfc3339 {
         raw: String,
@@ -94,6 +106,50 @@ pub(crate) fn validate_submit_response_request_identity(
     Ok(())
 }
 
+pub(crate) fn validate_submit_response_extended_identity(
+    backend_response: &Value,
+    expected_signal_id: &str,
+    expected_side: &str,
+    expected_token: &str,
+) -> Result<(), SubmitResponseValidationError> {
+    let normalized_expected_signal_id = expected_signal_id.trim();
+    let normalized_expected_side = expected_side.trim().to_ascii_lowercase();
+    let normalized_expected_token = expected_token.trim();
+
+    if let Some(response_signal_id) =
+        parse_optional_non_empty_string_field(backend_response, "signal_id")?
+    {
+        if response_signal_id.as_str() != normalized_expected_signal_id {
+            return Err(SubmitResponseValidationError::SignalIdMismatch {
+                response_signal_id,
+                expected_signal_id: normalized_expected_signal_id.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_side) = parse_optional_non_empty_string_field(backend_response, "side")? {
+        let normalized_response_side = response_side.to_ascii_lowercase();
+        if normalized_response_side != normalized_expected_side {
+            return Err(SubmitResponseValidationError::SideMismatch {
+                response_side,
+                expected_side: normalized_expected_side,
+            });
+        }
+    }
+
+    if let Some(response_token) = parse_optional_non_empty_string_field(backend_response, "token")?
+    {
+        if response_token.as_str() != normalized_expected_token {
+            return Err(SubmitResponseValidationError::TokenMismatch {
+                response_token,
+                expected_token: normalized_expected_token.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn parse_optional_non_empty_string_field(
     backend_response: &Value,
     field_name: &str,
@@ -135,8 +191,9 @@ pub(crate) fn resolve_submit_response_submitted_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_submit_response_submitted_at, validate_submit_response_request_identity,
-        validate_submit_response_route_and_contract, SubmitResponseValidationError,
+        resolve_submit_response_submitted_at, validate_submit_response_extended_identity,
+        validate_submit_response_request_identity, validate_submit_response_route_and_contract,
+        SubmitResponseValidationError,
     };
     use chrono::TimeZone;
     use serde_json::json;
@@ -201,6 +258,56 @@ mod tests {
         });
         validate_submit_response_request_identity(&backend, "client-1", "request-1")
             .expect("trimmed response identity should be accepted");
+    }
+
+    #[test]
+    fn submit_response_validate_extended_identity_rejects_signal_id_mismatch() {
+        let backend = json!({
+            "signal_id": "signal-2"
+        });
+        let error = validate_submit_response_extended_identity(
+            &backend,
+            "signal-1",
+            "buy",
+            "11111111111111111111111111111111",
+        )
+        .expect_err("signal_id mismatch must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::SignalIdMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn submit_response_validate_extended_identity_accepts_side_case_insensitive() {
+        let backend = json!({
+            "side": "BUY"
+        });
+        validate_submit_response_extended_identity(
+            &backend,
+            "signal-1",
+            "buy",
+            "11111111111111111111111111111111",
+        )
+        .expect("side case mismatch should be normalized");
+    }
+
+    #[test]
+    fn submit_response_validate_extended_identity_rejects_token_mismatch() {
+        let backend = json!({
+            "token": "22222222222222222222222222222222"
+        });
+        let error = validate_submit_response_extended_identity(
+            &backend,
+            "signal-1",
+            "buy",
+            "11111111111111111111111111111111",
+        )
+        .expect_err("token mismatch must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::TokenMismatch { .. }
+        ));
     }
 
     #[test]

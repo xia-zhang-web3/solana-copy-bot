@@ -311,6 +311,36 @@ pub(crate) fn map_submit_response_validation_error_to_reject(
                 response_request_id, expected_request_id
             ),
         ),
+        SubmitResponseValidationError::SignalIdMismatch {
+            response_signal_id,
+            expected_signal_id,
+        } => Reject::terminal(
+            "submit_adapter_signal_id_mismatch",
+            format!(
+                "upstream signal_id={} does not match expected signal_id={}",
+                response_signal_id, expected_signal_id
+            ),
+        ),
+        SubmitResponseValidationError::SideMismatch {
+            response_side,
+            expected_side,
+        } => Reject::terminal(
+            "submit_adapter_side_mismatch",
+            format!(
+                "upstream side={} does not match expected side={}",
+                response_side, expected_side
+            ),
+        ),
+        SubmitResponseValidationError::TokenMismatch {
+            response_token,
+            expected_token,
+        } => Reject::terminal(
+            "submit_adapter_token_mismatch",
+            format!(
+                "upstream token={} does not match expected token={}",
+                response_token, expected_token
+            ),
+        ),
         SubmitResponseValidationError::SubmittedAtMustBeNonEmptyRfc3339 => Reject::terminal(
             "submit_adapter_invalid_response",
             "submitted_at must be non-empty RFC3339 string",

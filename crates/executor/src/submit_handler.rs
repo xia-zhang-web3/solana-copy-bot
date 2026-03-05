@@ -26,7 +26,8 @@ use crate::submit_claim_guard::SubmitClaimGuard;
 use crate::submit_deadline::SubmitDeadline;
 use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_response::{
-    resolve_submit_response_submitted_at, validate_submit_response_request_identity,
+    resolve_submit_response_submitted_at, validate_submit_response_extended_identity,
+    validate_submit_response_request_identity,
     validate_submit_response_route_and_contract,
 };
 use crate::send_rpc::send_signed_transaction_via_rpc;
@@ -192,6 +193,14 @@ pub(crate) async fn handle_submit(
         &backend_response,
         request.client_order_id.as_str(),
         request.request_id.as_str(),
+    )
+    .map_err(map_submit_response_validation_error_to_reject)?;
+
+    validate_submit_response_extended_identity(
+        &backend_response,
+        request.signal_id.as_str(),
+        request.side.as_str(),
+        request.token.as_str(),
     )
     .map_err(map_submit_response_validation_error_to_reject)?;
 
