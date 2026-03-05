@@ -268,10 +268,12 @@ adapter_final_nested_package_bundle_enabled="n/a"
 adapter_final_go_nogo_require_executor_upstream="n/a"
 adapter_final_go_nogo_require_ingestion_grpc="n/a"
 adapter_final_go_nogo_require_non_bootstrap_signer="n/a"
+adapter_final_go_nogo_require_submit_verify_strict="n/a"
 adapter_final_executor_env_path="n/a"
 adapter_final_rollout_nested_go_nogo_require_executor_upstream="n/a"
 adapter_final_rollout_nested_go_nogo_require_ingestion_grpc="n/a"
 adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer="n/a"
+adapter_final_rollout_nested_go_nogo_require_submit_verify_strict="n/a"
 adapter_final_rollout_nested_executor_env_path="n/a"
 adapter_final_rollout_nested_executor_backend_mode_guard_verdict="n/a"
 adapter_final_rollout_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -281,6 +283,8 @@ adapter_final_rollout_nested_ingestion_grpc_guard_verdict="n/a"
 adapter_final_rollout_nested_ingestion_grpc_guard_reason_code="n/a"
 adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict="n/a"
 adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code="n/a"
+adapter_final_rollout_nested_submit_verify_guard_verdict="n/a"
+adapter_final_rollout_nested_submit_verify_guard_reason_code="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if preflight_output="$(
@@ -859,6 +863,13 @@ package_bundle_enabled: false"
   elif [[ "$adapter_final_go_nogo_require_non_bootstrap_signer" != "$go_nogo_require_non_bootstrap_signer_norm" ]]; then
     input_errors+=("nested adapter final go_nogo_require_non_bootstrap_signer mismatch: nested=${adapter_final_go_nogo_require_non_bootstrap_signer} expected=${go_nogo_require_non_bootstrap_signer_norm}")
   fi
+  adapter_final_go_nogo_require_submit_verify_strict_raw="$(trim_string "$(extract_field "go_nogo_require_submit_verify_strict" "$adapter_final_output")")"
+  if ! adapter_final_go_nogo_require_submit_verify_strict="$(extract_bool_field_strict "go_nogo_require_submit_verify_strict" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final go_nogo_require_submit_verify_strict must be boolean token, got: ${adapter_final_go_nogo_require_submit_verify_strict_raw:-<empty>}")
+    adapter_final_go_nogo_require_submit_verify_strict="unknown"
+  elif [[ "$adapter_final_go_nogo_require_submit_verify_strict" != "$go_nogo_require_submit_verify_strict_norm" ]]; then
+    input_errors+=("nested adapter final go_nogo_require_submit_verify_strict mismatch: nested=${adapter_final_go_nogo_require_submit_verify_strict} expected=${go_nogo_require_submit_verify_strict_norm}")
+  fi
   adapter_final_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$adapter_final_output")")"
   if [[ -z "$adapter_final_executor_env_path" ]]; then
     input_errors+=("nested adapter final executor_env_path must be non-empty")
@@ -886,6 +897,13 @@ package_bundle_enabled: false"
     adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer="unknown"
   elif [[ "$adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer" != "$go_nogo_require_non_bootstrap_signer_norm" ]]; then
     input_errors+=("nested adapter final rollout_nested_go_nogo_require_non_bootstrap_signer mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer} expected=${go_nogo_require_non_bootstrap_signer_norm}")
+  fi
+  adapter_final_rollout_nested_go_nogo_require_submit_verify_strict_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_submit_verify_strict" "$adapter_final_output")")"
+  if ! adapter_final_rollout_nested_go_nogo_require_submit_verify_strict="$(extract_bool_field_strict "rollout_nested_go_nogo_require_submit_verify_strict" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_submit_verify_strict must be boolean token, got: ${adapter_final_rollout_nested_go_nogo_require_submit_verify_strict_raw:-<empty>}")
+    adapter_final_rollout_nested_go_nogo_require_submit_verify_strict="unknown"
+  elif [[ "$adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" != "$go_nogo_require_submit_verify_strict_norm" ]]; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_submit_verify_strict mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_submit_verify_strict} expected=${go_nogo_require_submit_verify_strict_norm}")
   fi
   adapter_final_rollout_nested_executor_env_path="$(trim_string "$(extract_field "rollout_nested_executor_env_path" "$adapter_final_output")")"
   if [[ -z "$adapter_final_rollout_nested_executor_env_path" ]]; then
@@ -954,6 +972,21 @@ package_bundle_enabled: false"
     input_errors+=("nested adapter final rollout_nested_non_bootstrap_signer_guard_reason_code must be non-empty")
     adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code="n/a"
   fi
+  adapter_final_rollout_nested_submit_verify_guard_verdict_raw="$(trim_string "$(extract_field "rollout_nested_submit_verify_guard_verdict" "$adapter_final_output")")"
+  adapter_final_rollout_nested_submit_verify_guard_verdict_raw_upper="$(printf '%s' "$adapter_final_rollout_nested_submit_verify_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  adapter_final_rollout_nested_submit_verify_guard_verdict="$(normalize_strict_guard_verdict "$adapter_final_rollout_nested_submit_verify_guard_verdict_raw")"
+  if [[ -z "$adapter_final_rollout_nested_submit_verify_guard_verdict_raw" ]]; then
+    input_errors+=("nested adapter final rollout_nested_submit_verify_guard_verdict must be non-empty")
+    adapter_final_rollout_nested_submit_verify_guard_verdict="UNKNOWN"
+  elif [[ "$adapter_final_rollout_nested_submit_verify_guard_verdict_raw_upper" != "PASS" && "$adapter_final_rollout_nested_submit_verify_guard_verdict_raw_upper" != "WARN" && "$adapter_final_rollout_nested_submit_verify_guard_verdict_raw_upper" != "UNKNOWN" && "$adapter_final_rollout_nested_submit_verify_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested adapter final rollout_nested_submit_verify_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${adapter_final_rollout_nested_submit_verify_guard_verdict_raw})")
+    adapter_final_rollout_nested_submit_verify_guard_verdict="UNKNOWN"
+  fi
+  adapter_final_rollout_nested_submit_verify_guard_reason_code="$(trim_string "$(extract_field "rollout_nested_submit_verify_guard_reason_code" "$adapter_final_output")")"
+  if [[ -z "$adapter_final_rollout_nested_submit_verify_guard_reason_code" ]]; then
+    input_errors+=("nested adapter final rollout_nested_submit_verify_guard_reason_code must be non-empty")
+    adapter_final_rollout_nested_submit_verify_guard_reason_code="n/a"
+  fi
   if [[ "$server_rollout_require_executor_upstream_norm" == "true" ]]; then
     if [[ "$adapter_final_rollout_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested adapter final rollout_nested_executor_backend_mode_guard_verdict cannot be SKIP when SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -985,6 +1018,15 @@ package_bundle_enabled: false"
   else
     if [[ "$adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested adapter final rollout_nested_non_bootstrap_signer_guard_verdict must be SKIP when GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER=false (got: ${adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_submit_verify_strict_norm" == "true" ]]; then
+    if [[ "$adapter_final_rollout_nested_submit_verify_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_submit_verify_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=true")
+    fi
+  else
+    if [[ "$adapter_final_rollout_nested_submit_verify_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_submit_verify_guard_verdict must be SKIP when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=false (got: ${adapter_final_rollout_nested_submit_verify_guard_verdict})")
     fi
   fi
 fi
@@ -1170,10 +1212,12 @@ adapter_final_nested_package_bundle_enabled: ${adapter_final_nested_package_bund
 adapter_final_go_nogo_require_executor_upstream: ${adapter_final_go_nogo_require_executor_upstream:-n/a}
 adapter_final_go_nogo_require_ingestion_grpc: ${adapter_final_go_nogo_require_ingestion_grpc:-n/a}
 adapter_final_go_nogo_require_non_bootstrap_signer: ${adapter_final_go_nogo_require_non_bootstrap_signer:-n/a}
+adapter_final_go_nogo_require_submit_verify_strict: ${adapter_final_go_nogo_require_submit_verify_strict:-n/a}
 adapter_final_executor_env_path: ${adapter_final_executor_env_path:-n/a}
 adapter_final_rollout_nested_go_nogo_require_executor_upstream: ${adapter_final_rollout_nested_go_nogo_require_executor_upstream:-n/a}
 adapter_final_rollout_nested_go_nogo_require_ingestion_grpc: ${adapter_final_rollout_nested_go_nogo_require_ingestion_grpc:-n/a}
 adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer: ${adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer:-n/a}
+adapter_final_rollout_nested_go_nogo_require_submit_verify_strict: ${adapter_final_rollout_nested_go_nogo_require_submit_verify_strict:-n/a}
 adapter_final_rollout_nested_executor_env_path: ${adapter_final_rollout_nested_executor_env_path:-n/a}
 adapter_final_rollout_nested_executor_backend_mode_guard_verdict: ${adapter_final_rollout_nested_executor_backend_mode_guard_verdict:-n/a}
 adapter_final_rollout_nested_executor_backend_mode_guard_reason_code: ${adapter_final_rollout_nested_executor_backend_mode_guard_reason_code:-n/a}
@@ -1183,6 +1227,8 @@ adapter_final_rollout_nested_ingestion_grpc_guard_verdict: ${adapter_final_rollo
 adapter_final_rollout_nested_ingestion_grpc_guard_reason_code: ${adapter_final_rollout_nested_ingestion_grpc_guard_reason_code:-n/a}
 adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict: ${adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict:-n/a}
 adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code: ${adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code:-n/a}
+adapter_final_rollout_nested_submit_verify_guard_verdict: ${adapter_final_rollout_nested_submit_verify_guard_verdict:-n/a}
+adapter_final_rollout_nested_submit_verify_guard_reason_code: ${adapter_final_rollout_nested_submit_verify_guard_reason_code:-n/a}
 server_rollout_verdict: $overall_verdict
 server_rollout_reason: $overall_reason
 server_rollout_reason_code: $overall_reason_code

@@ -26,6 +26,7 @@ GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
 GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
+GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
@@ -119,6 +120,7 @@ parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_RE
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE_INGESTION_GRPC" go_nogo_require_ingestion_grpc_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" go_nogo_require_non_bootstrap_signer_norm
+parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" "$GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" go_nogo_require_submit_verify_strict_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_rollout_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
@@ -269,6 +271,7 @@ rehearsal_nested_package_bundle_enabled="unknown"
 rehearsal_nested_go_nogo_require_executor_upstream="n/a"
 rehearsal_nested_go_nogo_require_ingestion_grpc="n/a"
 rehearsal_nested_go_nogo_require_non_bootstrap_signer="n/a"
+rehearsal_nested_go_nogo_require_submit_verify_strict="n/a"
 rehearsal_nested_executor_env_path="n/a"
 rehearsal_nested_executor_backend_mode_guard_verdict="unknown"
 rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -278,6 +281,8 @@ rehearsal_nested_ingestion_grpc_guard_verdict="unknown"
 rehearsal_nested_ingestion_grpc_guard_reason_code="n/a"
 rehearsal_nested_non_bootstrap_signer_guard_verdict="unknown"
 rehearsal_nested_non_bootstrap_signer_guard_reason_code="n/a"
+rehearsal_nested_submit_verify_guard_verdict="unknown"
+rehearsal_nested_submit_verify_guard_reason_code="n/a"
 windowed_signoff_artifact_manifest=""
 windowed_signoff_summary_sha256=""
 windowed_signoff_artifacts_written="false"
@@ -310,6 +315,7 @@ if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_nested_go_nogo_require_executor_upstream="n/a"
   rehearsal_nested_go_nogo_require_ingestion_grpc="n/a"
   rehearsal_nested_go_nogo_require_non_bootstrap_signer="n/a"
+  rehearsal_nested_go_nogo_require_submit_verify_strict="n/a"
   rehearsal_nested_executor_env_path="n/a"
   rehearsal_nested_executor_backend_mode_guard_verdict="n/a"
   rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -319,6 +325,8 @@ if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_nested_ingestion_grpc_guard_reason_code="n/a"
   rehearsal_nested_non_bootstrap_signer_guard_verdict="n/a"
   rehearsal_nested_non_bootstrap_signer_guard_reason_code="n/a"
+  rehearsal_nested_submit_verify_guard_verdict="n/a"
+  rehearsal_nested_submit_verify_guard_reason_code="n/a"
   go_nogo_artifacts_written="n/a"
   windowed_signoff_artifacts_written="n/a"
   rehearsal_route_fee_signoff_artifacts_written="n/a"
@@ -352,6 +360,7 @@ else
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream_norm" \
       GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
       GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer_norm" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict_norm" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       WINDOWED_SIGNOFF_WINDOWS_CSV="$WINDOWED_SIGNOFF_WINDOWS_CSV" \
       WINDOWED_SIGNOFF_REQUIRED="$windowed_signoff_required_norm" \
@@ -414,6 +423,14 @@ else
     input_errors+=("nested rehearsal go_nogo_require_non_bootstrap_signer mismatch: nested=${go_nogo_require_non_bootstrap_signer} expected=${go_nogo_require_non_bootstrap_signer_norm}")
   fi
   rehearsal_nested_go_nogo_require_non_bootstrap_signer="$go_nogo_require_non_bootstrap_signer"
+  go_nogo_require_submit_verify_strict_raw="$(trim_string "$(extract_field "go_nogo_require_submit_verify_strict" "$rehearsal_output")")"
+  if ! go_nogo_require_submit_verify_strict="$(extract_bool_field_strict "go_nogo_require_submit_verify_strict" "$rehearsal_output")"; then
+    input_errors+=("nested rehearsal go_nogo_require_submit_verify_strict must be boolean token, got: ${go_nogo_require_submit_verify_strict_raw:-<empty>}")
+    go_nogo_require_submit_verify_strict="unknown"
+  elif [[ "$go_nogo_require_submit_verify_strict" != "$go_nogo_require_submit_verify_strict_norm" ]]; then
+    input_errors+=("nested rehearsal go_nogo_require_submit_verify_strict mismatch: nested=${go_nogo_require_submit_verify_strict} expected=${go_nogo_require_submit_verify_strict_norm}")
+  fi
+  rehearsal_nested_go_nogo_require_submit_verify_strict="$go_nogo_require_submit_verify_strict"
   rehearsal_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$rehearsal_output")")"
   if [[ -z "$rehearsal_nested_executor_env_path" ]]; then
     input_errors+=("nested rehearsal executor_env_path must be non-empty")
@@ -481,6 +498,21 @@ else
     input_errors+=("nested rehearsal go_nogo_non_bootstrap_signer_guard_reason_code must be non-empty")
     rehearsal_nested_non_bootstrap_signer_guard_reason_code="n/a"
   fi
+  rehearsal_nested_submit_verify_guard_verdict_raw="$(trim_string "$(extract_field "go_nogo_submit_verify_guard_verdict" "$rehearsal_output")")"
+  rehearsal_nested_submit_verify_guard_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_submit_verify_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rehearsal_nested_submit_verify_guard_verdict="$(normalize_strict_guard_verdict "$rehearsal_nested_submit_verify_guard_verdict_raw")"
+  if [[ -z "$rehearsal_nested_submit_verify_guard_verdict_raw" ]]; then
+    input_errors+=("nested rehearsal go_nogo_submit_verify_guard_verdict must be non-empty")
+    rehearsal_nested_submit_verify_guard_verdict="UNKNOWN"
+  elif [[ "$rehearsal_nested_submit_verify_guard_verdict_raw_upper" != "PASS" && "$rehearsal_nested_submit_verify_guard_verdict_raw_upper" != "WARN" && "$rehearsal_nested_submit_verify_guard_verdict_raw_upper" != "UNKNOWN" && "$rehearsal_nested_submit_verify_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested rehearsal go_nogo_submit_verify_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${rehearsal_nested_submit_verify_guard_verdict_raw})")
+    rehearsal_nested_submit_verify_guard_verdict="UNKNOWN"
+  fi
+  rehearsal_nested_submit_verify_guard_reason_code="$(trim_string "$(extract_field "go_nogo_submit_verify_guard_reason_code" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_submit_verify_guard_reason_code" ]]; then
+    input_errors+=("nested rehearsal go_nogo_submit_verify_guard_reason_code must be non-empty")
+    rehearsal_nested_submit_verify_guard_reason_code="n/a"
+  fi
   if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
     if [[ "$rehearsal_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested rehearsal go_nogo_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -512,6 +544,15 @@ else
   else
     if [[ "$rehearsal_nested_non_bootstrap_signer_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested rehearsal go_nogo_non_bootstrap_signer_guard_verdict must be SKIP when GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER=false (got: ${rehearsal_nested_non_bootstrap_signer_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_submit_verify_strict_norm" == "true" ]]; then
+    if [[ "$rehearsal_nested_submit_verify_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_submit_verify_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=true")
+    fi
+  else
+    if [[ "$rehearsal_nested_submit_verify_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_submit_verify_guard_verdict must be SKIP when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=false (got: ${rehearsal_nested_submit_verify_guard_verdict})")
     fi
   fi
   submit_fastlane_enabled_raw="$(trim_string "$(extract_field "submit_fastlane_enabled" "$rehearsal_output")")"
@@ -694,6 +735,7 @@ else
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream_norm" \
       GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
+      GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict_norm" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       PACKAGE_BUNDLE_ENABLED="false" \
       bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
@@ -862,10 +904,12 @@ go_nogo_require_fastlane_disabled: ${go_nogo_require_fastlane_disabled:-false}
 go_nogo_require_executor_upstream: ${go_nogo_require_executor_upstream:-false}
 go_nogo_require_ingestion_grpc: ${go_nogo_require_ingestion_grpc:-false}
 go_nogo_require_non_bootstrap_signer: ${go_nogo_require_non_bootstrap_signer:-false}
+go_nogo_require_submit_verify_strict: ${go_nogo_require_submit_verify_strict:-false}
 executor_env_path: $EXECUTOR_ENV_PATH
 rehearsal_nested_go_nogo_require_executor_upstream: ${rehearsal_nested_go_nogo_require_executor_upstream:-n/a}
 rehearsal_nested_go_nogo_require_ingestion_grpc: ${rehearsal_nested_go_nogo_require_ingestion_grpc:-n/a}
 rehearsal_nested_go_nogo_require_non_bootstrap_signer: ${rehearsal_nested_go_nogo_require_non_bootstrap_signer:-n/a}
+rehearsal_nested_go_nogo_require_submit_verify_strict: ${rehearsal_nested_go_nogo_require_submit_verify_strict:-n/a}
 rehearsal_nested_executor_env_path: ${rehearsal_nested_executor_env_path:-n/a}
 rehearsal_nested_executor_backend_mode_guard_verdict: ${rehearsal_nested_executor_backend_mode_guard_verdict:-unknown}
 rehearsal_nested_executor_backend_mode_guard_reason_code: ${rehearsal_nested_executor_backend_mode_guard_reason_code:-n/a}
@@ -875,6 +919,8 @@ rehearsal_nested_ingestion_grpc_guard_verdict: ${rehearsal_nested_ingestion_grpc
 rehearsal_nested_ingestion_grpc_guard_reason_code: ${rehearsal_nested_ingestion_grpc_guard_reason_code:-n/a}
 rehearsal_nested_non_bootstrap_signer_guard_verdict: ${rehearsal_nested_non_bootstrap_signer_guard_verdict:-unknown}
 rehearsal_nested_non_bootstrap_signer_guard_reason_code: ${rehearsal_nested_non_bootstrap_signer_guard_reason_code:-n/a}
+rehearsal_nested_submit_verify_guard_verdict: ${rehearsal_nested_submit_verify_guard_verdict:-unknown}
+rehearsal_nested_submit_verify_guard_reason_code: ${rehearsal_nested_submit_verify_guard_reason_code:-n/a}
 submit_fastlane_enabled: ${submit_fastlane_enabled:-false}
 fastlane_feature_flag_verdict: ${fastlane_feature_flag_verdict:-unknown}
 fastlane_feature_flag_reason: ${fastlane_feature_flag_reason:-n/a}
