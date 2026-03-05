@@ -284,11 +284,29 @@ fn mock_submit_signature(payload_expectations: RouteActionPayloadExpectations<'_
     let request_id = payload_expectations.request_id.unwrap_or("");
     let client_order_id = payload_expectations.client_order_id.unwrap_or("");
     let signal_id = payload_expectations.signal_id.unwrap_or("");
-    let route_hint = payload_expectations.route_hint.unwrap_or("");
-    let side = payload_expectations.side.unwrap_or("");
+    let normalized_route_hint = normalize_route(payload_expectations.route_hint.unwrap_or(""));
+    let normalized_side = payload_expectations
+        .side
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     let token = payload_expectations.token.unwrap_or("");
-    let primary_fields = [request_id, client_order_id, signal_id, route_hint, side, token];
-    let secondary_fields = [token, side, route_hint, signal_id, client_order_id, request_id];
+    let primary_fields = [
+        request_id,
+        client_order_id,
+        signal_id,
+        normalized_route_hint.as_str(),
+        normalized_side.as_str(),
+        token,
+    ];
+    let secondary_fields = [
+        token,
+        normalized_side.as_str(),
+        normalized_route_hint.as_str(),
+        signal_id,
+        client_order_id,
+        request_id,
+    ];
 
     deterministic_submit_signature_from_fields(
         "executor-mock-submit-signature",
@@ -1211,6 +1229,46 @@ mod tests {
         assert_ne!(
             base_signature, different_side_signature,
             "mock signature must change when side changes with same request/client_order_id"
+        );
+    }
+
+    #[test]
+    fn build_mock_submit_backend_response_normalizes_route_hint_and_side_for_identity() {
+        let normalized_payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let non_normalized_payload = super::build_mock_submit_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some(" RPC "),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: Some("client-order-1"),
+                side: Some(" BUY "),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
+        let normalized_signature = normalized_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("normalized tx_signature should be present");
+        let non_normalized_signature = non_normalized_payload
+            .get("tx_signature")
+            .and_then(Value::as_str)
+            .expect("non-normalized tx_signature should be present");
+        assert_eq!(
+            normalized_signature, non_normalized_signature,
+            "mock signature identity should normalize route_hint and side tokens"
         );
     }
 
