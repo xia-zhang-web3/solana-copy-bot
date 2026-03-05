@@ -1531,12 +1531,13 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 5. Followlist output пока без изменений:
    1. `eligible_wallets_last=0`,
    2. `active_follow_wallets_last=0`.
+   3. На этом этапе это считается ожидаемым состоянием при фильтре `>=4 дней` активности, а не incident.
 
 Операционный вывод:
 
 1. Ночной прогон стабильный, без OOM/restart regressions.
 2. Discovery backlog/cap давление продолжает спадать.
-3. Главная незакрытая бизнес-метрика — выход `eligible/active follow wallets` из нуля.
+3. Нулевые `eligible/active follow wallets` на этом этапе считаются ожидаемыми при фильтре `>=4 дней` активности; повторная валидация нужна после созревания окна фильтра.
 
 ### 2026-03-05 — afternoon post-patch follow-up (snapshot 14:47 UTC / 16:47 Europe/Kiev)
 
@@ -1559,6 +1560,7 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 5. Followlist output пока без изменений:
    1. `eligible_wallets_last=0`,
    2. `active_follow_wallets_last=0`.
+   3. На этом этапе это считается ожидаемым состоянием при фильтре `>=4 дней` активности, а не business-gap.
 6. Process memory remains stable:
    1. `VmRSS ~303 MB`,
    2. `VmHWM ~599 MB`,
@@ -1568,4 +1570,42 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 
 1. Пост-патч стабильность сохраняется >26h без OOM/restart regressions.
 2. Discovery saturation продолжает снижаться.
-3. Единственный открытый бизнес-gap — нулевые `eligible/active follow wallets`.
+3. Нулевые `eligible/active follow wallets` на этом этапе считаются ожидаемыми при фильтре `>=4 дней` активности; основной вывод остается про стабильность runtime и дальнейшее наблюдение.
+
+### 2026-03-05 — evening post-patch follow-up (snapshot 20:23 UTC / 22:23 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-05_evening_post_patch_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-05_post_patch_followup_2021_snapshot/computed_summary.json`
+
+Итог вечернего окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Ingestion gates: PASS (`rpc_429 delta=0`, `rpc_5xx delta=0`, `parse_rejected delta=0`; throughput ~`368.30 msg/s`).
+3. Discovery pressure: IMPROVED further
+   1. `swaps_fetch_limit_reached_ratio=0.1625` (`104/640`) vs дневных `0.1970` (`104/528`).
+4. Discovery duration: slightly softer but still controlled
+   1. `duration_ms_p50=6827.5`,
+   2. `duration_ms_p95=25163.8` (хуже дневного `22817.65`, но редкий хвост без нового ухудшения по `max`),
+   3. `duration_ms_last=16093`,
+   4. `duration_ms_max=96516` (редкий хвост сохраняется).
+5. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+   3. На этом этапе это считается ожидаемым состоянием при фильтре `>=4 дней` активности, а не open gap.
+6. Process memory remains stable:
+   1. `VmRSS ~317 MB`,
+   2. `VmHWM ~599 MB`,
+   3. cgroup memory `~7.44 -> 7.47 GB`, file-cache dominated.
+7. DB stays live, but business tables remain empty:
+   1. `live_copybot.db ~32G`, `live_copybot.db-wal ~4.7G`,
+   2. `followlist_total=0`, `copy_signals_rows=0`, `orders_rows=0`, `shadow_lots_rows=0`,
+   3. `observed_swaps_max_ts=2026-03-05T20:28:05.148399863+00:00`.
+   4. Это пока согласуется с тем, что фильтр `>=4 дней` активности еще не созрел.
+
+Операционный вывод:
+
+1. Пост-патч стабильность подтверждена уже на окне `~31h 58m` без OOM/restart regressions.
+2. Discovery saturation продолжает снижаться, но latency tail полностью не исчез и остается предметом наблюдения, а не incident.
+3. Нулевой followlist/output на этом этапе считается ожидаемым при фильтре `>=4 дней` активности; live execution evidence остается отложенным до созревания окна фильтра, а не blocked из-за runtime regression.
