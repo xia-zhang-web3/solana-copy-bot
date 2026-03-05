@@ -372,10 +372,37 @@ fn execution_config_debug_redacts_secret_values() {
         "ingestion debug output should show redaction marker: {ingestion_debug}"
     );
 
+    let mut discovery = DiscoveryConfig::default();
+    discovery.helius_http_url =
+        "https://discovery.helius.example/?api-key=discovery-secret".to_string();
+    let discovery_debug = format!("{discovery:?}");
+    assert!(
+        !discovery_debug.contains("discovery-secret"),
+        "discovery debug output leaked URL secret: {discovery_debug}"
+    );
+    assert!(
+        discovery_debug.contains("https://discovery.helius.example/?<redacted>"),
+        "discovery debug output should redact URL query: {discovery_debug}"
+    );
+
+    let mut shadow = ShadowConfig::default();
+    shadow.helius_http_url = "https://shadow.helius.example/?api-key=shadow-secret".to_string();
+    let shadow_debug = format!("{shadow:?}");
+    assert!(
+        !shadow_debug.contains("shadow-secret"),
+        "shadow debug output leaked URL secret: {shadow_debug}"
+    );
+    assert!(
+        shadow_debug.contains("https://shadow.helius.example/?<redacted>"),
+        "shadow debug output should redact URL query: {shadow_debug}"
+    );
+
     let app_debug = format!(
         "{:?}",
         AppConfig {
+            discovery,
             ingestion,
+            shadow,
             execution,
             ..AppConfig::default()
         }
@@ -388,6 +415,12 @@ fn execution_config_debug_redacts_secret_values() {
         !app_debug.contains("yellowstone-secret"),
         "AppConfig debug output leaked ingestion token: {app_debug}"
     );
+    for secret in ["discovery-secret", "shadow-secret"] {
+        assert!(
+            !app_debug.contains(secret),
+            "AppConfig debug output leaked nested URL secret={secret}: {app_debug}"
+        );
+    }
 }
 
 fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {

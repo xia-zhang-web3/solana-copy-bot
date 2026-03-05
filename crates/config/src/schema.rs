@@ -459,7 +459,7 @@ impl fmt::Debug for IngestionConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct DiscoveryConfig {
     pub scoring_window_days: u32,
@@ -507,6 +507,43 @@ impl Default for DiscoveryConfig {
     }
 }
 
+impl fmt::Debug for DiscoveryConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DiscoveryConfig")
+            .field("scoring_window_days", &self.scoring_window_days)
+            .field("decay_window_days", &self.decay_window_days)
+            .field("follow_top_n", &self.follow_top_n)
+            .field("min_leader_notional_sol", &self.min_leader_notional_sol)
+            .field(
+                "helius_http_url",
+                &redacted_url_debug_value(&self.helius_http_url),
+            )
+            .field("refresh_seconds", &self.refresh_seconds)
+            .field("min_trades", &self.min_trades)
+            .field("min_active_days", &self.min_active_days)
+            .field("min_score", &self.min_score)
+            .field("max_tx_per_minute", &self.max_tx_per_minute)
+            .field("min_buy_count", &self.min_buy_count)
+            .field("min_tradable_ratio", &self.min_tradable_ratio)
+            .field("max_rug_ratio", &self.max_rug_ratio)
+            .field("rug_lookahead_seconds", &self.rug_lookahead_seconds)
+            .field(
+                "thin_market_min_volume_sol",
+                &self.thin_market_min_volume_sol,
+            )
+            .field(
+                "thin_market_min_unique_traders",
+                &self.thin_market_min_unique_traders,
+            )
+            .field(
+                "max_window_swaps_in_memory",
+                &self.max_window_swaps_in_memory,
+            )
+            .field("max_fetch_swaps_per_cycle", &self.max_fetch_swaps_per_cycle)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct RiskConfig {
@@ -543,7 +580,7 @@ pub struct RiskConfig {
     pub shadow_universe_breach_cycles: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct ShadowConfig {
     pub enabled: bool,
@@ -580,6 +617,30 @@ impl Default for ShadowConfig {
             min_volume_5m_sol: 0.5,
             min_unique_traders_5m: 1,
         }
+    }
+}
+
+impl fmt::Debug for ShadowConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShadowConfig")
+            .field("enabled", &self.enabled)
+            .field(
+                "helius_http_url",
+                &redacted_url_debug_value(&self.helius_http_url),
+            )
+            .field("causal_holdback_enabled", &self.causal_holdback_enabled)
+            .field("causal_holdback_ms", &self.causal_holdback_ms)
+            .field("refresh_seconds", &self.refresh_seconds)
+            .field("copy_notional_sol", &self.copy_notional_sol)
+            .field("min_leader_notional_sol", &self.min_leader_notional_sol)
+            .field("max_signal_lag_seconds", &self.max_signal_lag_seconds)
+            .field("quality_gates_enabled", &self.quality_gates_enabled)
+            .field("min_token_age_seconds", &self.min_token_age_seconds)
+            .field("min_holders", &self.min_holders)
+            .field("min_liquidity_sol", &self.min_liquidity_sol)
+            .field("min_volume_5m_sol", &self.min_volume_5m_sol)
+            .field("min_unique_traders_5m", &self.min_unique_traders_5m)
+            .finish()
     }
 }
 
