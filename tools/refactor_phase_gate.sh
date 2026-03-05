@@ -26,6 +26,7 @@ phase_gate_require_executor_upstream_raw="${REFACTOR_PHASE_GATE_REQUIRE_EXECUTOR
 phase_gate_require_ingestion_grpc_raw="${REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC:-true}"
 phase_gate_require_fastlane_disabled_raw="${REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED:-false}"
 phase_gate_require_jito_rpc_policy_raw="${REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY:-false}"
+phase_gate_require_non_bootstrap_signer_raw="${REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 phase_gate_ingestion_source="$(trim_string "${REFACTOR_PHASE_GATE_INGESTION_SOURCE:-yellowstone_grpc}")"
 phase_gate_ingestion_source="$(printf '%s' "$phase_gate_ingestion_source" | tr '[:upper:]' '[:lower:]')"
 
@@ -80,6 +81,10 @@ if ! phase_gate_require_fastlane_disabled="$(parse_bool_token_strict "$phase_gat
 fi
 if ! phase_gate_require_jito_rpc_policy="$(parse_bool_token_strict "$phase_gate_require_jito_rpc_policy_raw")"; then
   echo "REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY must be a boolean token (got: ${phase_gate_require_jito_rpc_policy_raw:-<empty>})" >&2
+  exit 1
+fi
+if ! phase_gate_require_non_bootstrap_signer="$(parse_bool_token_strict "$phase_gate_require_non_bootstrap_signer_raw")"; then
+  echo "REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token (got: ${phase_gate_require_non_bootstrap_signer_raw:-<empty>})" >&2
   exit 1
 fi
 
@@ -243,6 +248,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
+  GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$phase_gate_require_non_bootstrap_signer" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -263,6 +269,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
+  GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$phase_gate_require_non_bootstrap_signer" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -284,6 +291,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
+  GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$phase_gate_require_non_bootstrap_signer" \
   SOLANA_COPY_BOT_INGESTION_SOURCE="$phase_gate_ingestion_source" \
   EXECUTOR_ENV_PATH="$executor_env_path" \
   CONFIG_PATH="$config_path" \
@@ -314,6 +322,9 @@ validate_strict_guard_reason_code "go_nogo" "fastlane_feature_flag_reason_code" 
 validate_bool_field_equals "go_nogo" "go_nogo_require_jito_rpc_policy" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy"
 validate_policy_gate_verdict "go_nogo" "jito_rpc_policy_verdict" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
 validate_strict_guard_reason_code "go_nogo" "jito_rpc_policy_reason_code" "$go_nogo_output" "$phase_gate_require_jito_rpc_policy"
+validate_bool_field_equals "go_nogo" "go_nogo_require_non_bootstrap_signer" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_verdict "go_nogo" "non_bootstrap_signer_guard_verdict" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_reason_code "go_nogo" "non_bootstrap_signer_guard_reason_code" "$go_nogo_output" "$phase_gate_require_non_bootstrap_signer"
 
 validate_go_nogo_verdict_is_go "rehearsal" "devnet_rehearsal_verdict" "$rehearsal_output"
 validate_bool_field_equals "rehearsal" "go_nogo_require_executor_upstream" "$rehearsal_output" "$phase_gate_require_executor_upstream"
@@ -330,6 +341,9 @@ validate_strict_guard_reason_code "rehearsal" "fastlane_feature_flag_reason_code
 validate_bool_field_equals "rehearsal" "go_nogo_require_jito_rpc_policy" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy"
 validate_policy_gate_verdict "rehearsal" "jito_rpc_policy_verdict" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
 validate_strict_guard_reason_code "rehearsal" "jito_rpc_policy_reason_code" "$rehearsal_output" "$phase_gate_require_jito_rpc_policy"
+validate_bool_field_equals "rehearsal" "go_nogo_require_non_bootstrap_signer" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_verdict "rehearsal" "go_nogo_non_bootstrap_signer_guard_verdict" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_non_bootstrap_signer_guard_reason_code" "$rehearsal_output" "$phase_gate_require_non_bootstrap_signer"
 
 validate_go_nogo_verdict_is_go "rollout" "adapter_rollout_verdict" "$rollout_output"
 validate_bool_field_equals "rollout" "go_nogo_require_executor_upstream" "$rollout_output" "$phase_gate_require_executor_upstream"
@@ -348,6 +362,10 @@ validate_strict_guard_reason_code "rollout" "fastlane_feature_flag_reason_code" 
 validate_bool_field_equals "rollout" "go_nogo_require_jito_rpc_policy" "$rollout_output" "$phase_gate_require_jito_rpc_policy"
 validate_policy_gate_verdict "rollout" "jito_rpc_policy_verdict" "$rollout_output" "$phase_gate_require_jito_rpc_policy" "NON_SKIP"
 validate_strict_guard_reason_code "rollout" "jito_rpc_policy_reason_code" "$rollout_output" "$phase_gate_require_jito_rpc_policy"
+validate_bool_field_equals "rollout" "go_nogo_require_non_bootstrap_signer" "$rollout_output" "$phase_gate_require_non_bootstrap_signer"
+validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_non_bootstrap_signer" "$rollout_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_verdict "rollout" "rehearsal_nested_non_bootstrap_signer_guard_verdict" "$rollout_output" "$phase_gate_require_non_bootstrap_signer"
+validate_strict_guard_reason_code "rollout" "rehearsal_nested_non_bootstrap_signer_guard_reason_code" "$rollout_output" "$phase_gate_require_non_bootstrap_signer"
 
 if ((${#phase_gate_errors[@]} > 0)); then
   for phase_gate_error in "${phase_gate_errors[@]}"; do
@@ -383,5 +401,6 @@ go_nogo_require_executor_upstream: $phase_gate_require_executor_upstream
 go_nogo_require_ingestion_grpc: $phase_gate_require_ingestion_grpc
 go_nogo_require_fastlane_disabled: $phase_gate_require_fastlane_disabled
 go_nogo_require_jito_rpc_policy: $phase_gate_require_jito_rpc_policy
+go_nogo_require_non_bootstrap_signer: $phase_gate_require_non_bootstrap_signer
 ingestion_source: $phase_gate_ingestion_source
 EOF_SUMMARY

@@ -10192,6 +10192,7 @@ run_refactor_phase_gate_case() {
   assert_field_equals "$phase_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$phase_output" "go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$phase_output" "go_nogo_require_jito_rpc_policy" "false"
+  assert_field_equals "$phase_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$phase_output" "ingestion_source" "yellowstone_grpc"
 
   local raw_checksum_manifest=""
@@ -10237,6 +10238,15 @@ run_refactor_phase_gate_case() {
   assert_contains "$normalized_rollout_text" "rehearsal_nested_go_nogo_require_ingestion_grpc: true"
   assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_verdict: PASS"
   assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_reason_code: grpc_active_source_yellowstone"
+  assert_contains "$normalized_go_nogo_text" "go_nogo_require_non_bootstrap_signer: false"
+  assert_contains "$normalized_go_nogo_text" "non_bootstrap_signer_guard_verdict: SKIP"
+  assert_contains "$normalized_go_nogo_text" "non_bootstrap_signer_guard_reason_code: gate_disabled"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_require_non_bootstrap_signer: false"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_non_bootstrap_signer_guard_verdict: SKIP"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_non_bootstrap_signer_guard_reason_code: gate_disabled"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_go_nogo_require_non_bootstrap_signer: false"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_non_bootstrap_signer_guard_verdict: SKIP"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_non_bootstrap_signer_guard_reason_code: gate_disabled"
 
   local phase_relaxed_ingestion_output=""
   phase_relaxed_ingestion_output="$(
@@ -10315,6 +10325,18 @@ run_refactor_phase_gate_case() {
   assert_contains "$phase_strict_jito_output" "jito_rpc_policy_verdict: WARN"
   assert_contains "$phase_strict_jito_output" "jito_rpc_policy_reason_code: route_profile_not_pass"
 
+  local phase_strict_signer_output_path="$phase_output_dir.strict-signer.out"
+  local phase_strict_signer_output=""
+  if REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER="true" \
+    bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-signer" --fixture-dir "$phase_fixture_dir.strict-signer" >"$phase_strict_signer_output_path" 2>&1; then
+    echo "expected refactor_phase_gate to fail-close when strict non-bootstrap signer is enabled against bootstrap baseline signer" >&2
+    exit 1
+  fi
+  phase_strict_signer_output="$(cat "$phase_strict_signer_output_path")"
+  assert_contains "$phase_strict_signer_output" "phase-gate error: execution_devnet_rehearsal.sh failed for stage=rehearsal"
+  assert_contains "$phase_strict_signer_output" "go_nogo_non_bootstrap_signer_guard_verdict: UNKNOWN"
+  assert_contains "$phase_strict_signer_output" "go_nogo_non_bootstrap_signer_guard_reason_code: signer_pubkey_missing"
+
   local phase_invalid_ingestion_source_output=""
   if phase_invalid_ingestion_source_output="$(
     REFACTOR_PHASE_GATE_INGESTION_SOURCE="helius_ws" \
@@ -10355,6 +10377,16 @@ run_refactor_phase_gate_case() {
     exit 1
   fi
   assert_contains "$phase_invalid_jito_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY must be a boolean token"
+
+  local phase_invalid_signer_bool_output=""
+  if phase_invalid_signer_bool_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER="sometimes" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.invalid-signer-bool" --fixture-dir "$phase_fixture_dir.invalid-signer-bool" 2>&1
+  )"; then
+    echo "expected refactor_phase_gate to fail-close for invalid REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER token" >&2
+    exit 1
+  fi
+  assert_contains "$phase_invalid_signer_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token"
 
   echo "[ok] refactor phase gate"
 }
