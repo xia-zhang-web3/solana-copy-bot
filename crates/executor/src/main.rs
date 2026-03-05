@@ -5659,6 +5659,18 @@ mod tests {
             Some("executor_mock_submit_ok")
         );
         assert!(response.get("tx_signature").and_then(Value::as_str).is_some());
+        assert_eq!(
+            response.get("base_fee_lamports").and_then(Value::as_u64),
+            Some(5_000)
+        );
+        assert_eq!(
+            response.get("priority_fee_lamports").and_then(Value::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            response.get("network_fee_lamports").and_then(Value::as_u64),
+            Some(5_300)
+        );
     }
 
     #[tokio::test]
@@ -5800,6 +5812,18 @@ mod tests {
             Some("executor_paper_submit_ok")
         );
         assert!(response.get("tx_signature").and_then(Value::as_str).is_some());
+        assert_eq!(
+            response.get("base_fee_lamports").and_then(Value::as_u64),
+            Some(5_000)
+        );
+        assert_eq!(
+            response.get("priority_fee_lamports").and_then(Value::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            response.get("network_fee_lamports").and_then(Value::as_u64),
+            Some(5_300)
+        );
     }
 
     #[tokio::test]

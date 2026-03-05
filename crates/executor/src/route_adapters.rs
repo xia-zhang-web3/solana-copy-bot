@@ -222,18 +222,22 @@ impl RouteAdapter {
             "route adapter received submit instruction plan"
         );
         if is_internal_paper_route(route) {
-            return Ok(build_paper_submit_backend_response(
+            let mut response = build_paper_submit_backend_response(
                 route,
                 state.config.contract_version.as_str(),
                 payload_expectations,
-            ));
+            );
+            append_internal_submit_fee_hint_fields(&mut response, plan);
+            return Ok(response);
         }
         if state.config.backend_mode == ExecutorBackendMode::Mock {
-            return Ok(build_mock_submit_backend_response(
+            let mut response = build_mock_submit_backend_response(
                 route,
                 state.config.contract_version.as_str(),
                 payload_expectations,
-            ));
+            );
+            append_internal_submit_fee_hint_fields(&mut response, plan);
+            return Ok(response);
         }
         forward_to_upstream(
             state,
@@ -421,6 +425,24 @@ fn append_optional_submit_identity_echo_fields(
             payload["token"] = Value::String(trimmed_token.to_string());
         }
     }
+}
+
+fn append_internal_submit_fee_hint_fields(payload: &mut Value, instruction_plan: SubmitInstructionPlan) {
+    let priority_fee_lamports_u128 = u128::from(instruction_plan.compute_budget_cu_limit)
+        .saturating_mul(u128::from(
+            instruction_plan.compute_budget_cu_price_micro_lamports,
+        ))
+        / 1_000_000u128;
+    let Ok(priority_fee_lamports) = u64::try_from(priority_fee_lamports_u128) else {
+        return;
+    };
+    let Some(network_fee_lamports) = crate::DEFAULT_BASE_FEE_LAMPORTS.checked_add(priority_fee_lamports)
+    else {
+        return;
+    };
+    payload["network_fee_lamports"] = json!(network_fee_lamports);
+    payload["base_fee_lamports"] = json!(crate::DEFAULT_BASE_FEE_LAMPORTS);
+    payload["priority_fee_lamports"] = json!(priority_fee_lamports);
 }
 
 fn parse_payload_object_for_action(
