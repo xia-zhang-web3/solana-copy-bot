@@ -133,12 +133,14 @@ impl RouteAdapter {
             return Ok(build_paper_simulate_backend_response(
                 route,
                 state.config.contract_version.as_str(),
+                payload_expectations,
             ));
         }
         if state.config.backend_mode == ExecutorBackendMode::Mock {
             return Ok(build_mock_simulate_backend_response(
                 route,
                 state.config.contract_version.as_str(),
+                payload_expectations,
             ));
         }
         forward_to_upstream(
@@ -367,15 +369,21 @@ fn is_internal_paper_route(route: &str) -> bool {
     route == "paper"
 }
 
-fn build_paper_simulate_backend_response(route: &str, contract_version: &str) -> Value {
-    json!({
+fn build_paper_simulate_backend_response(
+    route: &str,
+    contract_version: &str,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
+) -> Value {
+    let mut payload = json!({
         "status": "ok",
         "ok": true,
         "accepted": true,
         "route": route,
         "contract_version": contract_version,
         "detail": "executor_paper_simulation_ok"
-    })
+    });
+    append_optional_identity_echo_fields(&mut payload, payload_expectations);
+    payload
 }
 
 fn build_paper_submit_backend_response(
@@ -398,19 +406,25 @@ fn build_paper_submit_backend_response(
     if let Some(client_order_id) = payload_expectations.client_order_id {
         payload["client_order_id"] = Value::String(client_order_id.to_string());
     }
-    append_optional_submit_identity_echo_fields(&mut payload, payload_expectations);
+    append_optional_identity_echo_fields(&mut payload, payload_expectations);
     payload
 }
 
-fn build_mock_simulate_backend_response(route: &str, contract_version: &str) -> Value {
-    json!({
+fn build_mock_simulate_backend_response(
+    route: &str,
+    contract_version: &str,
+    payload_expectations: RouteActionPayloadExpectations<'_>,
+) -> Value {
+    let mut payload = json!({
         "status": "ok",
         "ok": true,
         "accepted": true,
         "route": route,
         "contract_version": contract_version,
         "detail": "executor_mock_simulation_ok"
-    })
+    });
+    append_optional_identity_echo_fields(&mut payload, payload_expectations);
+    payload
 }
 
 fn build_mock_submit_backend_response(
@@ -433,14 +447,17 @@ fn build_mock_submit_backend_response(
     if let Some(client_order_id) = payload_expectations.client_order_id {
         payload["client_order_id"] = Value::String(client_order_id.to_string());
     }
-    append_optional_submit_identity_echo_fields(&mut payload, payload_expectations);
+    append_optional_identity_echo_fields(&mut payload, payload_expectations);
     payload
 }
 
-fn append_optional_submit_identity_echo_fields(
+fn append_optional_identity_echo_fields(
     payload: &mut Value,
     payload_expectations: RouteActionPayloadExpectations<'_>,
 ) {
+    if let Some(request_id) = payload_expectations.request_id {
+        payload["request_id"] = Value::String(request_id.to_string());
+    }
     if let Some(signal_id) = payload_expectations.signal_id {
         payload["signal_id"] = Value::String(signal_id.to_string());
     }
@@ -1150,12 +1167,36 @@ mod tests {
 
     #[test]
     fn build_mock_simulate_backend_response_includes_contract_fields() {
-        let payload = super::build_mock_simulate_backend_response("rpc", "v1");
+        let payload = super::build_mock_simulate_backend_response(
+            "rpc",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("rpc"),
+                request_id: Some("request-1"),
+                signal_id: Some("signal-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
         assert_eq!(payload.get("status").and_then(Value::as_str), Some("ok"));
         assert_eq!(payload.get("route").and_then(Value::as_str), Some("rpc"));
         assert_eq!(
             payload.get("contract_version").and_then(Value::as_str),
             Some("v1")
+        );
+        assert_eq!(
+            payload.get("request_id").and_then(Value::as_str),
+            Some("request-1")
+        );
+        assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
         );
         assert_eq!(
             payload.get("detail").and_then(Value::as_str),
@@ -1384,12 +1425,36 @@ mod tests {
 
     #[test]
     fn build_paper_simulate_backend_response_includes_contract_fields() {
-        let payload = super::build_paper_simulate_backend_response("paper", "v1");
+        let payload = super::build_paper_simulate_backend_response(
+            "paper",
+            "v1",
+            RouteActionPayloadExpectations {
+                route_hint: Some("paper"),
+                request_id: Some("request-paper-1"),
+                signal_id: Some("signal-paper-1"),
+                client_order_id: None,
+                side: Some("buy"),
+                token: Some("11111111111111111111111111111111"),
+            },
+        );
         assert_eq!(payload.get("status").and_then(Value::as_str), Some("ok"));
         assert_eq!(payload.get("route").and_then(Value::as_str), Some("paper"));
         assert_eq!(
             payload.get("contract_version").and_then(Value::as_str),
             Some("v1")
+        );
+        assert_eq!(
+            payload.get("request_id").and_then(Value::as_str),
+            Some("request-paper-1")
+        );
+        assert_eq!(
+            payload.get("signal_id").and_then(Value::as_str),
+            Some("signal-paper-1")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
         );
         assert_eq!(
             payload.get("detail").and_then(Value::as_str),

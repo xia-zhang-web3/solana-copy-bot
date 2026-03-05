@@ -5592,6 +5592,19 @@ mod tests {
         assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
         assert_eq!(response.get("route").and_then(Value::as_str), Some("rpc"));
         assert_eq!(
+            response.get("request_id").and_then(Value::as_str),
+            Some("request-simulate-mock-backend-1")
+        );
+        assert_eq!(
+            response.get("signal_id").and_then(Value::as_str),
+            Some("signal-simulate-mock-backend-1")
+        );
+        assert_eq!(response.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            response.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(
             response.get("detail").and_then(Value::as_str),
             Some("executor_mock_simulation_ok")
         );
@@ -5729,6 +5742,19 @@ mod tests {
         .expect("simulate should use internal paper backend");
         assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
         assert_eq!(response.get("route").and_then(Value::as_str), Some("paper"));
+        assert_eq!(
+            response.get("request_id").and_then(Value::as_str),
+            Some("request-simulate-paper-internal-1")
+        );
+        assert_eq!(
+            response.get("signal_id").and_then(Value::as_str),
+            Some("signal-simulate-paper-internal-1")
+        );
+        assert_eq!(response.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            response.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
+        );
         assert_eq!(
             response.get("detail").and_then(Value::as_str),
             Some("executor_paper_simulation_ok")
