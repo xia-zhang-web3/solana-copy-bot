@@ -1789,6 +1789,28 @@ mod tests {
     }
 
     #[test]
+    fn executor_config_from_env_rejects_submit_verify_strict_without_verify_rpc_url() {
+        with_clean_executor_env(|| {
+            with_temp_signer_keypair_file(|keypair_path| {
+                set_minimal_executor_env_for_from_env(keypair_path);
+                env::set_var("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT", "true");
+
+                let error = match crate::ExecutorConfig::from_env() {
+                    Ok(_) => panic!("strict submit verify without endpoint must reject"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"),
+                    "unexpected error: {}",
+                    error
+                );
+            });
+        });
+    }
+
+    #[test]
     fn executor_config_from_env_rejects_route_scoped_env_outside_allowlist() {
         with_clean_executor_env(|| {
             with_temp_signer_keypair_file(|keypair_path| {

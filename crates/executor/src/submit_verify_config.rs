@@ -37,6 +37,12 @@ pub(crate) fn build_submit_signature_verify_config(
     interval_ms: u64,
     strict: bool,
 ) -> Result<Option<SubmitSignatureVerifyConfig>> {
+    if strict && primary.is_none() {
+        return Err(anyhow!(
+            "COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"
+        ));
+    }
+
     if primary.is_none() && fallback.is_none() {
         return Ok(None);
     }
@@ -82,4 +88,37 @@ pub(crate) fn build_submit_signature_verify_config(
         interval_ms,
         strict,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_submit_signature_verify_config;
+
+    #[test]
+    fn build_submit_signature_verify_config_rejects_strict_without_primary_endpoint() {
+        let error = build_submit_signature_verify_config(None, None, 3, 250, true)
+            .expect_err("strict submit verify without primary endpoint must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("COPYBOT_EXECUTOR_SUBMIT_VERIFY_STRICT requires COPYBOT_EXECUTOR_SUBMIT_VERIFY_RPC_URL"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn build_submit_signature_verify_config_accepts_strict_with_primary_endpoint() {
+        let config = build_submit_signature_verify_config(
+            Some("https://verify.integration.test".to_string()),
+            None,
+            3,
+            250,
+            true,
+        )
+        .expect("strict submit verify with primary endpoint must parse")
+        .expect("strict submit verify should be configured");
+        assert!(config.strict, "strict flag must be preserved");
+        assert_eq!(config.endpoints, vec!["https://verify.integration.test"]);
+    }
 }
