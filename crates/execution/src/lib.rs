@@ -3371,6 +3371,109 @@ mod tests {
     }
 
     #[test]
+    fn process_batch_falls_back_when_observed_fill_sign_mismatches_intent() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-observed-sign-mismatch")?;
+        let now = Utc::now();
+        seed_token_price(&store, "token-obs-sign", now, "sig-price-obs-sign")?;
+        store.apply_execution_fill_to_positions("token-obs-sign", "buy", 4.0, 0.20, now)?;
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:obs:wallet:sell:token-obs-sign".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "sell".to_string(),
+            token: "token-obs-sign".to_string(),
+            notional_sol: 0.10,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-observed-sign-mismatch-1",
+                &signal.signal_id,
+                &client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-observed-sign-mismatch-1",
+            "paper",
+            "sig-obs-sign-mismatch",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let mut route_tip_lamports = BTreeMap::new();
+        route_tip_lamports.insert("paper".to_string(), 0);
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports,
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(SequenceConfirmer::new(vec![confirm::ConfirmationResult {
+                status: ConfirmationStatus::Confirmed,
+                confirmed_at: Some(now + Duration::seconds(1)),
+                network_fee_lamports: Some(5_000),
+                network_fee_lookup_error: None,
+                observed_fill: Some(confirm::ObservedExecutionFill {
+                    signer_balance_delta_lamports: 89_995_000,
+                    token_delta_qty: 1.5,
+                }),
+                detail: "observed_sign_mismatch".to_string(),
+            }])),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 1);
+        let (qty, cost_sol) = store
+            .live_open_position_qty_cost("token-obs-sign")?
+            .context("position should remain after synthetic fallback")?;
+        assert!(
+            (qty - 3.0).abs() < 1e-9,
+            "expected wrong-sign observed fill to be rejected and synthetic sell qty=1.0 used, got {}",
+            qty
+        );
+        assert!(
+            (cost_sol - 0.15).abs() < 1e-9,
+            "expected synthetic fallback to preserve 0.15 remaining cost basis, got {}",
+            cost_sol
+        );
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("observed sign mismatch order should remain present after confirm")?;
+        assert_eq!(order.status, "execution_confirmed");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_records_post_confirm_total_exposure_risk_breach() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-total-exposure-breach")?;
         let now = Utc::now();

@@ -63,6 +63,22 @@ pub fn build_fill_from_confirmed_observation(
             observed_fill.token_delta_qty
         ));
     }
+    match intent.side.as_str() {
+        "buy" if observed_fill.token_delta_qty <= 1e-12 => {
+            return Err(anyhow!(
+                "observed token_delta_qty sign mismatch side=buy token_delta_qty={}",
+                observed_fill.token_delta_qty
+            ));
+        }
+        "sell" if observed_fill.token_delta_qty >= -1e-12 => {
+            return Err(anyhow!(
+                "observed token_delta_qty sign mismatch side=sell token_delta_qty={}",
+                observed_fill.token_delta_qty
+            ));
+        }
+        "buy" | "sell" => {}
+        other => return Err(anyhow!("unsupported execution side: {other}")),
+    }
 
     let gross_sol_delta_sol =
         (observed_fill.signer_balance_delta_lamports as f64) / 1_000_000_000.0;
@@ -107,4 +123,64 @@ pub fn build_fill_from_confirmed_observation(
         fee_sol,
         slippage_bps,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intent::{ExecutionIntent, ExecutionSide};
+    use chrono::Utc;
+
+    fn make_intent(side: ExecutionSide) -> ExecutionIntent {
+        ExecutionIntent {
+            signal_id: "sig".to_string(),
+            leader_wallet: "wallet".to_string(),
+            side,
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            signal_ts: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn build_fill_from_confirmed_observation_rejects_wrong_sign_for_buy() {
+        let error = build_fill_from_confirmed_observation(
+            &make_intent(ExecutionSide::Buy),
+            "order-1",
+            ObservedExecutionFill {
+                signer_balance_delta_lamports: -100_005_000,
+                token_delta_qty: -2.0,
+            },
+            50.0,
+            0.000005,
+        )
+        .expect_err("buy should reject negative token delta");
+        assert!(
+            error
+                .to_string()
+                .contains("observed token_delta_qty sign mismatch"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn build_fill_from_confirmed_observation_rejects_wrong_sign_for_sell() {
+        let error = build_fill_from_confirmed_observation(
+            &make_intent(ExecutionSide::Sell),
+            "order-1",
+            ObservedExecutionFill {
+                signer_balance_delta_lamports: 89_995_000,
+                token_delta_qty: 2.0,
+            },
+            50.0,
+            0.000005,
+        )
+        .expect_err("sell should reject positive token delta");
+        assert!(
+            error
+                .to_string()
+                .contains("observed token_delta_qty sign mismatch"),
+            "unexpected error: {error}"
+        );
+    }
 }

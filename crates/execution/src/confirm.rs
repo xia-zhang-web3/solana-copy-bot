@@ -136,7 +136,6 @@ impl RpcOrderConfirmer {
         &self,
         endpoint: &str,
         tx_signature: &str,
-        token_mint: &str,
         now: DateTime<Utc>,
     ) -> Result<ConfirmationResult> {
         let payload = json!({
@@ -152,28 +151,7 @@ impl RpcOrderConfirmer {
             .send()
             .context("rpc request failed")?;
         let body: Value = response.json().context("invalid rpc json")?;
-        let mut confirmation = parse_confirmation_from_rpc_body(&body, now)?;
-        if matches!(confirmation.status, ConfirmationStatus::Confirmed) {
-            match self.query_confirmed_transaction_observation(endpoint, tx_signature, token_mint) {
-                Ok(value) => {
-                    confirmation.network_fee_lamports = value.network_fee_lamports;
-                    confirmation.observed_fill = value.observed_fill;
-                    confirmation.network_fee_lookup_error = None;
-                }
-                Err(error_class) => {
-                    warn!(
-                        endpoint = %redacted_endpoint_label(endpoint),
-                        tx_signature,
-                        error_class = error_class.as_str(),
-                        "confirmed transaction observation lookup failed; proceeding without on-chain fill details"
-                    );
-                    confirmation.network_fee_lamports = None;
-                    confirmation.observed_fill = None;
-                    confirmation.network_fee_lookup_error = Some(error_class.as_str().to_string());
-                }
-            }
-        }
-        Ok(confirmation)
+        parse_confirmation_from_rpc_body(&body, now)
     }
 
     fn query_confirmed_transaction_observation(
@@ -235,11 +213,76 @@ impl OrderConfirmer for RpcOrderConfirmer {
         }
 
         let mut last_error: Option<anyhow::Error> = None;
+        let mut last_timeout: Option<ConfirmationResult> = None;
+        let mut confirmed: Option<ConfirmationResult> = None;
         for endpoint in &self.endpoints {
-            match self.query_signature_status(endpoint, tx_signature, token_mint, now) {
-                Ok(result) => return Ok(result),
+            match self.query_signature_status(endpoint, tx_signature, now) {
+                Ok(result) => match result.status {
+                    ConfirmationStatus::Confirmed => {
+                        confirmed = Some(result);
+                        break;
+                    }
+                    ConfirmationStatus::Failed => return Ok(result),
+                    ConfirmationStatus::Timeout => {
+                        if last_timeout.is_none() {
+                            last_timeout = Some(result);
+                        }
+                    }
+                },
                 Err(error) => last_error = Some(error),
             }
+        }
+
+        if let Some(mut result) = confirmed {
+            let mut best_observation = ConfirmedTransactionObservation {
+                network_fee_lamports: None,
+                observed_fill: None,
+            };
+            let mut last_observation_error: Option<FeeLookupErrorClass> = None;
+            for endpoint in &self.endpoints {
+                match self.query_confirmed_transaction_observation(
+                    endpoint,
+                    tx_signature,
+                    token_mint,
+                ) {
+                    Ok(observation) => {
+                        if best_observation.network_fee_lamports.is_none() {
+                            best_observation.network_fee_lamports =
+                                observation.network_fee_lamports;
+                        }
+                        if best_observation.observed_fill.is_none() {
+                            best_observation.observed_fill = observation.observed_fill;
+                        }
+                        if best_observation.network_fee_lamports.is_some()
+                            && best_observation.observed_fill.is_some()
+                        {
+                            last_observation_error = None;
+                            break;
+                        }
+                    }
+                    Err(error_class) => {
+                        last_observation_error = Some(error_class);
+                        warn!(
+                            endpoint = %redacted_endpoint_label(endpoint),
+                            tx_signature,
+                            error_class = error_class.as_str(),
+                            "confirmed transaction observation lookup failed; trying next RPC endpoint"
+                        );
+                    }
+                }
+            }
+            result.network_fee_lamports = best_observation.network_fee_lamports;
+            result.observed_fill = best_observation.observed_fill;
+            result.network_fee_lookup_error = if result.network_fee_lamports.is_none() {
+                last_observation_error.map(|value| value.as_str().to_string())
+            } else {
+                None
+            };
+            return Ok(result);
+        }
+
+        if let Some(result) = last_timeout {
+            return Ok(result);
         }
         Err(last_error.unwrap_or_else(|| anyhow!("all rpc confirmation endpoints failed")))
     }
@@ -580,6 +623,54 @@ fn redacted_endpoint_label(endpoint: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread::{self, JoinHandle};
+    use std::time::{Duration as StdDuration, Instant};
+
+    fn spawn_jsonrpc_server(responses: Vec<String>) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind jsonrpc test listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking on test listener");
+        let addr = listener.local_addr().expect("read listener addr");
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + StdDuration::from_secs(5);
+            let mut served = 0usize;
+            while served < responses.len() {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(StdDuration::from_secs(1)))
+                            .expect("set read timeout");
+                        let mut request = [0_u8; 4096];
+                        let _ = stream.read(&mut request);
+                        let body = &responses[served];
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        stream
+                            .write_all(response.as_bytes())
+                            .expect("write jsonrpc response");
+                        served += 1;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "jsonrpc test server timed out after serving {} of {} responses",
+                            served,
+                            responses.len()
+                        );
+                        thread::sleep(StdDuration::from_millis(10));
+                    }
+                    Err(error) => panic!("jsonrpc test server accept failed: {error}"),
+                }
+            }
+        });
+        (format!("http://{}", addr), handle)
+    }
 
     #[test]
     fn parse_confirmation_from_rpc_body_returns_confirmed() -> Result<()> {
@@ -801,6 +892,74 @@ mod tests {
                 token_delta_qty: -2.5,
             })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_confirmer_uses_fallback_endpoint_for_observation_after_primary_confirm() -> Result<()> {
+        let confirmed_status_body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "value": [{
+                    "err": null,
+                    "confirmationStatus": "confirmed"
+                }]
+            },
+            "id": 1
+        })
+        .to_string();
+        let fallback_observation_body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "transaction": {
+                    "message": {
+                        "accountKeys": ["signer-pubkey", "other-account"]
+                    }
+                },
+                "meta": {
+                    "fee": 5000,
+                    "preBalances": [1_000_000_000_u64, 0],
+                    "postBalances": [899_995_000_u64, 0],
+                    "preTokenBalances": [],
+                    "postTokenBalances": [{
+                        "mint": "token-a",
+                        "owner": "signer-pubkey",
+                        "uiTokenAmount": {
+                            "uiAmountString": "2.0"
+                        }
+                    }]
+                }
+            },
+            "id": 1
+        })
+        .to_string();
+
+        let (primary_url, primary_handle) =
+            spawn_jsonrpc_server(vec![confirmed_status_body, "{".to_string()]);
+        let (fallback_url, fallback_handle) = spawn_jsonrpc_server(vec![fallback_observation_body]);
+        let confirmer = RpcOrderConfirmer::new(&primary_url, &fallback_url, 1_000, "signer-pubkey")
+            .expect("rpc confirmer should initialize");
+
+        let result = confirmer.confirm(
+            "sig-observed-fill",
+            "token-a",
+            Utc::now() + chrono::Duration::seconds(5),
+        )?;
+        assert_eq!(result.status, ConfirmationStatus::Confirmed);
+        assert_eq!(result.network_fee_lamports, Some(5_000));
+        assert_eq!(result.network_fee_lookup_error, None);
+        assert_eq!(
+            result.observed_fill,
+            Some(ObservedExecutionFill {
+                signer_balance_delta_lamports: -100_005_000,
+                token_delta_qty: 2.0,
+            })
+        );
+
+        primary_handle.join().expect("join primary jsonrpc server");
+        fallback_handle
+            .join()
+            .expect("join fallback jsonrpc server");
         Ok(())
     }
 
