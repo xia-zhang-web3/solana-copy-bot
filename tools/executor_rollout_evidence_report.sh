@@ -202,6 +202,9 @@ preflight_artifact_summary=""
 preflight_artifact_manifest=""
 preflight_summary_sha256=""
 preflight_artifacts_written="false"
+preflight_executor_submit_verify_strict="n/a"
+preflight_executor_submit_verify_configured="n/a"
+preflight_executor_submit_verify_fallback_configured="n/a"
 if [[ "$executor_rollout_run_preflight_norm" != "true" ]]; then
   preflight_output=$'preflight_verdict: SKIP\npreflight_reason: stage_disabled\npreflight_reason_code: stage_disabled\nartifacts_written: false'
   preflight_exit_code=0
@@ -233,6 +236,27 @@ elif ((${#input_errors[@]} == 0)) && [[ -f "$CONFIG_PATH" && -f "$EXECUTOR_ENV_P
   preflight_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$preflight_output")")"
   preflight_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$preflight_output")")"
   preflight_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$preflight_output")")"
+  preflight_executor_submit_verify_strict_raw="$(trim_string "$(extract_field "executor_submit_verify_strict" "$preflight_output")")"
+  if ! preflight_executor_submit_verify_strict="$(extract_bool_field_strict "executor_submit_verify_strict" "$preflight_output")"; then
+    input_errors+=("preflight helper executor_submit_verify_strict must be boolean token, got: ${preflight_executor_submit_verify_strict_raw:-<empty>}")
+    preflight_executor_submit_verify_strict="unknown"
+  fi
+  preflight_executor_submit_verify_configured_raw="$(trim_string "$(extract_field "executor_submit_verify_configured" "$preflight_output")")"
+  if ! preflight_executor_submit_verify_configured="$(extract_bool_field_strict "executor_submit_verify_configured" "$preflight_output")"; then
+    input_errors+=("preflight helper executor_submit_verify_configured must be boolean token, got: ${preflight_executor_submit_verify_configured_raw:-<empty>}")
+    preflight_executor_submit_verify_configured="unknown"
+  fi
+  preflight_executor_submit_verify_fallback_configured_raw="$(trim_string "$(extract_field "executor_submit_verify_fallback_configured" "$preflight_output")")"
+  if ! preflight_executor_submit_verify_fallback_configured="$(extract_bool_field_strict "executor_submit_verify_fallback_configured" "$preflight_output")"; then
+    input_errors+=("preflight helper executor_submit_verify_fallback_configured must be boolean token, got: ${preflight_executor_submit_verify_fallback_configured_raw:-<empty>}")
+    preflight_executor_submit_verify_fallback_configured="unknown"
+  fi
+  if [[ "$preflight_executor_submit_verify_strict" == "true" && "$preflight_executor_submit_verify_configured" != "true" ]]; then
+    input_errors+=("preflight helper executor_submit_verify_strict=true requires executor_submit_verify_configured=true")
+  fi
+  if [[ "$preflight_executor_submit_verify_fallback_configured" == "true" && "$preflight_executor_submit_verify_configured" != "true" ]]; then
+    input_errors+=("preflight helper executor_submit_verify_fallback_configured=true requires executor_submit_verify_configured=true")
+  fi
   preflight_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$preflight_output")")"
   if ! preflight_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$preflight_output")"; then
     input_errors+=("preflight helper artifacts_written must be boolean token, got: ${preflight_artifacts_written_raw:-<empty>}")
@@ -621,6 +645,9 @@ preflight_artifact_summary: ${preflight_artifact_summary:-n/a}
 preflight_artifact_manifest: ${preflight_artifact_manifest:-n/a}
 preflight_summary_sha256: ${preflight_summary_sha256:-n/a}
 preflight_artifacts_written: $preflight_artifacts_written
+preflight_executor_submit_verify_strict: ${preflight_executor_submit_verify_strict:-n/a}
+preflight_executor_submit_verify_configured: ${preflight_executor_submit_verify_configured:-n/a}
+preflight_executor_submit_verify_fallback_configured: ${preflight_executor_submit_verify_fallback_configured:-n/a}
 
 devnet_rehearsal_verdict: $rehearsal_verdict
 devnet_rehearsal_reason: ${rehearsal_reason:-n/a}

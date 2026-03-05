@@ -112,6 +112,9 @@ rollout_nested_ingestion_grpc_guard_verdict="unknown"
 rollout_nested_ingestion_grpc_guard_reason_code="n/a"
 rollout_nested_non_bootstrap_signer_guard_verdict="unknown"
 rollout_nested_non_bootstrap_signer_guard_reason_code="n/a"
+rollout_nested_preflight_executor_submit_verify_strict="n/a"
+rollout_nested_preflight_executor_submit_verify_configured="n/a"
+rollout_nested_preflight_executor_submit_verify_fallback_configured="n/a"
 if ((${#input_errors[@]} == 0)); then
   if rollout_output="$(
     EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -254,6 +257,27 @@ if ((${#input_errors[@]} == 0)); then
     input_errors+=("nested executor rollout rehearsal_nested_non_bootstrap_signer_guard_reason_code must be non-empty")
     rollout_nested_non_bootstrap_signer_guard_reason_code="n/a"
   fi
+  rollout_nested_preflight_executor_submit_verify_strict_raw="$(trim_string "$(extract_field "preflight_executor_submit_verify_strict" "$rollout_output")")"
+  if ! rollout_nested_preflight_executor_submit_verify_strict="$(extract_bool_field_strict "preflight_executor_submit_verify_strict" "$rollout_output")"; then
+    input_errors+=("nested executor rollout preflight_executor_submit_verify_strict must be boolean token, got: ${rollout_nested_preflight_executor_submit_verify_strict_raw:-<empty>}")
+    rollout_nested_preflight_executor_submit_verify_strict="unknown"
+  fi
+  rollout_nested_preflight_executor_submit_verify_configured_raw="$(trim_string "$(extract_field "preflight_executor_submit_verify_configured" "$rollout_output")")"
+  if ! rollout_nested_preflight_executor_submit_verify_configured="$(extract_bool_field_strict "preflight_executor_submit_verify_configured" "$rollout_output")"; then
+    input_errors+=("nested executor rollout preflight_executor_submit_verify_configured must be boolean token, got: ${rollout_nested_preflight_executor_submit_verify_configured_raw:-<empty>}")
+    rollout_nested_preflight_executor_submit_verify_configured="unknown"
+  fi
+  rollout_nested_preflight_executor_submit_verify_fallback_configured_raw="$(trim_string "$(extract_field "preflight_executor_submit_verify_fallback_configured" "$rollout_output")")"
+  if ! rollout_nested_preflight_executor_submit_verify_fallback_configured="$(extract_bool_field_strict "preflight_executor_submit_verify_fallback_configured" "$rollout_output")"; then
+    input_errors+=("nested executor rollout preflight_executor_submit_verify_fallback_configured must be boolean token, got: ${rollout_nested_preflight_executor_submit_verify_fallback_configured_raw:-<empty>}")
+    rollout_nested_preflight_executor_submit_verify_fallback_configured="unknown"
+  fi
+  if [[ "$rollout_nested_preflight_executor_submit_verify_strict" == "true" && "$rollout_nested_preflight_executor_submit_verify_configured" != "true" ]]; then
+    input_errors+=("nested executor rollout preflight_executor_submit_verify_strict=true requires preflight_executor_submit_verify_configured=true")
+  fi
+  if [[ "$rollout_nested_preflight_executor_submit_verify_fallback_configured" == "true" && "$rollout_nested_preflight_executor_submit_verify_configured" != "true" ]]; then
+    input_errors+=("nested executor rollout preflight_executor_submit_verify_fallback_configured=true requires preflight_executor_submit_verify_configured=true")
+  fi
   if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
     if [[ "$rollout_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested executor rollout rehearsal_nested_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -377,6 +401,9 @@ rollout_nested_ingestion_grpc_guard_verdict: ${rollout_nested_ingestion_grpc_gua
 rollout_nested_ingestion_grpc_guard_reason_code: ${rollout_nested_ingestion_grpc_guard_reason_code:-n/a}
 rollout_nested_non_bootstrap_signer_guard_verdict: ${rollout_nested_non_bootstrap_signer_guard_verdict:-unknown}
 rollout_nested_non_bootstrap_signer_guard_reason_code: ${rollout_nested_non_bootstrap_signer_guard_reason_code:-n/a}
+rollout_nested_preflight_executor_submit_verify_strict: ${rollout_nested_preflight_executor_submit_verify_strict:-n/a}
+rollout_nested_preflight_executor_submit_verify_configured: ${rollout_nested_preflight_executor_submit_verify_configured:-n/a}
+rollout_nested_preflight_executor_submit_verify_fallback_configured: ${rollout_nested_preflight_executor_submit_verify_fallback_configured:-n/a}
 final_executor_package_verdict: $rollout_verdict
 final_executor_package_reason: ${rollout_reason:-n/a}
 final_executor_package_reason_code: ${rollout_reason_code:-n/a}
