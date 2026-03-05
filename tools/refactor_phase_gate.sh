@@ -24,6 +24,7 @@ fixture_dir=""
 
 phase_gate_require_executor_upstream_raw="${REFACTOR_PHASE_GATE_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 phase_gate_require_ingestion_grpc_raw="${REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC:-true}"
+phase_gate_require_followlist_activity_raw="${REFACTOR_PHASE_GATE_REQUIRE_FOLLOWLIST_ACTIVITY:-false}"
 phase_gate_require_fastlane_disabled_raw="${REFACTOR_PHASE_GATE_REQUIRE_FASTLANE_DISABLED:-false}"
 phase_gate_require_jito_rpc_policy_raw="${REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY:-false}"
 phase_gate_require_non_bootstrap_signer_raw="${REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
@@ -74,6 +75,10 @@ if ! phase_gate_require_executor_upstream="$(parse_bool_token_strict "$phase_gat
 fi
 if ! phase_gate_require_ingestion_grpc="$(parse_bool_token_strict "$phase_gate_require_ingestion_grpc_raw")"; then
   echo "REFACTOR_PHASE_GATE_REQUIRE_INGESTION_GRPC must be a boolean token (got: ${phase_gate_require_ingestion_grpc_raw:-<empty>})" >&2
+  exit 1
+fi
+if ! phase_gate_require_followlist_activity="$(parse_bool_token_strict "$phase_gate_require_followlist_activity_raw")"; then
+  echo "REFACTOR_PHASE_GATE_REQUIRE_FOLLOWLIST_ACTIVITY must be a boolean token (got: ${phase_gate_require_followlist_activity_raw:-<empty>})" >&2
   exit 1
 fi
 if ! phase_gate_require_fastlane_disabled="$(parse_bool_token_strict "$phase_gate_require_fastlane_disabled_raw")"; then
@@ -266,6 +271,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
+  GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$phase_gate_require_followlist_activity" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
   GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$phase_gate_require_non_bootstrap_signer" \
@@ -292,6 +298,9 @@ validate_strict_guard_reason_code "go_nogo" "executor_upstream_endpoint_guard_re
 validate_bool_field_equals "go_nogo" "go_nogo_require_ingestion_grpc" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "go_nogo" "ingestion_grpc_guard_verdict" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "go_nogo" "ingestion_grpc_guard_reason_code" "$go_nogo_output" "$phase_gate_require_ingestion_grpc"
+validate_bool_field_equals "go_nogo" "go_nogo_require_followlist_activity" "$go_nogo_output" "$phase_gate_require_followlist_activity"
+validate_strict_guard_verdict "go_nogo" "followlist_activity_guard_verdict" "$go_nogo_output" "$phase_gate_require_followlist_activity"
+validate_strict_guard_reason_code "go_nogo" "followlist_activity_guard_reason_code" "$go_nogo_output" "$phase_gate_require_followlist_activity"
 validate_bool_field_equals "go_nogo" "go_nogo_require_fastlane_disabled" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
 validate_policy_gate_verdict "go_nogo" "fastlane_feature_flag_verdict" "$go_nogo_output" "$phase_gate_require_fastlane_disabled" "PASS"
 validate_strict_guard_reason_code "go_nogo" "fastlane_feature_flag_reason_code" "$go_nogo_output" "$phase_gate_require_fastlane_disabled"
@@ -314,6 +323,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
+  GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$phase_gate_require_followlist_activity" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
   GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$phase_gate_require_non_bootstrap_signer" \
@@ -340,6 +350,9 @@ validate_strict_guard_reason_code "rehearsal" "go_nogo_executor_upstream_endpoin
 validate_bool_field_equals "rehearsal" "go_nogo_require_ingestion_grpc" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "rehearsal" "go_nogo_ingestion_grpc_guard_verdict" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "rehearsal" "go_nogo_ingestion_grpc_guard_reason_code" "$rehearsal_output" "$phase_gate_require_ingestion_grpc"
+validate_bool_field_equals "rehearsal" "go_nogo_require_followlist_activity" "$rehearsal_output" "$phase_gate_require_followlist_activity"
+validate_strict_guard_verdict "rehearsal" "go_nogo_followlist_activity_guard_verdict" "$rehearsal_output" "$phase_gate_require_followlist_activity"
+validate_strict_guard_reason_code "rehearsal" "go_nogo_followlist_activity_guard_reason_code" "$rehearsal_output" "$phase_gate_require_followlist_activity"
 validate_bool_field_equals "rehearsal" "go_nogo_require_fastlane_disabled" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
 validate_policy_gate_verdict "rehearsal" "fastlane_feature_flag_verdict" "$rehearsal_output" "$phase_gate_require_fastlane_disabled" "PASS"
 validate_strict_guard_reason_code "rehearsal" "fastlane_feature_flag_reason_code" "$rehearsal_output" "$phase_gate_require_fastlane_disabled"
@@ -363,6 +376,7 @@ if ! PATH="$fake_bin_dir:$PATH" \
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE=PASS \
   GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$phase_gate_require_executor_upstream" \
   GO_NOGO_REQUIRE_INGESTION_GRPC="$phase_gate_require_ingestion_grpc" \
+  GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$phase_gate_require_followlist_activity" \
   GO_NOGO_REQUIRE_FASTLANE_DISABLED="$phase_gate_require_fastlane_disabled" \
   GO_NOGO_REQUIRE_JITO_RPC_POLICY="$phase_gate_require_jito_rpc_policy" \
   GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$phase_gate_require_non_bootstrap_signer" \
@@ -390,6 +404,10 @@ validate_bool_field_equals "rollout" "go_nogo_require_ingestion_grpc" "$rollout_
 validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_ingestion_grpc" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_verdict "rollout" "rehearsal_nested_ingestion_grpc_guard_verdict" "$rollout_output" "$phase_gate_require_ingestion_grpc"
 validate_strict_guard_reason_code "rollout" "rehearsal_nested_ingestion_grpc_guard_reason_code" "$rollout_output" "$phase_gate_require_ingestion_grpc"
+validate_bool_field_equals "rollout" "go_nogo_require_followlist_activity" "$rollout_output" "$phase_gate_require_followlist_activity"
+validate_bool_field_equals "rollout" "rehearsal_nested_go_nogo_require_followlist_activity" "$rollout_output" "$phase_gate_require_followlist_activity"
+validate_strict_guard_verdict "rollout" "rehearsal_nested_followlist_activity_guard_verdict" "$rollout_output" "$phase_gate_require_followlist_activity"
+validate_strict_guard_reason_code "rollout" "rehearsal_nested_followlist_activity_guard_reason_code" "$rollout_output" "$phase_gate_require_followlist_activity"
 validate_bool_field_equals "rollout" "go_nogo_require_fastlane_disabled" "$rollout_output" "$phase_gate_require_fastlane_disabled"
 validate_policy_gate_verdict "rollout" "fastlane_feature_flag_verdict" "$rollout_output" "$phase_gate_require_fastlane_disabled" "PASS"
 validate_strict_guard_reason_code "rollout" "fastlane_feature_flag_reason_code" "$rollout_output" "$phase_gate_require_fastlane_disabled"
@@ -431,6 +449,7 @@ normalized_rehearsal: $norm_dir/rehearsal_normalized.txt
 normalized_rollout: $norm_dir/rollout_normalized.txt
 go_nogo_require_executor_upstream: $phase_gate_require_executor_upstream
 go_nogo_require_ingestion_grpc: $phase_gate_require_ingestion_grpc
+go_nogo_require_followlist_activity: $phase_gate_require_followlist_activity
 go_nogo_require_fastlane_disabled: $phase_gate_require_fastlane_disabled
 go_nogo_require_jito_rpc_policy: $phase_gate_require_jito_rpc_policy
 go_nogo_require_non_bootstrap_signer: $phase_gate_require_non_bootstrap_signer

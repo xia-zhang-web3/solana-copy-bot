@@ -25,6 +25,7 @@ GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
+GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="${GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY:-false}"
 GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
@@ -119,6 +120,7 @@ parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQU
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE_INGESTION_GRPC" go_nogo_require_ingestion_grpc_norm
+parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" "$GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" go_nogo_require_followlist_activity_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" go_nogo_require_non_bootstrap_signer_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" "$GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" go_nogo_require_submit_verify_strict_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
@@ -270,6 +272,7 @@ rehearsal_artifacts_written="false"
 rehearsal_nested_package_bundle_enabled="unknown"
 rehearsal_nested_go_nogo_require_executor_upstream="n/a"
 rehearsal_nested_go_nogo_require_ingestion_grpc="n/a"
+rehearsal_nested_go_nogo_require_followlist_activity="n/a"
 rehearsal_nested_go_nogo_require_non_bootstrap_signer="n/a"
 rehearsal_nested_go_nogo_require_submit_verify_strict="n/a"
 rehearsal_nested_executor_env_path="n/a"
@@ -279,6 +282,8 @@ rehearsal_nested_executor_upstream_endpoint_guard_verdict="unknown"
 rehearsal_nested_executor_upstream_endpoint_guard_reason_code="n/a"
 rehearsal_nested_ingestion_grpc_guard_verdict="unknown"
 rehearsal_nested_ingestion_grpc_guard_reason_code="n/a"
+rehearsal_nested_followlist_activity_guard_verdict="unknown"
+rehearsal_nested_followlist_activity_guard_reason_code="n/a"
 rehearsal_nested_non_bootstrap_signer_guard_verdict="unknown"
 rehearsal_nested_non_bootstrap_signer_guard_reason_code="n/a"
 rehearsal_nested_submit_verify_guard_verdict="unknown"
@@ -314,6 +319,7 @@ if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_nested_package_bundle_enabled="n/a"
   rehearsal_nested_go_nogo_require_executor_upstream="n/a"
   rehearsal_nested_go_nogo_require_ingestion_grpc="n/a"
+  rehearsal_nested_go_nogo_require_followlist_activity="n/a"
   rehearsal_nested_go_nogo_require_non_bootstrap_signer="n/a"
   rehearsal_nested_go_nogo_require_submit_verify_strict="n/a"
   rehearsal_nested_executor_env_path="n/a"
@@ -323,6 +329,8 @@ if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_nested_executor_upstream_endpoint_guard_reason_code="n/a"
   rehearsal_nested_ingestion_grpc_guard_verdict="n/a"
   rehearsal_nested_ingestion_grpc_guard_reason_code="n/a"
+  rehearsal_nested_followlist_activity_guard_verdict="n/a"
+  rehearsal_nested_followlist_activity_guard_reason_code="n/a"
   rehearsal_nested_non_bootstrap_signer_guard_verdict="n/a"
   rehearsal_nested_non_bootstrap_signer_guard_reason_code="n/a"
   rehearsal_nested_submit_verify_guard_verdict="n/a"
@@ -359,6 +367,7 @@ else
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream_norm" \
       GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity_norm" \
       GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer_norm" \
       GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict_norm" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -415,6 +424,14 @@ else
     input_errors+=("nested rehearsal go_nogo_require_ingestion_grpc mismatch: nested=${go_nogo_require_ingestion_grpc} expected=${go_nogo_require_ingestion_grpc_norm}")
   fi
   rehearsal_nested_go_nogo_require_ingestion_grpc="$go_nogo_require_ingestion_grpc"
+  go_nogo_require_followlist_activity_raw="$(trim_string "$(extract_field "go_nogo_require_followlist_activity" "$rehearsal_output")")"
+  if ! go_nogo_require_followlist_activity="$(extract_bool_field_strict "go_nogo_require_followlist_activity" "$rehearsal_output")"; then
+    input_errors+=("nested rehearsal go_nogo_require_followlist_activity must be boolean token, got: ${go_nogo_require_followlist_activity_raw:-<empty>}")
+    go_nogo_require_followlist_activity="unknown"
+  elif [[ "$go_nogo_require_followlist_activity" != "$go_nogo_require_followlist_activity_norm" ]]; then
+    input_errors+=("nested rehearsal go_nogo_require_followlist_activity mismatch: nested=${go_nogo_require_followlist_activity} expected=${go_nogo_require_followlist_activity_norm}")
+  fi
+  rehearsal_nested_go_nogo_require_followlist_activity="$go_nogo_require_followlist_activity"
   go_nogo_require_non_bootstrap_signer_raw="$(trim_string "$(extract_field "go_nogo_require_non_bootstrap_signer" "$rehearsal_output")")"
   if ! go_nogo_require_non_bootstrap_signer="$(extract_bool_field_strict "go_nogo_require_non_bootstrap_signer" "$rehearsal_output")"; then
     input_errors+=("nested rehearsal go_nogo_require_non_bootstrap_signer must be boolean token, got: ${go_nogo_require_non_bootstrap_signer_raw:-<empty>}")
@@ -483,6 +500,21 @@ else
     input_errors+=("nested rehearsal go_nogo_ingestion_grpc_guard_reason_code must be non-empty")
     rehearsal_nested_ingestion_grpc_guard_reason_code="n/a"
   fi
+  rehearsal_nested_followlist_activity_guard_verdict_raw="$(trim_string "$(extract_field "go_nogo_followlist_activity_guard_verdict" "$rehearsal_output")")"
+  rehearsal_nested_followlist_activity_guard_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_followlist_activity_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rehearsal_nested_followlist_activity_guard_verdict="$(normalize_strict_guard_verdict "$rehearsal_nested_followlist_activity_guard_verdict_raw")"
+  if [[ -z "$rehearsal_nested_followlist_activity_guard_verdict_raw" ]]; then
+    input_errors+=("nested rehearsal go_nogo_followlist_activity_guard_verdict must be non-empty")
+    rehearsal_nested_followlist_activity_guard_verdict="UNKNOWN"
+  elif [[ "$rehearsal_nested_followlist_activity_guard_verdict_raw_upper" != "PASS" && "$rehearsal_nested_followlist_activity_guard_verdict_raw_upper" != "WARN" && "$rehearsal_nested_followlist_activity_guard_verdict_raw_upper" != "UNKNOWN" && "$rehearsal_nested_followlist_activity_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested rehearsal go_nogo_followlist_activity_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${rehearsal_nested_followlist_activity_guard_verdict_raw})")
+    rehearsal_nested_followlist_activity_guard_verdict="UNKNOWN"
+  fi
+  rehearsal_nested_followlist_activity_guard_reason_code="$(trim_string "$(extract_field "go_nogo_followlist_activity_guard_reason_code" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_followlist_activity_guard_reason_code" ]]; then
+    input_errors+=("nested rehearsal go_nogo_followlist_activity_guard_reason_code must be non-empty")
+    rehearsal_nested_followlist_activity_guard_reason_code="n/a"
+  fi
   rehearsal_nested_non_bootstrap_signer_guard_verdict_raw="$(trim_string "$(extract_field "go_nogo_non_bootstrap_signer_guard_verdict" "$rehearsal_output")")"
   rehearsal_nested_non_bootstrap_signer_guard_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_non_bootstrap_signer_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
   rehearsal_nested_non_bootstrap_signer_guard_verdict="$(normalize_strict_guard_verdict "$rehearsal_nested_non_bootstrap_signer_guard_verdict_raw")"
@@ -535,6 +567,15 @@ else
   else
     if [[ "$rehearsal_nested_ingestion_grpc_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested rehearsal go_nogo_ingestion_grpc_guard_verdict must be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=false (got: ${rehearsal_nested_ingestion_grpc_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_followlist_activity_norm" == "true" ]]; then
+    if [[ "$rehearsal_nested_followlist_activity_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_followlist_activity_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY=true")
+    fi
+  else
+    if [[ "$rehearsal_nested_followlist_activity_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_followlist_activity_guard_verdict must be SKIP when GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY=false (got: ${rehearsal_nested_followlist_activity_guard_verdict})")
     fi
   fi
   if [[ "$go_nogo_require_non_bootstrap_signer_norm" == "true" ]]; then
@@ -735,6 +776,7 @@ else
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream_norm" \
       GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity_norm" \
       GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict_norm" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       PACKAGE_BUNDLE_ENABLED="false" \
@@ -903,11 +945,13 @@ jito_rpc_policy_reason_code: ${jito_rpc_policy_reason_code:-n/a}
 go_nogo_require_fastlane_disabled: ${go_nogo_require_fastlane_disabled:-false}
 go_nogo_require_executor_upstream: ${go_nogo_require_executor_upstream:-false}
 go_nogo_require_ingestion_grpc: ${go_nogo_require_ingestion_grpc:-false}
+go_nogo_require_followlist_activity: ${go_nogo_require_followlist_activity:-false}
 go_nogo_require_non_bootstrap_signer: ${go_nogo_require_non_bootstrap_signer:-false}
 go_nogo_require_submit_verify_strict: ${go_nogo_require_submit_verify_strict:-false}
 executor_env_path: $EXECUTOR_ENV_PATH
 rehearsal_nested_go_nogo_require_executor_upstream: ${rehearsal_nested_go_nogo_require_executor_upstream:-n/a}
 rehearsal_nested_go_nogo_require_ingestion_grpc: ${rehearsal_nested_go_nogo_require_ingestion_grpc:-n/a}
+rehearsal_nested_go_nogo_require_followlist_activity: ${rehearsal_nested_go_nogo_require_followlist_activity:-n/a}
 rehearsal_nested_go_nogo_require_non_bootstrap_signer: ${rehearsal_nested_go_nogo_require_non_bootstrap_signer:-n/a}
 rehearsal_nested_go_nogo_require_submit_verify_strict: ${rehearsal_nested_go_nogo_require_submit_verify_strict:-n/a}
 rehearsal_nested_executor_env_path: ${rehearsal_nested_executor_env_path:-n/a}
@@ -917,6 +961,8 @@ rehearsal_nested_executor_upstream_endpoint_guard_verdict: ${rehearsal_nested_ex
 rehearsal_nested_executor_upstream_endpoint_guard_reason_code: ${rehearsal_nested_executor_upstream_endpoint_guard_reason_code:-n/a}
 rehearsal_nested_ingestion_grpc_guard_verdict: ${rehearsal_nested_ingestion_grpc_guard_verdict:-unknown}
 rehearsal_nested_ingestion_grpc_guard_reason_code: ${rehearsal_nested_ingestion_grpc_guard_reason_code:-n/a}
+rehearsal_nested_followlist_activity_guard_verdict: ${rehearsal_nested_followlist_activity_guard_verdict:-unknown}
+rehearsal_nested_followlist_activity_guard_reason_code: ${rehearsal_nested_followlist_activity_guard_reason_code:-n/a}
 rehearsal_nested_non_bootstrap_signer_guard_verdict: ${rehearsal_nested_non_bootstrap_signer_guard_verdict:-unknown}
 rehearsal_nested_non_bootstrap_signer_guard_reason_code: ${rehearsal_nested_non_bootstrap_signer_guard_reason_code:-n/a}
 rehearsal_nested_submit_verify_guard_verdict: ${rehearsal_nested_submit_verify_guard_verdict:-unknown}

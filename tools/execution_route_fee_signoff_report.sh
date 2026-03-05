@@ -15,6 +15,7 @@ GO_NOGO_REQUIRE_JITO_RPC_POLICY="${GO_NOGO_REQUIRE_JITO_RPC_POLICY:-false}"
 GO_NOGO_REQUIRE_FASTLANE_DISABLED="${GO_NOGO_REQUIRE_FASTLANE_DISABLED:-false}"
 GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="${GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM:-true}"
 GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
+GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="${GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY:-false}"
 GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
@@ -47,6 +48,7 @@ parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQU
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE_INGESTION_GRPC" go_nogo_require_ingestion_grpc
+parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" "$GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" go_nogo_require_followlist_activity
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" go_nogo_require_non_bootstrap_signer
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" "$GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" go_nogo_require_submit_verify_strict
 parse_signoff_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
@@ -173,6 +175,9 @@ declare -a window_fastlane_feature_flag_reason_codes=()
 declare -a window_go_nogo_require_ingestion_grpc=()
 declare -a window_ingestion_grpc_guard_verdicts=()
 declare -a window_ingestion_grpc_guard_reason_codes=()
+declare -a window_go_nogo_require_followlist_activity=()
+declare -a window_followlist_activity_guard_verdicts=()
+declare -a window_followlist_activity_guard_reason_codes=()
 declare -a window_go_nogo_require_non_bootstrap_signer=()
 declare -a window_non_bootstrap_signer_guard_verdicts=()
 declare -a window_non_bootstrap_signer_guard_reason_codes=()
@@ -221,6 +226,7 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="$go_nogo_require_executor_upstream" \
       GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity" \
       GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer" \
       GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -371,6 +377,28 @@ if ((${#input_errors[@]} == 0)); then
       input_errors+=("window ${window_hours}h nested go/no-go ingestion_grpc_guard_reason_code must be non-empty")
       ingestion_grpc_guard_reason_code="n/a"
     fi
+    go_nogo_require_followlist_activity_raw="$(trim_string "$(extract_field "go_nogo_require_followlist_activity" "$go_nogo_output")")"
+    if ! go_nogo_require_followlist_activity_nested="$(extract_bool_field_strict "go_nogo_require_followlist_activity" "$go_nogo_output")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_followlist_activity must be boolean token, got: ${go_nogo_require_followlist_activity_raw:-<empty>}")
+      go_nogo_require_followlist_activity_nested="unknown"
+    elif [[ "$go_nogo_require_followlist_activity_nested" != "$go_nogo_require_followlist_activity" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_followlist_activity mismatch: nested=${go_nogo_require_followlist_activity_nested} expected=${go_nogo_require_followlist_activity}")
+    fi
+    followlist_activity_guard_verdict_raw="$(trim_string "$(extract_field "followlist_activity_guard_verdict" "$go_nogo_output")")"
+    followlist_activity_guard_verdict_raw_upper="$(printf '%s' "$followlist_activity_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    followlist_activity_guard_verdict="$(normalize_strict_guard_verdict "$followlist_activity_guard_verdict_raw")"
+    if [[ -z "$followlist_activity_guard_verdict_raw" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go followlist_activity_guard_verdict must be non-empty")
+      followlist_activity_guard_verdict="UNKNOWN"
+    elif [[ "$followlist_activity_guard_verdict_raw_upper" != "PASS" && "$followlist_activity_guard_verdict_raw_upper" != "WARN" && "$followlist_activity_guard_verdict_raw_upper" != "UNKNOWN" && "$followlist_activity_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go followlist_activity_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${followlist_activity_guard_verdict_raw})")
+      followlist_activity_guard_verdict="UNKNOWN"
+    fi
+    followlist_activity_guard_reason_code="$(trim_string "$(extract_field "followlist_activity_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$followlist_activity_guard_reason_code" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go followlist_activity_guard_reason_code must be non-empty")
+      followlist_activity_guard_reason_code="n/a"
+    fi
     go_nogo_require_non_bootstrap_signer_raw="$(trim_string "$(extract_field "go_nogo_require_non_bootstrap_signer" "$go_nogo_output")")"
     if ! go_nogo_require_non_bootstrap_signer_nested="$(extract_bool_field_strict "go_nogo_require_non_bootstrap_signer" "$go_nogo_output")"; then
       input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_non_bootstrap_signer must be boolean token, got: ${go_nogo_require_non_bootstrap_signer_raw:-<empty>}")
@@ -455,6 +483,15 @@ if ((${#input_errors[@]} == 0)); then
     else
       if [[ "$ingestion_grpc_guard_verdict" != "SKIP" ]]; then
         input_errors+=("window ${window_hours}h nested go/no-go ingestion_grpc_guard_verdict must be SKIP when GO_NOGO_REQUIRE_INGESTION_GRPC=false (got: ${ingestion_grpc_guard_verdict})")
+      fi
+    fi
+    if [[ "$go_nogo_require_followlist_activity" == "true" ]]; then
+      if [[ "$followlist_activity_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go followlist_activity_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY=true")
+      fi
+    else
+      if [[ "$followlist_activity_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go followlist_activity_guard_verdict must be SKIP when GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY=false (got: ${followlist_activity_guard_verdict})")
       fi
     fi
     if [[ "$go_nogo_require_non_bootstrap_signer" == "true" ]]; then
@@ -563,6 +600,9 @@ if ((${#input_errors[@]} == 0)); then
     window_go_nogo_require_ingestion_grpc+=("${go_nogo_require_ingestion_grpc_nested:-unknown}")
     window_ingestion_grpc_guard_verdicts+=("${ingestion_grpc_guard_verdict:-UNKNOWN}")
     window_ingestion_grpc_guard_reason_codes+=("${ingestion_grpc_guard_reason_code:-n/a}")
+    window_go_nogo_require_followlist_activity+=("${go_nogo_require_followlist_activity_nested:-unknown}")
+    window_followlist_activity_guard_verdicts+=("${followlist_activity_guard_verdict:-UNKNOWN}")
+    window_followlist_activity_guard_reason_codes+=("${followlist_activity_guard_reason_code:-n/a}")
     window_go_nogo_require_non_bootstrap_signer+=("${go_nogo_require_non_bootstrap_signer_nested:-unknown}")
     window_non_bootstrap_signer_guard_verdicts+=("${non_bootstrap_signer_guard_verdict:-UNKNOWN}")
     window_non_bootstrap_signer_guard_reason_codes+=("${non_bootstrap_signer_guard_reason_code:-n/a}")
@@ -708,6 +748,7 @@ go_nogo_require_jito_rpc_policy: $go_nogo_require_jito_rpc_policy
 go_nogo_require_fastlane_disabled: $go_nogo_require_fastlane_disabled
 go_nogo_require_executor_upstream: $go_nogo_require_executor_upstream
 go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc
+go_nogo_require_followlist_activity: $go_nogo_require_followlist_activity
 go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer
 go_nogo_require_submit_verify_strict: $go_nogo_require_submit_verify_strict
 executor_env_path: $EXECUTOR_ENV_PATH
@@ -766,6 +807,9 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_go_nogo_require_ingestion_grpc: ${window_go_nogo_require_ingestion_grpc[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_ingestion_grpc_guard_verdict: ${window_ingestion_grpc_guard_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_ingestion_grpc_guard_reason_code: ${window_ingestion_grpc_guard_reason_codes[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_go_nogo_require_followlist_activity: ${window_go_nogo_require_followlist_activity[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_followlist_activity_guard_verdict: ${window_followlist_activity_guard_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_followlist_activity_guard_reason_code: ${window_followlist_activity_guard_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_require_non_bootstrap_signer: ${window_go_nogo_require_non_bootstrap_signer[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_non_bootstrap_signer_guard_verdict: ${window_non_bootstrap_signer_guard_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_non_bootstrap_signer_guard_reason_code: ${window_non_bootstrap_signer_guard_reason_codes[$idx]}"

@@ -6900,6 +6900,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$output" "go_nogo_non_bootstrap_signer_guard_reason_code" "gate_disabled"
+  assert_field_equals "$output" "go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$output" "go_nogo_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$output" "go_nogo_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "go_nogo_artifacts_written" "true"
   assert_field_equals "$output" "rehearsal_artifacts_written" "true"
   assert_field_equals "$output" "executor_final_artifacts_written" "true"
@@ -6908,6 +6911,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "executor_final_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$output" "executor_final_go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$output" "executor_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$output" "executor_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$output" "executor_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "executor_final_executor_env_path" "$executor_env_path"
@@ -6919,6 +6923,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "executor_final_rollout_nested_fastlane_feature_flag_verdict" "SKIP"
   assert_field_equals "$output" "executor_final_rollout_nested_fastlane_feature_flag_reason_code" "gate_disabled"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
@@ -6928,6 +6933,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$output" "executor_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$output" "executor_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$output" "executor_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$output" "executor_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "executor_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$output" "executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "executor_final_rollout_nested_preflight_executor_submit_verify_strict" "false"
@@ -6937,6 +6944,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "adapter_final_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$output" "adapter_final_go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$output" "adapter_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$output" "adapter_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$output" "adapter_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$output" "adapter_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "adapter_final_executor_env_path" "$executor_env_path"
@@ -6948,6 +6956,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "adapter_final_rollout_nested_fastlane_feature_flag_verdict" "SKIP"
   assert_field_equals "$output" "adapter_final_rollout_nested_fastlane_feature_flag_reason_code" "gate_disabled"
   assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "adapter_final_rollout_nested_executor_env_path" "$executor_env_path"
@@ -6957,6 +6966,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$output" "adapter_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$output" "adapter_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$output" "adapter_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$output" "adapter_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "adapter_final_rollout_nested_submit_verify_guard_verdict" "SKIP"
@@ -7040,6 +7051,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$skip_direct_output" "go_nogo_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "go_nogo_ingestion_grpc_guard_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$skip_direct_output" "go_nogo_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "go_nogo_followlist_activity_guard_reason_code" "stage_disabled"
   assert_field_equals "$skip_direct_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$skip_direct_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "stage_disabled"
@@ -7048,11 +7062,13 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "adapter_final_verdict" "GO"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
@@ -7062,6 +7078,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_preflight_executor_submit_verify_strict" "false"
@@ -7069,11 +7087,13 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_preflight_executor_submit_verify_fallback_configured" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_executor_env_path" "$executor_env_path"
@@ -7083,6 +7103,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_submit_verify_guard_verdict" "SKIP"
@@ -7139,15 +7161,20 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$profile_skip_output" "go_nogo_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "go_nogo_ingestion_grpc_guard_reason_code" "stage_disabled"
+  assert_field_equals "$profile_skip_output" "go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$profile_skip_output" "go_nogo_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "go_nogo_followlist_activity_guard_reason_code" "stage_disabled"
   assert_field_equals "$profile_skip_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_skip_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "stage_disabled"
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_skip_output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
@@ -7156,6 +7183,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_preflight_executor_submit_verify_strict" "false"
@@ -7163,11 +7192,13 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_preflight_executor_submit_verify_fallback_configured" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_executor_env_path" "$executor_env_path"
@@ -7177,6 +7208,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_submit_verify_guard_verdict" "SKIP"
@@ -7229,6 +7262,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$bundle_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$bundle_output" "go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$bundle_output" "go_nogo_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$bundle_output" "go_nogo_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$bundle_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$bundle_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -7247,6 +7283,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "executor_final_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$bundle_output" "executor_final_go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$bundle_output" "executor_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$bundle_output" "executor_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$bundle_output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$bundle_output" "executor_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$bundle_output" "executor_final_executor_env_path" "$executor_env_path"
@@ -7258,6 +7295,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_fastlane_feature_flag_verdict" "SKIP"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_fastlane_feature_flag_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$bundle_output" "executor_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
@@ -7267,6 +7305,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$bundle_output" "executor_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$bundle_output" "executor_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "executor_final_rollout_nested_preflight_executor_submit_verify_strict" "false"
@@ -7276,6 +7316,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "adapter_final_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$bundle_output" "adapter_final_go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$bundle_output" "adapter_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$bundle_output" "adapter_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$bundle_output" "adapter_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$bundle_output" "adapter_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$bundle_output" "adapter_final_executor_env_path" "$executor_env_path"
@@ -7287,6 +7328,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_fastlane_feature_flag_verdict" "SKIP"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_fastlane_feature_flag_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$bundle_output" "adapter_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_executor_env_path" "$executor_env_path"
@@ -7296,6 +7338,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "topology_pass"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$bundle_output" "adapter_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$bundle_output" "adapter_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "adapter_final_rollout_nested_submit_verify_guard_verdict" "SKIP"
@@ -7365,6 +7409,30 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$invalid_ingestion_bool_output" "server_rollout_verdict" "NO_GO"
   assert_field_equals "$invalid_ingestion_bool_output" "server_rollout_reason_code" "input_error"
 
+  local invalid_followlist_bool_output=""
+  if invalid_followlist_bool_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="sometimes" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected server rollout report to fail for invalid GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY token" >&2
+    exit 1
+  else
+    local invalid_followlist_bool_exit_code=$?
+    if [[ "$invalid_followlist_bool_exit_code" -ne 3 ]]; then
+      echo "expected server rollout invalid followlist bool exit code 3, got $invalid_followlist_bool_exit_code" >&2
+      echo "$invalid_followlist_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_followlist_bool_output" "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY must be a boolean token"
+  assert_field_equals "$invalid_followlist_bool_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$invalid_followlist_bool_output" "server_rollout_reason_code" "input_error"
+
   local strict_signer_output=""
   if strict_signer_output="$(
     PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
@@ -7401,6 +7469,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$strict_signer_output" "go_nogo_require_non_bootstrap_signer" "true"
   assert_field_equals "$strict_signer_output" "go_nogo_non_bootstrap_signer_guard_verdict" "WARN"
   assert_field_equals "$strict_signer_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "signer_pubkey_bootstrap_default"
+  assert_field_equals "$strict_signer_output" "go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$strict_signer_output" "go_nogo_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$strict_signer_output" "go_nogo_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_signer_output" "go_nogo_reason_code" "signer_guard_not_pass"
   assert_field_equals "$strict_signer_output" "server_rollout_verdict" "NO_GO"
   assert_field_equals "$strict_signer_output" "server_rollout_reason_code" "adapter_final_not_go"
@@ -7549,6 +7620,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$mock_backend_allowed_output" "go_nogo_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$mock_backend_allowed_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -7556,6 +7630,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_executor_env_path" "$mock_backend_env_path"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "false"
@@ -7566,6 +7641,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_fastlane_feature_flag_verdict" "SKIP"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_fastlane_feature_flag_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_executor_env_path" "$mock_backend_env_path"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_executor_backend_mode_guard_verdict" "SKIP"
@@ -7574,6 +7650,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "executor_final_rollout_nested_preflight_executor_submit_verify_strict" "false"
@@ -7583,6 +7661,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$mock_backend_allowed_output" "adapter_final_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_executor_env_path" "$mock_backend_env_path"
@@ -7594,6 +7673,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_fastlane_feature_flag_verdict" "SKIP"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_fastlane_feature_flag_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
+  assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_go_nogo_require_followlist_activity" "false"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_executor_env_path" "$mock_backend_env_path"
@@ -7603,6 +7683,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_executor_upstream_endpoint_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_ingestion_grpc_guard_verdict" "PASS"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_ingestion_grpc_guard_reason_code" "grpc_active_source_yellowstone"
+  assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$mock_backend_allowed_output" "adapter_final_rollout_nested_submit_verify_guard_verdict" "SKIP"
@@ -8826,6 +8908,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$pass_output" "go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$pass_output" "go_nogo_require_fastlane_disabled" "false"
+  assert_field_equals "$pass_output" "go_nogo_require_followlist_activity" "false"
   assert_field_equals "$pass_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
@@ -8843,6 +8926,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$pass_output" "adapter_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$pass_output" "adapter_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$pass_output" "adapter_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$pass_output" "adapter_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$pass_output" "adapter_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$pass_output" "adapter_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -8865,6 +8951,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$pass_output" "route_fee_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$pass_output" "route_fee_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$pass_output" "route_fee_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$pass_output" "route_fee_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$pass_output" "route_fee_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$pass_output" "route_fee_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -8945,6 +9034,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_mock_output" "go_nogo_require_executor_upstream" "true"
   assert_field_equals "$strict_mock_output" "go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$strict_mock_output" "go_nogo_require_fastlane_disabled" "false"
+  assert_field_equals "$strict_mock_output" "go_nogo_require_followlist_activity" "false"
   assert_field_equals "$strict_mock_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$strict_mock_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$strict_mock_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
@@ -8962,6 +9052,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_mock_output" "adapter_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$strict_mock_output" "adapter_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$strict_mock_output" "adapter_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_mock_output" "adapter_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$strict_mock_output" "adapter_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$strict_mock_output" "adapter_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_mock_output" "adapter_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$strict_mock_output" "adapter_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$strict_mock_output" "adapter_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -8984,6 +9077,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_mock_output" "route_fee_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$strict_mock_output" "route_fee_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$strict_mock_output" "route_fee_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_mock_output" "route_fee_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$strict_mock_output" "route_fee_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$strict_mock_output" "route_fee_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_mock_output" "route_fee_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$strict_mock_output" "route_fee_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$strict_mock_output" "route_fee_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -9019,6 +9115,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "go_nogo_require_executor_upstream" "false"
   assert_field_equals "$strict_override_output" "go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$strict_override_output" "go_nogo_require_fastlane_disabled" "false"
+  assert_field_equals "$strict_override_output" "go_nogo_require_followlist_activity" "false"
   assert_field_equals "$strict_override_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$strict_override_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_executor_upstream" "false"
@@ -9036,6 +9133,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$strict_override_output" "adapter_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$strict_override_output" "adapter_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$strict_override_output" "adapter_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$strict_override_output" "adapter_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -9058,6 +9158,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -9117,6 +9220,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -9138,6 +9244,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_require_ingestion_grpc" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_ingestion_grpc_guard_verdict" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_ingestion_grpc_guard_reason_code" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_require_followlist_activity" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_followlist_activity_guard_verdict" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_followlist_activity_guard_reason_code" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_require_non_bootstrap_signer" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_non_bootstrap_signer_guard_verdict" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_non_bootstrap_signer_guard_reason_code" "n/a"
@@ -9191,6 +9300,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -9212,6 +9324,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_require_ingestion_grpc" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_ingestion_grpc_guard_verdict" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_ingestion_grpc_guard_reason_code" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_require_followlist_activity" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_followlist_activity_guard_verdict" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_followlist_activity_guard_reason_code" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_require_non_bootstrap_signer" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_non_bootstrap_signer_guard_verdict" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_non_bootstrap_signer_guard_reason_code" "n/a"
@@ -9264,6 +9379,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_go_nogo_require_ingestion_grpc" "n/a"
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_ingestion_grpc_guard_verdict" "n/a"
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_ingestion_grpc_guard_reason_code" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_go_nogo_require_followlist_activity" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_followlist_activity_guard_verdict" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_followlist_activity_guard_reason_code" "n/a"
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_go_nogo_require_non_bootstrap_signer" "n/a"
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_non_bootstrap_signer_guard_verdict" "n/a"
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_non_bootstrap_signer_guard_reason_code" "n/a"
@@ -9285,6 +9403,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -9339,6 +9460,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$bundle_output" "adapter_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$bundle_output" "adapter_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$bundle_output" "adapter_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$bundle_output" "adapter_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$bundle_output" "adapter_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$bundle_output" "adapter_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "adapter_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$bundle_output" "adapter_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$bundle_output" "adapter_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -9358,6 +9482,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$bundle_output" "route_fee_final_nested_go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$bundle_output" "route_fee_final_nested_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$bundle_output" "route_fee_final_nested_ingestion_grpc_guard_reason_code" "gate_disabled"
+  assert_field_equals "$bundle_output" "route_fee_final_nested_go_nogo_require_followlist_activity" "false"
+  assert_field_equals "$bundle_output" "route_fee_final_nested_followlist_activity_guard_verdict" "SKIP"
+  assert_field_equals "$bundle_output" "route_fee_final_nested_followlist_activity_guard_reason_code" "gate_disabled"
   assert_field_equals "$bundle_output" "route_fee_final_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$bundle_output" "route_fee_final_nested_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$bundle_output" "route_fee_final_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
@@ -9411,6 +9538,30 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_contains "$invalid_bool_output" "input_error: PACKAGE_BUNDLE_ENABLED must be a boolean token"
   assert_field_equals "$invalid_bool_output" "runtime_readiness_reason_code" "input_error"
   assert_field_equals "$invalid_bool_output" "final_runtime_package_reason_code" "input_error"
+
+  local invalid_followlist_bool_output=""
+  if invalid_followlist_bool_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="sometimes" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24" 2>&1
+  )"; then
+    echo "expected NO_GO exit for runtime readiness helper invalid GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY token" >&2
+    exit 1
+  else
+    local invalid_followlist_bool_exit_code=$?
+    if [[ "$invalid_followlist_bool_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for invalid runtime readiness followlist bool token, got $invalid_followlist_bool_exit_code" >&2
+      echo "$invalid_followlist_bool_output" >&2
+      exit 1
+    fi
+  fi
+  assert_contains "$invalid_followlist_bool_output" "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY must be a boolean token"
+  assert_field_equals "$invalid_followlist_bool_output" "runtime_readiness_reason_code" "input_error"
+  assert_field_equals "$invalid_followlist_bool_output" "final_runtime_package_reason_code" "input_error"
 
   local invalid_stage_toggle_output=""
   if invalid_stage_toggle_output="$(
@@ -11003,6 +11154,7 @@ run_refactor_phase_gate_case() {
   assert_field_equals "$phase_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$phase_output" "go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$phase_output" "go_nogo_require_jito_rpc_policy" "false"
+  assert_field_equals "$phase_output" "go_nogo_require_followlist_activity" "false"
   assert_field_equals "$phase_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$phase_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$phase_output" "ingestion_source" "yellowstone_grpc"
@@ -11050,6 +11202,15 @@ run_refactor_phase_gate_case() {
   assert_contains "$normalized_rollout_text" "rehearsal_nested_go_nogo_require_ingestion_grpc: true"
   assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_verdict: PASS"
   assert_contains "$normalized_rollout_text" "rehearsal_nested_ingestion_grpc_guard_reason_code: grpc_active_source_yellowstone"
+  assert_contains "$normalized_go_nogo_text" "go_nogo_require_followlist_activity: false"
+  assert_contains "$normalized_go_nogo_text" "followlist_activity_guard_verdict: SKIP"
+  assert_contains "$normalized_go_nogo_text" "followlist_activity_guard_reason_code: gate_disabled"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_require_followlist_activity: false"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_followlist_activity_guard_verdict: SKIP"
+  assert_contains "$normalized_rehearsal_text" "go_nogo_followlist_activity_guard_reason_code: gate_disabled"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_go_nogo_require_followlist_activity: false"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_followlist_activity_guard_verdict: SKIP"
+  assert_contains "$normalized_rollout_text" "rehearsal_nested_followlist_activity_guard_reason_code: gate_disabled"
   assert_contains "$normalized_go_nogo_text" "go_nogo_require_non_bootstrap_signer: false"
   assert_contains "$normalized_go_nogo_text" "non_bootstrap_signer_guard_verdict: SKIP"
   assert_contains "$normalized_go_nogo_text" "non_bootstrap_signer_guard_reason_code: gate_disabled"
@@ -11178,6 +11339,39 @@ run_refactor_phase_gate_case() {
   assert_contains "$(cat "$phase_strict_signer_pass_norm_rollout")" "rehearsal_nested_non_bootstrap_signer_guard_verdict: PASS"
   assert_contains "$(cat "$phase_strict_signer_pass_norm_rollout")" "rehearsal_nested_non_bootstrap_signer_guard_reason_code: signer_pubkey_non_bootstrap"
 
+  local phase_strict_followlist_output_path="$phase_output_dir.strict-followlist.out"
+  local phase_strict_followlist_output=""
+  if REFACTOR_PHASE_GATE_REQUIRE_FOLLOWLIST_ACTIVITY="true" \
+    GO_NOGO_TEST_JOURNAL_MODE="followlist_inactive" \
+    bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-followlist" --fixture-dir "$phase_fixture_dir.strict-followlist" >"$phase_strict_followlist_output_path" 2>&1; then
+    echo "expected refactor_phase_gate to fail-close when strict followlist activity is enabled against inactive followlist fixture" >&2
+    exit 1
+  fi
+  phase_strict_followlist_output="$(cat "$phase_strict_followlist_output_path")"
+  assert_contains "$phase_strict_followlist_output" "phase-gate error: execution_go_nogo_report.sh failed for stage=go_nogo"
+  assert_contains "$phase_strict_followlist_output" "followlist_activity_guard_verdict: WARN"
+  assert_contains "$phase_strict_followlist_output" "followlist_activity_guard_reason_code: followlist_inactive"
+
+  local phase_strict_followlist_pass_output=""
+  phase_strict_followlist_pass_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_FOLLOWLIST_ACTIVITY="true" \
+      GO_NOGO_TEST_JOURNAL_MODE="followlist_active" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-followlist-pass" --fixture-dir "$phase_fixture_dir.strict-followlist-pass"
+  )"
+  assert_field_equals "$phase_strict_followlist_pass_output" "go_nogo_require_followlist_activity" "true"
+  local phase_strict_followlist_pass_norm_go_nogo=""
+  local phase_strict_followlist_pass_norm_rehearsal=""
+  local phase_strict_followlist_pass_norm_rollout=""
+  phase_strict_followlist_pass_norm_go_nogo="$(extract_field_value "$phase_strict_followlist_pass_output" "normalized_go_nogo")"
+  phase_strict_followlist_pass_norm_rehearsal="$(extract_field_value "$phase_strict_followlist_pass_output" "normalized_rehearsal")"
+  phase_strict_followlist_pass_norm_rollout="$(extract_field_value "$phase_strict_followlist_pass_output" "normalized_rollout")"
+  assert_contains "$(cat "$phase_strict_followlist_pass_norm_go_nogo")" "followlist_activity_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_followlist_pass_norm_go_nogo")" "followlist_activity_guard_reason_code: followlist_active"
+  assert_contains "$(cat "$phase_strict_followlist_pass_norm_rehearsal")" "go_nogo_followlist_activity_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_followlist_pass_norm_rehearsal")" "go_nogo_followlist_activity_guard_reason_code: followlist_active"
+  assert_contains "$(cat "$phase_strict_followlist_pass_norm_rollout")" "rehearsal_nested_followlist_activity_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_followlist_pass_norm_rollout")" "rehearsal_nested_followlist_activity_guard_reason_code: followlist_active"
+
   local phase_strict_submit_verify_output_path="$phase_output_dir.strict-submit-verify.out"
   local phase_strict_submit_verify_output=""
   if REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT="true" \
@@ -11291,6 +11485,16 @@ run_refactor_phase_gate_case() {
     exit 1
   fi
   assert_contains "$phase_invalid_signer_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER must be a boolean token"
+
+  local phase_invalid_followlist_bool_output=""
+  if phase_invalid_followlist_bool_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_FOLLOWLIST_ACTIVITY="sometimes" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.invalid-followlist-bool" --fixture-dir "$phase_fixture_dir.invalid-followlist-bool" 2>&1
+  )"; then
+    echo "expected refactor_phase_gate to fail-close for invalid REFACTOR_PHASE_GATE_REQUIRE_FOLLOWLIST_ACTIVITY token" >&2
+    exit 1
+  fi
+  assert_contains "$phase_invalid_followlist_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_FOLLOWLIST_ACTIVITY must be a boolean token"
 
   local phase_invalid_submit_verify_bool_output=""
   if phase_invalid_submit_verify_bool_output="$(
