@@ -26,9 +26,10 @@ Observed runtime window: `~19h 19m 01s` (`12:25:25Z -> 07:44:26Z`)
    - current: `p50=5612 ms`, `p95=26121.8 ms`, `max=96516 ms`, `last=5042 ms`
    - previous: `p50=8197 ms`, `p95=25870.8 ms`, `max=96516 ms`, `last=4231 ms`
    - interpretation: median improved, worst absolute max unchanged, tail (`p95`) remains around ~26s
-3. `eligible_wallets_last` / `active_follow_wallets_last`: **still zero**
+3. `eligible_wallets_last` / `active_follow_wallets_last`: **still zero (expected at this stage)**
    - `eligible_wallets_last=0`
    - `active_follow_wallets_last=0`
+   - interpretation: expected while the `>=4 days` followlist activity filter has not matured yet
 4. Stability guards: **PASS**
    - `oom_kernel_lines=0`
    - `NRestarts=0` for app/executor/adapter
@@ -64,4 +65,4 @@ Observed runtime window: `~19h 19m 01s` (`12:25:25Z -> 07:44:26Z`)
 
 1. Overnight run remained stable with no OOM/restart regressions.
 2. Discovery cap pressure improved materially (`ratio` reduced to `0.2687`).
-3. Main remaining runtime gap is business output (`eligible_wallets`/`active_follow_wallets` still zero).
+3. Zero followlist output is currently treated as expected under the `>=4 days` activity filter; re-validate after the filter window matures.

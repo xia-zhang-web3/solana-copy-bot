@@ -42,20 +42,17 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
         });
     }
 
-    let ok_flag = match parse_optional_bool_field(
-        body,
-        "ok",
-        "upstream ok must be boolean when present",
-    ) {
-        Ok(value) => value,
-        Err(detail) => {
-            return UpstreamOutcome::Reject(ParsedUpstreamReject {
-                retryable: false,
-                code: "upstream_invalid_response".to_string(),
-                detail,
-            });
-        }
-    };
+    let ok_flag =
+        match parse_optional_bool_field(body, "ok", "upstream ok must be boolean when present") {
+            Ok(value) => value,
+            Err(detail) => {
+                return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                    retryable: false,
+                    code: "upstream_invalid_response".to_string(),
+                    detail,
+                });
+            }
+        };
     let accepted_flag = match parse_optional_bool_field(
         body,
         "accepted",
@@ -71,29 +68,23 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
         }
     };
 
-    let is_reject = is_known_reject_status || ok_flag == Some(false) || accepted_flag == Some(false);
-    if is_known_success_status
-        && (ok_flag == Some(false) || accepted_flag == Some(false))
-    {
+    let is_reject =
+        is_known_reject_status || ok_flag == Some(false) || accepted_flag == Some(false);
+    if is_known_success_status && (ok_flag == Some(false) || accepted_flag == Some(false)) {
         return UpstreamOutcome::Reject(ParsedUpstreamReject {
             retryable: false,
             code: "upstream_invalid_response".to_string(),
             detail: "upstream status=ok conflicts with reject flags".to_string(),
         });
     }
-    if is_known_reject_status
-        && (ok_flag == Some(true) || accepted_flag == Some(true))
-    {
+    if is_known_reject_status && (ok_flag == Some(true) || accepted_flag == Some(true)) {
         return UpstreamOutcome::Reject(ParsedUpstreamReject {
             retryable: false,
             code: "upstream_invalid_response".to_string(),
             detail: "upstream status=reject conflicts with success flags".to_string(),
         });
     }
-    if status.is_empty()
-        && ok_flag.is_some()
-        && accepted_flag.is_some()
-        && ok_flag != accepted_flag
+    if status.is_empty() && ok_flag.is_some() && accepted_flag.is_some() && ok_flag != accepted_flag
     {
         return UpstreamOutcome::Reject(ParsedUpstreamReject {
             retryable: false,
@@ -365,11 +356,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(
-                    reject
-                        .detail
-                        .contains("upstream reject code must be non-empty string when present")
-                );
+                assert!(reject
+                    .detail
+                    .contains("upstream reject code must be non-empty string when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -387,11 +376,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(
-                    reject
-                        .detail
-                        .contains("upstream reject detail must be non-empty string when present")
-                );
+                assert!(reject
+                    .detail
+                    .contains("upstream reject detail must be non-empty string when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -410,11 +397,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(
-                    reject
-                        .detail
-                        .contains("upstream reject retryable must be boolean when present")
-                );
+                assert!(reject
+                    .detail
+                    .contains("upstream reject retryable must be boolean when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -433,11 +418,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(
-                    reject
-                        .detail
-                        .contains("upstream reject retryable must be boolean when present")
-                );
+                assert!(reject
+                    .detail
+                    .contains("upstream reject retryable must be boolean when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -454,11 +437,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(
-                    reject
-                        .detail
-                        .contains("upstream status must be non-empty string when present")
-                );
+                assert!(reject
+                    .detail
+                    .contains("upstream status must be non-empty string when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -475,11 +456,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(
-                    reject
-                        .detail
-                        .contains("upstream status must be non-empty string when present")
-                );
+                assert!(reject
+                    .detail
+                    .contains("upstream status must be non-empty string when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -496,11 +475,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(
-                    reject
-                        .detail
-                        .contains("upstream ok must be boolean when present")
-                );
+                assert!(reject
+                    .detail
+                    .contains("upstream ok must be boolean when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -517,11 +494,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(
-                    reject
-                        .detail
-                        .contains("upstream accepted must be boolean when present")
-                );
+                assert!(reject
+                    .detail
+                    .contains("upstream accepted must be boolean when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }

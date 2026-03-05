@@ -124,7 +124,10 @@ pub(crate) fn map_simulate_response_validation_error_to_reject(
         SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name } => {
             Reject::terminal(
                 "simulation_invalid_response",
-                format!("upstream {} must be non-empty string when present", field_name),
+                format!(
+                    "upstream {} must be non-empty string when present",
+                    field_name
+                ),
             )
         }
         SimulateResponseValidationError::RouteMismatch {
@@ -280,7 +283,10 @@ pub(crate) fn map_submit_transport_artifact_error_to_reject(
         SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name } => {
             Reject::retryable(
                 "submit_adapter_invalid_response",
-                format!("upstream {} must be non-empty string when present", field_name),
+                format!(
+                    "upstream {} must be non-empty string when present",
+                    field_name
+                ),
             )
         }
         SubmitTransportArtifactError::InvalidUpstreamSignature { error } => Reject::retryable(
@@ -308,7 +314,10 @@ pub(crate) fn map_submit_response_validation_error_to_reject(
         SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name } => {
             Reject::terminal(
                 "submit_adapter_invalid_response",
-                format!("upstream {} must be non-empty string when present", field_name),
+                format!(
+                    "upstream {} must be non-empty string when present",
+                    field_name
+                ),
             )
         }
         SubmitResponseValidationError::RouteMismatch {

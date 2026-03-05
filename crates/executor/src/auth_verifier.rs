@@ -84,12 +84,8 @@ impl AuthVerifier {
         }
 
         if let Some(hmac) = self.hmac.as_ref() {
-            let provided_key_id = get_required_header(
-                headers,
-                "x-copybot-key-id",
-                "hmac_missing",
-                "hmac_invalid",
-            )?;
+            let provided_key_id =
+                get_required_header(headers, "x-copybot-key-id", "hmac_missing", "hmac_invalid")?;
             if !constant_time_eq(provided_key_id.as_bytes(), hmac.key_id.as_bytes()) {
                 return Err(Reject::terminal(
                     "hmac_invalid",
@@ -135,12 +131,8 @@ impl AuthVerifier {
                     "x-copybot-auth-ttl-sec mismatch",
                 ));
             }
-            let nonce = get_required_header(
-                headers,
-                "x-copybot-nonce",
-                "hmac_missing",
-                "hmac_invalid",
-            )?;
+            let nonce =
+                get_required_header(headers, "x-copybot-nonce", "hmac_missing", "hmac_invalid")?;
             if nonce.is_empty() || nonce.len() > 128 {
                 return Err(Reject::terminal(
                     "hmac_invalid",
@@ -200,7 +192,8 @@ impl AuthVerifier {
 
 fn build_hmac_payload_bytes(timestamp: &str, ttl: &str, nonce: &str, raw_body: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(
-        timestamp.len()
+        timestamp
+            .len()
             .saturating_add(ttl.len())
             .saturating_add(nonce.len())
             .saturating_add(raw_body.len())
@@ -233,7 +226,10 @@ fn get_required_header<'a>(
     })?;
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err(Reject::terminal(missing_code, format!("missing header {}", key)));
+        return Err(Reject::terminal(
+            missing_code,
+            format!("missing header {}", key),
+        ));
     }
     Ok(trimmed)
 }
@@ -285,11 +281,15 @@ mod tests {
         );
         let body = br#"{"status":"ok"}"#;
         let timestamp = Utc::now().timestamp();
-        let payload = build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-1", body);
+        let payload =
+            build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-1", body);
         let signature = compute_hmac_signature_hex(b"secret-1", payload.as_slice()).unwrap();
         let headers = build_hmac_headers("kid-1", 30, "nonce-1", timestamp, signature.as_str());
 
-        verifier.verify(&headers, body).await.expect("first verify must pass");
+        verifier
+            .verify(&headers, body)
+            .await
+            .expect("first verify must pass");
         let reject = verifier
             .verify(&headers, body)
             .await
@@ -299,13 +299,8 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_rejects_non_ascii_authorization_header() {
-        let verifier = AuthVerifier::new(
-            Some("token-1".to_string().into()),
-            None,
-            None,
-            30,
-            100_000,
-        );
+        let verifier =
+            AuthVerifier::new(Some("token-1".to_string().into()), None, None, 30, 100_000);
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
@@ -318,7 +313,9 @@ mod tests {
             .expect_err("non-ascii Authorization header must reject");
         assert_eq!(reject.code, "auth_invalid");
         assert!(
-            reject.detail.contains("Authorization header must be valid ASCII"),
+            reject
+                .detail
+                .contains("Authorization header must be valid ASCII"),
             "detail={}",
             reject.detail
         );
@@ -343,9 +340,11 @@ mod tests {
             .expect_err("bad signature must reject");
         assert_eq!(reject.code, "hmac_invalid");
 
-        let payload = build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-2", body);
+        let payload =
+            build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-2", body);
         let signature = compute_hmac_signature_hex(b"secret-2", payload.as_slice()).unwrap();
-        let good_headers = build_hmac_headers("kid-2", 30, "nonce-2", timestamp, signature.as_str());
+        let good_headers =
+            build_hmac_headers("kid-2", 30, "nonce-2", timestamp, signature.as_str());
         verifier
             .verify(&good_headers, body)
             .await
@@ -396,8 +395,13 @@ mod tests {
         let payload =
             build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-ascii", body);
         let signature = compute_hmac_signature_hex(b"secret-ascii", payload.as_slice()).unwrap();
-        let mut headers =
-            build_hmac_headers("kid-ascii", 30, "nonce-ascii", timestamp, signature.as_str());
+        let mut headers = build_hmac_headers(
+            "kid-ascii",
+            30,
+            "nonce-ascii",
+            timestamp,
+            signature.as_str(),
+        );
         headers.insert(
             "x-copybot-key-id",
             HeaderValue::from_bytes(&[0xff]).expect("non-ascii header value fixture"),
@@ -437,7 +441,8 @@ mod tests {
             body,
         );
         let signature = compute_hmac_signature_hex(b"secret-3", payload.as_slice()).unwrap();
-        let headers = build_hmac_headers("kid-3", ttl_sec, "nonce-3", timestamp, signature.as_str());
+        let headers =
+            build_hmac_headers("kid-3", ttl_sec, "nonce-3", timestamp, signature.as_str());
 
         verifier
             .verify_with_now_epoch(&headers, body, now_epoch)
@@ -471,8 +476,13 @@ mod tests {
             body,
         );
         let signature_1 = compute_hmac_signature_hex(b"secret-cap", payload_1.as_slice()).unwrap();
-        let headers_1 =
-            build_hmac_headers("kid-cap", ttl_sec, "nonce-cap-1", timestamp, signature_1.as_str());
+        let headers_1 = build_hmac_headers(
+            "kid-cap",
+            ttl_sec,
+            "nonce-cap-1",
+            timestamp,
+            signature_1.as_str(),
+        );
         verifier
             .verify(&headers_1, body)
             .await
@@ -485,8 +495,13 @@ mod tests {
             body,
         );
         let signature_2 = compute_hmac_signature_hex(b"secret-cap", payload_2.as_slice()).unwrap();
-        let headers_2 =
-            build_hmac_headers("kid-cap", ttl_sec, "nonce-cap-2", timestamp, signature_2.as_str());
+        let headers_2 = build_hmac_headers(
+            "kid-cap",
+            ttl_sec,
+            "nonce-cap-2",
+            timestamp,
+            signature_2.as_str(),
+        );
         let reject = verifier
             .verify(&headers_2, body)
             .await

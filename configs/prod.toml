@@ -52,7 +52,7 @@ mock_interval_ms = 2000
 [discovery]
 scoring_window_days = 30
 decay_window_days = 7
-follow_top_n = 10
+follow_top_n = 20
 min_leader_notional_sol = 1.0
 helius_http_url = ""
 refresh_seconds = 180

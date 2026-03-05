@@ -1,0 +1,50 @@
+utc_now=2026-03-05T20:23:36Z
+[service:solana-copy-bot]
+MainPID=101133
+NRestarts=0
+ExecMainStartTimestamp=Wed 2026-03-04 12:25:02 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 12:25:02 UTC
+[service:copybot-executor]
+MainPID=101117
+NRestarts=0
+ExecMainStartTimestamp=Wed 2026-03-04 12:25:02 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 12:25:02 UTC
+[service:copybot-adapter]
+MainPID=101128
+NRestarts=0
+ExecMainStartTimestamp=Wed 2026-03-04 12:25:02 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 12:25:02 UTC
+[service:copybot-execution-mock-upstream]
+MainPID=101110
+NRestarts=0
+ExecMainStartTimestamp=Wed 2026-03-04 12:25:02 UTC
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Wed 2026-03-04 12:25:02 UTC
+[health:8080]
+{"contract_version":"v1","routes":["rpc","jito"],"signer_pubkey":"11111111111111111111111111111111","status":"ok"}
+[health:8090]
+{"backend_mode":"upstream","contract_version":"v1","enabled_routes":["jito","rpc"],"idempotency_store_status":"ok","routes":["jito","rpc"],"send_rpc_enabled_routes":[],"send_rpc_fallback_routes":[],"send_rpc_routes":[],"signer_keypair_file_configured":true,"signer_kms_key_id_configured":false,"signer_pubkey":"11111111111111111111111111111111","signer_source":"file","status":"ok","submit_fastlane_enabled":false}
+[health:18080]
+{"status": "ok", "service": "mock_execution_upstream", "version": "v1", "ts": "2026-03-05T20:23:36Z"}
+[ps]
+ 101133       1  9.2  3.9 317032 859076 /var/www/solana-copy-bot/target/release/copybot-app --config /etc/solana-copy-bot/live.server.toml
+ 101110       1  0.0  0.1 14880 103516 python3 /var/www/solana-copy-bot/tools/mock_execution_upstream.py
+ 101117       1  0.0  0.0  5920 217512 /var/www/solana-copy-bot/target/release/copybot-executor
+ 101128       1  0.0  0.0  3864 145648 /var/www/solana-copy-bot/target/release/copybot-adapter
+ 126319  126308  0.0  0.0  2332   7124 grep -E /var/www/solana-copy-bot/target/release/copybot-app|copybot-executor|copybot-adapter|mock_execution_upstream.py
+[proc_status_copybot_app]
+Name:	copybot-app
+VmHWM:	  599492 kB
+VmRSS:	  317032 kB
+Threads:	7
+[memory]
+               total        used        free      shared  buff/cache   available
+Mem:           7.6Gi       905Mi       129Mi       2.9Mi       6.9Gi       6.7Gi
+Swap:             0B          0B          0B

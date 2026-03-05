@@ -55,7 +55,7 @@ mod tests {
         let response = result.expect_err("invalid json must reject");
         assert_eq!(response.0, StatusCode::OK);
         assert_eq!(
-            response.1.0.get("code").and_then(Value::as_str),
+            response.1 .0.get("code").and_then(Value::as_str),
             Some("invalid_json")
         );
     }
@@ -74,7 +74,7 @@ mod tests {
             .expect("missing auth must reject");
         assert_eq!(response.0, StatusCode::OK);
         assert_eq!(
-            response.1.0.get("code").and_then(Value::as_str),
+            response.1 .0.get("code").and_then(Value::as_str),
             Some("auth_missing")
         );
     }
@@ -93,7 +93,13 @@ mod tests {
             "authorization",
             "Bearer expected-token".parse().expect("valid header"),
         );
-        let response = verify_auth_or_reject(&auth, &headers, json!({"ok": true}).to_string().as_bytes(), "v1").await;
+        let response = verify_auth_or_reject(
+            &auth,
+            &headers,
+            json!({"ok": true}).to_string().as_bytes(),
+            "v1",
+        )
+        .await;
         assert!(response.is_none());
     }
 }

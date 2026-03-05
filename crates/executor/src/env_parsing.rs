@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use std::net::SocketAddr;
 use std::env;
+use std::net::SocketAddr;
 
 pub(crate) fn non_empty_env(name: &str) -> Result<String> {
     let value = match env::var(name) {
@@ -43,9 +43,7 @@ pub(crate) fn parse_u64_env(name: &str, default: u64) -> Result<u64> {
             .parse::<u64>()
             .map_err(|error| anyhow!("{} must be u64: {}", name, error)),
         Err(env::VarError::NotPresent) => Ok(default),
-        Err(env::VarError::NotUnicode(_)) => {
-            Err(anyhow!("{} must be valid UTF-8 u64 token", name))
-        }
+        Err(env::VarError::NotUnicode(_)) => Err(anyhow!("{} must be valid UTF-8 u64 token", name)),
     }
 }
 
@@ -56,9 +54,7 @@ pub(crate) fn parse_f64_env(name: &str, default: f64) -> Result<f64> {
             .parse::<f64>()
             .map_err(|error| anyhow!("{} must be f64: {}", name, error)),
         Err(env::VarError::NotPresent) => Ok(default),
-        Err(env::VarError::NotUnicode(_)) => {
-            Err(anyhow!("{} must be valid UTF-8 f64 token", name))
-        }
+        Err(env::VarError::NotUnicode(_)) => Err(anyhow!("{} must be valid UTF-8 f64 token", name)),
     }
 }
 
@@ -99,9 +95,7 @@ mod tests {
     use std::ffi::OsString;
     use std::sync::Mutex;
 
-    use super::{
-        non_empty_env, optional_non_empty_env, parse_bool_token, parse_socket_addr_str,
-    };
+    use super::{non_empty_env, optional_non_empty_env, parse_bool_token, parse_socket_addr_str};
 
     static ENV_PARSING_ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -202,9 +196,7 @@ mod tests {
                 let error = optional_non_empty_env("COPYBOT_EXECUTOR_TEST_OPTIONAL")
                     .expect_err("non-UTF8 optional value must reject");
                 assert!(
-                    error
-                        .to_string()
-                        .contains("COPYBOT_EXECUTOR_TEST_OPTIONAL"),
+                    error.to_string().contains("COPYBOT_EXECUTOR_TEST_OPTIONAL"),
                     "unexpected error: {}",
                     error
                 );

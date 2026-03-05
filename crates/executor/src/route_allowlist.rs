@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
 
-use crate::{route_normalization::normalize_route, route_policy::requires_submit_fastlane_enabled};
 use crate::text_distance::closest_match;
+use crate::{route_normalization::normalize_route, route_policy::requires_submit_fastlane_enabled};
 
 const KNOWN_ROUTES: &[&str] = &["paper", "rpc", "jito", "fastlane"];
 
@@ -129,16 +129,12 @@ mod tests {
         let error = parse_route_allowlist("rpc,faslane".to_string())
             .expect_err("typo route must fail closed with suggestion");
         assert!(
-            error
-                .to_string()
-                .contains("unsupported route=faslane"),
+            error.to_string().contains("unsupported route=faslane"),
             "error={}",
             error
         );
         assert!(
-            error
-                .to_string()
-                .contains("did you mean route=fastlane?"),
+            error.to_string().contains("did you mean route=fastlane?"),
             "error={}",
             error
         );
@@ -149,9 +145,7 @@ mod tests {
         let error = parse_route_allowlist("rpc, RPC".to_string())
             .expect_err("duplicate route entries must reject");
         assert!(
-            error
-                .to_string()
-                .contains("contains duplicate route=rpc"),
+            error.to_string().contains("contains duplicate route=rpc"),
             "error={}",
             error
         );
@@ -162,9 +156,7 @@ mod tests {
         let error = parse_route_allowlist("rpc,".to_string())
             .expect_err("empty route entry must fail closed");
         assert!(
-            error
-                .to_string()
-                .contains("contains empty route entry"),
+            error.to_string().contains("contains empty route entry"),
             "error={}",
             error
         );

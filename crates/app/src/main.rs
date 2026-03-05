@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 #[cfg(test)]
 use copybot_config::ExecutionConfig;
+use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};

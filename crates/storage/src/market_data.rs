@@ -1,6 +1,5 @@
 use crate::{
-    DiscoveryRuntimeCursor, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
-    TokenQualityRpcRow,
+    DiscoveryRuntimeCursor, SqliteStore, TokenMarketStats, TokenQualityCacheRow, TokenQualityRpcRow,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -707,7 +706,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_token_holders_from_program_accounts_response_accepts_wrapped_value_array() -> Result<()> {
+    fn parse_token_holders_from_program_accounts_response_accepts_wrapped_value_array() -> Result<()>
+    {
         let response = json!({
             "jsonrpc": "2.0",
             "result": {

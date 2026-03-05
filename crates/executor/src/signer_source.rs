@@ -101,13 +101,14 @@ fn validate_signer_keypair_file(path: &str, signer_pubkey: &str) -> Result<()> {
             path
         ));
     }
-    let keypair_bytes: Zeroizing<Vec<u8>> =
-        Zeroizing::new(serde_json::from_slice(raw_bytes.as_slice()).with_context(|| {
+    let keypair_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(
+        serde_json::from_slice(raw_bytes.as_slice()).with_context(|| {
             format!(
                 "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must be JSON array with 64 u8 values path={}",
                 path
             )
-        })?);
+        })?,
+    );
     if keypair_bytes.len() != 64 {
         return Err(anyhow!(
             "COPYBOT_EXECUTOR_SIGNER_KEYPAIR_FILE must contain 64-byte keypair, got {} path={}",

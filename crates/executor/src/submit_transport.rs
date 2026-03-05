@@ -1,5 +1,5 @@
-use serde_json::Value;
 use crate::key_validation::validate_signature_like;
+use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SubmitTransportArtifact {
@@ -36,7 +36,9 @@ pub(crate) fn extract_submit_transport_artifact(
         return Ok(SubmitTransportArtifact::UpstreamSignature(value));
     }
     if let Some(value) = signed_tx_base64 {
-        return Ok(SubmitTransportArtifact::SignedTransactionBase64(value.to_string()));
+        return Ok(SubmitTransportArtifact::SignedTransactionBase64(
+            value.to_string(),
+        ));
     }
 
     Err(SubmitTransportArtifactError::MissingSubmitArtifact)

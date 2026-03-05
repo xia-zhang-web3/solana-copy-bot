@@ -252,10 +252,10 @@ impl SubmitIdempotencyStore {
             i64::try_from(response_cleanup_batch_size).map_err(|_| {
                 anyhow::anyhow!("idempotency response cleanup batch_size exceeds i64 range")
             })?;
-        let response_cleanup_max_batches_usize = usize::try_from(
-            response_cleanup_max_batches_per_run,
-        )
-        .map_err(|_| anyhow::anyhow!("idempotency response cleanup max_batches exceeds usize range"))?;
+        let response_cleanup_max_batches_usize =
+            usize::try_from(response_cleanup_max_batches_per_run).map_err(|_| {
+                anyhow::anyhow!("idempotency response cleanup max_batches exceeds usize range")
+            })?;
         let response_cleanup_interval = response_cleanup_interval_sec(response_retention);
         let last_response_cleanup_unix = self.last_response_cleanup_unix.load(Ordering::Relaxed);
         if !should_run_claim_cleanup(
@@ -563,9 +563,9 @@ mod tests {
     use super::{
         claim_cleanup_interval_sec, clamp_cleanup_marker_to_now, response_cleanup_interval_sec,
         should_run_claim_cleanup, store_global_claim_cleanup_last_unix,
-        store_global_response_cleanup_last_unix, DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
-        DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN, META_KEY_CLAIM_CLEANUP_LAST_UNIX,
-        META_KEY_RESPONSE_CLEANUP_LAST_UNIX, SubmitClaimOutcome, SubmitIdempotencyStore,
+        store_global_response_cleanup_last_unix, SubmitClaimOutcome, SubmitIdempotencyStore,
+        DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+        META_KEY_CLAIM_CLEANUP_LAST_UNIX, META_KEY_RESPONSE_CLEANUP_LAST_UNIX,
     };
     use chrono::{Duration, Utc};
     use rusqlite::{params, OptionalExtension};
@@ -603,9 +603,11 @@ mod tests {
 
     fn response_row_count(store: &SubmitIdempotencyStore) -> i64 {
         let conn = store.conn.lock().expect("lock conn");
-        conn.query_row("SELECT COUNT(1) FROM executor_submit_idempotency", [], |row| {
-            row.get(0)
-        })
+        conn.query_row(
+            "SELECT COUNT(1) FROM executor_submit_idempotency",
+            [],
+            |row| row.get(0),
+        )
         .expect("query response row count")
     }
 
@@ -908,7 +910,11 @@ mod tests {
                     claimed_at_unix
                 ) VALUES (?1, ?2, ?3)
                 "#,
-                params!["order-stale-marker-1", "req-old-1", now_unix.saturating_sub(300)],
+                params![
+                    "order-stale-marker-1",
+                    "req-old-1",
+                    now_unix.saturating_sub(300)
+                ],
             )
             .expect("insert stale claim 1");
         }
@@ -930,7 +936,11 @@ mod tests {
                     claimed_at_unix
                 ) VALUES (?1, ?2, ?3)
                 "#,
-                params!["order-stale-marker-2", "req-old-2", now_unix.saturating_sub(300)],
+                params![
+                    "order-stale-marker-2",
+                    "req-old-2",
+                    now_unix.saturating_sub(300)
+                ],
             )
             .expect("insert stale claim 2");
         }
@@ -953,12 +963,14 @@ mod tests {
     #[test]
     fn claim_cleanup_clamps_future_global_marker_to_now() {
         let db_path = temp_db_path();
-        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
         let now_unix = Utc::now().timestamp();
         let future_marker = now_unix.saturating_add(3600);
         {
             let conn = store.conn.lock().expect("lock conn");
-            store_global_claim_cleanup_last_unix(&conn, future_marker).expect("store future marker");
+            store_global_claim_cleanup_last_unix(&conn, future_marker)
+                .expect("store future marker");
         }
 
         let _ = store
@@ -968,7 +980,10 @@ mod tests {
         let persisted_marker = claim_cleanup_marker_value(&store).expect("marker must exist");
         let in_memory_marker = store.last_claim_cleanup_unix.load(Ordering::Relaxed);
         let latest_now = Utc::now().timestamp();
-        assert!(persisted_marker >= now_unix, "marker should not move backwards");
+        assert!(
+            persisted_marker >= now_unix,
+            "marker should not move backwards"
+        );
         assert!(
             persisted_marker <= latest_now,
             "marker must be clamped to now and not stay in the future"
@@ -1022,7 +1037,8 @@ mod tests {
     #[test]
     fn response_cleanup_clamps_future_global_marker_to_now() {
         let db_path = temp_db_path();
-        let store = SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
         let now_unix = Utc::now().timestamp();
         let future_marker = now_unix.saturating_add(3600);
         {
@@ -1032,13 +1048,20 @@ mod tests {
         }
 
         store
-            .run_response_cleanup_if_due(60, DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN)
+            .run_response_cleanup_if_due(
+                60,
+                DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+                DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
+            )
             .expect("response cleanup should pass");
 
         let persisted_marker = response_cleanup_marker_value(&store).expect("marker must exist");
         let in_memory_marker = store.last_response_cleanup_unix.load(Ordering::Relaxed);
         let latest_now = Utc::now().timestamp();
-        assert!(persisted_marker >= now_unix, "marker should not move backwards");
+        assert!(
+            persisted_marker >= now_unix,
+            "marker should not move backwards"
+        );
         assert!(
             persisted_marker <= latest_now,
             "response marker must be clamped to now and not stay in the future"

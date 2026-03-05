@@ -4,8 +4,13 @@ use crate::route_policy::apply_submit_tip_policy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SubmitTipPolicyError {
-    TipExceedsMax { tip_lamports: u64, max_lamports: u64 },
-    TipNotAllowed { tip_lamports: u64 },
+    TipExceedsMax {
+        tip_lamports: u64,
+        max_lamports: u64,
+    },
+    TipNotAllowed {
+        tip_lamports: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,8 +36,12 @@ pub(crate) enum ComputeBudgetValidationError {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SlippageValidationError {
-    SlippageOutOfRange { value: f64 },
-    RouteCapOutOfRange { value: f64 },
+    SlippageOutOfRange {
+        value: f64,
+    },
+    RouteCapOutOfRange {
+        value: f64,
+    },
     ExceedsRouteCap {
         slippage_bps: f64,
         route_slippage_cap_bps: f64,
@@ -175,7 +184,10 @@ pub(crate) fn build_submit_forward_payload(
     let object = payload
         .as_object_mut()
         .ok_or(ForwardPayloadBuildError::RootNotObject)?;
-    object.insert("tip_lamports".to_string(), Value::from(effective_tip_lamports));
+    object.insert(
+        "tip_lamports".to_string(),
+        Value::from(effective_tip_lamports),
+    );
 
     serde_json::to_vec(&payload).map_err(|error| {
         ForwardPayloadBuildError::Encode(format!("failed to encode submit request body: {}", error))
@@ -234,10 +246,10 @@ pub(crate) fn validate_submit_slippage_policy(
 mod tests {
     use super::{
         build_submit_forward_payload, build_submit_plan, compose_submit_instruction_plan,
-        resolve_submit_tip_lamports,
-        validate_submit_compute_budget, validate_submit_slippage_policy, ComputeBudgetBounds,
-        ComputeBudgetValidationError, ForwardPayloadBuildError, SlippageValidationError,
-        SubmitBuildPlanError, SubmitBuildPlanInputs, SubmitInstructionPlan, SubmitTipPolicyError,
+        resolve_submit_tip_lamports, validate_submit_compute_budget,
+        validate_submit_slippage_policy, ComputeBudgetBounds, ComputeBudgetValidationError,
+        ForwardPayloadBuildError, SlippageValidationError, SubmitBuildPlanError,
+        SubmitBuildPlanInputs, SubmitInstructionPlan, SubmitTipPolicyError,
     };
 
     #[test]
@@ -254,7 +266,9 @@ mod tests {
             .expect_err("must reject non-zero tip when disabled");
         assert_eq!(
             error,
-            SubmitTipPolicyError::TipNotAllowed { tip_lamports: 1_000 }
+            SubmitTipPolicyError::TipNotAllowed {
+                tip_lamports: 1_000
+            }
         );
     }
 
@@ -445,7 +459,10 @@ mod tests {
         );
         let payload: serde_json::Value =
             serde_json::from_slice(plan.forward_body.as_slice()).expect("valid json");
-        assert_eq!(payload.get("tip_lamports").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(
+            payload.get("tip_lamports").and_then(|v| v.as_u64()),
+            Some(0)
+        );
     }
 
     #[test]
@@ -538,6 +555,9 @@ mod tests {
 
         let payload: serde_json::Value =
             serde_json::from_slice(plan.forward_body.as_slice()).expect("valid json");
-        assert_eq!(payload.get("tip_lamports").and_then(|v| v.as_u64()), Some(12_000));
+        assert_eq!(
+            payload.get("tip_lamports").and_then(|v| v.as_u64()),
+            Some(12_000)
+        );
     }
 }

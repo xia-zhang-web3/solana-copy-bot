@@ -168,7 +168,8 @@ impl DiscoveryService {
                     slot: cursor.slot,
                     signature: cursor.signature,
                 });
-                state.cursor = Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
+                state.cursor =
+                    Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
             }
 
             let mut cursor = state
@@ -180,7 +181,8 @@ impl DiscoveryService {
             }
 
             if state.swaps.is_empty() && cursor_restored_from_store {
-                match store.load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
+                match store
+                    .load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
                 {
                     Ok(swaps) => {
                         for swap in swaps {
@@ -885,7 +887,8 @@ mod tests {
         config.max_window_swaps_in_memory = 100;
         config.max_fetch_swaps_per_cycle = 4;
 
-        let discovery_first = DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
+        let discovery_first =
+            DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
         let _ = discovery_first.run_cycle(&store, now)?;
         let cursor_after_first = store
             .load_discovery_runtime_cursor()?
@@ -970,7 +973,8 @@ mod tests {
         config.thin_market_min_unique_traders = 1;
         config.max_window_swaps_in_memory = 200;
         config.max_fetch_swaps_per_cycle = 200;
-        let discovery = DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
+        let discovery =
+            DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
         let summary = discovery.run_cycle(&store, now)?;
         assert!(summary.follow_promoted >= 1);
         let active_before = store.list_active_follow_wallets()?;

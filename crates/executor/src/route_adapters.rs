@@ -1,11 +1,11 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tracing::debug;
 #[cfg(test)]
 use std::{
     collections::HashMap,
     sync::{Mutex, OnceLock},
 };
+use tracing::debug;
 
 use crate::backend_mode::ExecutorBackendMode;
 use crate::route_backend::UpstreamAction;
@@ -53,7 +53,9 @@ pub(crate) fn clear_submit_instruction_plan_presence_for_test(client_order_id: &
 }
 
 #[cfg(test)]
-pub(crate) fn take_submit_instruction_plan_presence_for_test(client_order_id: &str) -> Option<bool> {
+pub(crate) fn take_submit_instruction_plan_presence_for_test(
+    client_order_id: &str,
+) -> Option<bool> {
     submit_instruction_plan_presence_store()
         .lock()
         .ok()
@@ -95,8 +97,14 @@ impl RouteAdapter {
     ) -> std::result::Result<Value, Reject> {
         match action {
             UpstreamAction::Simulate => {
-                self.execute_simulate(state, route, raw_body, submit_deadline, payload_expectations)
-                    .await
+                self.execute_simulate(
+                    state,
+                    route,
+                    raw_body,
+                    submit_deadline,
+                    payload_expectations,
+                )
+                .await
             }
             UpstreamAction::Submit => {
                 self.execute_submit(
@@ -257,7 +265,6 @@ fn deterministic_submit_signature_from_legacy_fields(
     primary_fields: &[&str],
     secondary_fields: &[&str],
 ) -> String {
-
     let mut first = Sha256::new();
     first.update(signature_namespace.as_bytes());
     first.update(b":v1:");
@@ -481,16 +488,19 @@ fn append_optional_identity_echo_fields(
     }
 }
 
-fn append_internal_submit_fee_hint_fields(payload: &mut Value, instruction_plan: SubmitInstructionPlan) {
-    let priority_fee_lamports_u128 = u128::from(instruction_plan.compute_budget_cu_limit)
-        .saturating_mul(u128::from(
+fn append_internal_submit_fee_hint_fields(
+    payload: &mut Value,
+    instruction_plan: SubmitInstructionPlan,
+) {
+    let priority_fee_lamports_u128 =
+        u128::from(instruction_plan.compute_budget_cu_limit).saturating_mul(u128::from(
             instruction_plan.compute_budget_cu_price_micro_lamports,
-        ))
-        / 1_000_000u128;
+        )) / 1_000_000u128;
     let Ok(priority_fee_lamports) = u64::try_from(priority_fee_lamports_u128) else {
         return;
     };
-    let Some(network_fee_lamports) = crate::DEFAULT_BASE_FEE_LAMPORTS.checked_add(priority_fee_lamports)
+    let Some(network_fee_lamports) =
+        crate::DEFAULT_BASE_FEE_LAMPORTS.checked_add(priority_fee_lamports)
     else {
         return;
     };
@@ -510,7 +520,10 @@ fn parse_payload_object_for_action(
     let payload: Value = serde_json::from_slice(raw_body).map_err(|error| {
         Reject::terminal(
             "invalid_request_body",
-            format!("{action_label} payload must be valid JSON object: {}", error),
+            format!(
+                "{action_label} payload must be valid JSON object: {}",
+                error
+            ),
         )
     })?;
     payload.as_object().cloned().ok_or_else(|| {
@@ -938,12 +951,8 @@ fn validate_submit_instruction_plan_payload_consistency(
     instruction_plan: SubmitInstructionPlan,
 ) -> std::result::Result<(), Reject> {
     let expected_tip = instruction_plan.tip_instruction_lamports.unwrap_or(0);
-    let actual_tip = validate_required_payload_u64_field(
-        payload,
-        "submit",
-        "tip_lamports",
-        "tip_lamports",
-    )?;
+    let actual_tip =
+        validate_required_payload_u64_field(payload, "submit", "tip_lamports", "tip_lamports")?;
     if actual_tip != expected_tip {
         return Err(Reject::terminal(
             "invalid_request_body",
@@ -1010,12 +1019,8 @@ fn validate_submit_slippage_payload_consistency(
     expected_route_slippage_cap_bps: f64,
 ) -> std::result::Result<(), Reject> {
     const FLOAT_MATCH_EPSILON: f64 = 1e-9;
-    let actual_slippage_bps = validate_required_payload_f64_field(
-        payload,
-        "submit",
-        "slippage_bps",
-        "slippage_bps",
-    )?;
+    let actual_slippage_bps =
+        validate_required_payload_f64_field(payload, "submit", "slippage_bps", "slippage_bps")?;
     if (actual_slippage_bps - expected_slippage_bps).abs() > FLOAT_MATCH_EPSILON {
         return Err(Reject::terminal(
             "invalid_request_body",
@@ -1032,8 +1037,7 @@ fn validate_submit_slippage_payload_consistency(
         "route_slippage_cap_bps",
         "route_slippage_cap_bps",
     )?;
-    if (actual_route_slippage_cap_bps - expected_route_slippage_cap_bps).abs()
-        > FLOAT_MATCH_EPSILON
+    if (actual_route_slippage_cap_bps - expected_route_slippage_cap_bps).abs() > FLOAT_MATCH_EPSILON
     {
         return Err(Reject::terminal(
             "invalid_request_body",
@@ -1050,16 +1054,16 @@ fn validate_submit_slippage_payload_consistency(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_submit_slippage_payload_consistency as validate_submit_slippage_payload_consistency_with_payload,
-        validate_submit_instruction_plan_payload_consistency as validate_submit_instruction_plan_payload_consistency_with_payload,
         validate_rpc_submit_tip_payload as validate_rpc_submit_tip_payload_with_expectations,
         validate_simulate_payload_for_route as validate_simulate_payload_for_route_with_expectations,
+        validate_submit_instruction_plan_payload_consistency as validate_submit_instruction_plan_payload_consistency_with_payload,
         validate_submit_payload_for_route as validate_submit_payload_for_route_with_expectations,
+        validate_submit_slippage_payload_consistency as validate_submit_slippage_payload_consistency_with_payload,
         RouteAdapter,
     };
-    use crate::Reject;
     use crate::route_executor::{RouteActionPayloadExpectations, RouteExecutorKind};
     use crate::tx_build::SubmitInstructionPlan;
+    use crate::Reject;
     use serde_json::json;
     use serde_json::Map;
     use serde_json::Value;
@@ -1127,7 +1131,10 @@ mod tests {
         instruction_plan: SubmitInstructionPlan,
     ) -> std::result::Result<(), Reject> {
         let payload = validate_submit_payload_for_route(raw_body, "rpc", "v1", None, None, None)?;
-        validate_submit_instruction_plan_payload_consistency_with_payload(&payload, instruction_plan)
+        validate_submit_instruction_plan_payload_consistency_with_payload(
+            &payload,
+            instruction_plan,
+        )
     }
 
     fn validate_submit_slippage_payload_consistency(
@@ -1837,7 +1844,8 @@ mod tests {
 
     #[test]
     fn validate_submit_slippage_payload_consistency_rejects_missing_route_slippage_cap_bps() {
-        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":10.0}"#;
+        let body =
+            br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","slippage_bps":10.0}"#;
         let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
             .expect_err("missing route_slippage_cap_bps must reject");
         assert_eq!(reject.code, "invalid_request_body");
@@ -1861,9 +1869,7 @@ mod tests {
         let reject = validate_submit_slippage_payload_consistency(body, 10.0, 20.0)
             .expect_err("route_slippage_cap mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
-        assert!(reject
-            .detail
-            .contains("route_slippage_cap_bps mismatch"));
+        assert!(reject.detail.contains("route_slippage_cap_bps mismatch"));
     }
 
     #[test]
@@ -1907,7 +1913,8 @@ mod tests {
 
     #[test]
     fn validate_submit_payload_for_route_rejects_mismatched_action_when_present() {
-        let body = br#"{"route":"rpc","tip_lamports":0,"action":"simulate","contract_version":"v1"}"#;
+        let body =
+            br#"{"route":"rpc","tip_lamports":0,"action":"simulate","contract_version":"v1"}"#;
         let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("mismatched submit action must reject");
         assert_eq!(reject.code, "invalid_request_body");
@@ -1925,7 +1932,8 @@ mod tests {
 
     #[test]
     fn validate_submit_payload_for_route_accepts_matching_action_case_insensitive_when_present() {
-        let body = br#"{"route":"rpc","tip_lamports":0,"action":" SUBMIT ","contract_version":"v1"}"#;
+        let body =
+            br#"{"route":"rpc","tip_lamports":0,"action":" SUBMIT ","contract_version":"v1"}"#;
         assert!(validate_submit_payload_for_route(body, "rpc", "v1", None, None, None).is_ok());
     }
 
@@ -1967,7 +1975,8 @@ mod tests {
 
     #[test]
     fn validate_submit_payload_for_route_rejects_empty_client_order_id_when_present() {
-        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","client_order_id":" "}"#;
+        let body =
+            br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","client_order_id":" "}"#;
         let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit empty client_order_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
@@ -2002,8 +2011,15 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_missing_request_id_when_expected() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1", Some("request-expected"), None, None)
-            .expect_err("submit missing request_id must reject when expected");
+        let reject = validate_submit_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            Some("request-expected"),
+            None,
+            None,
+        )
+        .expect_err("submit missing request_id must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing request_id"));
     }
@@ -2027,8 +2043,15 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_missing_signal_id_when_expected() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, Some("signal-expected"), None)
-            .expect_err("submit missing signal_id must reject when expected");
+        let reject = validate_submit_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            None,
+            Some("signal-expected"),
+            None,
+        )
+        .expect_err("submit missing signal_id must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing signal_id"));
     }
@@ -2052,8 +2075,15 @@ mod tests {
     #[test]
     fn validate_submit_payload_for_route_rejects_missing_client_order_id_when_expected() {
         let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1"}"#;
-        let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, Some("client-expected"))
-            .expect_err("submit missing client_order_id must reject when expected");
+        let reject = validate_submit_payload_for_route(
+            body,
+            "rpc",
+            "v1",
+            None,
+            None,
+            Some("client-expected"),
+        )
+        .expect_err("submit missing client_order_id must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing client_order_id"));
     }
@@ -2132,8 +2162,7 @@ mod tests {
 
     #[test]
     fn validate_submit_payload_for_route_rejects_empty_signal_id_when_present() {
-        let body =
-            br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":" "}"#;
+        let body = br#"{"route":"rpc","tip_lamports":0,"contract_version":"v1","signal_id":" "}"#;
         let reject = validate_submit_payload_for_route(body, "rpc", "v1", None, None, None)
             .expect_err("submit empty signal_id must reject when present");
         assert_eq!(reject.code, "invalid_request_body");
@@ -2142,7 +2171,8 @@ mod tests {
 
     #[test]
     fn validate_simulate_payload_for_route_rejects_mismatched_route() {
-        let body = br#"{"route":"jito","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
+        let body =
+            br#"{"route":"jito","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
         let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate route mismatch must reject");
         assert_eq!(reject.code, "invalid_request_body");
@@ -2151,7 +2181,8 @@ mod tests {
 
     #[test]
     fn validate_simulate_payload_for_route_accepts_matching_route_case_insensitive() {
-        let body = br#"{"route":" RPC ","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
+        let body =
+            br#"{"route":" RPC ","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
         assert!(validate_simulate_payload_for_route(body, "rpc", "v1", None, None).is_ok());
     }
 
@@ -2203,7 +2234,8 @@ mod tests {
 
     #[test]
     fn validate_simulate_payload_for_route_rejects_dry_run_false() {
-        let body = br#"{"route":"rpc","action":"simulate","dry_run":false,"contract_version":"v1"}"#;
+        let body =
+            br#"{"route":"rpc","action":"simulate","dry_run":false,"contract_version":"v1"}"#;
         let reject = validate_simulate_payload_for_route(body, "rpc", "v1", None, None)
             .expect_err("simulate dry_run=false must reject");
         assert_eq!(reject.code, "invalid_request_body");
@@ -2285,14 +2317,9 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_signal_id_mismatch_when_expected() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","signal_id":"signal-other"}"#;
-        let reject = validate_simulate_payload_for_route(
-            body,
-            "rpc",
-            "v1",
-            None,
-            Some("signal-expected"),
-        )
-        .expect_err("simulate signal_id mismatch must reject when expected");
+        let reject =
+            validate_simulate_payload_for_route(body, "rpc", "v1", None, Some("signal-expected"))
+                .expect_err("simulate signal_id mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("signal_id mismatch"));
     }
@@ -2300,14 +2327,9 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_request_id_mismatch_when_expected() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1","request_id":"request-other"}"#;
-        let reject = validate_simulate_payload_for_route(
-            body,
-            "rpc",
-            "v1",
-            Some("request-expected"),
-            None,
-        )
-        .expect_err("simulate request_id mismatch must reject when expected");
+        let reject =
+            validate_simulate_payload_for_route(body, "rpc", "v1", Some("request-expected"), None)
+                .expect_err("simulate request_id mismatch must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("request_id mismatch"));
     }
@@ -2315,14 +2337,9 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_missing_request_id_when_expected() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
-        let reject = validate_simulate_payload_for_route(
-            body,
-            "rpc",
-            "v1",
-            Some("request-expected"),
-            None,
-        )
-        .expect_err("simulate missing request_id must reject when expected");
+        let reject =
+            validate_simulate_payload_for_route(body, "rpc", "v1", Some("request-expected"), None)
+                .expect_err("simulate missing request_id must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing request_id"));
     }
@@ -2381,14 +2398,9 @@ mod tests {
     #[test]
     fn validate_simulate_payload_for_route_rejects_missing_signal_id_when_expected() {
         let body = br#"{"route":"rpc","action":"simulate","dry_run":true,"contract_version":"v1"}"#;
-        let reject = validate_simulate_payload_for_route(
-            body,
-            "rpc",
-            "v1",
-            None,
-            Some("signal-expected"),
-        )
-        .expect_err("simulate missing signal_id must reject when expected");
+        let reject =
+            validate_simulate_payload_for_route(body, "rpc", "v1", None, Some("signal-expected"))
+                .expect_err("simulate missing signal_id must reject when expected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(reject.detail.contains("missing signal_id"));
     }

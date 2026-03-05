@@ -29,9 +29,10 @@ Observed runtime window: `~26h 21m 27s` (`2026-03-04T12:25:25Z -> 2026-03-05T14:
 3. Discovery duration: **stable**
    - current: `p50=6052.5 ms`, `p95=22817.65 ms`, `max=96516 ms`, `last=12693 ms`
    - morning: `p50=5612 ms`, `p95=26121.8 ms`, `max=96516 ms`, `last=5042 ms`
-4. Followlist/discovery business output: **unchanged**
+4. Followlist/discovery business output: **unchanged and still expected**
    - `eligible_wallets_last=0`
    - `active_follow_wallets_last=0`
+   - interpretation: still consistent with the active `>=4 days` followlist activity filter
 
 ## Ingestion summary
 
@@ -67,4 +68,4 @@ Observed runtime window: `~26h 21m 27s` (`2026-03-04T12:25:25Z -> 2026-03-05T14:
 
 1. Runtime remains stable with no OOM/restart regressions.
 2. Discovery saturation trend keeps improving (`cap ratio` down to `~0.20`).
-3. Core unresolved business signal remains: followlist/eligible wallets still at zero.
+3. Zero followlist output remains consistent with the active `>=4 days` activity filter and is not treated as an incident before the filter window matures.

@@ -1,9 +1,4 @@
-use axum::{
-    body::Bytes,
-    extract::State,
-    http::HeaderMap,
-    response::IntoResponse,
-};
+use axum::{body::Bytes, extract::State, http::HeaderMap, response::IntoResponse};
 use std::sync::Arc;
 
 use crate::request_ingress::{parse_json_or_reject, verify_auth_or_reject};

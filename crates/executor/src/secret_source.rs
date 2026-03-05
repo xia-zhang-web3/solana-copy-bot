@@ -36,10 +36,10 @@ pub(crate) fn resolve_secret_source(
 }
 
 fn read_trimmed_secret_file(path: &str) -> Result<SecretValue> {
-    let raw =
-        Zeroizing::new(fs::read_to_string(path).with_context(|| {
-            format!("secret file not found/readable path={}", path)
-        })?);
+    let raw = Zeroizing::new(
+        fs::read_to_string(path)
+            .with_context(|| format!("secret file not found/readable path={}", path))?,
+    );
     match secret_file_has_restrictive_permissions(path) {
         Ok(false) => {
             warn!(

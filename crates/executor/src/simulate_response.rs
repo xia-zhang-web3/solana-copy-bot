@@ -1,5 +1,5 @@
-use serde_json::{json, Value};
 use crate::route_normalization::normalize_route;
+use serde_json::{json, Value};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SimulateResponseValidationError {
@@ -128,15 +128,19 @@ fn parse_optional_non_empty_string_field(
         return Ok(None);
     };
     let Some(raw_value) = field_value.as_str() else {
-        return Err(SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     };
     let normalized = raw_value.trim();
     if normalized.is_empty() {
-        return Err(SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     }
     Ok(Some(normalized.to_string()))
 }

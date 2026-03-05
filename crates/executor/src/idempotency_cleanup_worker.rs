@@ -1,5 +1,5 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -13,15 +13,15 @@ pub(crate) const MAX_RESPONSE_CLEANUP_WORKER_TICK_SEC: u64 = 300;
 pub(crate) fn spawn_response_cleanup_worker(state: Arc<AppState>) -> JoinHandle<()> {
     let response_retention_sec = state.config.idempotency_response_retention_sec;
     let response_cleanup_batch_size = state.config.idempotency_response_cleanup_batch_size;
-    let response_cleanup_max_batches_per_run =
-        state.config.idempotency_response_cleanup_max_batches_per_run;
+    let response_cleanup_max_batches_per_run = state
+        .config
+        .idempotency_response_cleanup_max_batches_per_run;
     let tick_sec = state.config.idempotency_response_cleanup_worker_tick_sec;
     tokio::spawn(async move {
         let initial_delay_sec = response_cleanup_worker_initial_delay_sec(tick_sec);
         debug!(
             tick_sec,
-            initial_delay_sec,
-            "background idempotency response cleanup worker started"
+            initial_delay_sec, "background idempotency response cleanup worker started"
         );
         let mut ticker = tokio::time::interval_at(
             Instant::now() + Duration::from_secs(initial_delay_sec),
@@ -119,6 +119,9 @@ mod tests {
         let delay_b = response_cleanup_worker_initial_delay_sec_from_seed(tick, 43);
         assert!((1..=tick).contains(&delay_a));
         assert!((1..=tick).contains(&delay_b));
-        assert_eq!(delay_a, response_cleanup_worker_initial_delay_sec_from_seed(tick, 42));
+        assert_eq!(
+            delay_a,
+            response_cleanup_worker_initial_delay_sec_from_seed(tick, 42)
+        );
     }
 }

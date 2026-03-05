@@ -1,0 +1,58 @@
+utc_now=2026-03-05T20:23:39Z
+MainPID=101133
+NRestarts=0
+MemoryCurrent=7439351808
+proc_pid=101133
+VmHWM:	  599492 kB
+VmRSS:	  317032 kB
+Threads:	7
+[memory.stat]
+anon 315940864
+file 6965178368
+kernel 158232576
+kernel_stack 98304
+pagetables 794624
+sec_pagetables 0
+percpu 0
+sock 0
+vmalloc 0
+shmem 0
+zswap 0
+zswapped 0
+file_mapped 856064
+file_dirty 1273856
+file_writeback 0
+swapcached 0
+anon_thp 0
+file_thp 0
+shmem_thp 0
+inactive_anon 175337472
+utc_now=2026-03-05T20:24:09Z
+MainPID=101133
+NRestarts=0
+MemoryCurrent=7465570304
+proc_pid=101133
+VmHWM:	  599492 kB
+VmRSS:	  317032 kB
+Threads:	7
+[memory.stat]
+anon 315940864
+file 6990729216
+kernel 158900224
+kernel_stack 98304
+pagetables 794624
+sec_pagetables 0
+percpu 0
+sock 0
+vmalloc 0
+shmem 0
+zswap 0
+zswapped 0
+file_mapped 856064
+file_dirty 1220608
+file_writeback 0
+swapcached 0
+anon_thp 0
+file_thp 0
+shmem_thp 0
+inactive_anon 175337472
