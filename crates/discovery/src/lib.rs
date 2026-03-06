@@ -705,9 +705,20 @@ fn is_sol_sell(swap: &SwapEvent) -> bool {
 mod tests {
     use super::*;
     use anyhow::Context;
+    use copybot_config::ShadowConfig;
     use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore};
     use std::path::Path;
     use tempfile::tempdir;
+
+    fn permissive_shadow_quality() -> ShadowConfig {
+        let mut config = ShadowConfig::default();
+        config.min_token_age_seconds = 0;
+        config.min_holders = 0;
+        config.min_liquidity_sol = 0.0;
+        config.min_volume_5m_sol = 0.0;
+        config.min_unique_traders_5m = 0;
+        config
+    }
 
     #[test]
     fn promotes_profitable_wallets_to_followlist() -> Result<()> {
@@ -779,7 +790,7 @@ mod tests {
         config.max_tx_per_minute = 50;
         config.thin_market_min_unique_traders = 1;
 
-        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery.run_cycle(&store, now)?;
         assert_eq!(summary.wallets_seen, 2);
         assert_eq!(summary.metrics_written, 2);
@@ -801,7 +812,7 @@ mod tests {
 
         let mut config = DiscoveryConfig::default();
         config.scoring_window_days = 7;
-        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
 
         let state = discovery.window_state.clone();
         let _ = std::panic::catch_unwind(move || {
@@ -845,7 +856,7 @@ mod tests {
         config.scoring_window_days = 7;
         config.max_window_swaps_in_memory = 5;
         config.max_fetch_swaps_per_cycle = 100;
-        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let _ = discovery.run_cycle(&store, now)?;
 
         let guard = discovery
@@ -893,8 +904,7 @@ mod tests {
         config.max_window_swaps_in_memory = 100;
         config.max_fetch_swaps_per_cycle = 4;
 
-        let discovery_first =
-            DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
+        let discovery_first = DiscoveryService::new(config.clone(), permissive_shadow_quality());
         let _ = discovery_first.run_cycle(&store, now)?;
         let cursor_after_first = store
             .load_discovery_runtime_cursor()?
@@ -902,8 +912,7 @@ mod tests {
         assert_eq!(cursor_after_first.signature, "cursor-sig-003");
 
         // Simulate process restart: new DiscoveryService should continue from persisted cursor.
-        let discovery_second =
-            DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+        let discovery_second = DiscoveryService::new(config, permissive_shadow_quality());
         let _ = discovery_second.run_cycle(&store, now + Duration::minutes(1))?;
         let cursor_after_second = store
             .load_discovery_runtime_cursor()?
@@ -979,8 +988,7 @@ mod tests {
         config.thin_market_min_unique_traders = 1;
         config.max_window_swaps_in_memory = 200;
         config.max_fetch_swaps_per_cycle = 200;
-        let discovery =
-            DiscoveryService::new(config.clone(), copybot_config::ShadowConfig::default());
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
         let summary = discovery.run_cycle(&store, now)?;
         assert!(summary.follow_promoted >= 1);
         let active_before = store.list_active_follow_wallets()?;
@@ -1001,7 +1009,7 @@ mod tests {
         let mut restart_config = config.clone();
         restart_config.max_fetch_swaps_per_cycle = 1;
         let discovery_after_restart =
-            DiscoveryService::new(restart_config, copybot_config::ShadowConfig::default());
+            DiscoveryService::new(restart_config, permissive_shadow_quality());
         let _ = discovery_after_restart.run_cycle(&store, now + Duration::minutes(2))?;
         let active_after = store.list_active_follow_wallets()?;
         assert!(
@@ -1048,7 +1056,7 @@ mod tests {
         config.scoring_window_days = 7;
         config.max_window_swaps_in_memory = 5;
         config.max_fetch_swaps_per_cycle = 3;
-        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let _ = discovery.run_cycle(&store, now)?;
 
         let guard = discovery

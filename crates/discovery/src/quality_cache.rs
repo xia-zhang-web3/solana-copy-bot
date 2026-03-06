@@ -309,31 +309,28 @@ impl DiscoveryService {
             return false;
         }
 
-        // Discovery should never hard-fail on missing RPC fields.
-        // Age/holders/liquidity are enforced here only when RPC provided them.
-        if let Some(row) = rpc_quality {
-            if self.shadow_quality.min_token_age_seconds > 0 {
-                if let Some(token_age_seconds) = row.token_age_seconds {
-                    if token_age_seconds < self.shadow_quality.min_token_age_seconds {
-                        return false;
-                    }
-                }
+        if self.shadow_quality.min_token_age_seconds > 0 {
+            let Some(token_age_seconds) = rpc_quality.and_then(|row| row.token_age_seconds) else {
+                return false;
+            };
+            if token_age_seconds < self.shadow_quality.min_token_age_seconds {
+                return false;
             }
-            if self.shadow_quality.min_holders > 0 {
-                if let Some(holders) = row.holders {
-                    if holders < self.shadow_quality.min_holders {
-                        return false;
-                    }
-                }
+        }
+        if self.shadow_quality.min_holders > 0 {
+            let Some(holders) = rpc_quality.and_then(|row| row.holders) else {
+                return false;
+            };
+            if holders < self.shadow_quality.min_holders {
+                return false;
             }
-            if self.shadow_quality.min_liquidity_sol > 0.0 {
-                if let Some(liquidity_sol) = row.liquidity_sol {
-                    if liquidity_sol + 1e-12 < self.shadow_quality.min_liquidity_sol {
-                        return false;
-                    }
-                } else if liquidity_proxy + 1e-12 < self.shadow_quality.min_liquidity_sol {
-                    return false;
-                }
+        }
+        if self.shadow_quality.min_liquidity_sol > 0.0 {
+            let liquidity_sol = rpc_quality
+                .and_then(|row| row.liquidity_sol)
+                .unwrap_or(liquidity_proxy);
+            if liquidity_sol + 1e-12 < self.shadow_quality.min_liquidity_sol {
+                return false;
             }
         }
         true
@@ -354,4 +351,112 @@ fn fetch_token_quality_from_helius_guarded(
         max_signature_pages,
         min_age_hint_seconds,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use copybot_config::{DiscoveryConfig, ShadowConfig};
+
+    fn make_service(shadow_quality: ShadowConfig) -> DiscoveryService {
+        DiscoveryService::new(DiscoveryConfig::default(), shadow_quality)
+    }
+
+    fn make_state(sol_notional: f64, unique_traders: usize) -> TokenRollingState {
+        let mut state = TokenRollingState::default();
+        let now = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        for idx in 0..unique_traders {
+            let wallet = format!("wallet-{idx}");
+            state.sol_traders_5m.insert(wallet.clone(), 1);
+            state.sol_trades_5m.push_back(SolLegTrade {
+                ts: now,
+                wallet_id: wallet,
+                sol_notional,
+            });
+            state.sol_volume_5m += sol_notional;
+        }
+        state
+    }
+
+    fn make_cache_row() -> TokenQualityCacheRow {
+        TokenQualityCacheRow {
+            mint: "TokenA".to_string(),
+            holders: Some(42),
+            liquidity_sol: Some(3.0),
+            token_age_seconds: Some(3_600),
+            fetched_at: DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        }
+    }
+
+    #[test]
+    fn is_tradable_token_rejects_missing_rpc_age_and_holders_when_thresholded() {
+        let mut shadow_quality = ShadowConfig::default();
+        shadow_quality.min_token_age_seconds = 600;
+        shadow_quality.min_holders = 10;
+        shadow_quality.min_volume_5m_sol = 0.5;
+        shadow_quality.min_unique_traders_5m = 1;
+        let discovery = make_service(shadow_quality);
+        let state = make_state(1.0, 1);
+
+        assert!(
+            !discovery.is_tradable_token(&state, None, Utc::now()),
+            "missing rpc/cache quality must fail closed when age/holders thresholds are enabled"
+        );
+    }
+
+    #[test]
+    fn is_tradable_token_rejects_missing_holders_field_when_thresholded() {
+        let mut shadow_quality = ShadowConfig::default();
+        shadow_quality.min_token_age_seconds = 0;
+        shadow_quality.min_holders = 10;
+        shadow_quality.min_volume_5m_sol = 0.5;
+        shadow_quality.min_unique_traders_5m = 1;
+        let discovery = make_service(shadow_quality);
+        let state = make_state(1.0, 1);
+        let mut row = make_cache_row();
+        row.holders = None;
+
+        assert!(
+            !discovery.is_tradable_token(&state, Some(&row), Utc::now()),
+            "missing holders field must fail closed when min_holders is enabled"
+        );
+    }
+
+    #[test]
+    fn is_tradable_token_uses_liquidity_proxy_when_rpc_quality_missing() {
+        let mut shadow_quality = ShadowConfig::default();
+        shadow_quality.min_token_age_seconds = 0;
+        shadow_quality.min_holders = 0;
+        shadow_quality.min_liquidity_sol = 0.75;
+        shadow_quality.min_volume_5m_sol = 0.5;
+        shadow_quality.min_unique_traders_5m = 1;
+        let discovery = make_service(shadow_quality);
+        let state = make_state(1.0, 1);
+
+        assert!(
+            discovery.is_tradable_token(&state, None, Utc::now()),
+            "liquidity gate should still use rolling proxy when rpc quality is unavailable"
+        );
+    }
+
+    #[test]
+    fn is_tradable_token_rejects_when_liquidity_proxy_is_below_threshold() {
+        let mut shadow_quality = ShadowConfig::default();
+        shadow_quality.min_token_age_seconds = 0;
+        shadow_quality.min_holders = 0;
+        shadow_quality.min_liquidity_sol = 1.5;
+        shadow_quality.min_volume_5m_sol = 0.5;
+        shadow_quality.min_unique_traders_5m = 1;
+        let discovery = make_service(shadow_quality);
+        let state = make_state(1.0, 1);
+
+        assert!(
+            !discovery.is_tradable_token(&state, None, Utc::now()),
+            "missing rpc quality must not bypass liquidity threshold"
+        );
+    }
 }
