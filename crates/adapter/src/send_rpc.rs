@@ -1,11 +1,15 @@
-use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
-use serde_json::{json, Value};
+use anyhow::{Result, anyhow};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::{
-    http_utils::{classify_request_error, redacted_endpoint_label},
-    validate_signature_like, AppState, Reject,
+    AppState, Reject,
+    http_utils::{
+        MAX_HTTP_ERROR_BODY_READ_BYTES, MAX_HTTP_JSON_BODY_READ_BYTES, classify_request_error,
+        read_response_body_limited, redacted_endpoint_label,
+    },
+    validate_signature_like,
 };
 
 pub(crate) async fn send_signed_transaction_via_rpc(
@@ -109,7 +113,9 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         };
         let status = response.status();
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text = read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES)
+                .await
+                .text;
             let reject = if status.as_u16() == 429 || status.is_server_error() {
                 Reject::retryable(
                     "send_rpc_http_unavailable",
@@ -141,7 +147,26 @@ pub(crate) async fn send_signed_transaction_via_rpc(
             }
             return Err(reject);
         }
-        let body: Value = response.json().await.map_err(|error| {
+        let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
+        if let Some(read_error_class) = body_read.read_error_class {
+            return Err(Reject::terminal(
+                "send_rpc_body_read_failed",
+                format!(
+                    "send RPC body read failed endpoint={} class={}",
+                    endpoint_label, read_error_class
+                ),
+            ));
+        }
+        if body_read.was_truncated {
+            return Err(Reject::terminal(
+                "send_rpc_response_too_large",
+                format!(
+                    "send RPC response exceeded {} bytes endpoint={}",
+                    MAX_HTTP_JSON_BODY_READ_BYTES, endpoint_label
+                ),
+            ));
+        }
+        let body: Value = serde_json::from_slice(body_read.bytes.as_slice()).map_err(|error| {
             Reject::terminal(
                 "send_rpc_invalid_json",
                 format!(

@@ -1,15 +1,16 @@
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::warn;
 
 use crate::{
+    AppState, DEFAULT_SUBMIT_VERIFY_ATTEMPTS, DEFAULT_SUBMIT_VERIFY_INTERVAL_MS, Reject,
     http_utils::{
-        classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
+        MAX_HTTP_JSON_BODY_READ_BYTES, classify_request_error, endpoint_identity,
+        read_response_body_limited, redacted_endpoint_label, validate_endpoint_url,
     },
-    optional_non_empty_env, parse_bool_env, parse_u64_env, AppState, Reject,
-    DEFAULT_SUBMIT_VERIFY_ATTEMPTS, DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
+    optional_non_empty_env, parse_bool_env, parse_u64_env,
 };
 
 #[derive(Clone, Debug)]
@@ -65,7 +66,20 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 );
                 continue;
             }
-            let body: Value = match response.json().await {
+            let body_read =
+                read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
+            if let Some(read_error_class) = body_read.read_error_class {
+                last_reason = format!(
+                    "rpc body_read_failed endpoint={} class={}",
+                    endpoint_label, read_error_class
+                );
+                continue;
+            }
+            if body_read.was_truncated {
+                last_reason = format!("rpc response_too_large endpoint={}", endpoint_label);
+                continue;
+            }
+            let body: Value = match serde_json::from_slice(body_read.bytes.as_slice()) {
                 Ok(value) => value,
                 Err(_) => {
                     last_reason = format!("rpc invalid_json endpoint={}", endpoint_label);

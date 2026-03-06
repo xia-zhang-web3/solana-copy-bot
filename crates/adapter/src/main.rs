@@ -1,25 +1,25 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use std::{
     collections::{HashMap, HashSet},
     env, fs, future,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -32,17 +32,18 @@ mod send_rpc;
 mod submit_verify;
 
 use crate::http_utils::{
-    classify_request_error, endpoint_identity, redacted_endpoint_label, validate_endpoint_url,
+    MAX_HTTP_ERROR_BODY_READ_BYTES, MAX_HTTP_JSON_BODY_READ_BYTES, classify_request_error,
+    endpoint_identity, read_response_body_limited, redacted_endpoint_label, validate_endpoint_url,
 };
 use crate::send_rpc::send_signed_transaction_via_rpc;
 #[cfg(test)]
-use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
+use crate::submit_verify::{SubmitSignatureVerification, build_submit_signature_verify_config};
 use crate::submit_verify::{
-    parse_submit_signature_verify_config, submit_signature_verification_to_json,
-    verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
+    SubmitSignatureVerifyConfig, parse_submit_signature_verify_config,
+    submit_signature_verification_to_json, verify_submitted_signature_visibility,
 };
 #[cfg(test)]
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
 const TIP_MAX_LAMPORTS: u64 = 100_000_000;
 const CU_LIMIT_MIN: u32 = 1;
@@ -1385,7 +1386,9 @@ async fn forward_to_upstream(
         let status = response.status();
 
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text = read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES)
+                .await
+                .text;
             let retryable = status.as_u16() == 429 || status.is_server_error();
             let reject = if retryable {
                 Reject::retryable(
@@ -1426,7 +1429,30 @@ async fn forward_to_upstream(
             return Err(reject);
         }
 
-        let body: Value = response.json().await.map_err(|error| {
+        let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
+        if let Some(read_error_class) = body_read.read_error_class {
+            return Err(Reject::terminal(
+                "upstream_body_read_failed",
+                format!(
+                    "upstream {} body read failed endpoint={} class={}",
+                    action.as_str(),
+                    endpoint_label,
+                    read_error_class
+                ),
+            ));
+        }
+        if body_read.was_truncated {
+            return Err(Reject::terminal(
+                "upstream_response_too_large",
+                format!(
+                    "upstream {} response exceeded {} bytes endpoint={}",
+                    action.as_str(),
+                    MAX_HTTP_JSON_BODY_READ_BYTES,
+                    endpoint_label
+                ),
+            ));
+        }
+        let body: Value = serde_json::from_slice(body_read.bytes.as_slice()).map_err(|error| {
             Reject::terminal(
                 "upstream_invalid_json",
                 format!(
@@ -1987,9 +2013,11 @@ mod tests {
             false,
         )
         .expect_err("fallback without primary must fail");
-        assert!(error
-            .to_string()
-            .contains("requires COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL"));
+        assert!(
+            error
+                .to_string()
+                .contains("requires COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL")
+        );
     }
 
     #[test]
@@ -2002,9 +2030,11 @@ mod tests {
             false,
         )
         .expect_err("same primary/fallback identity must fail");
-        assert!(error
-            .to_string()
-            .contains("must resolve to distinct endpoint"));
+        assert!(
+            error
+                .to_string()
+                .contains("must resolve to distinct endpoint")
+        );
     }
 
     #[test]
@@ -2030,9 +2060,11 @@ mod tests {
             false,
         )
         .expect_err("interval=0 must fail");
-        assert!(error
-            .to_string()
-            .contains("INTERVAL_MS must be in 1..=60000"));
+        assert!(
+            error
+                .to_string()
+                .contains("INTERVAL_MS must be in 1..=60000")
+        );
     }
 
     #[test]
@@ -2581,6 +2613,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_to_upstream_rejects_oversized_success_body() {
+        let oversized_body = format!(
+            r#"{{"status":"ok","accepted":true,"payload":"{}"}}"#,
+            "x".repeat(70_000)
+        );
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", oversized_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(primary_url.as_str(), None, primary_url.as_str(), None);
+        let reject = forward_to_upstream(&state, "rpc", UpstreamAction::Submit, b"{}")
+            .await
+            .expect_err("oversized upstream body must fail closed");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_response_too_large");
+        let _ = primary_handle.join();
+    }
+
+    #[tokio::test]
     async fn forward_to_upstream_adds_upstream_hmac_headers() {
         let key_id = "executor-hmac-k1";
         let secret = "executor-hmac-secret";
@@ -2801,6 +2855,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_oversized_success_body() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([36u8; 64]);
+        let oversized_body = format!(r#"{{"jsonrpc":"2.0","result":"{}"}}"#, "x".repeat(70_000));
+        let Some((send_rpc_url, send_rpc_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", oversized_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some(send_rpc_url);
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+            .await
+            .expect_err("oversized send-rpc body must fail closed");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "send_rpc_response_too_large");
+        let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_uses_send_rpc_when_upstream_returns_signed_tx_base64() {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([14u8; 64]);
         let upstream_body = format!(
@@ -2972,6 +3057,36 @@ mod tests {
         let _ = handle.join();
     }
 
+    #[tokio::test]
+    async fn verify_submit_signature_returns_unseen_when_response_body_too_large() {
+        let signature = bs58::encode([13u8; 64]).into_string();
+        let oversized_body = format!(
+            r#"{{"jsonrpc":"2.0","result":{{"value":[{{"confirmationStatus":"{}","padding":"{}"}}]}}}}"#,
+            "confirmed",
+            "x".repeat(70_000)
+        );
+        let Some((verify_url, handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", oversized_body.as_str())
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            false,
+        );
+        let result = verify_submitted_signature_visibility(&state, "rpc", signature.as_str()).await;
+        let Ok(SubmitSignatureVerification::Unseen { reason }) = result else {
+            panic!("expected unseen verification result");
+        };
+        assert!(reason.contains("response_too_large"), "reason={}", reason);
+        let _ = handle.join();
+    }
+
     fn test_state(endpoint: &str) -> AppState {
         test_state_with_backends(endpoint, None, endpoint, None)
     }
@@ -3138,7 +3253,11 @@ mod tests {
                     "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status,
                     reason,
-                    if status == 200 { "application/json" } else { "text/plain" },
+                    if status == 200 {
+                        "application/json"
+                    } else {
+                        "text/plain"
+                    },
                     body.len(),
                     body
                 );
@@ -3265,7 +3384,11 @@ mod tests {
                     "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status,
                     reason,
-                    if status == 200 { "application/json" } else { "text/plain" },
+                    if status == 200 {
+                        "application/json"
+                    } else {
+                        "text/plain"
+                    },
                     body.len(),
                     body
                 );
@@ -3327,7 +3450,11 @@ mod tests {
                     "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status,
                     reason,
-                    if status == 200 { "application/json" } else { "text/plain" },
+                    if status == 200 {
+                        "application/json"
+                    } else {
+                        "text/plain"
+                    },
                     body.len(),
                     body
                 );
