@@ -7,17 +7,32 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{info, warn};
+
+#[derive(Debug, Clone)]
+pub(super) enum TokenQualityResolution {
+    Fresh(TokenQualityCacheRow),
+    Stale(TokenQualityCacheRow),
+    Deferred,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BuyTradability {
+    Tradable,
+    Rejected,
+    Deferred,
+}
 
 impl DiscoveryService {
     pub(super) fn resolve_token_quality_for_mints(
         &self,
         store: &SqliteStore,
-        mints: &HashSet<String>,
+        mints: &[String],
         now: DateTime<Utc>,
-    ) -> HashMap<String, TokenQualityCacheRow> {
+    ) -> HashMap<String, TokenQualityResolution> {
         if mints.is_empty() {
             return HashMap::new();
         }
@@ -34,7 +49,7 @@ impl DiscoveryService {
                 Ok(Some(row)) => {
                     if now - row.fetched_at <= ttl {
                         fresh_hits += 1;
-                        out.insert(mint.clone(), row);
+                        out.insert(mint.clone(), TokenQualityResolution::Fresh(row));
                     } else {
                         stale_hits += 1;
                         to_fetch.push((mint.clone(), Some(row)));
@@ -53,7 +68,9 @@ impl DiscoveryService {
         let Some(helius_http_url) = self.helius_http_url.as_deref() else {
             for (mint, stale_row) in to_fetch {
                 if let Some(row) = stale_row {
-                    out.insert(mint, row);
+                    out.insert(mint, TokenQualityResolution::Stale(row));
+                } else {
+                    out.insert(mint, TokenQualityResolution::Missing);
                 }
             }
             info!(
@@ -79,6 +96,8 @@ impl DiscoveryService {
         let mut fetched_fail = 0usize;
         let mut fallback_from_stale = 0usize;
         let mut budget_exhausted = 0usize;
+        let mut deferred_missing = 0usize;
+        let mut missing_hard = 0usize;
         let mut rpc_attempted = 0usize;
         let refresh_started = Instant::now();
         for (mint, stale_row) in to_fetch {
@@ -86,7 +105,10 @@ impl DiscoveryService {
             if rpc_attempted >= QUALITY_MAX_FETCH_PER_CYCLE {
                 if let Some(stale_row) = stale_fallback.take() {
                     fallback_from_stale += 1;
-                    out.insert(mint, stale_row);
+                    out.insert(mint, TokenQualityResolution::Stale(stale_row));
+                } else {
+                    deferred_missing += 1;
+                    out.insert(mint, TokenQualityResolution::Deferred);
                 }
                 continue;
             }
@@ -94,7 +116,10 @@ impl DiscoveryService {
                 budget_exhausted += 1;
                 if let Some(stale_row) = stale_fallback.take() {
                     fallback_from_stale += 1;
-                    out.insert(mint, stale_row);
+                    out.insert(mint, TokenQualityResolution::Stale(stale_row));
+                } else {
+                    deferred_missing += 1;
+                    out.insert(mint, TokenQualityResolution::Deferred);
                 }
                 continue;
             }
@@ -120,13 +145,15 @@ impl DiscoveryService {
                     match store.get_token_quality_cache(&mint) {
                         Ok(Some(row)) => {
                             fetched_ok += 1;
-                            out.insert(mint, row);
+                            out.insert(mint, TokenQualityResolution::Fresh(row));
                         }
                         Ok(None) => {
                             if let Some(stale_row) = stale_fallback.take() {
                                 fallback_from_stale += 1;
-                                out.insert(mint, stale_row);
+                                out.insert(mint, TokenQualityResolution::Stale(stale_row));
                             } else {
+                                missing_hard += 1;
+                                out.insert(mint.clone(), TokenQualityResolution::Missing);
                                 warn!(
                                     mint = %mint,
                                     "token quality cache row missing after refresh"
@@ -141,7 +168,10 @@ impl DiscoveryService {
                             );
                             if let Some(stale_row) = stale_fallback.take() {
                                 fallback_from_stale += 1;
-                                out.insert(mint, stale_row);
+                                out.insert(mint, TokenQualityResolution::Stale(stale_row));
+                            } else {
+                                missing_hard += 1;
+                                out.insert(mint, TokenQualityResolution::Missing);
                             }
                         }
                     }
@@ -155,7 +185,10 @@ impl DiscoveryService {
                     );
                     if let Some(stale_row) = stale_fallback.take() {
                         fallback_from_stale += 1;
-                        out.insert(mint, stale_row);
+                        out.insert(mint, TokenQualityResolution::Stale(stale_row));
+                    } else {
+                        missing_hard += 1;
+                        out.insert(mint, TokenQualityResolution::Missing);
                     }
                 }
             }
@@ -173,6 +206,8 @@ impl DiscoveryService {
             fetched_fail,
             fallback_from_stale,
             budget_exhausted,
+            deferred_missing,
+            missing_hard,
             rpc_attempted,
             rpc_budget_ms = QUALITY_RPC_BUDGET_MS,
             rpc_spent_ms,
@@ -186,9 +221,9 @@ impl DiscoveryService {
         &self,
         token_states: &mut HashMap<String, TokenRollingState>,
         token_sol_history: &mut HashMap<String, Vec<SolLegTrade>>,
-        token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
+        token_quality_cache: &HashMap<String, TokenQualityResolution>,
         swap: &SwapEvent,
-    ) -> Option<bool> {
+    ) -> Option<BuyTradability> {
         self.touch_token_state(token_states, &swap.token_in, &swap.wallet, swap.ts_utc);
         self.touch_token_state(token_states, &swap.token_out, &swap.wallet, swap.ts_utc);
 
@@ -217,7 +252,7 @@ impl DiscoveryService {
             .get_mut(token)
             .expect("token state is initialized when push_sol_leg_trade is called");
         Self::evict_expired_5m(state, swap.ts_utc);
-        Some(self.is_tradable_token(state, token_quality_cache.get(token), swap.ts_utc))
+        Some(self.evaluate_buy_tradability(state, token_quality_cache.get(token), swap.ts_utc))
     }
 
     fn touch_token_state(
@@ -287,12 +322,12 @@ impl DiscoveryService {
         }
     }
 
-    fn is_tradable_token(
+    fn evaluate_buy_tradability(
         &self,
         state: &TokenRollingState,
-        rpc_quality: Option<&TokenQualityCacheRow>,
-        _signal_ts: DateTime<Utc>,
-    ) -> bool {
+        quality: Option<&TokenQualityResolution>,
+        signal_ts: DateTime<Utc>,
+    ) -> BuyTradability {
         let liquidity_proxy = state
             .sol_trades_5m
             .iter()
@@ -301,39 +336,83 @@ impl DiscoveryService {
         if self.shadow_quality.min_volume_5m_sol > 0.0
             && state.sol_volume_5m + 1e-12 < self.shadow_quality.min_volume_5m_sol
         {
-            return false;
+            return BuyTradability::Rejected;
         }
         if self.shadow_quality.min_unique_traders_5m > 0
             && state.sol_traders_5m.len() < self.shadow_quality.min_unique_traders_5m as usize
         {
-            return false;
+            return BuyTradability::Rejected;
         }
 
+        let mut deferred = false;
         if self.shadow_quality.min_token_age_seconds > 0 {
-            let Some(token_age_seconds) = rpc_quality.and_then(|row| row.token_age_seconds) else {
-                return false;
+            let token_age_seconds = match quality {
+                Some(TokenQualityResolution::Fresh(row)) => row.token_age_seconds,
+                Some(TokenQualityResolution::Stale(row)) => row.token_age_seconds.map(|age| {
+                    age.saturating_add(
+                        signal_ts
+                            .signed_duration_since(row.fetched_at)
+                            .num_seconds()
+                            .max(0) as u64,
+                    )
+                }),
+                Some(TokenQualityResolution::Deferred) => {
+                    deferred = true;
+                    None
+                }
+                Some(TokenQualityResolution::Missing) | None => None,
+            };
+            let Some(token_age_seconds) = token_age_seconds else {
+                return if deferred {
+                    BuyTradability::Deferred
+                } else {
+                    BuyTradability::Rejected
+                };
             };
             if token_age_seconds < self.shadow_quality.min_token_age_seconds {
-                return false;
+                return BuyTradability::Rejected;
             }
         }
         if self.shadow_quality.min_holders > 0 {
-            let Some(holders) = rpc_quality.and_then(|row| row.holders) else {
-                return false;
-            };
-            if holders < self.shadow_quality.min_holders {
-                return false;
+            match quality {
+                Some(TokenQualityResolution::Fresh(row)) => {
+                    let Some(holders) = row.holders else {
+                        return BuyTradability::Rejected;
+                    };
+                    if holders < self.shadow_quality.min_holders {
+                        return BuyTradability::Rejected;
+                    }
+                }
+                Some(TokenQualityResolution::Stale(row)) => {
+                    if let Some(holders) = row.holders {
+                        if holders < self.shadow_quality.min_holders {
+                            return BuyTradability::Rejected;
+                        }
+                    }
+                    deferred = true;
+                }
+                Some(TokenQualityResolution::Deferred) => deferred = true,
+                Some(TokenQualityResolution::Missing) | None => {
+                    return BuyTradability::Rejected;
+                }
             }
         }
         if self.shadow_quality.min_liquidity_sol > 0.0 {
-            let liquidity_sol = rpc_quality
-                .and_then(|row| row.liquidity_sol)
-                .unwrap_or(liquidity_proxy);
+            let liquidity_sol = match quality {
+                Some(TokenQualityResolution::Fresh(row)) => {
+                    row.liquidity_sol.unwrap_or(liquidity_proxy)
+                }
+                _ => liquidity_proxy,
+            };
             if liquidity_sol + 1e-12 < self.shadow_quality.min_liquidity_sol {
-                return false;
+                return BuyTradability::Rejected;
             }
         }
-        true
+        if deferred {
+            BuyTradability::Deferred
+        } else {
+            BuyTradability::Tradable
+        }
     }
 }
 
@@ -403,7 +482,10 @@ mod tests {
         let state = make_state(1.0, 1);
 
         assert!(
-            !discovery.is_tradable_token(&state, None, Utc::now()),
+            matches!(
+                discovery.evaluate_buy_tradability(&state, None, Utc::now()),
+                BuyTradability::Rejected
+            ),
             "missing rpc/cache quality must fail closed when age/holders thresholds are enabled"
         );
     }
@@ -421,7 +503,14 @@ mod tests {
         row.holders = None;
 
         assert!(
-            !discovery.is_tradable_token(&state, Some(&row), Utc::now()),
+            matches!(
+                discovery.evaluate_buy_tradability(
+                    &state,
+                    Some(&TokenQualityResolution::Fresh(row)),
+                    Utc::now()
+                ),
+                BuyTradability::Rejected
+            ),
             "missing holders field must fail closed when min_holders is enabled"
         );
     }
@@ -438,7 +527,10 @@ mod tests {
         let state = make_state(1.0, 1);
 
         assert!(
-            discovery.is_tradable_token(&state, None, Utc::now()),
+            matches!(
+                discovery.evaluate_buy_tradability(&state, None, Utc::now()),
+                BuyTradability::Tradable
+            ),
             "liquidity gate should still use rolling proxy when rpc quality is unavailable"
         );
     }
@@ -455,8 +547,86 @@ mod tests {
         let state = make_state(1.0, 1);
 
         assert!(
-            !discovery.is_tradable_token(&state, None, Utc::now()),
+            matches!(
+                discovery.evaluate_buy_tradability(&state, None, Utc::now()),
+                BuyTradability::Rejected
+            ),
             "missing rpc quality must not bypass liquidity threshold"
+        );
+    }
+
+    #[test]
+    fn evaluate_buy_tradability_defers_missing_age_holders_when_fetch_was_deferred() {
+        let mut shadow_quality = ShadowConfig::default();
+        shadow_quality.min_token_age_seconds = 600;
+        shadow_quality.min_holders = 10;
+        shadow_quality.min_liquidity_sol = 0.5;
+        shadow_quality.min_volume_5m_sol = 0.5;
+        shadow_quality.min_unique_traders_5m = 1;
+        let discovery = make_service(shadow_quality);
+        let state = make_state(1.0, 1);
+
+        assert!(
+            matches!(
+                discovery.evaluate_buy_tradability(
+                    &state,
+                    Some(&TokenQualityResolution::Deferred),
+                    Utc::now()
+                ),
+                BuyTradability::Deferred
+            ),
+            "budget-deferred quality should not hard-reject tradability"
+        );
+    }
+
+    #[test]
+    fn evaluate_buy_tradability_does_not_trust_stale_holders_for_pass() {
+        let mut shadow_quality = ShadowConfig::default();
+        shadow_quality.min_token_age_seconds = 0;
+        shadow_quality.min_holders = 10;
+        shadow_quality.min_liquidity_sol = 0.5;
+        shadow_quality.min_volume_5m_sol = 0.5;
+        shadow_quality.min_unique_traders_5m = 1;
+        let discovery = make_service(shadow_quality);
+        let state = make_state(1.0, 1);
+        let row = make_cache_row();
+
+        assert!(
+            matches!(
+                discovery.evaluate_buy_tradability(
+                    &state,
+                    Some(&TokenQualityResolution::Stale(row)),
+                    Utc::now()
+                ),
+                BuyTradability::Deferred
+            ),
+            "stale holders above threshold must not be treated as authoritative pass"
+        );
+    }
+
+    #[test]
+    fn evaluate_buy_tradability_uses_liquidity_proxy_for_stale_rows() {
+        let mut shadow_quality = ShadowConfig::default();
+        shadow_quality.min_token_age_seconds = 0;
+        shadow_quality.min_holders = 0;
+        shadow_quality.min_liquidity_sol = 1.5;
+        shadow_quality.min_volume_5m_sol = 0.5;
+        shadow_quality.min_unique_traders_5m = 1;
+        let discovery = make_service(shadow_quality);
+        let state = make_state(1.0, 1);
+        let mut row = make_cache_row();
+        row.liquidity_sol = Some(10.0);
+
+        assert!(
+            matches!(
+                discovery.evaluate_buy_tradability(
+                    &state,
+                    Some(&TokenQualityResolution::Stale(row)),
+                    Utc::now()
+                ),
+                BuyTradability::Rejected
+            ),
+            "stale liquidity rows must not keep a token passing if current proxy is below threshold"
         );
     }
 }

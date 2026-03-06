@@ -16,6 +16,7 @@ mod windows;
 use self::followlist::{desired_wallets, rank_follow_candidates, top_wallet_labels};
 use self::scoring::{hold_time_quality_score, median_i64, tanh01};
 use self::windows::{cmp_swap_order, DiscoveryCursor, DiscoveryWindowState};
+use quality_cache::BuyTradability;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
@@ -80,6 +81,7 @@ struct BuyObservation {
     token: String,
     ts: DateTime<Utc>,
     tradable: bool,
+    quality_resolved: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -382,11 +384,13 @@ impl DiscoveryService {
         now: DateTime<Utc>,
     ) -> Vec<WalletSnapshot> {
         let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
-        let unique_buy_mints: HashSet<String> = swaps
-            .iter()
-            .filter(|swap| is_sol_buy(swap))
-            .map(|swap| swap.token_out.clone())
-            .collect();
+        let mut seen_buy_mints = HashSet::new();
+        let mut unique_buy_mints = Vec::new();
+        for swap in swaps.iter().filter(|swap| is_sol_buy(swap)) {
+            if seen_buy_mints.insert(swap.token_out.clone()) {
+                unique_buy_mints.push(swap.token_out.clone());
+            }
+        }
         let token_quality_cache =
             self.resolve_token_quality_for_mints(store, &unique_buy_mints, now);
         let mut token_states: HashMap<String, TokenRollingState> = HashMap::new();
@@ -421,13 +425,18 @@ impl DiscoveryService {
         let last_seen = acc.last_seen.unwrap_or(now);
         let active_days = acc.active_days.len() as u32;
         let buy_total = acc.buy_observations.len() as u32;
+        let quality_resolved_buys = acc
+            .buy_observations
+            .iter()
+            .filter(|buy| buy.quality_resolved)
+            .count() as u32;
         let tradable_buys = acc
             .buy_observations
             .iter()
-            .filter(|buy| buy.tradable)
+            .filter(|buy| buy.quality_resolved && buy.tradable)
             .count() as u32;
-        let tradable_ratio = if buy_total > 0 {
-            tradable_buys as f64 / buy_total as f64
+        let tradable_ratio = if quality_resolved_buys > 0 {
+            tradable_buys as f64 / quality_resolved_buys as f64
         } else {
             0.0
         };
@@ -552,7 +561,7 @@ impl WalletAccumulator {
         &mut self,
         swap: &SwapEvent,
         max_tx_per_minute: u32,
-        buy_tradable: Option<bool>,
+        buy_tradability: Option<BuyTradability>,
     ) {
         self.trades = self.trades.saturating_add(1);
         self.first_seen = Some(
@@ -575,7 +584,7 @@ impl WalletAccumulator {
                 swap.amount_out,
                 swap.amount_in,
                 swap.ts_utc,
-                buy_tradable.unwrap_or(false),
+                buy_tradability.unwrap_or(BuyTradability::Rejected),
             );
             return;
         }
@@ -595,15 +604,21 @@ impl WalletAccumulator {
         qty: f64,
         cost_sol: f64,
         ts: DateTime<Utc>,
-        tradable: bool,
+        tradability: BuyTradability,
     ) {
         if qty <= 0.0 || cost_sol <= 0.0 {
             return;
         }
+        let (tradable, quality_resolved) = match tradability {
+            BuyTradability::Tradable => (true, true),
+            BuyTradability::Rejected => (false, true),
+            BuyTradability::Deferred => (false, false),
+        };
         self.buy_observations.push(BuyObservation {
             token: token.to_string(),
             ts,
             tradable,
+            quality_resolved,
         });
         self.spent_sol += cost_sol;
         if cost_sol > self.max_buy_notional_sol {
@@ -1110,6 +1125,7 @@ mod tests {
             token: "TokenRecent11111111111111111111111111111111".to_string(),
             ts: buy_ts,
             tradable: true,
+            quality_resolved: true,
         });
 
         let snapshot = discovery.snapshot_from_accumulator(
@@ -1168,6 +1184,7 @@ mod tests {
                 token: token.clone(),
                 ts: buy_ts,
                 tradable: true,
+                quality_resolved: true,
             });
             token_sol_history.insert(
                 token,
@@ -1190,6 +1207,7 @@ mod tests {
             token: "TokenFresh999999999999999999999999999999999".to_string(),
             ts: fresh_buy_ts,
             tradable: true,
+            quality_resolved: true,
         });
 
         let snapshot = discovery.snapshot_from_accumulator(
@@ -1206,6 +1224,63 @@ mod tests {
         assert!(
             snapshot.eligible,
             "a mostly healthy wallet should remain eligible when unevaluated buys stay below max_rug_ratio"
+        );
+    }
+
+    #[test]
+    fn tradable_ratio_ignores_deferred_quality_buys() {
+        let now = DateTime::parse_from_rfc3339("2026-03-05T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let mut config = DiscoveryConfig::default();
+        config.min_trades = 3;
+        config.min_active_days = 1;
+        config.min_leader_notional_sol = 0.1;
+        config.min_buy_count = 3;
+        config.min_tradable_ratio = 0.5;
+        config.max_rug_ratio = 1.0;
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+
+        let mut acc = WalletAccumulator::default();
+        acc.first_seen = Some(now - Duration::minutes(10));
+        acc.last_seen = Some(now);
+        acc.trades = 3;
+        acc.max_buy_notional_sol = 1.0;
+        acc.active_days.insert(now.date_naive());
+        acc.buy_observations.push(BuyObservation {
+            token: "TokenTradable111111111111111111111111111111".to_string(),
+            ts: now - Duration::minutes(10),
+            tradable: true,
+            quality_resolved: true,
+        });
+        acc.buy_observations.push(BuyObservation {
+            token: "TokenRejected111111111111111111111111111111".to_string(),
+            ts: now - Duration::minutes(9),
+            tradable: false,
+            quality_resolved: true,
+        });
+        acc.buy_observations.push(BuyObservation {
+            token: "TokenDeferred11111111111111111111111111111".to_string(),
+            ts: now - Duration::minutes(8),
+            tradable: false,
+            quality_resolved: false,
+        });
+
+        let snapshot = discovery.snapshot_from_accumulator(
+            "wallet_tradability".to_string(),
+            acc,
+            now,
+            &HashMap::new(),
+        );
+
+        assert!(
+            (snapshot.tradable_ratio - 0.5).abs() < 1e-9,
+            "deferred buys must be excluded from tradable_ratio denominator"
+        );
+        assert!(
+            snapshot.eligible,
+            "one tradable and one rejected resolved buy should satisfy min_tradable_ratio=0.5 regardless of deferred buys"
         );
     }
 
