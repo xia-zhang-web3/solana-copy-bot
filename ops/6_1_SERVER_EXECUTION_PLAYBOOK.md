@@ -7,7 +7,8 @@ This playbook is synchronized with the current staging server snapshot (`52.28.0
 2. runtime `execution.enabled=false`,
 3. non-live execution contour via local mock upstream (`127.0.0.1:18080`).
 
-Important: these values are for staging/non-live contour only; rotate token/signer before tiny-live or production.
+Important: these values are for staging/non-live contour only. Keep real RPC tokens/signer
+material only in server-local files/env, never in repo-tracked config.
 
 ## 1) What is already prepared in repo
 
@@ -59,16 +60,22 @@ sudo install -m 0644 ops/server_templates/solana-copy-bot.service /etc/systemd/s
 Expected key values:
 
 1. `ingestion.source = "yellowstone_grpc"`
-2. `ingestion.helius_ws_url = "wss://floral-alien-log.solana-mainnet.quiknode.pro/4fe0922bd257e0c073667d02381fa924940531e3/"`
-3. `ingestion.helius_http_url = "https://floral-alien-log.solana-mainnet.quiknode.pro/4fe0922bd257e0c073667d02381fa924940531e3/"`
-4. `ingestion.yellowstone_grpc_url = "https://floral-alien-log.solana-mainnet.quiknode.pro:10000"`
-5. `ingestion.yellowstone_x_token = "4fe0922bd257e0c073667d02381fa924940531e3"`
+2. `ingestion.helius_ws_url = "wss://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"`
+3. `ingestion.helius_http_url = "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"`
+4. `ingestion.yellowstone_grpc_url = "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro:10000"`
+5. `ingestion.yellowstone_x_token = "REPLACE_ON_SERVER"`
 6. `execution.enabled = false` (shadow-only runtime)
 7. `execution.mode = "adapter_submit_confirm"`
 8. `execution.submit_adapter_http_url = "http://127.0.0.1:8080/submit"`
 9. `execution.submit_adapter_auth_token_file = "/etc/solana-copy-bot/secrets/adapter_bearer.token"`
 10. `execution.execution_signer_pubkey = "11111111111111111111111111111111"`
 11. `execution.submit_allowed_routes = ["jito", "rpc"]`
+
+The four ingestion credential values above must be edited only in
+`/etc/solana-copy-bot/live.server.toml` on the server, or injected via env
+overrides (`SOLANA_COPY_BOT_HELIUS_WS_URL`, `SOLANA_COPY_BOT_HELIUS_HTTP_URL`,
+`SOLANA_COPY_BOT_YELLOWSTONE_GRPC_URL`, `SOLANA_COPY_BOT_YELLOWSTONE_X_TOKEN`).
+Do not commit real values back into repo-tracked files.
 
 ### 4.2 `/etc/solana-copy-bot/executor.env`
 

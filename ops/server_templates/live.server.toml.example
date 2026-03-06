@@ -14,11 +14,13 @@ path = "state/live_copybot.db"
 
 [ingestion]
 source = "yellowstone_grpc"
-helius_ws_url = "wss://floral-alien-log.solana-mainnet.quiknode.pro/4fe0922bd257e0c073667d02381fa924940531e3/"
-helius_http_url = "https://floral-alien-log.solana-mainnet.quiknode.pro/4fe0922bd257e0c073667d02381fa924940531e3/"
+# Intentionally placeholder-only in repo. Populate real RPC credentials only in
+# the server-local copy of this file or via env overrides.
+helius_ws_url = "wss://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
+helius_http_url = "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
 helius_http_urls = []
-yellowstone_grpc_url = "https://floral-alien-log.solana-mainnet.quiknode.pro:10000"
-yellowstone_x_token = "4fe0922bd257e0c073667d02381fa924940531e3"
+yellowstone_grpc_url = "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro:10000"
+yellowstone_x_token = "REPLACE_ON_SERVER"
 yellowstone_connect_timeout_ms = 5000
 yellowstone_subscribe_timeout_ms = 15000
 yellowstone_stream_buffer_capacity = 2048
