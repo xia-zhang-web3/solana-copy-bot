@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 #[cfg(test)]
 use copybot_config::ExecutionConfig;
+use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
@@ -1456,18 +1456,23 @@ async fn run_app_loop(
             Utc::now(),
         );
 
-        let shadow_queue_full =
-            shadow_scheduler.pending_shadow_task_count >= SHADOW_PENDING_TASK_CAPACITY;
+        let shadow_buffered_task_count = shadow_scheduler.buffered_shadow_task_count();
+        let shadow_queue_full = shadow_buffered_task_count >= SHADOW_PENDING_TASK_CAPACITY;
         if shadow_queue_full && !shadow_scheduler.shadow_queue_backpressure_active {
             shadow_scheduler.shadow_queue_backpressure_active = true;
             warn!(
                 shadow_scheduler.pending_shadow_task_count,
+                shadow_held_task_count = shadow_scheduler.held_shadow_sell_count(),
+                shadow_buffered_task_count,
                 shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
                 "shadow queue backpressure active; switching to inline shadow processing"
             );
             let details_json = format!(
-                "{{\"reason\":\"queue_backpressure\",\"pending\":{},\"capacity\":{}}}",
-                shadow_scheduler.pending_shadow_task_count, SHADOW_PENDING_TASK_CAPACITY
+                "{{\"reason\":\"queue_backpressure\",\"pending\":{},\"held\":{},\"buffered\":{},\"capacity\":{}}}",
+                shadow_scheduler.pending_shadow_task_count,
+                shadow_scheduler.held_shadow_sell_count(),
+                shadow_buffered_task_count,
+                SHADOW_PENDING_TASK_CAPACITY
             );
             if let Err(error) = store.insert_risk_event(
                 "shadow_queue_saturated",
@@ -1484,6 +1489,8 @@ async fn run_app_loop(
             shadow_scheduler.shadow_queue_backpressure_active = false;
             info!(
                 shadow_scheduler.pending_shadow_task_count,
+                shadow_held_task_count = shadow_scheduler.held_shadow_sell_count(),
+                shadow_buffered_task_count,
                 shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
                 "shadow queue backpressure cleared"
             );
@@ -1830,11 +1837,23 @@ async fn run_app_loop(
                             &task_input.key,
                             &open_shadow_lots,
                         ) {
-                            shadow_scheduler.hold_sell_for_causality(
+                            match shadow_scheduler.hold_sell_for_causality(
+                                SHADOW_PENDING_TASK_CAPACITY,
                                 task_input,
                                 shadow_causal_holdback_ms,
                                 Utc::now(),
-                            );
+                            ) {
+                                Ok(()) => {}
+                                Err(overflow_task) => shadow_scheduler.handle_held_sell_overflow(
+                                    overflow_task,
+                                    SHADOW_PENDING_TASK_CAPACITY,
+                                    shadow_causal_holdback_ms,
+                                    Utc::now(),
+                                    &mut shadow_drop_reason_counts,
+                                    &mut shadow_drop_stage_counts,
+                                    &mut shadow_queue_full_outcome_counts,
+                                ),
+                            }
                             continue;
                         }
                         if shadow_scheduler.should_process_shadow_inline(
@@ -3992,6 +4011,221 @@ mod app_tests {
                 .is_none(),
             "inflight key must not be marked ready"
         );
+    }
+
+    #[test]
+    fn causal_holdback_counts_held_sells_against_global_capacity() {
+        fn make_buy_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: "So11111111111111111111111111111111111111112".to_string(),
+                    token_out: token.to_string(),
+                    amount_in: 1.0,
+                    amount_out: 1000.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
+
+        fn make_sell_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: token.to_string(),
+                    token_out: "So11111111111111111111111111111111111111112".to_string(),
+                    amount_in: 1000.0,
+                    amount_out: 1.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
+
+        let mut shadow_scheduler = ShadowScheduler::new();
+        let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let cap = 1usize;
+        let now = Utc::now();
+
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"))
+            .is_ok());
+        assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
+
+        let held_sell = make_sell_task("S1", "wallet-sell", "token-sell");
+        let overflow_sell = shadow_scheduler
+            .hold_sell_for_causality(cap, held_sell, 2_500, now)
+            .expect_err("held sell should respect the global buffered cap");
+        shadow_scheduler.handle_held_sell_overflow(
+            overflow_sell,
+            cap,
+            2_500,
+            now,
+            &mut shadow_drop_reason_counts,
+            &mut shadow_drop_stage_counts,
+            &mut shadow_queue_full_outcome_counts,
+        );
+
+        assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
+        assert_eq!(shadow_scheduler.held_shadow_sell_count(), 1);
+        assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
+        assert_eq!(
+            shadow_scheduler
+                .shadow_holdback_counts
+                .get("queued_after_buy_evict"),
+            Some(&1)
+        );
+        assert_eq!(
+            shadow_queue_full_outcome_counts.get("queue_full_buy_drop"),
+            Some(&1)
+        );
+        assert_eq!(
+            shadow_queue_full_outcome_counts.get("queue_full_sell_kept"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn release_held_shadow_sells_preserves_buffered_count_accounting() {
+        fn make_sell_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: token.to_string(),
+                    token_out: "So11111111111111111111111111111111111111112".to_string(),
+                    amount_in: 1000.0,
+                    amount_out: 1.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
+
+        let mut shadow_scheduler = ShadowScheduler::new();
+        let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let now = Utc::now();
+
+        assert!(shadow_scheduler
+            .hold_sell_for_causality(
+                2,
+                make_sell_task("S1", "wallet-sell", "token-sell"),
+                100,
+                now
+            )
+            .is_ok());
+        assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
+        assert_eq!(shadow_scheduler.held_shadow_sell_count(), 1);
+        assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
+
+        shadow_scheduler.release_held_shadow_sells(
+            &HashSet::new(),
+            &mut shadow_drop_reason_counts,
+            &mut shadow_drop_stage_counts,
+            &mut shadow_queue_full_outcome_counts,
+            2,
+            now + chrono::Duration::milliseconds(101),
+        );
+
+        assert_eq!(shadow_scheduler.pending_shadow_task_count, 1);
+        assert_eq!(shadow_scheduler.held_shadow_sell_count(), 0);
+        assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
+        assert_eq!(
+            shadow_scheduler
+                .shadow_holdback_counts
+                .get("released_expired"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn enqueue_shadow_task_respects_global_buffered_capacity_with_held_sells() {
+        fn make_buy_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: "So11111111111111111111111111111111111111112".to_string(),
+                    token_out: token.to_string(),
+                    amount_in: 1.0,
+                    amount_out: 1000.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
+
+        fn make_sell_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+            ShadowTaskInput {
+                swap: SwapEvent {
+                    wallet: wallet.to_string(),
+                    dex: "pumpswap".to_string(),
+                    token_in: token.to_string(),
+                    token_out: "So11111111111111111111111111111111111111112".to_string(),
+                    amount_in: 1000.0,
+                    amount_out: 1.0,
+                    signature: signature.to_string(),
+                    slot: 1,
+                    ts_utc: Utc::now(),
+                },
+                follow_snapshot: Arc::new(FollowSnapshot::default()),
+                key: ShadowTaskKey {
+                    wallet: wallet.to_string(),
+                    token: token.to_string(),
+                },
+            }
+        }
+
+        let mut shadow_scheduler = ShadowScheduler::new();
+        let now = Utc::now();
+
+        assert!(shadow_scheduler
+            .hold_sell_for_causality(
+                1,
+                make_sell_task("S1", "wallet-sell", "token-sell"),
+                100,
+                now
+            )
+            .is_ok());
+        assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
+
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(1, make_buy_task("B1", "wallet-buy", "token-buy"))
+            .is_err());
+        assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
+        assert_eq!(shadow_scheduler.held_shadow_sell_count(), 1);
+        assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
     }
 
     #[test]
