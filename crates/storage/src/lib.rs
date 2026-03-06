@@ -2054,6 +2054,70 @@ mod tests {
     }
 
     #[test]
+    fn persist_discovery_cycle_retention_keeps_cold_start_windows() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("discovery-wallet-metrics-cold-start-retention.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let wallet_id = "wallet-cold-start".to_string();
+        let base = DateTime::parse_from_rfc3339("2026-02-20T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        for offset_minutes in 0..2 {
+            let window_start = base + Duration::minutes(offset_minutes);
+            let wallets = vec![WalletUpsertRow {
+                wallet_id: wallet_id.clone(),
+                first_seen: base,
+                last_seen: window_start,
+                status: "active".to_string(),
+            }];
+            let metrics = vec![WalletMetricRow {
+                wallet_id: wallet_id.clone(),
+                window_start,
+                pnl: 0.0,
+                win_rate: 0.0,
+                trades: 1,
+                closed_trades: 1,
+                hold_median_seconds: 0,
+                score: 1.0,
+                buy_total: 1,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }];
+            let desired = vec![wallet_id.clone()];
+            store.persist_discovery_cycle(
+                &wallets,
+                &metrics,
+                &desired,
+                window_start,
+                "cold-start-retention-test",
+            )?;
+        }
+
+        let mut stmt = store.conn.prepare(
+            "SELECT DISTINCT window_start FROM wallet_metrics ORDER BY window_start ASC",
+        )?;
+        let windows: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+
+        assert_eq!(
+            windows,
+            vec![
+                base.to_rfc3339(),
+                (base + Duration::minutes(1)).to_rfc3339(),
+            ],
+            "retention must not delete cold-start metric windows before the threshold is reached"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn wallet_metrics_window_start_index_migration_is_present() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("wallet-metrics-window-start-index.db");

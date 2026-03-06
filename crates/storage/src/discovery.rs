@@ -140,12 +140,12 @@ impl SqliteStore {
 
             conn.execute(
                 "DELETE FROM wallet_metrics
-                 WHERE window_start < COALESCE((
+                 WHERE window_start < (
                     SELECT DISTINCT window_start
                     FROM wallet_metrics
                     ORDER BY window_start DESC
                     LIMIT 1 OFFSET ?1
-                 ), '9999-12-31T23:59:59Z')",
+                 )",
                 params![retention_offset],
             )
             .context("failed to apply wallet_metrics retention in discovery transaction")?;
