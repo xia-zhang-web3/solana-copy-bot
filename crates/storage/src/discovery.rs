@@ -196,26 +196,17 @@ impl SqliteStore {
         }
 
         {
-            let mut exists_stmt = tx
-                .prepare_cached(
-                    "SELECT id FROM followlist WHERE wallet_id = ?1 AND active = 1 LIMIT 1",
-                )
-                .context("failed to prepare followlist active check statement")?;
             let mut activate_stmt = tx
                 .prepare_cached(
-                    "INSERT INTO followlist(wallet_id, added_at, reason, active)
+                    "INSERT OR IGNORE INTO followlist(wallet_id, added_at, reason, active)
                      VALUES (?1, ?2, ?3, 1)",
                 )
                 .context("failed to prepare followlist activate statement")?;
             for wallet_id in desired_wallets {
-                let already_active: Option<i64> = exists_stmt
-                    .query_row(params![wallet_id], |row| row.get(0))
-                    .optional()
-                    .context("failed checking existing active follow wallet in transaction")?;
-                if already_active.is_none() {
-                    activate_stmt
-                        .execute(params![wallet_id, &now_raw, reason])
-                        .context("failed to activate follow wallet in discovery transaction")?;
+                let changed = activate_stmt
+                    .execute(params![wallet_id, &now_raw, reason])
+                    .context("failed to activate follow wallet in discovery transaction")?;
+                if changed > 0 {
                     result.activated += 1;
                 }
             }
@@ -289,27 +280,16 @@ impl SqliteStore {
         now: DateTime<Utc>,
         reason: &str,
     ) -> Result<bool> {
-        let already_active: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT id FROM followlist WHERE wallet_id = ?1 AND active = 1 LIMIT 1",
-                params![wallet_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .context("failed checking existing active follow entry")?;
-        if already_active.is_some() {
-            return Ok(false);
-        }
-
-        self.conn
-            .execute(
-                "INSERT INTO followlist(wallet_id, added_at, reason, active)
-                 VALUES (?1, ?2, ?3, 1)",
-                params![wallet_id, now.to_rfc3339(), reason],
-            )
+        let changed = self
+            .execute_with_retry(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO followlist(wallet_id, added_at, reason, active)
+                     VALUES (?1, ?2, ?3, 1)",
+                    params![wallet_id, now.to_rfc3339(), reason],
+                )
+            })
             .context("failed to activate follow wallet")?;
-        Ok(true)
+        Ok(changed > 0)
     }
 
     pub fn reconcile_followlist(

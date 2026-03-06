@@ -663,6 +663,32 @@ mod tests {
     use copybot_core_types::SwapEvent;
     use tempfile::tempdir;
 
+    fn copy_migrations_through(dest: &Path, max_version: &str) -> Result<()> {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        fs::create_dir_all(dest)
+            .with_context(|| format!("failed to create temp migration dir {}", dest.display()))?;
+        for entry in fs::read_dir(&source)
+            .with_context(|| format!("failed to read migrations dir {}", source.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("failed to read entry in {}", source.display()))?;
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if file_name <= max_version {
+                fs::copy(&path, dest.join(file_name)).with_context(|| {
+                    format!(
+                        "failed to copy migration {} into {}",
+                        path.display(),
+                        dest.display()
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn close_shadow_lots_fifo_atomic_handles_parallel_sells_without_double_close() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -1620,6 +1646,75 @@ mod tests {
         assert_eq!(windows[0], (base + Duration::minutes(1)).to_rfc3339());
         assert_eq!(windows[1], (base + Duration::minutes(2)).to_rfc3339());
         assert_eq!(windows[2], (base + Duration::minutes(3)).to_rfc3339());
+        Ok(())
+    }
+
+    #[test]
+    fn followlist_single_active_guard_migration_dedupes_existing_duplicates() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("followlist-single-active-guard.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0017_positions_closed_state_index.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        legacy_store.conn.execute(
+            "INSERT INTO followlist(wallet_id, added_at, reason, active)
+             VALUES (?1, ?2, NULL, 1)",
+            params!["wallet-dup", "2026-02-20T00:00:00Z"],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO followlist(wallet_id, added_at, reason, active)
+             VALUES (?1, ?2, NULL, 1)",
+            params!["wallet-dup", "2026-02-20T00:01:00Z"],
+        )?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut migrated_store = SqliteStore::open(Path::new(&db_path))?;
+        migrated_store.run_migrations(&migration_dir)?;
+
+        let rows: Vec<(i64, String, i64, Option<String>, Option<String>)> = {
+            let mut stmt = migrated_store.conn.prepare(
+                "SELECT id, added_at, active, removed_at, reason
+                 FROM followlist
+                 WHERE wallet_id = ?1
+                 ORDER BY id ASC",
+            )?;
+            let mapped_rows = stmt.query_map(params!["wallet-dup"], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?;
+            mapped_rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        assert_eq!(rows.len(), 2, "expected both historical rows to remain");
+        assert_eq!(rows[0].2, 0, "older duplicate must be deactivated by migration");
+        assert_eq!(
+            rows[0].3.as_deref(),
+            Some("2026-02-20T00:00:00Z"),
+            "migration should close duplicate row at its original add time",
+        );
+        assert_eq!(
+            rows[0].4.as_deref(),
+            Some("migration_dedup_active_followlist"),
+            "migration should annotate deduplicated row",
+        );
+        assert_eq!(rows[1].2, 1, "latest active row must stay active");
+
+        let duplicate_insert = migrated_store.conn.execute(
+            "INSERT INTO followlist(wallet_id, added_at, reason, active)
+             VALUES (?1, ?2, ?3, 1)",
+            params!["wallet-dup", "2026-02-20T00:02:00Z", "duplicate-test"],
+        );
+        assert!(
+            duplicate_insert.is_err(),
+            "unique partial index must reject a second active followlist row"
+        );
         Ok(())
     }
 
