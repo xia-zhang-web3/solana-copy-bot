@@ -1,3 +1,4 @@
+use super::DiscoverySummary;
 use chrono::{DateTime, Utc};
 use copybot_core_types::SwapEvent;
 use std::cmp::Ordering;
@@ -33,6 +34,8 @@ pub(super) struct DiscoveryWindowState {
     pub(super) swaps: VecDeque<SwapEvent>,
     pub(super) signatures: HashSet<String>,
     pub(super) cursor: Option<DiscoveryCursor>,
+    pub(super) last_snapshot_bucket: Option<DateTime<Utc>>,
+    pub(super) last_summary: Option<DiscoverySummary>,
 }
 
 impl DiscoveryWindowState {

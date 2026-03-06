@@ -150,7 +150,7 @@ impl DiscoveryService {
         let mut swaps_warm_loaded = 0usize;
         let max_window_swaps_in_memory = self.config.max_window_swaps_in_memory.max(1);
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
-        let (snapshots, swaps_window, swaps_query_rows) = {
+        let (snapshots, cached_summary, swaps_window, swaps_query_rows) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -266,8 +266,23 @@ impl DiscoveryService {
                 .saturating_add(state.enforce_max_swaps(max_window_swaps_in_memory));
 
             let swaps_window = state.swaps.len();
-            let snapshots = self.build_wallet_snapshots_from_cached(store, &state.swaps, now);
-            (snapshots, swaps_window, swaps_query_rows)
+            if swaps_window == 0 {
+                state.last_snapshot_bucket = None;
+                state.last_summary = None;
+                (None, None, swaps_window, swaps_query_rows)
+            } else if state.last_snapshot_bucket == Some(metrics_window_start)
+                && state.last_summary.is_some()
+            {
+                (
+                    None,
+                    state.last_summary.clone(),
+                    swaps_window,
+                    swaps_query_rows,
+                )
+            } else {
+                let snapshots = self.build_wallet_snapshots_from_cached(store, &state.swaps, now);
+                (Some(snapshots), None, swaps_window, swaps_query_rows)
+            }
         };
 
         if swaps_window == 0 {
@@ -294,6 +309,52 @@ impl DiscoveryService {
                 ..DiscoverySummary::default()
             });
         }
+        if let Some(previous_summary) = cached_summary {
+            let active_follow_wallets = store.list_active_follow_wallets()?.len();
+            let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+            let summary = DiscoverySummary {
+                window_start,
+                wallets_seen: previous_summary.wallets_seen,
+                eligible_wallets: previous_summary.eligible_wallets,
+                metrics_written: 0,
+                follow_promoted: 0,
+                follow_demoted: 0,
+                active_follow_wallets,
+                top_wallets: previous_summary.top_wallets,
+            };
+            info!(
+                window_start = %summary.window_start,
+                wallets_seen = summary.wallets_seen,
+                eligible_wallets = summary.eligible_wallets,
+                metrics_written = summary.metrics_written,
+                follow_promoted = summary.follow_promoted,
+                follow_demoted = summary.follow_demoted,
+                active_follow_wallets = summary.active_follow_wallets,
+                swaps_window,
+                swaps_query_rows,
+                swaps_delta_fetched = delta_fetched,
+                swaps_warm_loaded,
+                swaps_evicted_due_cap,
+                swaps_fetch_limit = fetch_limit,
+                swaps_fetch_limit_reached = swaps_query_rows >= fetch_limit,
+                metrics_window_start = %metrics_window_start,
+                metrics_persisted = false,
+                snapshot_recomputed = false,
+                discovery_cycle_duration_ms = elapsed_ms,
+                top_wallets = ?summary.top_wallets,
+                "discovery cycle completed"
+            );
+            if swaps_query_rows >= fetch_limit {
+                warn!(
+                    swaps_query_rows,
+                    swaps_fetch_limit = fetch_limit,
+                    "discovery swap fetch reached per-cycle limit; backlog processing continues next cycle"
+                );
+            }
+            return Ok(summary);
+        }
+
+        let snapshots = snapshots.expect("non-empty window without cached summary must recompute");
         let mut wallet_rows: Vec<WalletUpsertRow> = Vec::with_capacity(snapshots.len());
         let mut metric_rows: Vec<WalletMetricRow> = Vec::with_capacity(snapshots.len());
         for snapshot in snapshots.iter() {
@@ -352,6 +413,17 @@ impl DiscoveryService {
             active_follow_wallets,
             top_wallets,
         };
+        {
+            let mut state = match self.window_state.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    warn!("discovery window mutex poisoned while caching summary; continuing");
+                    poisoned.into_inner()
+                }
+            };
+            state.last_snapshot_bucket = Some(metrics_window_start);
+            state.last_summary = Some(summary.clone());
+        }
         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
         info!(
@@ -371,6 +443,7 @@ impl DiscoveryService {
             swaps_fetch_limit_reached = swaps_query_rows >= fetch_limit,
             metrics_window_start = %metrics_window_start,
             metrics_persisted = should_persist_metrics,
+            snapshot_recomputed = true,
             discovery_cycle_duration_ms = elapsed_ms,
             top_wallets = ?summary.top_wallets,
             "discovery cycle completed"
@@ -1520,6 +1593,105 @@ mod tests {
             store.wallet_metrics_window_exists(discovery_shifted.metrics_window_start(now))?,
             "the backward-shifted metrics bucket must still be inserted"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_defers_full_snapshot_recompute_until_next_snapshot_bucket() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-snapshot-recompute-cadence.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let base_ts = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for idx in 0..6 {
+            let offset = Duration::minutes((idx * 20) as i64);
+            let buy_ts = base_ts + offset;
+            let sell_ts = buy_ts + Duration::minutes(6);
+            store.insert_observed_swap(&swap(
+                "wallet_recompute_a",
+                &format!("recompute-a-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenRecomputeA111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_recompute_a",
+                &format!("recompute-a-sell-{idx}"),
+                sell_ts,
+                "TokenRecomputeA111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 2;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.metric_snapshot_interval_seconds = 3600;
+        config.thin_market_min_unique_traders = 1;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let first_now = DateTime::parse_from_rfc3339("2026-03-04T15:40:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let second_now = first_now + Duration::minutes(10);
+        let third_now = first_now + Duration::hours(1);
+
+        let summary_first = discovery.run_cycle(&store, first_now)?;
+        assert_eq!(summary_first.wallets_seen, 1);
+        assert_eq!(summary_first.metrics_written, 1);
+
+        for idx in 0..6 {
+            let offset = Duration::minutes((idx * 20) as i64);
+            let buy_ts = base_ts + Duration::minutes(5) + offset;
+            let sell_ts = buy_ts + Duration::minutes(6);
+            store.insert_observed_swap(&swap(
+                "wallet_recompute_b",
+                &format!("recompute-b-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenRecomputeB111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_recompute_b",
+                &format!("recompute-b-sell-{idx}"),
+                sell_ts,
+                "TokenRecomputeB111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            ))?;
+        }
+
+        let summary_second = discovery.run_cycle(&store, second_now)?;
+        assert_eq!(
+            summary_second.wallets_seen, 1,
+            "same snapshot bucket should reuse cached discovery summary instead of full recompute"
+        );
+        assert_eq!(summary_second.metrics_written, 0);
+
+        let summary_third = discovery.run_cycle(&store, third_now)?;
+        assert_eq!(
+            summary_third.wallets_seen, 2,
+            "next snapshot bucket must recompute and include swaps accumulated while cached"
+        );
+        assert_eq!(summary_third.metrics_written, 2);
         Ok(())
     }
 
