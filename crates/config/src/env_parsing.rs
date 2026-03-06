@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Result};
 use std::collections::{BTreeMap, HashSet};
+use std::fmt;
+use std::str::FromStr;
 
 use super::ExecutionConfig;
 
@@ -9,6 +11,20 @@ pub(crate) fn parse_env_bool(value: String) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+pub(crate) fn parse_env_number<T>(env_name: &str, type_name: &str) -> Result<Option<T>>
+where
+    T: FromStr,
+    T::Err: fmt::Display,
+{
+    let Some(raw) = std::env::var(env_name).ok() else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    trimmed.parse::<T>().map(Some).map_err(|error| {
+        anyhow!("{env_name} must be a valid {type_name}, got {trimmed:?}: {error}")
+    })
 }
 
 pub(crate) fn validate_adapter_route_policy_completeness(config: &ExecutionConfig) -> Result<()> {

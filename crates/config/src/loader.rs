@@ -4,8 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::env_parsing::{
-    parse_env_bool, parse_execution_route_list_env, parse_execution_route_map_env,
-    validate_adapter_route_policy_completeness,
+    parse_env_bool, parse_env_number, parse_execution_route_list_env,
+    parse_execution_route_map_env, validate_adapter_route_policy_completeness,
 };
 use super::AppConfig;
 
@@ -209,44 +209,38 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(discovery_http_url) = env::var("SOLANA_COPY_BOT_DISCOVERY_HELIUS_HTTP_URL") {
         config.discovery.helius_http_url = discovery_http_url;
     }
-    if let Some(refresh_seconds) = env::var("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(refresh_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS", "u64")?
     {
         config.discovery.refresh_seconds = refresh_seconds;
     }
-    if let Some(rug_lookahead_seconds) = env::var("SOLANA_COPY_BOT_DISCOVERY_RUG_LOOKAHEAD_SECONDS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(rug_lookahead_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_DISCOVERY_RUG_LOOKAHEAD_SECONDS", "u64")?
     {
         config.discovery.rug_lookahead_seconds = rug_lookahead_seconds;
     }
-    if let Some(metric_snapshot_interval_seconds) =
-        env::var("SOLANA_COPY_BOT_DISCOVERY_METRIC_SNAPSHOT_INTERVAL_SECONDS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(metric_snapshot_interval_seconds) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_DISCOVERY_METRIC_SNAPSHOT_INTERVAL_SECONDS",
+        "u64",
+    )? {
         config.discovery.metric_snapshot_interval_seconds = metric_snapshot_interval_seconds;
     }
-    if let Some(max_window_swaps_in_memory) =
-        env::var("SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-    {
+    if let Some(max_window_swaps_in_memory) = parse_env_number::<usize>(
+        "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
+        "usize",
+    )? {
         config.discovery.max_window_swaps_in_memory = max_window_swaps_in_memory;
     }
-    if let Some(max_fetch_swaps_per_cycle) =
-        env::var("SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-    {
+    if let Some(max_fetch_swaps_per_cycle) = parse_env_number::<usize>(
+        "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
+        "usize",
+    )? {
         config.discovery.max_fetch_swaps_per_cycle = max_fetch_swaps_per_cycle;
     }
-    if let Some(observed_swaps_retention_days) =
-        env::var("SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS")
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok())
-    {
+    if let Some(observed_swaps_retention_days) = parse_env_number::<u32>(
+        "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
+        "u32",
+    )? {
         config.discovery.observed_swaps_retention_days = observed_swaps_retention_days;
     }
     if let Ok(shadow_http_url) = env::var("SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL") {

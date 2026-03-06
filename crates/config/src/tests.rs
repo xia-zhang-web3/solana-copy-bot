@@ -339,6 +339,65 @@ fn load_from_env_rejects_discovery_fetch_cap_above_window_cap() {
 }
 
 #[test]
+fn load_from_env_rejects_invalid_discovery_refresh_seconds_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS", "abc", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("invalid discovery refresh override must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_discovery_window_cap_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
+                "12.5",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("invalid discovery window cap override must fail config load")
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_discovery_retention_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
+                "-1",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("invalid discovery retention override must fail config load")
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
 fn load_from_env_applies_discovery_window_memory_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
