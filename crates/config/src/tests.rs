@@ -21,6 +21,12 @@ fn ingestion_yellowstone_defaults_are_applied() {
 }
 
 #[test]
+fn shadow_defaults_use_conservative_min_holders_floor() {
+    let shadow = ShadowConfig::default();
+    assert_eq!(shadow.min_holders, 5);
+}
+
+#[test]
 fn load_from_env_rejects_duplicate_normalized_route_max_slippage_keys() {
     assert_duplicate_normalized_route_env_rejected(
         "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS",

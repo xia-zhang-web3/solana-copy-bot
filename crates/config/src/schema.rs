@@ -612,7 +612,7 @@ impl Default for ShadowConfig {
             max_signal_lag_seconds: 45,
             quality_gates_enabled: true,
             min_token_age_seconds: 30,
-            min_holders: 1,
+            min_holders: 5,
             min_liquidity_sol: 1.0,
             min_volume_5m_sol: 0.5,
             min_unique_traders_5m: 1,
