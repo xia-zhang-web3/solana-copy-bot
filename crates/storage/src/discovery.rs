@@ -330,30 +330,4 @@ impl SqliteStore {
         Ok(changed > 0)
     }
 
-    pub fn reconcile_followlist(
-        &self,
-        desired_wallets: &[String],
-        now: DateTime<Utc>,
-        reason: &str,
-    ) -> Result<FollowlistUpdateResult> {
-        let desired: HashSet<&str> = desired_wallets.iter().map(String::as_str).collect();
-        let active = self.list_active_follow_wallets()?;
-        let mut result = FollowlistUpdateResult::default();
-
-        for wallet_id in active.iter() {
-            if !desired.contains(wallet_id.as_str())
-                && self.deactivate_follow_wallet(wallet_id, now, reason)?
-            {
-                result.deactivated += 1;
-            }
-        }
-
-        for wallet_id in desired_wallets {
-            if self.activate_follow_wallet(wallet_id, now, reason)? {
-                result.activated += 1;
-            }
-        }
-
-        Ok(result)
-    }
 }
