@@ -157,12 +157,67 @@ impl ExecutionRuntime {
         }
 
         if self.simulate_before_submit {
-            let sim = self
+            let sim = match self
                 .simulator
                 .simulate(intent, selected_route)
                 .with_context(|| {
                     format!("failed to simulate order for signal {}", intent.signal_id)
-                })?;
+                }) {
+                Ok(sim) => sim,
+                Err(error) => {
+                    let detail = error.to_string();
+                    if attempt < self.max_submit_attempts {
+                        let next_attempt = attempt.saturating_add(1);
+                        store.set_order_attempt(&order.order_id, next_attempt, Some(&detail))?;
+                        store.update_copy_signal_status(&intent.signal_id, "execution_pending")?;
+                        bump_route_counter(
+                            &mut report.simulation_retry_scheduled_by_route,
+                            selected_route,
+                        );
+                        let details = json!({
+                            "signal_id": intent.signal_id,
+                            "order_id": order.order_id,
+                            "attempt": attempt,
+                            "next_attempt": next_attempt,
+                            "max_submit_attempts": self.max_submit_attempts,
+                            "route": selected_route,
+                            "detail": detail,
+                        })
+                        .to_string();
+                        let _ = store.insert_risk_event(
+                            "execution_simulation_retry_scheduled",
+                            "warn",
+                            now,
+                            Some(&details),
+                        );
+                        return Ok(SignalResult::Skipped);
+                    }
+
+                    store.mark_order_failed(
+                        &order.order_id,
+                        "simulation_attempts_exhausted",
+                        Some(&detail),
+                    )?;
+                    store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                    bump_route_counter(&mut report.simulation_failed_by_route, selected_route);
+                    let details = json!({
+                        "signal_id": intent.signal_id,
+                        "order_id": order.order_id,
+                        "attempt": attempt,
+                        "max_submit_attempts": self.max_submit_attempts,
+                        "route": selected_route,
+                        "detail": detail,
+                    })
+                    .to_string();
+                    let _ = store.insert_risk_event(
+                        "execution_simulation_failed",
+                        "error",
+                        now,
+                        Some(&details),
+                    );
+                    return Ok(SignalResult::Failed);
+                }
+            };
             if !sim.accepted {
                 store.mark_order_dropped(
                     &order.order_id,

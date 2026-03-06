@@ -859,6 +859,17 @@ mod tests {
         }
     }
 
+    struct ErrorIntentSimulator;
+
+    impl IntentSimulator for ErrorIntentSimulator {
+        fn simulate(&self, intent: &ExecutionIntent, _route: &str) -> Result<simulator::SimulationResult> {
+            Err(anyhow::anyhow!(
+                "forced simulation transport error for signal {}",
+                intent.signal_id
+            ))
+        }
+    }
+
     struct FailedConfirmer;
 
     impl OrderConfirmer for FailedConfirmer {
@@ -2229,6 +2240,84 @@ mod tests {
         assert_eq!(
             after_second.err_code.as_deref(),
             Some("pretrade_attempts_exhausted")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_bounds_retryable_simulation_failures() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-simulation-retries")?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:sim-retry:w:buy:t1".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: Utc::now(),
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "paper".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: false,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(ErrorIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let first = runtime.process_batch(&store, Utc::now(), None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
+        assert_eq!(
+            first.simulation_retry_scheduled_by_route.get("paper"),
+            Some(&1),
+            "first simulation error should schedule retry"
+        );
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        let after_first = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should exist after first simulation attempt")?;
+        assert_eq!(after_first.status, "execution_pending");
+        assert_eq!(after_first.attempt, 2);
+
+        let second = runtime.process_batch(&store, Utc::now(), None)?;
+        assert_eq!(second.failed, 1);
+        assert_eq!(
+            second.simulation_failed_by_route.get("paper"),
+            Some(&1),
+            "simulation exhaustion should be attributed to active route"
+        );
+
+        let after_second = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should remain present after simulation exhaustion")?;
+        assert_eq!(after_second.status, "execution_failed");
+        assert_eq!(after_second.attempt, 2);
+        assert_eq!(
+            after_second.err_code.as_deref(),
+            Some("simulation_attempts_exhausted")
         );
 
         let _ = std::fs::remove_file(db_path);
