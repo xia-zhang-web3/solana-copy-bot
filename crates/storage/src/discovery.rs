@@ -79,6 +79,7 @@ impl SqliteStore {
         reason: &str,
     ) -> Result<FollowlistUpdateResult> {
         self.with_immediate_transaction_retry("discovery write", |conn| {
+            let retention_offset = DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS.saturating_sub(1);
             {
                 let mut stmt = conn
                     .prepare_cached(
@@ -139,14 +140,13 @@ impl SqliteStore {
 
             conn.execute(
                 "DELETE FROM wallet_metrics
-                 WHERE window_start NOT IN (
-                    SELECT window_start
+                 WHERE window_start < COALESCE((
+                    SELECT DISTINCT window_start
                     FROM wallet_metrics
-                    GROUP BY window_start
                     ORDER BY window_start DESC
-                    LIMIT ?1
-                 )",
-                params![DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS],
+                    LIMIT 1 OFFSET ?1
+                 ), '9999-12-31T23:59:59Z')",
+                params![retention_offset],
             )
             .context("failed to apply wallet_metrics retention in discovery transaction")?;
 

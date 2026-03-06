@@ -2054,6 +2054,117 @@ mod tests {
     }
 
     #[test]
+    fn wallet_metrics_window_start_index_migration_is_present() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-metrics-window-start-index.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0020_execution_foreign_keys.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut migrated_store = SqliteStore::open(Path::new(&db_path))?;
+        migrated_store.run_migrations(&migration_dir)?;
+
+        let index_sql: Option<String> = migrated_store
+            .conn
+            .query_row(
+                "SELECT sql
+                 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_wallet_metrics_window_start'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        assert!(
+            index_sql.is_some(),
+            "wallet_metrics(window_start) hotfix index must exist after migration"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_cursor_is_strictly_lexicographic() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-cursor-lexicographic.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let swaps = [
+            SwapEvent {
+                signature: "sig-a".to_string(),
+                wallet: "wallet-1".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-a".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                slot: 100,
+                ts_utc: base,
+            },
+            SwapEvent {
+                signature: "sig-b".to_string(),
+                wallet: "wallet-1".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-b".to_string(),
+                amount_in: 1.1,
+                amount_out: 11.0,
+                slot: 100,
+                ts_utc: base,
+            },
+            SwapEvent {
+                signature: "sig-c".to_string(),
+                wallet: "wallet-1".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-c".to_string(),
+                amount_in: 1.2,
+                amount_out: 12.0,
+                slot: 101,
+                ts_utc: base,
+            },
+            SwapEvent {
+                signature: "sig-d".to_string(),
+                wallet: "wallet-1".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-d".to_string(),
+                amount_in: 1.3,
+                amount_out: 13.0,
+                slot: 1,
+                ts_utc: base + Duration::seconds(1),
+            },
+        ];
+        for swap in &swaps {
+            assert!(store.insert_observed_swap(swap)?);
+        }
+
+        let mut seen = Vec::new();
+        let count = store.for_each_observed_swap_after_cursor(base, 100, "sig-a", 10, |swap| {
+            seen.push((swap.signature, swap.slot, swap.ts_utc));
+            Ok(())
+        })?;
+
+        assert_eq!(count, 3);
+        assert_eq!(
+            seen,
+            vec![
+                ("sig-b".to_string(), 100, base),
+                ("sig-c".to_string(), 101, base),
+                ("sig-d".to_string(), 1, base + Duration::seconds(1)),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn persist_discovery_cycle_retries_after_immediate_write_lock() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("discovery-write-retry.db");

@@ -123,9 +123,7 @@ impl SqliteStore {
             .prepare(
                 "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
                  FROM observed_swaps
-                 WHERE ts > ?1
-                    OR (ts = ?1 AND slot > ?2)
-                    OR (ts = ?1 AND slot = ?2 AND signature > ?3)
+                 WHERE (ts, slot, signature) > (?1, ?2, ?3)
                  ORDER BY ts ASC, slot ASC, signature ASC
                  LIMIT ?4",
             )
