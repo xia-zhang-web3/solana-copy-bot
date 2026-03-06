@@ -493,10 +493,25 @@ impl DiscoveryService {
         swaps: &VecDeque<SwapEvent>,
         now: DateTime<Utc>,
     ) -> Vec<WalletSnapshot> {
+        let mut ordered_swaps: Vec<&SwapEvent> = swaps.iter().collect();
+        if ordered_swaps
+            .windows(2)
+            .any(|pair| cmp_swap_order(pair[1], pair[0]) == Ordering::Less)
+        {
+            ordered_swaps.sort_by(|a, b| cmp_swap_order(a, b));
+            warn!(
+                swaps_window = swaps.len(),
+                "discovery swap order invariant violated before snapshot rebuild; normalizing cached window"
+            );
+        }
         let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
         let mut seen_buy_mints = HashSet::new();
         let mut unique_buy_mints = Vec::new();
-        for swap in swaps.iter().filter(|swap| is_sol_buy(swap)) {
+        for swap in ordered_swaps
+            .iter()
+            .copied()
+            .filter(|swap| is_sol_buy(swap))
+        {
             if seen_buy_mints.insert(swap.token_out.clone()) {
                 unique_buy_mints.push(swap.token_out.clone());
             }
@@ -505,7 +520,7 @@ impl DiscoveryService {
             self.resolve_token_quality_for_mints(store, &unique_buy_mints, now);
         let mut token_states: HashMap<String, TokenRollingState> = HashMap::new();
         let mut token_sol_history: HashMap<String, Vec<SolLegTrade>> = HashMap::new();
-        for swap in swaps.iter() {
+        for swap in ordered_swaps.iter().copied() {
             let buy_quality = self.update_token_quality_state(
                 &mut token_states,
                 &mut token_sol_history,
@@ -1811,6 +1826,70 @@ mod tests {
         assert!(
             state.cap_truncation_floor.is_some(),
             "cap eviction should leave a truncation marker until the time window catches up"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_wallet_snapshots_normalizes_out_of_order_swaps_before_rug_partition_point(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-out-of-order-rug-history.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-03-05T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut swaps = VecDeque::new();
+        swaps.push_back(swap(
+            "wallet_target",
+            "target-buy",
+            buy_ts,
+            SOL_MINT,
+            "TokenOrder11111111111111111111111111111111",
+            1.0,
+            100.0,
+        ));
+        swaps.push_back(swap(
+            "wallet_post",
+            "post-sell",
+            buy_ts + Duration::minutes(1),
+            "TokenOrder11111111111111111111111111111111",
+            SOL_MINT,
+            100.0,
+            0.01,
+        ));
+        swaps.push_back(swap(
+            "wallet_pre",
+            "pre-sell",
+            buy_ts - Duration::minutes(1),
+            "TokenOrder11111111111111111111111111111111",
+            SOL_MINT,
+            100.0,
+            10.0,
+        ));
+
+        let mut config = DiscoveryConfig::default();
+        config.rug_lookahead_seconds = 300;
+        config.thin_market_min_volume_sol = 2.0;
+        config.thin_market_min_unique_traders = 1;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+
+        let snapshots = discovery.build_wallet_snapshots_from_cached(
+            &store,
+            &swaps,
+            buy_ts + Duration::minutes(10),
+        );
+        let target_snapshot = snapshots
+            .into_iter()
+            .find(|snapshot| snapshot.wallet_id == "wallet_target")
+            .expect("target wallet snapshot must exist");
+
+        assert!(
+            (target_snapshot.rug_ratio - 1.0).abs() < 1e-9,
+            "pre-buy trades that appear later in an unsorted swap window must not leak into rug lookahead volume"
         );
         Ok(())
     }
