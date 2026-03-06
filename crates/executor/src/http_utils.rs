@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use std::net::IpAddr;
 
 pub(crate) const MAX_HTTP_ERROR_BODY_DETAIL_CHARS: usize = 1024;
 pub(crate) const MAX_HTTP_ERROR_BODY_READ_BYTES: usize = 4096;
@@ -13,10 +14,7 @@ pub(crate) struct ReadResponseBody {
 
 pub(crate) fn validate_endpoint_url(url: &str) -> Result<()> {
     let parsed = reqwest::Url::parse(url).context("invalid URL parse")?;
-    let scheme = parsed.scheme().to_ascii_lowercase();
-    if scheme != "http" && scheme != "https" {
-        return Err(anyhow!("unsupported scheme {}", parsed.scheme()));
-    }
+    validate_endpoint_scheme(&parsed)?;
     if parsed.host_str().is_none() {
         return Err(anyhow!("host missing"));
     }
@@ -27,6 +25,36 @@ pub(crate) fn validate_endpoint_url(url: &str) -> Result<()> {
         return Err(anyhow!("query/fragment are not allowed"));
     }
     Ok(())
+}
+
+fn validate_endpoint_scheme(parsed: &reqwest::Url) -> Result<()> {
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    match scheme.as_str() {
+        "https" => Ok(()),
+        "http" if endpoint_host_is_local(parsed) => Ok(()),
+        "http" => Err(anyhow!(
+            "http scheme is allowed only for localhost/loopback endpoints"
+        )),
+        _ => Err(anyhow!("unsupported scheme {}", parsed.scheme())),
+    }
+}
+
+fn endpoint_host_is_local(parsed: &reqwest::Url) -> bool {
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let normalized = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    if normalized == "localhost" || normalized.ends_with(".localhost") {
+        return true;
+    }
+    normalized
+        .parse::<IpAddr>()
+        .map(|addr| addr.is_loopback())
+        .unwrap_or(false)
 }
 
 pub(crate) fn endpoint_placeholder_host(url: &str) -> Option<String> {
@@ -178,7 +206,10 @@ pub(crate) async fn read_response_body_limited(
 
 #[cfg(test)]
 mod tests {
-    use super::{endpoint_placeholder_host, read_response_body_limited, truncate_detail_chars};
+    use super::{
+        endpoint_placeholder_host, read_response_body_limited, truncate_detail_chars,
+        validate_endpoint_url,
+    };
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -230,6 +261,31 @@ mod tests {
             None
         );
         assert_eq!(endpoint_placeholder_host("not-a-url"), None);
+    }
+
+    #[test]
+    fn validate_endpoint_url_rejects_plaintext_non_loopback_endpoint() {
+        let error = validate_endpoint_url("http://rpc.example.com/upstream")
+            .expect_err("external plaintext endpoint must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("http scheme is allowed only for localhost/loopback endpoints"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_endpoint_url_allows_https_and_loopback_http() {
+        validate_endpoint_url("https://rpc.example.com/upstream")
+            .expect("https endpoint must be allowed");
+        validate_endpoint_url("http://127.0.0.1:8080/upstream")
+            .expect("loopback IPv4 endpoint must be allowed");
+        validate_endpoint_url("http://localhost:8080/upstream")
+            .expect("localhost endpoint must be allowed");
+        validate_endpoint_url("http://[::1]:8080/upstream")
+            .expect("loopback IPv6 endpoint must be allowed");
     }
 
     #[tokio::test]
