@@ -45,6 +45,50 @@ impl SqliteStore {
         Ok(written > 0)
     }
 
+    pub fn insert_observed_swaps_batch(&self, swaps: &[SwapEvent]) -> Result<Vec<bool>> {
+        if swaps.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.with_immediate_transaction_retry("observed swap batch write", |conn| {
+            let mut stmt = conn
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO observed_swaps(
+                        signature,
+                        wallet_id,
+                        dex,
+                        token_in,
+                        token_out,
+                        qty_in,
+                        qty_out,
+                        slot,
+                        ts
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .context("failed to prepare observed swap batch insert statement")?;
+
+            let mut inserted = Vec::with_capacity(swaps.len());
+            for swap in swaps {
+                let changed = stmt
+                    .execute(params![
+                        &swap.signature,
+                        &swap.wallet,
+                        &swap.dex,
+                        &swap.token_in,
+                        &swap.token_out,
+                        swap.amount_in,
+                        swap.amount_out,
+                        swap.slot as i64,
+                        swap.ts_utc.to_rfc3339(),
+                    ])
+                    .context("failed to insert observed swap in batch write")?;
+                inserted.push(changed > 0);
+            }
+            Ok(inserted)
+        })
+        .context("failed to insert observed swap batch")
+    }
+
     pub fn load_observed_swaps_since(&self, since: DateTime<Utc>) -> Result<Vec<SwapEvent>> {
         let mut stmt = self
             .conn

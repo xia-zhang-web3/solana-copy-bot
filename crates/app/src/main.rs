@@ -2,8 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use copybot_config::ExecutionConfig;
-use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
+#[cfg(test)]
 use copybot_core_types::SwapEvent;
+use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
@@ -23,6 +24,7 @@ use tracing_subscriber::EnvFilter;
 mod config_contract;
 mod execution_pause_helpers;
 mod execution_runtime_helpers;
+mod observed_swap_writer;
 mod secrets;
 mod shadow_runtime_helpers;
 mod shadow_scheduler;
@@ -34,10 +36,10 @@ mod telemetry;
 use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
 use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
+use crate::observed_swap_writer::ObservedSwapWriter;
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
-    apply_follow_snapshot_update, handle_shadow_task_output, insert_observed_swap_with_retry,
-    spawn_shadow_worker_task,
+    apply_follow_snapshot_update, handle_shadow_task_output, spawn_shadow_worker_task,
 };
 use crate::shadow_scheduler::{ShadowScheduler, ShadowSwapSide, ShadowTaskInput, ShadowTaskKey};
 use crate::stale_close::close_stale_shadow_lots;
@@ -1387,6 +1389,8 @@ async fn run_app_loop(
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
+    let observed_swap_writer = ObservedSwapWriter::start(sqlite_path.clone())
+        .context("failed to start observed swap writer")?;
     let mut operator_emergency_stop = OperatorEmergencyStop::from_env();
     let mut execution_emergency_stop_active_logged = false;
     let mut execution_hard_stop_pause_logged = false;
@@ -1705,7 +1709,7 @@ async fn run_app_loop(
                     }
                 };
 
-                match insert_observed_swap_with_retry(&sqlite_path, &swap).await {
+                match observed_swap_writer.write(&swap).await {
                     Ok(true) => {
                         debug!(
                             signature = %swap.signature,
@@ -1959,6 +1963,9 @@ async fn run_app_loop(
     if let Some(handle) = shadow_scheduler.shadow_snapshot_handle.take() {
         handle.abort();
     }
+    observed_swap_writer
+        .shutdown()
+        .context("failed to shut down observed swap writer")?;
 
     store
         .record_heartbeat("copybot-app", "shutdown")
