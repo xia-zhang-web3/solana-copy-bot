@@ -2334,6 +2334,142 @@ mod tests {
     }
 
     #[test]
+    fn execution_foreign_keys_migration_cleans_orphans_and_enforces_chain() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-foreign-keys.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0019_positions_single_open_guard.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        legacy_store.conn.execute(
+            "INSERT INTO copy_signals(signal_id, wallet_id, side, token, notional_sol, ts, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "sig-valid",
+                "wallet-1",
+                "buy",
+                "token-a",
+                0.25_f64,
+                now.to_rfc3339(),
+                "execution_submitted",
+            ],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO orders(
+                order_id, signal_id, route, submit_ts, status, client_order_id, attempt
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "ord-valid",
+                "sig-valid",
+                "paper",
+                now.to_rfc3339(),
+                "execution_submitted",
+                "cb_valid_order_a1",
+                1_i64,
+            ],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO orders(
+                order_id, signal_id, route, submit_ts, status, client_order_id, attempt
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "ord-orphan",
+                "sig-missing",
+                "paper",
+                now.to_rfc3339(),
+                "execution_failed",
+                "cb_orphan_order_a1",
+                1_i64,
+            ],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params!["ord-valid", "token-a", 1.0_f64, 0.25_f64, 0.0_f64, 0.0_f64],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "ord-missing",
+                "token-b",
+                2.0_f64,
+                0.15_f64,
+                0.0_f64,
+                0.0_f64,
+            ],
+        )?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut migrated_store = SqliteStore::open(Path::new(&db_path))?;
+        migrated_store.run_migrations(&migration_dir)?;
+
+        let order_count: i64 =
+            migrated_store
+                .conn
+                .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))?;
+        assert_eq!(
+            order_count, 1,
+            "orphan orders should be removed by migration"
+        );
+
+        let fill_count: i64 =
+            migrated_store
+                .conn
+                .query_row("SELECT COUNT(*) FROM fills", [], |row| row.get(0))?;
+        assert_eq!(fill_count, 1, "orphan fills should be removed by migration");
+
+        let preserved = migrated_store
+            .execution_order_by_client_order_id("cb_valid_order_a1")?
+            .context("valid order should survive foreign key migration")?;
+        assert_eq!(preserved.order_id, "ord-valid");
+
+        let orphan_order_insert = migrated_store.conn.execute(
+            "INSERT INTO orders(
+                order_id, signal_id, route, submit_ts, status, client_order_id, attempt
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "ord-after-migration",
+                "sig-missing",
+                "paper",
+                now.to_rfc3339(),
+                "execution_pending",
+                "cb_after_migration_a1",
+                1_i64,
+            ],
+        );
+        assert!(
+            orphan_order_insert.is_err(),
+            "orders.signal_id foreign key must reject missing copy signal"
+        );
+
+        let orphan_fill_insert = migrated_store.conn.execute(
+            "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "ord-missing-after-migration",
+                "token-c",
+                1.0_f64,
+                0.10_f64,
+                0.0_f64,
+                0.0_f64,
+            ],
+        );
+        assert!(
+            orphan_fill_insert.is_err(),
+            "fills.order_id foreign key must reject missing order"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn live_max_drawdown_since_respects_subsecond_closed_ts_order() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("live-max-drawdown-subsecond-order.db");
