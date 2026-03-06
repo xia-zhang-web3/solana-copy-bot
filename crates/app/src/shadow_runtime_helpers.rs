@@ -3,52 +3,20 @@ use chrono::{DateTime, Utc};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
 use tokio::task::JoinSet;
-use tokio::time::{self, Duration};
-use tracing::{debug, info, warn};
+use tokio::time::Duration;
+use tracing::{info, warn};
 
-use super::{
-    FollowSnapshot, ShadowService, SqliteStore, SwapEvent, OBSERVED_SWAP_RETRY_BACKOFF_MS,
-    OBSERVED_SWAP_WRITE_MAX_RETRIES,
-};
+use super::{FollowSnapshot, ShadowService, SqliteStore, SwapEvent};
 use crate::shadow_scheduler::{ShadowSwapSide, ShadowTaskInput, ShadowTaskOutput};
 use crate::swap_classification::classify_swap_side;
 use crate::telemetry::{reason_to_key, reason_to_stage};
 use copybot_shadow::ShadowProcessOutcome;
-use copybot_storage::{
-    is_retryable_sqlite_anyhow_error, note_sqlite_busy_error, note_sqlite_write_retry,
-};
 
 pub(crate) async fn insert_observed_swap_with_retry(
     store: &SqliteStore,
     swap: &SwapEvent,
 ) -> Result<bool> {
-    for attempt in 0..=OBSERVED_SWAP_WRITE_MAX_RETRIES {
-        match store.insert_observed_swap(swap) {
-            Ok(written) => return Ok(written),
-            Err(error) => {
-                let retryable = is_retryable_sqlite_anyhow_error(&error);
-                if retryable {
-                    note_sqlite_busy_error();
-                }
-                if attempt < OBSERVED_SWAP_WRITE_MAX_RETRIES && retryable {
-                    note_sqlite_write_retry();
-                    let backoff_ms = OBSERVED_SWAP_RETRY_BACKOFF_MS[attempt];
-                    debug!(
-                        signature = %swap.signature,
-                        attempt = attempt + 1,
-                        max_attempts = OBSERVED_SWAP_WRITE_MAX_RETRIES + 1,
-                        backoff_ms,
-                        error = %error,
-                        "retrying observed swap write after sqlite contention"
-                    );
-                    time::sleep(Duration::from_millis(backoff_ms)).await;
-                    continue;
-                }
-                return Err(error);
-            }
-        }
-    }
-    unreachable!("retry loop must return on success or terminal error");
+    store.insert_observed_swap(swap)
 }
 
 pub(crate) fn apply_follow_snapshot_update(

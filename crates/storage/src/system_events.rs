@@ -5,11 +5,12 @@ use rusqlite::params;
 
 impl SqliteStore {
     pub fn record_heartbeat(&self, component: &str, status: &str) -> Result<()> {
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "INSERT INTO system_heartbeat(component, ts, status) VALUES (?1, datetime('now'), ?2)",
                 params![component, status],
             )
+        })
             .context("failed to record heartbeat")?;
         Ok(())
     }

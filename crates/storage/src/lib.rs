@@ -2319,6 +2319,122 @@ mod tests {
         assert_eq!(missing_price_count, 0);
         Ok(())
     }
+
+    #[test]
+    fn insert_observed_swap_retries_after_write_lock() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-retry.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let blocker_store = SqliteStore::open(Path::new(&db_path))?;
+        blocker_store
+            .conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_store
+            .conn
+            .execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_db_path = db_path.clone();
+        let worker_barrier = barrier.clone();
+        let handle = std::thread::spawn(move || -> Result<()> {
+            let worker_store = SqliteStore::open(Path::new(&worker_db_path))?;
+            worker_store
+                .conn
+                .busy_timeout(StdDuration::from_millis(1))
+                .context("failed to shorten worker busy timeout")?;
+            worker_barrier.wait();
+            let now = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc);
+            let inserted = worker_store.insert_observed_swap(&SwapEvent {
+                wallet: "wallet-retry".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-retry".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: "sig-observed-swap-retry".to_string(),
+                slot: 999,
+                ts_utc: now,
+            })?;
+            assert!(
+                inserted,
+                "expected observed swap insert to succeed after retry"
+            );
+            Ok(())
+        });
+
+        barrier.wait();
+        std::thread::sleep(StdDuration::from_millis(250));
+        blocker_store.conn.execute_batch("COMMIT")?;
+        handle
+            .join()
+            .expect("worker thread panicked")
+            .context("worker insert should succeed after retry")?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-06T11:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].signature, "sig-observed-swap-retry");
+        Ok(())
+    }
+
+    #[test]
+    fn record_heartbeat_retries_after_write_lock() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("heartbeat-retry.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let blocker_store = SqliteStore::open(Path::new(&db_path))?;
+        blocker_store
+            .conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_store
+            .conn
+            .execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_db_path = db_path.clone();
+        let worker_barrier = barrier.clone();
+        let handle = std::thread::spawn(move || -> Result<()> {
+            let worker_store = SqliteStore::open(Path::new(&worker_db_path))?;
+            worker_store
+                .conn
+                .busy_timeout(StdDuration::from_millis(1))
+                .context("failed to shorten worker busy timeout")?;
+            worker_barrier.wait();
+            worker_store.record_heartbeat("copybot-app", "alive")?;
+            Ok(())
+        });
+
+        barrier.wait();
+        std::thread::sleep(StdDuration::from_millis(250));
+        blocker_store.conn.execute_batch("COMMIT")?;
+        handle
+            .join()
+            .expect("worker thread panicked")
+            .context("worker heartbeat should succeed after retry")?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let count: i64 = verify_store.conn.query_row(
+            "SELECT COUNT(*) FROM system_heartbeat WHERE component = ?1 AND status = ?2",
+            params!["copybot-app", "alive"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        Ok(())
+    }
 }
 
 fn u64_to_sql_i64(field: &str, value: u64) -> Result<i64> {

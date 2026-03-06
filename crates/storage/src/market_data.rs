@@ -1,6 +1,5 @@
 use crate::{
-    DiscoveryRuntimeCursor, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
-    TokenQualityRpcRow,
+    DiscoveryRuntimeCursor, SqliteStore, TokenMarketStats, TokenQualityCacheRow, TokenQualityRpcRow,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -16,9 +15,9 @@ const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 impl SqliteStore {
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
         let written = self
-            .conn
-            .execute(
-                "INSERT OR IGNORE INTO observed_swaps(
+            .execute_with_retry(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO observed_swaps(
                     signature,
                     wallet_id,
                     dex,
@@ -29,18 +28,19 @@ impl SqliteStore {
                     slot,
                     ts
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    &swap.signature,
-                    &swap.wallet,
-                    &swap.dex,
-                    &swap.token_in,
-                    &swap.token_out,
-                    swap.amount_in,
-                    swap.amount_out,
-                    swap.slot as i64,
-                    swap.ts_utc.to_rfc3339(),
-                ],
-            )
+                    params![
+                        &swap.signature,
+                        &swap.wallet,
+                        &swap.dex,
+                        &swap.token_in,
+                        &swap.token_out,
+                        swap.amount_in,
+                        swap.amount_out,
+                        swap.slot as i64,
+                        swap.ts_utc.to_rfc3339(),
+                    ],
+                )
+            })
             .context("failed to insert observed swap")?;
         Ok(written > 0)
     }
@@ -707,7 +707,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_token_holders_from_program_accounts_response_accepts_wrapped_value_array() -> Result<()> {
+    fn parse_token_holders_from_program_accounts_response_accepts_wrapped_value_array() -> Result<()>
+    {
         let response = json!({
             "jsonrpc": "2.0",
             "result": {

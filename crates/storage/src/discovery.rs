@@ -15,8 +15,8 @@ impl SqliteStore {
         last_seen: DateTime<Utc>,
         status: &str,
     ) -> Result<()> {
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "INSERT INTO wallets(wallet_id, first_seen, last_seen, status)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(wallet_id) DO UPDATE SET
@@ -30,13 +30,14 @@ impl SqliteStore {
                     status,
                 ],
             )
+        })
             .context("failed to upsert wallet")?;
         Ok(())
     }
 
     pub fn insert_wallet_metric(&self, metric: &WalletMetricRow) -> Result<()> {
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "INSERT INTO wallet_metrics(
                     wallet_id,
                     window_start,
@@ -64,7 +65,8 @@ impl SqliteStore {
                     metric.rug_ratio,
                 ],
             )
-            .context("failed to insert wallet metric")?;
+        })
+        .context("failed to insert wallet metric")?;
         Ok(())
     }
 
