@@ -1,15 +1,16 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
-    CopySignalRow, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS, ExecutionConfirmStateSnapshot,
-    ExecutionOrderRow, FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome,
-    TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
+    CopySignalRow, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
+    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, TokenQualityCacheRow,
+    TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
+    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
@@ -1145,6 +1146,72 @@ mod tests {
     }
 
     #[test]
+    fn mark_order_confirmed_accepts_reconcile_pending_status() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("mark-order-confirmed-reconcile-pending.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-direct-confirm-reconcile:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS.to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-direct-confirm-reconcile-1",
+                &signal.signal_id,
+                "cb_direct_confirm_reconcile_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-direct-confirm-reconcile-1",
+            "paper",
+            "paper:tx-direct-confirm-reconcile",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.mark_order_reconcile_pending(
+            "ord-direct-confirm-reconcile-1",
+            "confirm_timeout_manual_reconcile_required",
+        )?;
+
+        store.mark_order_confirmed("ord-direct-confirm-reconcile-1", now + Duration::seconds(1))?;
+
+        let order = store
+            .execution_order_by_client_order_id("cb_direct_confirm_reconcile_a1")?
+            .context("expected order row after direct confirm helper")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_timeout_manual_reconcile_required")
+        );
+        assert_eq!(order.confirm_ts, Some(now + Duration::seconds(1)));
+
+        Ok(())
+    }
+
+    #[test]
     fn finalize_execution_confirmed_order_accounts_for_fee_in_cost_and_pnl() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("execution-confirm-fee-accounting.db");
@@ -1441,11 +1508,9 @@ mod tests {
         let error = store
             .mark_order_simulated("ord-sim-regress-1", "ok", Some("late simulation"))
             .expect_err("submitted order must not regress to execution_simulated");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected status=execution_submitted")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_submitted"));
         let order = store
             .execution_order_by_client_order_id("cb_sim_regress_a1")?
             .context("expected order row after rejected regression")?;
@@ -1523,11 +1588,9 @@ mod tests {
                 None,
             )
             .expect_err("confirmed order must not regress to execution_submitted");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected status=execution_confirmed")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_confirmed"));
         let order = store
             .execution_order_by_client_order_id("cb_submit_regress_a1")?
             .context("expected order row after rejected regression")?;
@@ -1735,16 +1798,82 @@ mod tests {
                 Some("should not overwrite confirmed"),
             )
             .expect_err("confirmed order must not regress to execution_failed");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected status=execution_confirmed")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_confirmed"));
         let order = store
             .execution_order_by_client_order_id("cb_failed_regress_a1")?
             .context("expected order row after rejected failed regression")?;
         assert_eq!(order.status, "execution_confirmed");
         assert_eq!(order.err_code, None);
+        Ok(())
+    }
+
+    #[test]
+    fn mark_order_confirmed_rejects_status_regression_from_failed() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-confirmed-regression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-confirm-regress:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-confirm-regress-1",
+                &signal.signal_id,
+                "cb_confirm_regress_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-confirm-regress-1",
+            "paper",
+            "paper:tx-confirm-regress",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.mark_order_failed(
+            "ord-confirm-regress-1",
+            "submit_transport_failed",
+            Some("simulated regression guard"),
+        )?;
+
+        let error = store
+            .mark_order_confirmed("ord-confirm-regress-1", now + Duration::seconds(1))
+            .expect_err("failed order must not regress to execution_confirmed");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected status=execution_failed"),
+            "unexpected error: {error}"
+        );
+        let order = store
+            .execution_order_by_client_order_id("cb_confirm_regress_a1")?
+            .context("expected order row after rejected confirm regression")?;
+        assert_eq!(order.status, "execution_failed");
+        assert_eq!(order.confirm_ts, None);
+
         Ok(())
     }
 

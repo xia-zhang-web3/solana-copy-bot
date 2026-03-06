@@ -480,20 +480,27 @@ impl SqliteStore {
     }
 
     pub fn mark_order_confirmed(&self, order_id: &str, confirm_ts: DateTime<Utc>) -> Result<()> {
+        const ACTION: &str = "marking order confirmed";
+        const EXPECTED: &[&str] = &[
+            "execution_submitted",
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+        ];
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE orders
                  SET status = 'execution_confirmed',
                      confirm_ts = ?1
-                 WHERE order_id = ?2",
-                params![confirm_ts.to_rfc3339(), order_id],
+                 WHERE order_id = ?2
+                   AND status IN ('execution_submitted', ?3)",
+                params![
+                    confirm_ts.to_rfc3339(),
+                    order_id,
+                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                ],
             )
         })?;
         if changed == 0 {
-            return Err(anyhow!(
-                "failed marking order confirmed: order_id={} not found",
-                order_id
-            ));
+            return Err(self.unexpected_order_status_error(order_id, ACTION, EXPECTED)?);
         }
         Ok(())
     }
