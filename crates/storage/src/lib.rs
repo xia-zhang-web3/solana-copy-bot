@@ -1696,8 +1696,8 @@ mod tests {
         assert_eq!(rows[0].2, 0, "older duplicate must be deactivated by migration");
         assert_eq!(
             rows[0].3.as_deref(),
-            Some("2026-02-20T00:00:00Z"),
-            "migration should close duplicate row at its original add time",
+            Some("2026-02-20T00:01:00Z"),
+            "migration should close duplicate row at the surviving row start time",
         );
         assert_eq!(
             rows[0].4.as_deref(),
@@ -1705,6 +1705,15 @@ mod tests {
             "migration should annotate deduplicated row",
         );
         assert_eq!(rows[1].2, 1, "latest active row must stay active");
+        assert!(
+            migrated_store.was_wallet_followed_at(
+                "wallet-dup",
+                DateTime::parse_from_rfc3339("2026-02-20T00:00:30Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+            )?,
+            "dedup must preserve historical follow membership before the surviving active row"
+        );
 
         let duplicate_insert = migrated_store.conn.execute(
             "INSERT INTO followlist(wallet_id, added_at, reason, active)
