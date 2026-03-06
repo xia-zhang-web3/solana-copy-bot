@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 #[cfg(test)]
 use copybot_config::ExecutionConfig;
+use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
@@ -2003,6 +2003,13 @@ mod app_tests {
         ));
         let mut file = std::fs::File::create(&path)?;
         file.write_all(content.as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path)?.permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&path, perms)?;
+        }
         Ok(path)
     }
 
@@ -2183,6 +2190,35 @@ mod app_tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resolve_execution_adapter_secrets_rejects_broad_permissions_secret_file() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let auth_path = write_temp_secret_file("auth-broad-perms", "token-from-file\n")?;
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/dev.toml");
+
+        let mut perms = std::fs::metadata(&auth_path)?.permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&auth_path, perms)?;
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.submit_adapter_auth_token_file = auth_path.to_string_lossy().to_string();
+
+        let error = resolve_execution_adapter_secrets(&mut execution, config_path.as_path())
+            .expect_err("broad secret file permissions must fail");
+        assert!(
+            error_chain_contains(&error, "owner-only permissions"),
+            "unexpected error: {}",
+            error
+        );
+
+        let _ = std::fs::remove_file(auth_path);
+        Ok(())
+    }
+
     #[test]
     fn resolve_execution_adapter_secrets_resolves_relative_paths_from_config_dir() -> Result<()> {
         let root = write_temp_secret_dir("relative-resolve")?;
@@ -2197,6 +2233,15 @@ mod app_tests {
         std::fs::write(&auth_path, "auth-rel\n")?;
         std::fs::write(&hmac_path, "hmac-rel\n")?;
         std::fs::write(&api_token_path, "priority-api-rel\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&auth_path, &hmac_path, &api_token_path] {
+                let mut perms = std::fs::metadata(path)?.permissions();
+                perms.set_mode(0o600);
+                std::fs::set_permissions(path, perms)?;
+            }
+        }
 
         let loaded_config_path = config_dir.join("dev.toml");
         let mut execution = ExecutionConfig::default();

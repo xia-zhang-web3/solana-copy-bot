@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use std::fs;
-use tracing::warn;
 use zeroize::Zeroizing;
 
 use crate::secret_value::SecretValue;
@@ -36,31 +35,26 @@ pub(crate) fn resolve_secret_source(
 }
 
 fn read_trimmed_secret_file(path: &str) -> Result<SecretValue> {
-    let raw =
-        Zeroizing::new(fs::read_to_string(path).with_context(|| {
-            format!("secret file not found/readable path={}", path)
-        })?);
-    match secret_file_has_restrictive_permissions(path) {
-        Ok(false) => {
-            warn!(
-                path = %path,
-                "secret file permissions are broader than recommended; expected owner-only access (e.g. 0600/0400)"
-            );
-        }
-        Ok(true) => {}
-        Err(error) => {
-            warn!(
-                path = %path,
-                error = %error,
-                "unable to inspect secret file permissions"
-            );
-        }
-    }
+    let raw = Zeroizing::new(
+        fs::read_to_string(path)
+            .with_context(|| format!("secret file not found/readable path={}", path))?,
+    );
+    ensure_secret_file_has_restrictive_permissions(path)?;
     let secret = raw.trim().to_string();
     if secret.is_empty() {
         return Err(anyhow!("secret file is empty path={}", path));
     }
     Ok(secret.into())
+}
+
+fn ensure_secret_file_has_restrictive_permissions(path: &str) -> Result<()> {
+    if !secret_file_has_restrictive_permissions(path)? {
+        return Err(anyhow!(
+            "secret file must use owner-only permissions (0600/0400) path={}",
+            path
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

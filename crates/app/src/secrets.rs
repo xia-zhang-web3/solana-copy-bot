@@ -88,9 +88,33 @@ fn resolve_secret_file_path(path: &str, loaded_config_path: &Path) -> PathBuf {
 fn read_trimmed_secret_file(path: &Path) -> Result<String> {
     let value = fs::read_to_string(path)
         .with_context(|| format!("failed reading secret file {}", path.display()))?;
+    ensure_secret_file_has_restrictive_permissions(path)?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(anyhow!("secret file {} is empty", path.display()));
     }
     Ok(trimmed.to_string())
+}
+
+fn ensure_secret_file_has_restrictive_permissions(path: &Path) -> Result<()> {
+    if !secret_file_has_restrictive_permissions(path)? {
+        return Err(anyhow!(
+            "secret file {} must use owner-only permissions (0600/0400)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secret_file_has_restrictive_permissions(path: &Path) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed stating secret file {}", path.display()))?;
+    Ok((metadata.permissions().mode() & 0o077) == 0)
+}
+
+#[cfg(not(unix))]
+fn secret_file_has_restrictive_permissions(_path: &Path) -> Result<bool> {
+    Ok(true)
 }
