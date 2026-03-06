@@ -21,7 +21,11 @@ pub enum ScheduleOrderRetryOutcome {
 }
 
 impl SqliteStore {
-    fn current_order_status(&self, order_id: &str, action: &str) -> Result<Option<String>> {
+    pub(crate) fn current_order_status(
+        &self,
+        order_id: &str,
+        action: &str,
+    ) -> Result<Option<String>> {
         self.conn
             .query_row(
                 "SELECT status FROM orders WHERE order_id = ?1 LIMIT 1",
@@ -36,7 +40,7 @@ impl SqliteStore {
             })
     }
 
-    fn unexpected_order_status_error(
+    pub(crate) fn unexpected_order_status_error(
         &self,
         order_id: &str,
         action: &str,

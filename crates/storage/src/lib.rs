@@ -189,6 +189,11 @@ impl SqliteStore {
         slippage_bps: f64,
         confirmed_ts: DateTime<Utc>,
     ) -> Result<FinalizeExecutionConfirmOutcome> {
+        const CONFIRM_ACTION: &str = "marking order confirmed in finalize confirm transaction";
+        const CONFIRM_EXPECTED: &[&str] = &[
+            "execution_submitted",
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+        ];
         for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
             if let Err(error) = self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION") {
                 let error = anyhow!(error).context("failed to open execution confirm transaction");
@@ -260,15 +265,21 @@ impl SqliteStore {
                          SET status = 'execution_confirmed',
                              confirm_ts = ?1,
                              err_code = NULL
-                         WHERE order_id = ?2",
-                        params![confirmed_ts.to_rfc3339(), order_id],
+                         WHERE order_id = ?2
+                           AND status IN ('execution_submitted', ?3)",
+                        params![
+                            confirmed_ts.to_rfc3339(),
+                            order_id,
+                            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                        ],
                     )
                     .context("failed marking order confirmed in finalize confirm transaction")?;
                 if changed_order == 0 {
-                    return Err(anyhow!(
-                        "failed marking order confirmed in finalize confirm transaction: order_id={} not found",
-                        order_id
-                    ));
+                    return Err(self.unexpected_order_status_error(
+                        order_id,
+                        CONFIRM_ACTION,
+                        CONFIRM_EXPECTED,
+                    )?);
                 }
 
                 let changed_signal = self
@@ -1058,6 +1069,99 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(fills_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_execution_confirmed_order_rejects_transactional_status_regression() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-confirm-transactional-guard.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-tx-confirm-guard:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-tx-confirm-guard-1",
+                &signal.signal_id,
+                "cb_tx_confirm_guard_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-tx-confirm-guard-1",
+            "paper",
+            "paper:tx-tx-confirm-guard",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.conn.execute_batch(
+            "CREATE TRIGGER tx_confirm_guard_flip_status
+             AFTER INSERT ON fills
+             BEGIN
+                 UPDATE orders
+                 SET status = 'execution_failed',
+                     err_code = 'trigger_flip'
+                 WHERE order_id = NEW.order_id;
+             END;",
+        )?;
+
+        let error = store
+            .finalize_execution_confirmed_order(
+                "ord-tx-confirm-guard-1",
+                &signal.signal_id,
+                "token-a",
+                "buy",
+                1.0,
+                0.25,
+                0.25,
+                0.0,
+                50.0,
+                now + Duration::seconds(1),
+            )
+            .expect_err("transactional status regression must be rejected");
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains("unexpected status=execution_failed"),
+            "unexpected error: {error_chain}"
+        );
+
+        let order = store
+            .execution_order_by_client_order_id("cb_tx_confirm_guard_a1")?
+            .context("expected order row after rejected transactional regression")?;
+        assert_eq!(order.status, "execution_submitted");
+        assert_eq!(order.err_code, None);
+        assert_eq!(order.confirm_ts, None);
+        assert_eq!(store.live_open_positions_count()?, 0);
+
+        let fills_count: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM fills WHERE order_id = ?1",
+            params!["ord-tx-confirm-guard-1"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(fills_count, 0);
 
         Ok(())
     }
