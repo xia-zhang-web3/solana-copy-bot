@@ -5,7 +5,7 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 
 ## Security note
 
-1. `live.server.toml.example` currently contains staging QuickNode endpoint/token values.
+1. `live.server.toml.example` contains placeholder-only RPC values; populate real credentials only in the server-local copy or via env overrides.
 2. bootstrap signer values are for non-live contour testing only.
 3. rotate endpoint/token/signer before any tiny-live or production stage.
 

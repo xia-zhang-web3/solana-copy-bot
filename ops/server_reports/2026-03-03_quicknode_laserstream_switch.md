@@ -9,7 +9,7 @@ Scope: switch ingestion from WS+HTTP polling to QuickNode Yellowstone gRPC (shad
 Updated [/etc/solana-copy-bot/live.server.toml](/etc/solana-copy-bot/live.server.toml):
 
 1. `ingestion.source = "yellowstone_grpc"`
-2. `ingestion.yellowstone_grpc_url = "https://floral-alien-log.solana-mainnet.quiknode.pro:10000"`
+2. `ingestion.yellowstone_grpc_url = "https://<QUICKNODE_HOST>:10000"`
 3. `ingestion.yellowstone_x_token = "<set on server>"`
 
 Also removed stale override (none present) and restarted:
