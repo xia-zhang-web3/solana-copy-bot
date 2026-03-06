@@ -1,12 +1,35 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::{Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
 use copybot_storage::SqliteStore;
 use std::path::Path;
 use std::thread;
+use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::{mpsc, oneshot};
+use tracing::warn;
 
 const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
+const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
+
+#[derive(Clone, Copy)]
+struct ObservedSwapWriterConfig {
+    channel_capacity: usize,
+    batch_max_size: usize,
+    retention_days: u32,
+    retention_sweep_interval: StdDuration,
+}
+
+impl ObservedSwapWriterConfig {
+    fn production(retention_days: u32) -> Self {
+        Self {
+            channel_capacity: OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            batch_max_size: OBSERVED_SWAP_BATCH_MAX_SIZE,
+            retention_days,
+            retention_sweep_interval: OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL,
+        }
+    }
+}
 
 struct ObservedSwapWriteRequest {
     swap: SwapEvent,
@@ -19,11 +42,18 @@ pub(crate) struct ObservedSwapWriter {
 }
 
 impl ObservedSwapWriter {
-    pub(crate) fn start(sqlite_path: String) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel(OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY);
+    pub(crate) fn start(sqlite_path: String, retention_days: u32) -> Result<Self> {
+        Self::start_with_config(
+            sqlite_path,
+            ObservedSwapWriterConfig::production(retention_days),
+        )
+    }
+
+    fn start_with_config(sqlite_path: String, config: ObservedSwapWriterConfig) -> Result<Self> {
+        let (sender, receiver) = mpsc::channel(config.channel_capacity);
         let worker = thread::Builder::new()
             .name("copybot-observed-swap-writer".to_string())
-            .spawn(move || observed_swap_writer_loop(sqlite_path, receiver))
+            .spawn(move || observed_swap_writer_loop(sqlite_path, receiver, config))
             .context("failed to spawn observed swap writer thread")?;
         Ok(Self {
             sender,
@@ -61,14 +91,18 @@ impl ObservedSwapWriter {
 fn observed_swap_writer_loop(
     sqlite_path: String,
     mut receiver: mpsc::Receiver<ObservedSwapWriteRequest>,
+    config: ObservedSwapWriterConfig,
 ) -> Result<()> {
     let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
         format!("failed to open sqlite db for observed swap writer: {sqlite_path}")
     })?;
+    let mut last_retention_sweep = Instant::now()
+        .checked_sub(config.retention_sweep_interval)
+        .unwrap_or_else(Instant::now);
 
     while let Some(first_request) = receiver.blocking_recv() {
         let mut batch = vec![first_request];
-        while batch.len() < OBSERVED_SWAP_BATCH_MAX_SIZE {
+        while batch.len() < config.batch_max_size {
             match receiver.try_recv() {
                 Ok(request) => batch.push(request),
                 Err(mpsc::error::TryRecvError::Empty) => break,
@@ -96,6 +130,18 @@ fn observed_swap_writer_loop(
                 }
             }
         }
+
+        if last_retention_sweep.elapsed() >= config.retention_sweep_interval {
+            let cutoff = Utc::now() - ChronoDuration::days(config.retention_days.max(1) as i64);
+            if let Err(error) = store.delete_observed_swaps_before(cutoff) {
+                warn!(
+                    error = %error,
+                    retention_days = config.retention_days,
+                    "observed swap retention sweep failed"
+                );
+            }
+            last_retention_sweep = Instant::now();
+        }
     }
 
     Ok(())
@@ -113,9 +159,9 @@ fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ObservedSwapWriter;
+    use super::{ObservedSwapWriter, ObservedSwapWriterConfig};
     use anyhow::{Context, Result};
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use copybot_core_types::SwapEvent;
     use copybot_storage::SqliteStore;
     use rusqlite::Connection;
@@ -168,7 +214,7 @@ mod tests {
         let runtime_handle = thread::spawn(move || -> Result<bool> {
             let runtime = Builder::new_current_thread().enable_all().build()?;
             runtime.block_on(async move {
-                let writer = ObservedSwapWriter::start(sqlite_path.clone())?;
+                let writer = ObservedSwapWriter::start(sqlite_path.clone(), 45)?;
                 let swap_for_task = swap.clone();
                 let insert_task = tokio::spawn(async move { writer.write(&swap_for_task).await });
 
@@ -201,6 +247,74 @@ mod tests {
         )?;
         assert_eq!(swaps.len(), 1);
         assert_eq!(swaps[0].signature, "sig-observed-swap-async");
+        let _ = std::fs::remove_file(db_path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_applies_retention_sweep() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-retention-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    retention_days: 1,
+                    retention_sweep_interval: StdDuration::ZERO,
+                },
+            )?;
+
+            let stale_swap = SwapEvent {
+                wallet: "wallet-old".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-old".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: "sig-observed-swap-old".to_string(),
+                slot: 100,
+                ts_utc: Utc::now() - ChronoDuration::days(3),
+            };
+            let fresh_swap = SwapEvent {
+                wallet: "wallet-new".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-new".to_string(),
+                amount_in: 2.0,
+                amount_out: 20.0,
+                signature: "sig-observed-swap-new".to_string(),
+                slot: 101,
+                ts_utc: Utc::now(),
+            };
+
+            writer.write(&stale_swap).await?;
+            writer.write(&fresh_swap).await?;
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(Utc::now() - ChronoDuration::days(7))?;
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].signature, "sig-observed-swap-new");
         let _ = std::fs::remove_file(db_path);
 
         Ok(())

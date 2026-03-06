@@ -2,9 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use copybot_config::ExecutionConfig;
+use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 #[cfg(test)]
 use copybot_core_types::SwapEvent;
-use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
@@ -144,6 +144,7 @@ async fn main() -> Result<()> {
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
         config.discovery.refresh_seconds,
+        config.discovery.observed_swaps_retention_days,
         config.shadow.refresh_seconds,
         config.shadow.max_signal_lag_seconds,
         config.shadow.causal_holdback_enabled,
@@ -1351,6 +1352,7 @@ async fn run_app_loop(
     sqlite_path: String,
     heartbeat_seconds: u64,
     discovery_refresh_seconds: u64,
+    observed_swaps_retention_days: u32,
     shadow_refresh_seconds: u64,
     shadow_max_signal_lag_seconds: u64,
     shadow_causal_holdback_enabled: bool,
@@ -1389,8 +1391,9 @@ async fn run_app_loop(
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
-    let observed_swap_writer = ObservedSwapWriter::start(sqlite_path.clone())
-        .context("failed to start observed swap writer")?;
+    let observed_swap_writer =
+        ObservedSwapWriter::start(sqlite_path.clone(), observed_swaps_retention_days)
+            .context("failed to start observed swap writer")?;
     let mut operator_emergency_stop = OperatorEmergencyStop::from_env();
     let mut execution_emergency_stop_active_logged = false;
     let mut execution_hard_stop_pause_logged = false;

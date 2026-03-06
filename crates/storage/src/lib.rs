@@ -3116,6 +3116,52 @@ mod tests {
     }
 
     #[test]
+    fn delete_observed_swaps_before_applies_time_retention_cutoff() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-retention.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let stale_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let recent_ts = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "wallet-retention".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-stale".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-stale".to_string(),
+            slot: 1,
+            ts_utc: stale_ts,
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "wallet-retention".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-recent".to_string(),
+            amount_in: 2.0,
+            amount_out: 20.0,
+            signature: "sig-observed-swap-recent".to_string(),
+            slot: 2,
+            ts_utc: recent_ts,
+        })?;
+
+        let deleted = store.delete_observed_swaps_before(recent_ts - Duration::days(1))?;
+        assert_eq!(deleted, 1);
+
+        let swaps = store.load_observed_swaps_since(stale_ts - Duration::seconds(1))?;
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].signature, "sig-observed-swap-recent");
+        Ok(())
+    }
+
+    #[test]
     fn record_heartbeat_retries_after_write_lock() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("heartbeat-retry.db");
