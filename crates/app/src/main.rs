@@ -51,8 +51,6 @@ const SHADOW_INLINE_WORKER_OVERFLOW: usize = 1;
 const SHADOW_MAX_CONCURRENT_WORKERS: usize =
     SHADOW_WORKER_POOL_SIZE + SHADOW_INLINE_WORKER_OVERFLOW;
 const SHADOW_PENDING_TASK_CAPACITY: usize = 256;
-const OBSERVED_SWAP_WRITE_MAX_RETRIES: usize = 3;
-const OBSERVED_SWAP_RETRY_BACKOFF_MS: [u64; OBSERVED_SWAP_WRITE_MAX_RETRIES] = [50, 125, 250];
 const INGESTION_ERROR_BACKOFF_MS: [u64; 6] = [100, 250, 500, 1_000, 2_000, 5_000];
 const RISK_DB_REFRESH_MIN_SECONDS: i64 = 5;
 const RISK_INFRA_SAMPLE_MIN_SECONDS: i64 = 10;
@@ -1720,7 +1718,7 @@ async fn run_app_loop(
                     }
                 };
 
-                match insert_observed_swap_with_retry(&store, &swap).await {
+                match insert_observed_swap_with_retry(&sqlite_path, &swap).await {
                     Ok(true) => {
                         debug!(
                             signature = %swap.signature,
