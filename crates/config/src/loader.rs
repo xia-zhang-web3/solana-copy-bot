@@ -483,9 +483,8 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.shadow.causal_holdback_enabled = holdback_enabled;
     }
-    if let Some(holdback_ms) = env::var("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(holdback_ms) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_MS", "u64")?
     {
         config.shadow.causal_holdback_ms = holdback_ms;
     }
@@ -494,83 +493,68 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.shadow.quality_gates_enabled = quality_gates_enabled;
     }
-    if let Some(min_token_age_seconds) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(min_token_age_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS", "u64")?
     {
         config.shadow.min_token_age_seconds = min_token_age_seconds;
     }
-    if let Some(min_holders) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(min_holders) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "u64")?
     {
         config.shadow.min_holders = min_holders;
     }
-    if let Some(min_liquidity_sol) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_LIQUIDITY_SOL")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
+    if let Some(min_liquidity_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_SHADOW_MIN_LIQUIDITY_SOL", "f64")?
     {
         config.shadow.min_liquidity_sol = min_liquidity_sol;
     }
-    if let Some(min_volume_5m_sol) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_VOLUME_5M_SOL")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
+    if let Some(min_volume_5m_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_SHADOW_MIN_VOLUME_5M_SOL", "f64")?
     {
         config.shadow.min_volume_5m_sol = min_volume_5m_sol;
     }
-    if let Some(min_unique_traders_5m) = env::var("SOLANA_COPY_BOT_SHADOW_MIN_UNIQUE_TRADERS_5M")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(min_unique_traders_5m) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_SHADOW_MIN_UNIQUE_TRADERS_5M", "u64")?
     {
         config.shadow.min_unique_traders_5m = min_unique_traders_5m;
     }
-    if let Some(max_position_sol) = env::var("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
+    if let Some(max_position_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL", "f64")?
     {
         config.risk.max_position_sol = max_position_sol;
     }
-    if let Some(max_total_exposure_sol) = env::var("SOLANA_COPY_BOT_RISK_MAX_TOTAL_EXPOSURE_SOL")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
+    if let Some(max_total_exposure_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_MAX_TOTAL_EXPOSURE_SOL", "f64")?
     {
         config.risk.max_total_exposure_sol = max_total_exposure_sol;
     }
     if let Some(max_exposure_per_token_sol) =
-        env::var("SOLANA_COPY_BOT_RISK_MAX_EXPOSURE_PER_TOKEN_SOL")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_MAX_EXPOSURE_PER_TOKEN_SOL", "f64")?
     {
         config.risk.max_exposure_per_token_sol = max_exposure_per_token_sol;
     }
     if let Some(max_concurrent_positions) =
-        env::var("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS")
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok())
+        parse_env_number::<u32>("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS", "u32")?
     {
         config.risk.max_concurrent_positions = max_concurrent_positions;
     }
-    if let Some(daily_loss_limit_pct) = env::var("SOLANA_COPY_BOT_RISK_DAILY_LOSS_LIMIT_PCT")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
+    if let Some(daily_loss_limit_pct) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_DAILY_LOSS_LIMIT_PCT", "f64")?
     {
         config.risk.daily_loss_limit_pct = daily_loss_limit_pct;
     }
-    if let Some(max_drawdown_pct) = env::var("SOLANA_COPY_BOT_RISK_MAX_DRAWDOWN_PCT")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
+    if let Some(max_drawdown_pct) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_MAX_DRAWDOWN_PCT", "f64")?
     {
         config.risk.max_drawdown_pct = max_drawdown_pct;
     }
-    if let Some(max_hold_hours) = env::var("SOLANA_COPY_BOT_RISK_MAX_HOLD_HOURS")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
+    if let Some(max_hold_hours) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_RISK_MAX_HOLD_HOURS", "u32")?
     {
         config.risk.max_hold_hours = max_hold_hours;
     }
-    if let Some(max_copy_delay_sec) = env::var("SOLANA_COPY_BOT_RISK_MAX_COPY_DELAY_SEC")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(max_copy_delay_sec) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_MAX_COPY_DELAY_SEC", "u64")?
     {
         config.risk.max_copy_delay_sec = max_copy_delay_sec;
     }
@@ -579,159 +563,134 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.risk.shadow_killswitch_enabled = shadow_killswitch_enabled;
     }
-    if let Some(shadow_soft_exposure_cap_sol) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-    {
+    if let Some(shadow_soft_exposure_cap_sol) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL",
+        "f64",
+    )? {
         config.risk.shadow_soft_exposure_cap_sol = shadow_soft_exposure_cap_sol;
     }
     if let Some(shadow_soft_pause_minutes) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_PAUSE_MINUTES")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
+        parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_PAUSE_MINUTES", "u64")?
     {
         config.risk.shadow_soft_pause_minutes = shadow_soft_pause_minutes;
     }
-    if let Some(shadow_hard_exposure_cap_sol) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_HARD_EXPOSURE_CAP_SOL")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-    {
+    if let Some(shadow_hard_exposure_cap_sol) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_HARD_EXPOSURE_CAP_SOL",
+        "f64",
+    )? {
         config.risk.shadow_hard_exposure_cap_sol = shadow_hard_exposure_cap_sol;
     }
     if let Some(shadow_drawdown_1h_stop_sol) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_1H_STOP_SOL")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_1H_STOP_SOL", "f64")?
     {
         config.risk.shadow_drawdown_1h_stop_sol = shadow_drawdown_1h_stop_sol;
     }
-    if let Some(shadow_drawdown_1h_pause_minutes) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_1H_PAUSE_MINUTES")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_drawdown_1h_pause_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_1H_PAUSE_MINUTES",
+        "u64",
+    )? {
         config.risk.shadow_drawdown_1h_pause_minutes = shadow_drawdown_1h_pause_minutes;
     }
     if let Some(shadow_drawdown_6h_stop_sol) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_6H_STOP_SOL")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_6H_STOP_SOL", "f64")?
     {
         config.risk.shadow_drawdown_6h_stop_sol = shadow_drawdown_6h_stop_sol;
     }
-    if let Some(shadow_drawdown_6h_pause_minutes) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_6H_PAUSE_MINUTES")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_drawdown_6h_pause_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_6H_PAUSE_MINUTES",
+        "u64",
+    )? {
         config.risk.shadow_drawdown_6h_pause_minutes = shadow_drawdown_6h_pause_minutes;
     }
-    if let Some(shadow_drawdown_24h_stop_sol) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_24H_STOP_SOL")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-    {
+    if let Some(shadow_drawdown_24h_stop_sol) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_24H_STOP_SOL",
+        "f64",
+    )? {
         config.risk.shadow_drawdown_24h_stop_sol = shadow_drawdown_24h_stop_sol;
     }
-    if let Some(shadow_rug_loss_return_threshold) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RETURN_THRESHOLD")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-    {
+    if let Some(shadow_rug_loss_return_threshold) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RETURN_THRESHOLD",
+        "f64",
+    )? {
         config.risk.shadow_rug_loss_return_threshold = shadow_rug_loss_return_threshold;
     }
-    if let Some(shadow_rug_loss_window_minutes) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_WINDOW_MINUTES")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_rug_loss_window_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_WINDOW_MINUTES",
+        "u64",
+    )? {
         config.risk.shadow_rug_loss_window_minutes = shadow_rug_loss_window_minutes;
     }
-    if let Some(shadow_rug_loss_count_threshold) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_COUNT_THRESHOLD")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_rug_loss_count_threshold) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_COUNT_THRESHOLD",
+        "u64",
+    )? {
         config.risk.shadow_rug_loss_count_threshold = shadow_rug_loss_count_threshold;
     }
-    if let Some(shadow_rug_loss_rate_sample_size) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_SAMPLE_SIZE")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_rug_loss_rate_sample_size) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_SAMPLE_SIZE",
+        "u64",
+    )? {
         config.risk.shadow_rug_loss_rate_sample_size = shadow_rug_loss_rate_sample_size;
     }
-    if let Some(shadow_rug_loss_rate_threshold) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_THRESHOLD")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-    {
+    if let Some(shadow_rug_loss_rate_threshold) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_THRESHOLD",
+        "f64",
+    )? {
         config.risk.shadow_rug_loss_rate_threshold = shadow_rug_loss_rate_threshold;
     }
-    if let Some(shadow_infra_window_minutes) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_WINDOW_MINUTES")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_infra_window_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_INFRA_WINDOW_MINUTES",
+        "u64",
+    )? {
         config.risk.shadow_infra_window_minutes = shadow_infra_window_minutes;
     }
-    if let Some(shadow_infra_lag_p95_threshold_ms) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_LAG_P95_THRESHOLD_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_infra_lag_p95_threshold_ms) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_INFRA_LAG_P95_THRESHOLD_MS",
+        "u64",
+    )? {
         config.risk.shadow_infra_lag_p95_threshold_ms = shadow_infra_lag_p95_threshold_ms;
     }
-    if let Some(shadow_infra_lag_breach_minutes) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_LAG_BREACH_MINUTES")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_infra_lag_breach_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_INFRA_LAG_BREACH_MINUTES",
+        "u64",
+    )? {
         config.risk.shadow_infra_lag_breach_minutes = shadow_infra_lag_breach_minutes;
     }
-    if let Some(shadow_infra_replaced_ratio_threshold) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_REPLACED_RATIO_THRESHOLD")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-    {
+    if let Some(shadow_infra_replaced_ratio_threshold) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_INFRA_REPLACED_RATIO_THRESHOLD",
+        "f64",
+    )? {
         config.risk.shadow_infra_replaced_ratio_threshold = shadow_infra_replaced_ratio_threshold;
     }
-    if let Some(shadow_infra_rpc429_delta_threshold) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_RPC429_DELTA_THRESHOLD")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_infra_rpc429_delta_threshold) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_INFRA_RPC429_DELTA_THRESHOLD",
+        "u64",
+    )? {
         config.risk.shadow_infra_rpc429_delta_threshold = shadow_infra_rpc429_delta_threshold;
     }
-    if let Some(shadow_infra_rpc5xx_delta_threshold) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_RPC5XX_DELTA_THRESHOLD")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_infra_rpc5xx_delta_threshold) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_INFRA_RPC5XX_DELTA_THRESHOLD",
+        "u64",
+    )? {
         config.risk.shadow_infra_rpc5xx_delta_threshold = shadow_infra_rpc5xx_delta_threshold;
     }
-    if let Some(shadow_universe_min_active_follow_wallets) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_MIN_ACTIVE_FOLLOW_WALLETS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_universe_min_active_follow_wallets) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_MIN_ACTIVE_FOLLOW_WALLETS",
+        "u64",
+    )? {
         config.risk.shadow_universe_min_active_follow_wallets =
             shadow_universe_min_active_follow_wallets;
     }
-    if let Some(shadow_universe_min_eligible_wallets) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_MIN_ELIGIBLE_WALLETS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_universe_min_eligible_wallets) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_MIN_ELIGIBLE_WALLETS",
+        "u64",
+    )? {
         config.risk.shadow_universe_min_eligible_wallets = shadow_universe_min_eligible_wallets;
     }
-    if let Some(shadow_universe_breach_cycles) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(shadow_universe_breach_cycles) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES",
+        "u64",
+    )? {
         config.risk.shadow_universe_breach_cycles = shadow_universe_breach_cycles;
     }
     if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_PROGRAM_IDS") {

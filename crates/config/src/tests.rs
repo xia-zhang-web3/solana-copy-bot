@@ -546,6 +546,99 @@ fn load_from_env_rejects_invalid_ingestion_global_rpc_rps_limit_override() {
 }
 
 #[test]
+fn load_from_env_rejects_invalid_shadow_min_token_age_seconds_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS", "soon", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err(
+                        "invalid shadow min_token_age_seconds override must fail config load",
+                    )
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_shadow_min_liquidity_sol_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_LIQUIDITY_SOL", "high", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("invalid shadow min_liquidity_sol override must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_SHADOW_MIN_LIQUIDITY_SOL"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_risk_max_concurrent_positions_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS", "-1", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err(
+                        "invalid risk max_concurrent_positions override must fail config load",
+                    )
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_risk_shadow_soft_exposure_cap_sol_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL", "cap", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err(
+                        "invalid risk shadow soft exposure cap override must fail config load",
+                    )
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_risk_shadow_universe_breach_cycles_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES", "many", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err(
+                        "invalid risk shadow universe breach cycles override must fail config load",
+                    )
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
 fn load_from_path_rejects_invalid_ingestion_queue_overflow_policy() {
     with_temp_config_file(
         r#"
