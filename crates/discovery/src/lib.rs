@@ -435,8 +435,14 @@ impl DiscoveryService {
             .iter()
             .filter(|buy| buy.quality_resolved && buy.tradable)
             .count() as u32;
+        let resolved_buy_ratio = if buy_total > 0 {
+            quality_resolved_buys as f64 / buy_total as f64
+        } else {
+            0.0
+        };
         let tradable_ratio = if quality_resolved_buys > 0 {
-            tradable_buys as f64 / quality_resolved_buys as f64
+            // Deferred quality should penalize tradability without acting like a hard reject.
+            (tradable_buys as f64 / quality_resolved_buys as f64) * resolved_buy_ratio.sqrt()
         } else {
             0.0
         };
@@ -1228,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn tradable_ratio_ignores_deferred_quality_buys() {
+    fn tradable_ratio_soft_penalizes_deferred_quality_buys() {
         let now = DateTime::parse_from_rfc3339("2026-03-05T12:00:00Z")
             .expect("valid timestamp")
             .with_timezone(&Utc);
@@ -1274,13 +1280,67 @@ mod tests {
             &HashMap::new(),
         );
 
+        let expected = 0.5 * (2.0_f64 / 3.0).sqrt();
         assert!(
-            (snapshot.tradable_ratio - 0.5).abs() < 1e-9,
-            "deferred buys must be excluded from tradable_ratio denominator"
+            (snapshot.tradable_ratio - expected).abs() < 1e-9,
+            "deferred buys must apply a soft penalty to tradable_ratio"
         );
         assert!(
-            snapshot.eligible,
-            "one tradable and one rejected resolved buy should satisfy min_tradable_ratio=0.5 regardless of deferred buys"
+            !snapshot.eligible,
+            "deferred buys should no longer be neutral for min_tradable_ratio eligibility"
+        );
+    }
+
+    #[test]
+    fn tradable_ratio_blocks_wallet_when_most_buys_are_deferred() {
+        let now = DateTime::parse_from_rfc3339("2026-03-05T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let mut config = DiscoveryConfig::default();
+        config.min_trades = 10;
+        config.min_active_days = 1;
+        config.min_leader_notional_sol = 0.1;
+        config.min_buy_count = 10;
+        config.min_tradable_ratio = 0.5;
+        config.max_rug_ratio = 1.0;
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+
+        let mut acc = WalletAccumulator::default();
+        acc.first_seen = Some(now - Duration::minutes(20));
+        acc.last_seen = Some(now);
+        acc.trades = 10;
+        acc.max_buy_notional_sol = 1.0;
+        acc.active_days.insert(now.date_naive());
+        acc.buy_observations.push(BuyObservation {
+            token: "TokenResolved11111111111111111111111111111".to_string(),
+            ts: now - Duration::minutes(20),
+            tradable: true,
+            quality_resolved: true,
+        });
+        for idx in 0..9 {
+            acc.buy_observations.push(BuyObservation {
+                token: format!("TokenDeferred{idx:02}111111111111111111111111111"),
+                ts: now - Duration::minutes(19 - idx as i64),
+                tradable: false,
+                quality_resolved: false,
+            });
+        }
+
+        let snapshot = discovery.snapshot_from_accumulator(
+            "wallet_mostly_deferred".to_string(),
+            acc,
+            now,
+            &HashMap::new(),
+        );
+
+        assert!(
+            (snapshot.tradable_ratio - 0.1_f64.sqrt()).abs() < 1e-9,
+            "tradable_ratio should be penalized when most buys remain unresolved"
+        );
+        assert!(
+            !snapshot.eligible,
+            "wallet should not pass tradability gating when only a small minority of buys are resolved"
         );
     }
 
