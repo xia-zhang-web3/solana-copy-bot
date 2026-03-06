@@ -234,6 +234,7 @@ dependencies = [
  "copybot-shadow",
  "copybot-storage",
  "rusqlite",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
