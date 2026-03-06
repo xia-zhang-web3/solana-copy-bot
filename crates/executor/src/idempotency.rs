@@ -41,6 +41,12 @@ pub(crate) enum SubmitClaimOutcome {
     InFlight,
 }
 
+pub(crate) enum HmacNonceClaimOutcome {
+    Claimed,
+    Replay,
+    CapacityOverflow,
+}
+
 impl SubmitIdempotencyStore {
     pub(crate) fn open(path: &str) -> Result<Self> {
         let trimmed = path.trim();
@@ -76,6 +82,13 @@ impl SubmitIdempotencyStore {
             );
             CREATE INDEX IF NOT EXISTS idx_executor_submit_idempotency_claims_claimed_at
                 ON executor_submit_idempotency_claims(claimed_at_unix);
+            CREATE TABLE IF NOT EXISTS executor_hmac_nonce_replay (
+                nonce_key TEXT PRIMARY KEY,
+                expires_at_unix INTEGER NOT NULL,
+                created_at_unix INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_executor_hmac_nonce_replay_expires_at
+                ON executor_hmac_nonce_replay(expires_at_unix);
             CREATE TABLE IF NOT EXISTS executor_runtime_meta (
                 meta_key TEXT PRIMARY KEY,
                 value_int INTEGER NOT NULL,
@@ -213,6 +226,75 @@ impl SubmitIdempotencyStore {
             }
         }
         Ok(SubmitClaimOutcome::InFlight)
+    }
+
+    pub(crate) fn claim_hmac_nonce(
+        &self,
+        nonce_key: &str,
+        now_unix: i64,
+        expires_at_unix: i64,
+        max_entries: usize,
+    ) -> Result<HmacNonceClaimOutcome> {
+        let key = nonce_key.trim();
+        if key.is_empty() {
+            return Err(anyhow::anyhow!("nonce_key must be non-empty"));
+        }
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("idempotency db mutex poisoned"))?;
+        conn.execute(
+            "DELETE FROM executor_hmac_nonce_replay WHERE expires_at_unix < ?1",
+            params![now_unix],
+        )
+        .context("hmac nonce cleanup failed")?;
+
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT expires_at_unix
+                 FROM executor_hmac_nonce_replay
+                 WHERE nonce_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("hmac nonce lookup failed")?;
+        if existing.is_some() {
+            return Ok(HmacNonceClaimOutcome::Replay);
+        }
+
+        let max_entries_i64 = i64::try_from(max_entries)
+            .map_err(|_| anyhow::anyhow!("hmac nonce max_entries exceeds i64 range"))?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM executor_hmac_nonce_replay",
+                [],
+                |row| row.get(0),
+            )
+            .context("hmac nonce count query failed")?;
+        if count >= max_entries_i64 {
+            return Ok(HmacNonceClaimOutcome::CapacityOverflow);
+        }
+
+        let inserted = conn
+            .execute(
+                r#"
+                INSERT INTO executor_hmac_nonce_replay (
+                    nonce_key,
+                    expires_at_unix,
+                    created_at_unix
+                ) VALUES (?1, ?2, ?3)
+                ON CONFLICT(nonce_key) DO NOTHING
+                "#,
+                params![key, expires_at_unix, now_unix],
+            )
+            .context("hmac nonce insert failed")?;
+        if inserted > 0 {
+            Ok(HmacNonceClaimOutcome::Claimed)
+        } else {
+            Ok(HmacNonceClaimOutcome::Replay)
+        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -597,9 +679,10 @@ mod tests {
     use super::{
         claim_cleanup_interval_sec, clamp_cleanup_marker_to_now, response_cleanup_interval_sec,
         should_run_claim_cleanup, store_global_claim_cleanup_last_unix,
-        store_global_response_cleanup_last_unix, SubmitClaimOutcome, SubmitIdempotencyStore,
-        DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE, DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN,
-        META_KEY_CLAIM_CLEANUP_LAST_UNIX, META_KEY_RESPONSE_CLEANUP_LAST_UNIX,
+        store_global_response_cleanup_last_unix, HmacNonceClaimOutcome, SubmitClaimOutcome,
+        SubmitIdempotencyStore, DEFAULT_RESPONSE_CLEANUP_DELETE_BATCH_SIZE,
+        DEFAULT_RESPONSE_CLEANUP_MAX_BATCHES_PER_RUN, META_KEY_CLAIM_CLEANUP_LAST_UNIX,
+        META_KEY_RESPONSE_CLEANUP_LAST_UNIX,
     };
     use chrono::{Duration, Utc};
     use rusqlite::{params, OptionalExtension};
@@ -643,6 +726,16 @@ mod tests {
             |row| row.get(0),
         )
         .expect("query response row count")
+    }
+
+    fn hmac_nonce_row_count(store: &SubmitIdempotencyStore) -> i64 {
+        let conn = store.conn.lock().expect("lock conn");
+        conn.query_row(
+            "SELECT COUNT(1) FROM executor_hmac_nonce_replay",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query hmac nonce row count")
     }
 
     fn response_cleanup_marker_value(store: &SubmitIdempotencyStore) -> Option<i64> {
@@ -711,6 +804,48 @@ mod tests {
             .expect("load response")
             .expect("cached response");
         assert_eq!(loaded, response);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn hmac_nonce_claim_persists_across_store_reopen() {
+        let db_path = temp_db_path();
+        let db_path_str = db_path.to_string_lossy().to_string();
+
+        {
+            let store = SubmitIdempotencyStore::open(db_path_str.as_str()).expect("open store 1");
+            let outcome = store
+                .claim_hmac_nonce("kid-1:nonce-1", 1_000, 1_030, 100_000)
+                .expect("claim nonce");
+            assert!(matches!(outcome, HmacNonceClaimOutcome::Claimed));
+            assert_eq!(hmac_nonce_row_count(&store), 1);
+        }
+
+        let reopened = SubmitIdempotencyStore::open(db_path_str.as_str()).expect("open store 2");
+        let outcome = reopened
+            .claim_hmac_nonce("kid-1:nonce-1", 1_000, 1_030, 100_000)
+            .expect("replay lookup");
+        assert!(matches!(outcome, HmacNonceClaimOutcome::Replay));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn hmac_nonce_claim_evicts_expired_entries_before_capacity_check() {
+        let db_path = temp_db_path();
+        let store =
+            SubmitIdempotencyStore::open(db_path.to_string_lossy().as_ref()).expect("open store");
+
+        let first = store
+            .claim_hmac_nonce("kid-expire:nonce-1", 1_000, 1_001, 1)
+            .expect("first claim");
+        assert!(matches!(first, HmacNonceClaimOutcome::Claimed));
+        let second = store
+            .claim_hmac_nonce("kid-expire:nonce-2", 1_003, 1_004, 1)
+            .expect("second claim after expiry");
+        assert!(matches!(second, HmacNonceClaimOutcome::Claimed));
+        assert_eq!(hmac_nonce_row_count(&store), 1);
+
         let _ = std::fs::remove_file(db_path);
     }
 
