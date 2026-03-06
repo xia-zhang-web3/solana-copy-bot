@@ -109,6 +109,10 @@ Expected key values:
 1. `SOLANA_COPY_BOT_CONFIG=/etc/solana-copy-bot/live.server.toml`
 2. `SOLANA_COPY_BOT_EXECUTION_ENABLED=false`
 3. `COPYBOT_APP_LOG_FILTER=info`
+4. Optional alert delivery:
+   1. `COPYBOT_APP_ALERT_WEBHOOK_URL=https://alerts.example.internal/copybot`
+   2. `COPYBOT_APP_ALERT_TIMEOUT_MS=3000`
+   3. `COPYBOT_APP_ALERT_TEST_ON_STARTUP=false` (set to `true` once to verify delivery, then revert)
 
 ## 5) Secret files
 

@@ -39,6 +39,7 @@ mod system_events;
 
 pub use execution_orders::{MarkOrderDroppedOutcome, ScheduleOrderRetryOutcome};
 pub use sqlite_retry::is_retryable_sqlite_anyhow_error;
+pub use system_events::RiskEventRow;
 
 pub struct SqliteStore {
     conn: Connection,

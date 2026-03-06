@@ -27,6 +27,7 @@ use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod alerts;
 mod config_contract;
 mod execution_pause_helpers;
 mod execution_runtime_helpers;
@@ -42,6 +43,7 @@ mod telemetry;
 use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
 use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
+use crate::alerts::AlertDispatcher;
 use crate::observed_swap_writer::ObservedSwapWriter;
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
@@ -111,6 +113,17 @@ async fn main() -> Result<()> {
     store
         .record_heartbeat("copybot-app", "startup")
         .context("failed to write startup heartbeat")?;
+    let alert_dispatcher =
+        AlertDispatcher::from_env().context("failed to initialize alert delivery")?;
+    if let Some(dispatcher) = &alert_dispatcher {
+        if dispatcher.test_on_startup() {
+            dispatcher
+                .send_startup_test(&config.system.env)
+                .await
+                .context("failed sending startup alert delivery test")?;
+            info!("startup alert delivery test sent");
+        }
+    }
 
     let ingestion = IngestionService::build(&config.ingestion)
         .context("failed to initialize ingestion service")?;
@@ -160,6 +173,7 @@ async fn main() -> Result<()> {
         config.shadow.causal_holdback_enabled,
         config.shadow.causal_holdback_ms,
         config.system.pause_new_trades_on_outage,
+        alert_dispatcher,
     )
     .await
 }
@@ -1386,6 +1400,7 @@ async fn run_app_loop(
     shadow_causal_holdback_enabled: bool,
     shadow_causal_holdback_ms: u64,
     pause_new_trades_on_outage: bool,
+    alert_dispatcher: Option<AlertDispatcher>,
 ) -> Result<()> {
     let execution_runtime = Arc::new(execution_runtime);
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
@@ -1628,6 +1643,17 @@ async fn run_app_loop(
             _ = interval.tick() => {
                 if let Err(error) = store.record_heartbeat("copybot-app", "alive") {
                     warn!(error = %error, "heartbeat write failed");
+                }
+                if let Some(dispatcher) = &alert_dispatcher {
+                    match dispatcher.deliver_pending(&store).await {
+                        Ok(delivered) if delivered > 0 => {
+                            info!(delivered, "delivered pending alert webhooks");
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            warn!(error = %error, "alert delivery poll failed");
+                        }
+                    }
                 }
                 let sqlite_contention = sqlite_contention_snapshot();
                 info!(
