@@ -480,6 +480,7 @@ pub struct DiscoveryConfig {
     pub thin_market_min_unique_traders: u32,
     pub max_window_swaps_in_memory: usize,
     pub max_fetch_swaps_per_cycle: usize,
+    pub observed_swaps_retention_days: u32,
 }
 
 impl Default for DiscoveryConfig {
@@ -490,7 +491,7 @@ impl Default for DiscoveryConfig {
             follow_top_n: 20,
             min_leader_notional_sol: 0.5,
             helius_http_url: String::new(),
-            refresh_seconds: 300,
+            refresh_seconds: 600,
             min_trades: 8,
             min_active_days: 3,
             min_score: 0.55,
@@ -501,8 +502,9 @@ impl Default for DiscoveryConfig {
             rug_lookahead_seconds: 30 * 60,
             thin_market_min_volume_sol: 3.0,
             thin_market_min_unique_traders: 10,
-            max_window_swaps_in_memory: 120_000,
-            max_fetch_swaps_per_cycle: 120_000,
+            max_window_swaps_in_memory: 60_000,
+            max_fetch_swaps_per_cycle: 20_000,
+            observed_swaps_retention_days: 45,
         }
     }
 }
@@ -540,6 +542,10 @@ impl fmt::Debug for DiscoveryConfig {
                 &self.max_window_swaps_in_memory,
             )
             .field("max_fetch_swaps_per_cycle", &self.max_fetch_swaps_per_cycle)
+            .field(
+                "observed_swaps_retention_days",
+                &self.observed_swaps_retention_days,
+            )
             .finish()
     }
 }

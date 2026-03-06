@@ -89,6 +89,17 @@ impl SqliteStore {
         .context("failed to insert observed swap batch")
     }
 
+    pub fn delete_observed_swaps_before(&self, cutoff: DateTime<Utc>) -> Result<usize> {
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "DELETE FROM observed_swaps
+                 WHERE ts < ?1",
+                params![cutoff.to_rfc3339()],
+            )
+        })
+        .context("failed to delete observed swap retention slice")
+    }
+
     pub fn load_observed_swaps_since(&self, since: DateTime<Utc>) -> Result<Vec<SwapEvent>> {
         let mut stmt = self
             .conn

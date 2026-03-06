@@ -27,6 +27,15 @@ fn shadow_defaults_use_conservative_min_holders_floor() {
 }
 
 #[test]
+fn discovery_defaults_use_storage_mitigation_limits() {
+    let discovery = DiscoveryConfig::default();
+    assert_eq!(discovery.refresh_seconds, 600);
+    assert_eq!(discovery.max_window_swaps_in_memory, 60_000);
+    assert_eq!(discovery.max_fetch_swaps_per_cycle, 20_000);
+    assert_eq!(discovery.observed_swaps_retention_days, 45);
+}
+
+#[test]
 fn load_from_env_rejects_duplicate_normalized_route_max_slippage_keys() {
     assert_duplicate_normalized_route_env_rejected(
         "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_MAX_SLIPPAGE_BPS",
@@ -229,6 +238,99 @@ fn load_from_env_allows_shadow_min_holders_zero_to_disable_holder_gate() {
 }
 
 #[test]
+fn load_from_env_allows_discovery_runtime_storage_mitigation_overrides() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS", "900", || {
+                with_env_var(
+                    "SOLANA_COPY_BOT_DISCOVERY_RUG_LOOKAHEAD_SECONDS",
+                    "600",
+                    || {
+                        with_env_var(
+                            "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
+                            "50000",
+                            || {
+                                with_env_var(
+                                    "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
+                                    "15000",
+                                    || {
+                                        with_env_var(
+                                        "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
+                                        "60",
+                                        || {
+                                            let (cfg, _) = load_from_env_or_default(config_path)
+                                                .expect("load config with discovery mitigation overrides");
+                                            assert_eq!(cfg.discovery.refresh_seconds, 900);
+                                            assert_eq!(cfg.discovery.rug_lookahead_seconds, 600);
+                                            assert_eq!(cfg.discovery.max_window_swaps_in_memory, 50_000);
+                                            assert_eq!(cfg.discovery.max_fetch_swaps_per_cycle, 15_000);
+                                            assert_eq!(cfg.discovery.observed_swaps_retention_days, 60);
+                                        },
+                                    );
+                                    },
+                                );
+                            },
+                        );
+                    },
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_discovery_retention_shorter_than_scoring_window() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
+                "7",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("retention shorter than scoring window must fail config load")
+                        .to_string();
+                    assert!(
+                    err.contains(
+                        "discovery.observed_swaps_retention_days (7) must be >= discovery.scoring_window_days (30)"
+                    ),
+                    "unexpected error: {err}"
+                );
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_discovery_fetch_cap_above_window_cap() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
+                "10000",
+                || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
+                        "10001",
+                        || {
+                            let err = load_from_env_or_default(config_path)
+                                .expect_err("fetch cap above window cap must fail config load")
+                                .to_string();
+                            assert!(
+                            err.contains(
+                                "discovery.max_fetch_swaps_per_cycle (10001) must be <= discovery.max_window_swaps_in_memory (10000)"
+                            ),
+                            "unexpected error: {err}"
+                        );
+                        },
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
 fn load_from_env_applies_discovery_window_memory_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
@@ -238,12 +340,12 @@ fn load_from_env_applies_discovery_window_memory_overrides() {
                 || {
                     with_env_var(
                         "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
-                        "333333",
+                        "111111",
                         || {
                             let (cfg, _) = load_from_env_or_default(config_path)
                                 .expect("load config with discovery memory env overrides");
                             assert_eq!(cfg.discovery.max_window_swaps_in_memory, 222_222);
-                            assert_eq!(cfg.discovery.max_fetch_swaps_per_cycle, 333_333);
+                            assert_eq!(cfg.discovery.max_fetch_swaps_per_cycle, 111_111);
                         },
                     );
                 },
