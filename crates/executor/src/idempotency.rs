@@ -13,6 +13,8 @@ use std::{
 use tokio::task;
 use tracing::debug;
 
+use crate::submit_claim_guard::SubmitClaimGuard;
+
 #[cfg(test)]
 use std::collections::HashSet;
 #[cfg(test)]
@@ -38,6 +40,12 @@ static FAIL_NEXT_STORE_SUBMIT_RESPONSE_KEYS: OnceLock<Mutex<HashSet<String>>> = 
 
 pub(crate) enum SubmitClaimOutcome {
     Claimed,
+    Cached(Value),
+    InFlight,
+}
+
+pub(crate) enum SubmitClaimGuardOutcome {
+    Claimed(SubmitClaimGuard),
     Cached(Value),
     InFlight,
 }
@@ -240,6 +248,7 @@ impl SubmitIdempotencyStore {
         Ok(SubmitClaimOutcome::InFlight)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn load_cached_or_claim_submit_async(
         self: &std::sync::Arc<Self>,
         client_order_id: &str,
@@ -255,6 +264,37 @@ impl SubmitIdempotencyStore {
                 request_id.as_str(),
                 claim_ttl_sec,
             )
+        })
+        .await
+        .context("idempotency blocking task join failed")?
+    }
+
+    pub(crate) async fn load_cached_or_claim_submit_guard_async(
+        self: &std::sync::Arc<Self>,
+        client_order_id: &str,
+        request_id: &str,
+        claim_ttl_sec: u64,
+    ) -> Result<SubmitClaimGuardOutcome> {
+        let store = std::sync::Arc::clone(self);
+        let client_order_id = client_order_id.to_string();
+        let request_id = request_id.to_string();
+        task::spawn_blocking(move || {
+            let claim_outcome = store.load_cached_or_claim_submit(
+                client_order_id.as_str(),
+                request_id.as_str(),
+                claim_ttl_sec,
+            )?;
+            Ok(match claim_outcome {
+                SubmitClaimOutcome::Claimed => {
+                    SubmitClaimGuardOutcome::Claimed(SubmitClaimGuard::new(
+                        store.clone(),
+                        client_order_id.as_str(),
+                        request_id.as_str(),
+                    ))
+                }
+                SubmitClaimOutcome::Cached(cached) => SubmitClaimGuardOutcome::Cached(cached),
+                SubmitClaimOutcome::InFlight => SubmitClaimGuardOutcome::InFlight,
+            })
         })
         .await
         .context("idempotency blocking task join failed")?
@@ -1477,6 +1517,33 @@ mod tests {
             .expect("claim task join")
             .expect("claim task result");
         assert!(matches!(outcome, SubmitClaimOutcome::Claimed));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn load_cached_or_claim_submit_guard_async_releases_claim_if_awaiter_is_cancelled() {
+        let store = Arc::new(SubmitIdempotencyStore::open(":memory:").expect("open in-memory store"));
+        let held_lock = store.conn.lock().expect("hold idempotency lock");
+
+        let worker_store = store.clone();
+        let claim_task = tokio::spawn(async move {
+            worker_store
+                .load_cached_or_claim_submit_guard_async("order-guard-cancel-1", "req-guard-cancel-1", 30)
+                .await
+        });
+
+        tokio::time::sleep(StdDuration::from_millis(10)).await;
+        claim_task.abort();
+        drop(held_lock);
+
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+
+        let retry_outcome = store
+            .load_cached_or_claim_submit("order-guard-cancel-1", "req-guard-cancel-2", 30)
+            .expect("retry after cancelled awaiter");
+        assert!(
+            matches!(retry_outcome, SubmitClaimOutcome::Claimed),
+            "cancelled awaiter must not leave stale submit claim"
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 use crate::backend_mode::ExecutorBackendMode;
 use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
 use crate::fee_hints::{parse_response_fee_hint_fields, resolve_fee_hints, FeeHintInputs};
-use crate::idempotency::SubmitClaimOutcome;
+use crate::idempotency::SubmitClaimGuardOutcome;
 use crate::reject_mapping::{
     map_common_contract_validation_error_to_reject, map_compute_budget_validation_error_to_reject,
     map_fee_hint_error_to_reject, map_fee_hint_field_parse_error_to_reject,
@@ -147,14 +147,14 @@ pub(crate) async fn handle_submit(
     let submit_deadline = SubmitDeadline::new(state.config.submit_total_budget_ms);
     let mut submit_claim_guard = match state
         .idempotency
-        .load_cached_or_claim_submit_async(
+        .load_cached_or_claim_submit_guard_async(
             request.client_order_id.as_str(),
             request.request_id.as_str(),
             state.config.idempotency_claim_ttl_sec,
         )
         .await
     {
-        Ok(SubmitClaimOutcome::Cached(cached_response)) => {
+        Ok(SubmitClaimGuardOutcome::Cached(cached_response)) => {
             debug!(
                 route = %route,
                 signal_id = %request.signal_id,
@@ -163,12 +163,8 @@ pub(crate) async fn handle_submit(
             );
             return Ok(cached_response);
         }
-        Ok(SubmitClaimOutcome::Claimed) => SubmitClaimGuard::new(
-            state.idempotency.clone(),
-            request.client_order_id.as_str(),
-            request.request_id.as_str(),
-        ),
-        Ok(SubmitClaimOutcome::InFlight) => {
+        Ok(SubmitClaimGuardOutcome::Claimed(submit_claim_guard)) => submit_claim_guard,
+        Ok(SubmitClaimGuardOutcome::InFlight) => {
             return Err(Reject::retryable(
                 "submit_in_flight",
                 format!(
