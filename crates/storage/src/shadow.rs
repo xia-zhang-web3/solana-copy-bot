@@ -1,7 +1,7 @@
 use crate::sqlite_retry::is_retryable_sqlite_error;
 use crate::{
-    note_sqlite_busy_error, note_sqlite_write_retry, ShadowCloseOutcome, ShadowLotRow, SqliteStore,
-    SQLITE_WRITE_MAX_RETRIES, SQLITE_WRITE_RETRY_BACKOFF_MS,
+    SQLITE_WRITE_MAX_RETRIES, SQLITE_WRITE_RETRY_BACKOFF_MS, ShadowCloseOutcome, ShadowLotRow,
+    SqliteStore, note_sqlite_busy_error, note_sqlite_write_retry,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -9,7 +9,7 @@ use rusqlite::params;
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
 
-const SHADOW_LOT_OPEN_EPS: f64 = 1e-12;
+pub(crate) const SHADOW_LOT_OPEN_EPS: f64 = 1e-12;
 
 impl SqliteStore {
     pub fn insert_shadow_lot(

@@ -1,5 +1,5 @@
-use super::SqliteStore;
-use anyhow::{anyhow, Context, Result};
+use super::{SqliteStore, shadow::SHADOW_LOT_OPEN_EPS};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
@@ -7,7 +7,11 @@ impl SqliteStore {
     pub fn shadow_open_lots_count(&self) -> Result<u64> {
         let value: i64 = self
             .conn
-            .query_row("SELECT COUNT(*) FROM shadow_lots", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM shadow_lots WHERE qty > ?1",
+                params![SHADOW_LOT_OPEN_EPS],
+                |row| row.get(0),
+            )
             .context("failed querying shadow open lots count")?;
         Ok(value.max(0) as u64)
     }
@@ -16,8 +20,10 @@ impl SqliteStore {
         let notional: f64 = self
             .conn
             .query_row(
-                "SELECT COALESCE(SUM(cost_sol), 0.0) FROM shadow_lots",
-                [],
+                "SELECT COALESCE(SUM(cost_sol), 0.0)
+                 FROM shadow_lots
+                 WHERE qty > ?1",
+                params![SHADOW_LOT_OPEN_EPS],
                 |row| row.get(0),
             )
             .context("failed querying shadow open notional")?;

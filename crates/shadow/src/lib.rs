@@ -575,6 +575,11 @@ mod tests {
             !store.has_shadow_lots("leader-wallet", "TokenMint")?,
             "dust lot should not count as open inventory"
         );
+        let dust_snapshot = service.snapshot_24h(&store, sell_ts - Duration::seconds(1))?;
+        assert_eq!(
+            dust_snapshot.open_lots, 0,
+            "dust lot should not appear in shadow snapshot open lots"
+        );
 
         follow.active.clear();
         follow

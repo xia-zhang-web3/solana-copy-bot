@@ -3429,6 +3429,30 @@ mod app_tests {
     }
 
     #[test]
+    fn risk_guard_hard_exposure_ignores_dust_shadow_lots() -> Result<()> {
+        let (store, db_path) = make_test_store("hard-exposure-dust")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_hard_exposure_cap_sol = 1.0;
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let opened_ts = DateTime::parse_from_rfc3339("2026-02-17T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts)?;
+        store.update_shadow_lot(lot_id, 1e-13, 1.2)?;
+        let now = Utc::now();
+
+        let decision = guard.can_open_buy(&store, now, true);
+        match decision {
+            BuyRiskDecision::Allow => {}
+            other => panic!("expected dust lot to be ignored by hard exposure cap, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn stale_lot_cleanup_ignores_micro_swap_outlier_price() -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-cleanup")?;
         let now = Utc::now();

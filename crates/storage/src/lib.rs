@@ -1,16 +1,15 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
-    CopySignalRow, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
-    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, TokenQualityCacheRow,
-    TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
-    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+    CopySignalRow, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS, ExecutionConfirmStateSnapshot,
+    ExecutionOrderRow, FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome,
+    TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
 };
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
@@ -835,6 +834,15 @@ mod tests {
             !store.has_shadow_lots("wallet", "token")?,
             "dust lots should not count as open inventory"
         );
+        assert_eq!(
+            store.shadow_open_lots_count()?,
+            0,
+            "dust lots should not count toward open lot metrics"
+        );
+        assert!(
+            store.shadow_open_notional_sol()?.abs() < 1e-12,
+            "dust lots should not contribute to open notional metrics"
+        );
         assert!(
             !store
                 .list_shadow_open_pairs()?
@@ -1433,9 +1441,11 @@ mod tests {
         let error = store
             .mark_order_simulated("ord-sim-regress-1", "ok", Some("late simulation"))
             .expect_err("submitted order must not regress to execution_simulated");
-        assert!(error
-            .to_string()
-            .contains("unexpected status=execution_submitted"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected status=execution_submitted")
+        );
         let order = store
             .execution_order_by_client_order_id("cb_sim_regress_a1")?
             .context("expected order row after rejected regression")?;
@@ -1513,9 +1523,11 @@ mod tests {
                 None,
             )
             .expect_err("confirmed order must not regress to execution_submitted");
-        assert!(error
-            .to_string()
-            .contains("unexpected status=execution_confirmed"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected status=execution_confirmed")
+        );
         let order = store
             .execution_order_by_client_order_id("cb_submit_regress_a1")?
             .context("expected order row after rejected regression")?;
@@ -1723,9 +1735,11 @@ mod tests {
                 Some("should not overwrite confirmed"),
             )
             .expect_err("confirmed order must not regress to execution_failed");
-        assert!(error
-            .to_string()
-            .contains("unexpected status=execution_confirmed"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected status=execution_confirmed")
+        );
         let order = store
             .execution_order_by_client_order_id("cb_failed_regress_a1")?
             .context("expected order row after rejected failed regression")?;
