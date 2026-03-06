@@ -111,6 +111,17 @@ impl IngestionSource {
     }
 }
 
+pub(super) fn redacted_url_for_log(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else if let Some((prefix, _)) = trimmed.split_once('?') {
+        format!("{prefix}?<redacted>")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 pub struct MockSource {
     interval: Interval,
     sequence: u64,
@@ -280,9 +291,10 @@ impl HeliusWsSource {
 
         let mut http_urls = Vec::new();
         for candidate in candidates {
+            let redacted_candidate = redacted_url_for_log(&candidate);
             if !(candidate.starts_with("http://") || candidate.starts_with("https://")) {
                 warn!(
-                    url = %candidate,
+                    url = %redacted_candidate,
                     "dropping ingestion HTTP URL without explicit http(s):// prefix"
                 );
                 continue;
@@ -292,7 +304,7 @@ impl HeliusWsSource {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     warn!(
-                        url = %candidate,
+                        url = %redacted_candidate,
                         error = %error,
                         "dropping invalid ingestion HTTP URL"
                     );
@@ -303,7 +315,7 @@ impl HeliusWsSource {
             let scheme = parsed.scheme();
             if scheme != "http" && scheme != "https" {
                 warn!(
-                    url = %candidate,
+                    url = %redacted_candidate,
                     scheme = %scheme,
                     "dropping ingestion HTTP URL with unsupported scheme"
                 );
@@ -311,7 +323,7 @@ impl HeliusWsSource {
             }
             if parsed.host_str().is_none() {
                 warn!(
-                    url = %candidate,
+                    url = %redacted_candidate,
                     "dropping ingestion HTTP URL without host"
                 );
                 continue;
@@ -704,6 +716,27 @@ mod tests {
             http_client: Client::new(),
             telemetry,
         })
+    }
+
+    #[test]
+    fn redacted_url_for_log_redacts_query_string() {
+        assert_eq!(
+            redacted_url_for_log("wss://mainnet.helius-rpc.com/?api-key=super-secret"),
+            "wss://mainnet.helius-rpc.com/?<redacted>"
+        );
+        assert_eq!(
+            redacted_url_for_log("https://rpc.example.com/v1?token=abc&x=1"),
+            "https://rpc.example.com/v1?<redacted>"
+        );
+    }
+
+    #[test]
+    fn redacted_url_for_log_preserves_non_query_url() {
+        assert_eq!(
+            redacted_url_for_log("https://rpc.example.com/v1"),
+            "https://rpc.example.com/v1"
+        );
+        assert_eq!(redacted_url_for_log(""), "");
     }
 
     #[test]

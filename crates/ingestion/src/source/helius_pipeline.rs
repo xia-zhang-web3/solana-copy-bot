@@ -17,9 +17,9 @@ use super::core::{
     prune_seen_signatures, sleep_with_backoff,
 };
 use super::{
-    FetchedObservation, HeliusEndpoint, HeliusRuntimeConfig, HeliusWsSource, HeliusWsStream,
-    LogsNotification, NotificationQueue, QueueOverflowPolicy, QueuePushResult, RawSwapObservation,
-    SeenSignatureEntry, WS_IDLE_TIMEOUT_SECS,
+    redacted_url_for_log, FetchedObservation, HeliusEndpoint, HeliusRuntimeConfig, HeliusWsSource,
+    HeliusWsStream, LogsNotification, NotificationQueue, QueueOverflowPolicy, QueuePushResult,
+    RawSwapObservation, SeenSignatureEntry, WS_IDLE_TIMEOUT_SECS,
 };
 
 pub(super) async fn ws_reader_loop(
@@ -283,9 +283,10 @@ async fn connect_ws_stream(
     runtime_config: &HeliusRuntimeConfig,
     request_id: &mut u64,
 ) -> Result<HeliusWsStream> {
+    let redacted_ws_url = redacted_url_for_log(&runtime_config.ws_url);
     let (mut ws, _response) = connect_async(&runtime_config.ws_url)
         .await
-        .with_context(|| format!("failed connecting to {}", runtime_config.ws_url))?;
+        .with_context(|| format!("failed connecting to {redacted_ws_url}"))?;
 
     for program_id in &runtime_config.interested_program_ids {
         *request_id = request_id.saturating_add(1);
@@ -304,7 +305,7 @@ async fn connect_ws_stream(
     }
 
     info!(
-        ws_url = %runtime_config.ws_url,
+        ws_url = %redacted_ws_url,
         http_endpoints = runtime_config.http_endpoints.len(),
         programs = runtime_config.interested_program_ids.len(),
         "helius ws connected and subscriptions sent"
@@ -443,6 +444,7 @@ async fn fetch_swap_from_signature(
     }
 
     let http_url = endpoint.url.as_str();
+    let redacted_http_url = redacted_url_for_log(http_url);
     let request = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -465,7 +467,9 @@ async fn fetch_swap_from_signature(
         .await
         .map_err(|error| {
             FetchAttemptError::retryable(
-                anyhow!("failed getTransaction POST for {signature} via {http_url}: {error}"),
+                anyhow!(
+                    "failed getTransaction POST for {signature} via {redacted_http_url}: {error}"
+                ),
                 None,
             )
         })?;
@@ -486,19 +490,21 @@ async fn fetch_swap_from_signature(
     }
     if status.as_u16() == 429 || status.is_server_error() {
         return Err(FetchAttemptError::retryable(
-            anyhow!("retryable getTransaction status {status} for {signature} via {http_url}"),
+            anyhow!(
+                "retryable getTransaction status {status} for {signature} via {redacted_http_url}"
+            ),
             retry_after,
         ));
     }
     if !status.is_success() {
         return Err(FetchAttemptError::terminal(anyhow!(
-            "non-success getTransaction status {status} for {signature} via {http_url}"
+            "non-success getTransaction status {status} for {signature} via {redacted_http_url}"
         )));
     }
 
     let response: Value = response.json().await.map_err(|error| {
         FetchAttemptError::terminal(anyhow!(
-            "failed parsing getTransaction json for {signature} via {http_url}: {error}"
+            "failed parsing getTransaction json for {signature} via {redacted_http_url}: {error}"
         ))
     })?;
 
