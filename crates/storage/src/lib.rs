@@ -2118,6 +2118,66 @@ mod tests {
     }
 
     #[test]
+    fn persist_discovery_cycle_skips_metric_retention_when_metric_batch_is_empty() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("discovery-wallet-metrics-empty-batch.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let wallet_id = "wallet-empty-batch".to_string();
+        let window_start = DateTime::parse_from_rfc3339("2026-02-20T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let wallets = vec![WalletUpsertRow {
+            wallet_id: wallet_id.clone(),
+            first_seen: window_start,
+            last_seen: window_start,
+            status: "active".to_string(),
+        }];
+        let metrics = vec![WalletMetricRow {
+            wallet_id: wallet_id.clone(),
+            window_start,
+            pnl: 0.0,
+            win_rate: 0.0,
+            trades: 1,
+            closed_trades: 1,
+            hold_median_seconds: 0,
+            score: 1.0,
+            buy_total: 1,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        }];
+        let desired = vec![wallet_id.clone()];
+        store.persist_discovery_cycle(
+            &wallets,
+            &metrics,
+            &desired,
+            window_start,
+            "seed-metrics",
+        )?;
+        let latest_before = store
+            .latest_wallet_metrics_window_start()?
+            .expect("expected wallet_metrics window after initial persist");
+
+        let empty_follow_delta = store.persist_discovery_cycle(
+            &wallets,
+            &[],
+            &desired,
+            window_start + Duration::minutes(10),
+            "skip-metrics",
+        )?;
+        assert_eq!(empty_follow_delta.activated, 0);
+        assert_eq!(empty_follow_delta.deactivated, 0);
+
+        let latest_after = store
+            .latest_wallet_metrics_window_start()?
+            .expect("wallet_metrics window should survive empty batch");
+        assert_eq!(latest_after, latest_before);
+        Ok(())
+    }
+
+    #[test]
     fn wallet_metrics_window_start_index_migration_is_present() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("wallet-metrics-window-start-index.db");

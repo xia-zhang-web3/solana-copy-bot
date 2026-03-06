@@ -476,6 +476,7 @@ pub struct DiscoveryConfig {
     pub min_tradable_ratio: f64,
     pub max_rug_ratio: f64,
     pub rug_lookahead_seconds: u64,
+    pub metric_snapshot_interval_seconds: u64,
     pub thin_market_min_volume_sol: f64,
     pub thin_market_min_unique_traders: u32,
     pub max_window_swaps_in_memory: usize,
@@ -500,6 +501,7 @@ impl Default for DiscoveryConfig {
             min_tradable_ratio: 0.25,
             max_rug_ratio: 0.60,
             rug_lookahead_seconds: 30 * 60,
+            metric_snapshot_interval_seconds: 30 * 60,
             thin_market_min_volume_sol: 3.0,
             thin_market_min_unique_traders: 10,
             max_window_swaps_in_memory: 60_000,
@@ -529,6 +531,10 @@ impl fmt::Debug for DiscoveryConfig {
             .field("min_tradable_ratio", &self.min_tradable_ratio)
             .field("max_rug_ratio", &self.max_rug_ratio)
             .field("rug_lookahead_seconds", &self.rug_lookahead_seconds)
+            .field(
+                "metric_snapshot_interval_seconds",
+                &self.metric_snapshot_interval_seconds,
+            )
             .field(
                 "thin_market_min_volume_sol",
                 &self.thin_market_min_volume_sol,

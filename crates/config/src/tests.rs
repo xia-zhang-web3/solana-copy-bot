@@ -30,6 +30,7 @@ fn shadow_defaults_use_conservative_min_holders_floor() {
 fn discovery_defaults_use_storage_mitigation_limits() {
     let discovery = DiscoveryConfig::default();
     assert_eq!(discovery.refresh_seconds, 600);
+    assert_eq!(discovery.metric_snapshot_interval_seconds, 1_800);
     assert_eq!(discovery.max_window_swaps_in_memory, 60_000);
     assert_eq!(discovery.max_fetch_swaps_per_cycle, 20_000);
     assert_eq!(discovery.observed_swaps_retention_days, 45);
@@ -247,14 +248,18 @@ fn load_from_env_allows_discovery_runtime_storage_mitigation_overrides() {
                     "600",
                     || {
                         with_env_var(
-                            "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
-                            "50000",
+                            "SOLANA_COPY_BOT_DISCOVERY_METRIC_SNAPSHOT_INTERVAL_SECONDS",
+                            "2700",
                             || {
                                 with_env_var(
-                                    "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
-                                    "15000",
+                                    "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
+                                    "50000",
                                     || {
                                         with_env_var(
+                                            "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
+                                            "15000",
+                                            || {
+                                                with_env_var(
                                         "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
                                         "60",
                                         || {
@@ -262,11 +267,14 @@ fn load_from_env_allows_discovery_runtime_storage_mitigation_overrides() {
                                                 .expect("load config with discovery mitigation overrides");
                                             assert_eq!(cfg.discovery.refresh_seconds, 900);
                                             assert_eq!(cfg.discovery.rug_lookahead_seconds, 600);
+                                            assert_eq!(cfg.discovery.metric_snapshot_interval_seconds, 2_700);
                                             assert_eq!(cfg.discovery.max_window_swaps_in_memory, 50_000);
                                             assert_eq!(cfg.discovery.max_fetch_swaps_per_cycle, 15_000);
                                             assert_eq!(cfg.discovery.observed_swaps_retention_days, 60);
                                         },
                                     );
+                                            },
+                                        );
                                     },
                                 );
                             },

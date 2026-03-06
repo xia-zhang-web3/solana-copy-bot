@@ -221,6 +221,13 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.discovery.rug_lookahead_seconds = rug_lookahead_seconds;
     }
+    if let Some(metric_snapshot_interval_seconds) =
+        env::var("SOLANA_COPY_BOT_DISCOVERY_METRIC_SNAPSHOT_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.discovery.metric_snapshot_interval_seconds = metric_snapshot_interval_seconds;
+    }
     if let Some(max_window_swaps_in_memory) =
         env::var("SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY")
             .ok()

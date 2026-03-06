@@ -144,6 +144,7 @@ impl DiscoveryService {
         let cycle_started = Instant::now();
         let window_days = self.config.scoring_window_days.max(1);
         let window_start = now - Duration::days(window_days as i64);
+        let metrics_window_start = self.metrics_window_start(now);
         let mut delta_fetched = 0usize;
         let mut swaps_evicted_due_cap = 0usize;
         let mut swaps_warm_loaded = 0usize;
@@ -309,7 +310,7 @@ impl DiscoveryService {
             });
             metric_rows.push(WalletMetricRow {
                 wallet_id: snapshot.wallet_id.clone(),
-                window_start,
+                window_start: metrics_window_start,
                 pnl: snapshot.pnl_sol,
                 win_rate: snapshot.win_rate,
                 trades: snapshot.trades,
@@ -322,11 +323,21 @@ impl DiscoveryService {
             });
         }
 
+        let should_persist_metrics = store
+            .latest_wallet_metrics_window_start()?
+            .map(|latest| latest < metrics_window_start)
+            .unwrap_or(true);
+        let metrics_to_persist = if should_persist_metrics {
+            metric_rows.as_slice()
+        } else {
+            &[]
+        };
+
         let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
         let desired_wallets = desired_wallets(&ranked, self.config.follow_top_n);
         let follow_delta = store.persist_discovery_cycle(
             &wallet_rows,
-            &metric_rows,
+            metrics_to_persist,
             &desired_wallets,
             now,
             "discovery_score_refresh",
@@ -338,7 +349,7 @@ impl DiscoveryService {
             window_start,
             wallets_seen: snapshots.len(),
             eligible_wallets: ranked.len(),
-            metrics_written: snapshots.len(),
+            metrics_written: metrics_to_persist.len(),
             follow_promoted: follow_delta.activated,
             follow_demoted: follow_delta.deactivated,
             active_follow_wallets,
@@ -361,6 +372,8 @@ impl DiscoveryService {
             swaps_evicted_due_cap,
             swaps_fetch_limit = fetch_limit,
             swaps_fetch_limit_reached = swaps_query_rows >= fetch_limit,
+            metrics_window_start = %metrics_window_start,
+            metrics_persisted = should_persist_metrics,
             discovery_cycle_duration_ms = elapsed_ms,
             top_wallets = ?summary.top_wallets,
             "discovery cycle completed"
@@ -375,6 +388,13 @@ impl DiscoveryService {
         }
 
         Ok(summary)
+    }
+
+    fn metrics_window_start(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        let interval_seconds = self.config.metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        bucketed_now - Duration::days(self.config.scoring_window_days.max(1) as i64)
     }
 
     fn build_wallet_snapshots_from_cached(
@@ -1342,6 +1362,85 @@ mod tests {
             !snapshot.eligible,
             "wallet should not pass tradability gating when only a small minority of buys are resolved"
         );
+    }
+
+    #[test]
+    fn run_cycle_persists_wallet_metrics_only_once_per_snapshot_bucket() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-metric-bucket.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let sell_ts = buy_ts + Duration::minutes(6);
+        for idx in 0..6 {
+            let offset = Duration::minutes((idx * 20) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_bucket",
+                &format!("bucket-buy-{idx}"),
+                buy_ts + offset,
+                SOL_MINT,
+                "TokenBucket1111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_bucket",
+                &format!("bucket-sell-{idx}"),
+                sell_ts + offset,
+                "TokenBucket1111111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.metric_snapshot_interval_seconds = 3600;
+        config.thin_market_min_unique_traders = 1;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let first_now = DateTime::parse_from_rfc3339("2026-03-04T12:40:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let second_now = first_now + Duration::minutes(10);
+        let third_now = first_now + Duration::hours(1);
+
+        let summary_first = discovery.run_cycle(&store, first_now)?;
+        assert_eq!(summary_first.metrics_written, 1);
+        let first_window = store
+            .latest_wallet_metrics_window_start()?
+            .expect("expected first metrics window to persist");
+
+        let summary_second = discovery.run_cycle(&store, second_now)?;
+        assert_eq!(
+            summary_second.metrics_written, 0,
+            "same snapshot bucket must not rewrite wallet_metrics"
+        );
+        let second_window = store
+            .latest_wallet_metrics_window_start()?
+            .expect("metrics window should remain available");
+        assert_eq!(second_window, first_window);
+
+        let summary_third = discovery.run_cycle(&store, third_now)?;
+        assert_eq!(summary_third.metrics_written, 1);
+        let third_window = store
+            .latest_wallet_metrics_window_start()?
+            .expect("next snapshot bucket must persist a new wallet_metrics window");
+        assert!(third_window > second_window);
+        Ok(())
     }
 
     fn swap(

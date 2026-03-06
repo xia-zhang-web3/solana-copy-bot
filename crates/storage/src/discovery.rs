@@ -8,6 +8,25 @@ use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
 impl SqliteStore {
+    pub fn latest_wallet_metrics_window_start(&self) -> Result<Option<DateTime<Utc>>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT MAX(window_start) FROM wallet_metrics", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .context("failed querying latest wallet_metrics window_start")?
+            .flatten();
+        raw.map(|raw| {
+            DateTime::parse_from_rfc3339(&raw)
+                .map(|dt| dt.with_timezone(&Utc))
+                .with_context(|| {
+                    format!("invalid wallet_metrics.window_start rfc3339 value: {raw}")
+                })
+        })
+        .transpose()
+    }
+
     pub fn upsert_wallet(
         &self,
         wallet_id: &str,
@@ -102,53 +121,55 @@ impl SqliteStore {
                 }
             }
 
-            {
-                let mut stmt = conn
-                    .prepare_cached(
-                    "INSERT INTO wallet_metrics(
-                        wallet_id,
-                        window_start,
-                        pnl,
-                        win_rate,
-                        trades,
-                        closed_trades,
-                        hold_median_seconds,
-                        score,
-                        buy_total,
-                        tradable_ratio,
-                        rug_ratio
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    )
-                    .context("failed to prepare discovery wallet metric insert statement")?;
-                for metric in metrics {
-                    stmt.execute(params![
-                        &metric.wallet_id,
-                        metric.window_start.to_rfc3339(),
-                        metric.pnl,
-                        metric.win_rate,
-                        metric.trades as i64,
-                        metric.closed_trades as i64,
-                        metric.hold_median_seconds,
-                        metric.score,
-                        metric.buy_total as i64,
-                        metric.tradable_ratio,
-                        metric.rug_ratio,
-                    ])
-                    .context("failed to insert wallet metric in discovery transaction")?;
+            if !metrics.is_empty() {
+                {
+                    let mut stmt = conn
+                        .prepare_cached(
+                        "INSERT INTO wallet_metrics(
+                            wallet_id,
+                            window_start,
+                            pnl,
+                            win_rate,
+                            trades,
+                            closed_trades,
+                            hold_median_seconds,
+                            score,
+                            buy_total,
+                            tradable_ratio,
+                            rug_ratio
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        )
+                        .context("failed to prepare discovery wallet metric insert statement")?;
+                    for metric in metrics {
+                        stmt.execute(params![
+                            &metric.wallet_id,
+                            metric.window_start.to_rfc3339(),
+                            metric.pnl,
+                            metric.win_rate,
+                            metric.trades as i64,
+                            metric.closed_trades as i64,
+                            metric.hold_median_seconds,
+                            metric.score,
+                            metric.buy_total as i64,
+                            metric.tradable_ratio,
+                            metric.rug_ratio,
+                        ])
+                        .context("failed to insert wallet metric in discovery transaction")?;
+                    }
                 }
-            }
 
-            conn.execute(
-                "DELETE FROM wallet_metrics
-                 WHERE window_start < (
-                    SELECT DISTINCT window_start
-                    FROM wallet_metrics
-                    ORDER BY window_start DESC
-                    LIMIT 1 OFFSET ?1
-                 )",
-                params![retention_offset],
-            )
-            .context("failed to apply wallet_metrics retention in discovery transaction")?;
+                conn.execute(
+                    "DELETE FROM wallet_metrics
+                     WHERE window_start < (
+                        SELECT DISTINCT window_start
+                        FROM wallet_metrics
+                        ORDER BY window_start DESC
+                        LIMIT 1 OFFSET ?1
+                     )",
+                    params![retention_offset],
+                )
+                .context("failed to apply wallet_metrics retention in discovery transaction")?;
+            }
 
             let desired: HashSet<&str> = desired_wallets.iter().map(String::as_str).collect();
             let active_wallets: Vec<String> = {

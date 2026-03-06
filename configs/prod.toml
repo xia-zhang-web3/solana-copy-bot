@@ -64,6 +64,7 @@ min_buy_count = 10
 min_tradable_ratio = 0.25
 max_rug_ratio = 0.60
 rug_lookahead_seconds = 900
+metric_snapshot_interval_seconds = 1800
 max_window_swaps_in_memory = 60000
 max_fetch_swaps_per_cycle = 20000
 observed_swaps_retention_days = 45

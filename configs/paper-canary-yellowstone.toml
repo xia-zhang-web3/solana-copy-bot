@@ -64,6 +64,7 @@ min_buy_count = 2
 min_tradable_ratio = 0.05
 max_rug_ratio = 0.80
 rug_lookahead_seconds = 900
+metric_snapshot_interval_seconds = 1800
 thin_market_min_volume_sol = 3.0
 thin_market_min_unique_traders = 10
 max_window_swaps_in_memory = 20000
