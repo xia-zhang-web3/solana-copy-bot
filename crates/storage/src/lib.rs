@@ -37,6 +37,7 @@ mod shadow;
 mod sqlite_retry;
 mod system_events;
 
+pub use execution_orders::MarkOrderDroppedOutcome;
 pub use sqlite_retry::is_retryable_sqlite_anyhow_error;
 
 pub struct SqliteStore {
@@ -662,6 +663,32 @@ mod tests {
     use copybot_core_types::SwapEvent;
     use tempfile::tempdir;
 
+    fn copy_migrations_through(dest: &Path, max_version: &str) -> Result<()> {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        fs::create_dir_all(dest)
+            .with_context(|| format!("failed to create temp migration dir {}", dest.display()))?;
+        for entry in fs::read_dir(&source)
+            .with_context(|| format!("failed to read migrations dir {}", source.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("failed to read entry in {}", source.display()))?;
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if file_name <= max_version {
+                fs::copy(&path, dest.join(file_name)).with_context(|| {
+                    format!(
+                        "failed to copy migration {} into {}",
+                        path.display(),
+                        dest.display()
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn close_shadow_lots_fifo_atomic_handles_parallel_sells_without_double_close() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -731,6 +758,54 @@ mod tests {
             "all lots should be closed exactly once"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn insert_shadow_lot_returns_inserted_row_id_after_retryable_lock() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-insert-rowid-retry.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        drop(seed_store);
+
+        let blocker_store = SqliteStore::open(Path::new(&db_path))?;
+        blocker_store
+            .conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_store.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_path = db_path.clone();
+        let worker_barrier = barrier.clone();
+        let worker = std::thread::spawn(move || -> Result<i64> {
+            let store = SqliteStore::open(Path::new(&worker_path))?;
+            store
+                .conn
+                .busy_timeout(StdDuration::from_millis(1))
+                .context("failed to shorten worker busy timeout")?;
+            worker_barrier.wait();
+            let opened_ts = DateTime::parse_from_rfc3339("2026-02-15T10:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc);
+            store.insert_shadow_lot("wallet", "token", 100.0, 1.0, opened_ts)
+        });
+
+        barrier.wait();
+        std::thread::sleep(StdDuration::from_millis(250));
+        blocker_store.conn.execute_batch("COMMIT")?;
+
+        let lot_id = worker
+            .join()
+            .expect("worker thread panicked")
+            .context("worker insert failed")?;
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let lots = verify_store.list_shadow_lots("wallet", "token")?;
+        assert_eq!(lots.len(), 1, "expected exactly one inserted shadow lot");
+        assert_eq!(lots[0].id, lot_id, "returned row id must match persisted shadow lot");
         Ok(())
     }
 
@@ -1270,6 +1345,287 @@ mod tests {
     }
 
     #[test]
+    fn mark_order_simulated_rejects_status_regression_from_submitted() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-simulated-regression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-sim-regress:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-sim-regress-1",
+                &signal.signal_id,
+                "cb_sim_regress_a1",
+                "rpc",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-sim-regress-1",
+            "rpc",
+            "sig-sim-regress",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let error = store
+            .mark_order_simulated("ord-sim-regress-1", "ok", Some("late simulation"))
+            .expect_err("submitted order must not regress to execution_simulated");
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_submitted"));
+        let order = store
+            .execution_order_by_client_order_id("cb_sim_regress_a1")?
+            .context("expected order row after rejected regression")?;
+        assert_eq!(order.status, "execution_submitted");
+        Ok(())
+    }
+
+    #[test]
+    fn mark_order_submitted_rejects_status_regression_from_confirmed() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-submitted-regression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-submit-regress:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-submit-regress-1",
+                &signal.signal_id,
+                "cb_submit_regress_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-submit-regress-1",
+            "paper",
+            "paper:tx-submit-regress",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        let _ = store.finalize_execution_confirmed_order(
+            "ord-submit-regress-1",
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            1.0,
+            0.25,
+            0.25,
+            0.0,
+            50.0,
+            now + Duration::seconds(1),
+        )?;
+
+        let error = store
+            .mark_order_submitted(
+                "ord-submit-regress-1",
+                "paper",
+                "paper:tx-submit-regress-2",
+                now + Duration::seconds(2),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("confirmed order must not regress to execution_submitted");
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_confirmed"));
+        let order = store
+            .execution_order_by_client_order_id("cb_submit_regress_a1")?
+            .context("expected order row after rejected regression")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(
+            order.tx_signature.as_deref(),
+            Some("paper:tx-submit-regress")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn try_mark_order_dropped_reports_unexpected_status_without_masking_as_error() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("execution-dropped-guard-unexpected-status.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-drop-guard:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-drop-guard-1",
+                &signal.signal_id,
+                "cb_drop_guard_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-drop-guard-1",
+            "paper",
+            "paper:tx-drop-guard",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let outcome = store.try_mark_order_dropped(
+            "ord-drop-guard-1",
+            "signal_stale",
+            Some("late status sync"),
+        )?;
+        assert_eq!(
+            outcome,
+            MarkOrderDroppedOutcome::UnexpectedStatus("execution_submitted".to_string())
+        );
+        let order = store
+            .execution_order_by_client_order_id("cb_drop_guard_a1")?
+            .context("expected order row after guarded drop rejection")?;
+        assert_eq!(order.status, "execution_submitted");
+        assert_eq!(order.err_code, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn mark_order_failed_rejects_status_regression_from_confirmed() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-failed-regression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-failed-regress:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-failed-regress-1",
+                &signal.signal_id,
+                "cb_failed_regress_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-failed-regress-1",
+            "paper",
+            "paper:tx-failed-regress",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        let _ = store.finalize_execution_confirmed_order(
+            "ord-failed-regress-1",
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            1.0,
+            0.25,
+            0.25,
+            0.0,
+            50.0,
+            now + Duration::seconds(1),
+        )?;
+
+        let error = store
+            .mark_order_failed(
+                "ord-failed-regress-1",
+                "late_failure",
+                Some("should not overwrite confirmed"),
+            )
+            .expect_err("confirmed order must not regress to execution_failed");
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_confirmed"));
+        let order = store
+            .execution_order_by_client_order_id("cb_failed_regress_a1")?
+            .context("expected order row after rejected failed regression")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(order.err_code, None);
+        Ok(())
+    }
+
+    #[test]
     fn parse_non_negative_i64_rejects_negative_values() {
         let error = parse_non_negative_i64("orders.ata_create_rent_lamports", "ord-1", Some(-7))
             .expect_err("negative sqlite value must be rejected");
@@ -1338,6 +1694,273 @@ mod tests {
         assert_eq!(windows[0], (base + Duration::minutes(1)).to_rfc3339());
         assert_eq!(windows[1], (base + Duration::minutes(2)).to_rfc3339());
         assert_eq!(windows[2], (base + Duration::minutes(3)).to_rfc3339());
+        Ok(())
+    }
+
+    #[test]
+    fn persist_discovery_cycle_retries_after_immediate_write_lock() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("discovery-write-retry.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        drop(seed_store);
+
+        let blocker_store = SqliteStore::open(Path::new(&db_path))?;
+        blocker_store
+            .conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_store.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_db_path = db_path.clone();
+        let worker_barrier = barrier.clone();
+        let worker = std::thread::spawn(move || -> Result<FollowlistUpdateResult> {
+            let store = SqliteStore::open(Path::new(&worker_db_path))?;
+            store
+                .conn
+                .busy_timeout(StdDuration::from_millis(1))
+                .context("failed to shorten worker busy timeout")?;
+            let window_start = DateTime::parse_from_rfc3339("2026-02-20T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc);
+            let wallets = vec![WalletUpsertRow {
+                wallet_id: "wallet-retry".to_string(),
+                first_seen: window_start,
+                last_seen: window_start,
+                status: "candidate".to_string(),
+            }];
+            let metrics = vec![WalletMetricRow {
+                wallet_id: "wallet-retry".to_string(),
+                window_start,
+                pnl: 0.0,
+                win_rate: 0.0,
+                trades: 1,
+                closed_trades: 1,
+                hold_median_seconds: 0,
+                score: 1.0,
+                buy_total: 1,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }];
+            let desired_wallets = vec!["wallet-retry".to_string()];
+            worker_barrier.wait();
+            store.persist_discovery_cycle(
+                &wallets,
+                &metrics,
+                &desired_wallets,
+                window_start,
+                "retry-test",
+            )
+        });
+
+        barrier.wait();
+        std::thread::sleep(StdDuration::from_millis(250));
+        blocker_store.conn.execute_batch("COMMIT")?;
+
+        let follow_delta = worker
+            .join()
+            .expect("worker thread panicked")
+            .context("worker discovery cycle failed")?;
+        assert_eq!(follow_delta.activated, 1);
+        assert_eq!(follow_delta.deactivated, 0);
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert!(
+            verify_store.list_active_follow_wallets()?.contains("wallet-retry"),
+            "followlist activation should commit after retry"
+        );
+        let windows: i64 = verify_store.conn.query_row(
+            "SELECT COUNT(*) FROM wallet_metrics WHERE wallet_id = ?1",
+            params!["wallet-retry"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(windows, 1, "wallet metric insert should commit after retry");
+        Ok(())
+    }
+
+    #[test]
+    fn followlist_single_active_guard_migration_dedupes_existing_duplicates() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("followlist-single-active-guard.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0017_positions_closed_state_index.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        legacy_store.conn.execute(
+            "INSERT INTO followlist(wallet_id, added_at, reason, active)
+             VALUES (?1, ?2, NULL, 1)",
+            params!["wallet-dup", "2026-02-20T00:00:00Z"],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO followlist(wallet_id, added_at, reason, active)
+             VALUES (?1, ?2, NULL, 1)",
+            params!["wallet-dup", "2026-02-20T00:01:00Z"],
+        )?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut migrated_store = SqliteStore::open(Path::new(&db_path))?;
+        migrated_store.run_migrations(&migration_dir)?;
+
+        let rows: Vec<(i64, String, i64, Option<String>, Option<String>)> = {
+            let mut stmt = migrated_store.conn.prepare(
+                "SELECT id, added_at, active, removed_at, reason
+                 FROM followlist
+                 WHERE wallet_id = ?1
+                 ORDER BY id ASC",
+            )?;
+            let mapped_rows = stmt.query_map(params!["wallet-dup"], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?;
+            mapped_rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        assert_eq!(rows.len(), 2, "expected both historical rows to remain");
+        assert_eq!(rows[0].2, 0, "older duplicate must be deactivated by migration");
+        assert_eq!(
+            rows[0].3.as_deref(),
+            Some("2026-02-20T00:01:00Z"),
+            "migration should close duplicate row at the surviving row start time",
+        );
+        assert_eq!(
+            rows[0].4.as_deref(),
+            Some("migration_dedup_active_followlist"),
+            "migration should annotate deduplicated row",
+        );
+        assert_eq!(rows[1].2, 1, "latest active row must stay active");
+        assert!(
+            migrated_store.was_wallet_followed_at(
+                "wallet-dup",
+                DateTime::parse_from_rfc3339("2026-02-20T00:00:30Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+            )?,
+            "dedup must preserve historical follow membership before the surviving active row"
+        );
+
+        let duplicate_insert = migrated_store.conn.execute(
+            "INSERT INTO followlist(wallet_id, added_at, reason, active)
+             VALUES (?1, ?2, ?3, 1)",
+            params!["wallet-dup", "2026-02-20T00:02:00Z", "duplicate-test"],
+        );
+        assert!(
+            duplicate_insert.is_err(),
+            "unique partial index must reject a second active followlist row"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn positions_single_open_guard_migration_merges_duplicate_open_rows() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("positions-single-open-guard.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0018_followlist_single_active_guard.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        legacy_store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 'open')",
+            params![
+                "pos-open-a",
+                "token-dup",
+                1.5_f64,
+                0.30_f64,
+                "2026-03-01T00:00:00+00:00",
+                0.05_f64,
+            ],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 'open')",
+            params![
+                "pos-open-b",
+                "token-dup",
+                2.0_f64,
+                0.45_f64,
+                "2026-03-01T00:05:00+00:00",
+                0.07_f64,
+            ],
+        )?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut migrated_store = SqliteStore::open(Path::new(&db_path))?;
+        migrated_store.run_migrations(&migration_dir)?;
+
+        let open_rows: Vec<(String, f64, f64, String, Option<f64>)> = {
+            let mut stmt = migrated_store.conn.prepare(
+                "SELECT position_id, qty, cost_sol, opened_ts, pnl_sol
+                 FROM positions
+                 WHERE token = ?1
+                   AND state = 'open'
+                 ORDER BY opened_ts ASC",
+            )?;
+            let mapped_rows = stmt.query_map(params!["token-dup"], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?;
+            mapped_rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        assert_eq!(open_rows.len(), 1, "migration must leave exactly one open row");
+        assert!(
+            (open_rows[0].1 - 3.5).abs() < 1e-9,
+            "qty should be merged into surviving open row"
+        );
+        assert!(
+            (open_rows[0].2 - 0.75).abs() < 1e-9,
+            "cost_sol should be merged into surviving open row"
+        );
+        assert_eq!(
+            open_rows[0].3,
+            "2026-03-01T00:00:00+00:00",
+            "merged row should preserve earliest opened_ts"
+        );
+        assert!(
+            (open_rows[0].4.unwrap_or_default() - 0.12).abs() < 1e-9,
+            "pnl_sol should be preserved across merged open rows"
+        );
+        assert_eq!(
+            migrated_store.live_open_positions_count()?,
+            1,
+            "runtime open position count should observe deduplicated schema invariant"
+        );
+        assert_eq!(
+            migrated_store.live_open_position_qty_cost("token-dup")?,
+            Some((3.5, 0.75)),
+            "runtime open position lookup should see merged aggregate row"
+        );
+
+        let duplicate_insert = migrated_store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, state, pnl_sol)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', 0.0)",
+            params![
+                "pos-open-c",
+                "token-dup",
+                0.5_f64,
+                0.10_f64,
+                "2026-03-01T00:10:00+00:00",
+            ],
+        );
+        assert!(
+            duplicate_insert.is_err(),
+            "unique partial index must reject a second open position row for the same token"
+        );
         Ok(())
     }
 

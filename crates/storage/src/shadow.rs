@@ -18,15 +18,15 @@ impl SqliteStore {
         cost_sol: f64,
         opened_ts: DateTime<Utc>,
     ) -> Result<i64> {
-        self.execute_with_retry(|conn| {
+        self.execute_with_retry_result(|conn| {
             conn.execute(
                 "INSERT INTO shadow_lots(wallet_id, token, qty, cost_sol, opened_ts)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![wallet_id, token, qty, cost_sol, opened_ts.to_rfc3339()],
-            )
+            )?;
+            Ok(conn.last_insert_rowid())
         })
-        .context("failed to insert shadow lot")?;
-        Ok(self.conn.last_insert_rowid())
+        .context("failed to insert shadow lot")
     }
 
     pub fn list_shadow_lots(&self, wallet_id: &str, token: &str) -> Result<Vec<ShadowLotRow>> {

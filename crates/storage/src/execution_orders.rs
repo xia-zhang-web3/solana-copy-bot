@@ -6,7 +6,49 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarkOrderDroppedOutcome {
+    Applied,
+    UnexpectedStatus(String),
+    NotFound,
+}
+
 impl SqliteStore {
+    fn current_order_status(&self, order_id: &str, action: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT status FROM orders WHERE order_id = ?1 LIMIT 1",
+                params![order_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .with_context(|| {
+                format!(
+                    "failed reading current order status for action={action} order_id={order_id}"
+                )
+            })
+    }
+
+    fn unexpected_order_status_error(
+        &self,
+        order_id: &str,
+        action: &str,
+        expected_statuses: &[&str],
+    ) -> Result<anyhow::Error> {
+        let status = self.current_order_status(order_id, action)?;
+        let expected = expected_statuses.join(", ");
+        Ok(match status {
+            Some(status) => anyhow!(
+                "failed {}: order_id={} has unexpected status={} expected one of [{}]",
+                action,
+                order_id,
+                status,
+                expected
+            ),
+            None => anyhow!("failed {}: order_id={} not found", action, order_id),
+        })
+    }
+
     pub fn insert_copy_signal(&self, signal: &CopySignalRow) -> Result<bool> {
         let written = self
             .execute_with_retry(|conn| {
@@ -316,21 +358,24 @@ impl SqliteStore {
         simulation_status: &str,
         simulation_detail: Option<&str>,
     ) -> Result<()> {
+        const EXPECTED: &[&str] = &["execution_pending"];
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE orders
                  SET status = 'execution_simulated',
                      simulation_status = ?1,
                      simulation_error = ?2
-                 WHERE order_id = ?3",
+                 WHERE order_id = ?3
+                   AND status = 'execution_pending'",
                 params![simulation_status, simulation_detail, order_id],
             )
         })?;
         if changed == 0 {
-            return Err(anyhow!(
-                "failed marking order simulated: order_id={} not found",
-                order_id
-            ));
+            return Err(self.unexpected_order_status_error(
+                order_id,
+                "marking order simulated",
+                EXPECTED,
+            )?);
         }
         Ok(())
     }
@@ -347,6 +392,7 @@ impl SqliteStore {
         base_fee_lamports_hint: Option<u64>,
         priority_fee_lamports_hint: Option<u64>,
     ) -> Result<()> {
+        const EXPECTED: &[&str] = &["execution_pending", "execution_simulated"];
         let applied_tip_lamports_sql = applied_tip_lamports
             .map(|value| u64_to_sql_i64("orders.applied_tip_lamports", value))
             .transpose()?;
@@ -365,7 +411,7 @@ impl SqliteStore {
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE orders
-                 SET status = 'execution_submitted',
+                SET status = 'execution_submitted',
                      route = ?1,
                      tx_signature = ?2,
                      submit_ts = ?3,
@@ -374,7 +420,8 @@ impl SqliteStore {
                      network_fee_lamports_hint = ?6,
                      base_fee_lamports_hint = ?7,
                      priority_fee_lamports_hint = ?8
-                 WHERE order_id = ?9",
+                 WHERE order_id = ?9
+                   AND status IN ('execution_pending', 'execution_simulated')",
                 params![
                     route,
                     tx_signature,
@@ -389,10 +436,11 @@ impl SqliteStore {
             )
         })?;
         if changed == 0 {
-            return Err(anyhow!(
-                "failed marking order submitted: order_id={} not found",
-                order_id
-            ));
+            return Err(self.unexpected_order_status_error(
+                order_id,
+                "marking order submitted",
+                EXPECTED,
+            )?);
         }
         Ok(())
     }
@@ -446,23 +494,50 @@ impl SqliteStore {
         err_code: &str,
         detail: Option<&str>,
     ) -> Result<()> {
+        const ACTION: &str = "marking order dropped";
+        const EXPECTED: &[&str] = &["execution_pending", "execution_simulated"];
+        match self.try_mark_order_dropped(order_id, err_code, detail)? {
+            MarkOrderDroppedOutcome::Applied => Ok(()),
+            MarkOrderDroppedOutcome::UnexpectedStatus(status) => Err(anyhow!(
+                "failed {}: order_id={} has unexpected status={} expected one of [{}]",
+                ACTION,
+                order_id,
+                status,
+                EXPECTED.join(", ")
+            )),
+            MarkOrderDroppedOutcome::NotFound => Err(anyhow!(
+                "failed {}: order_id={} not found",
+                ACTION,
+                order_id
+            )),
+        }
+    }
+
+    pub fn try_mark_order_dropped(
+        &self,
+        order_id: &str,
+        err_code: &str,
+        detail: Option<&str>,
+    ) -> Result<MarkOrderDroppedOutcome> {
+        const ACTION: &str = "marking order dropped";
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE orders
                  SET status = 'execution_dropped',
                      err_code = ?1,
                      simulation_error = COALESCE(?2, simulation_error)
-                 WHERE order_id = ?3",
+                 WHERE order_id = ?3
+                   AND status IN ('execution_pending', 'execution_simulated')",
                 params![err_code, detail, order_id],
             )
         })?;
-        if changed == 0 {
-            return Err(anyhow!(
-                "failed marking order dropped: order_id={} not found",
-                order_id
-            ));
+        if changed > 0 {
+            return Ok(MarkOrderDroppedOutcome::Applied);
         }
-        Ok(())
+        Ok(match self.current_order_status(order_id, ACTION)? {
+            Some(status) => MarkOrderDroppedOutcome::UnexpectedStatus(status),
+            None => MarkOrderDroppedOutcome::NotFound,
+        })
     }
 
     pub fn mark_order_failed(
@@ -471,32 +546,55 @@ impl SqliteStore {
         err_code: &str,
         detail: Option<&str>,
     ) -> Result<()> {
+        const EXPECTED: &[&str] = &[
+            "execution_pending",
+            "execution_simulated",
+            "execution_submitted",
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+        ];
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE orders
                  SET status = 'execution_failed',
                      err_code = ?1,
                      simulation_error = COALESCE(?2, simulation_error)
-                 WHERE order_id = ?3",
-                params![err_code, detail, order_id],
+                 WHERE order_id = ?3
+                   AND status IN (
+                       'execution_pending',
+                       'execution_simulated',
+                       'execution_submitted',
+                       ?4
+                   )",
+                params![
+                    err_code,
+                    detail,
+                    order_id,
+                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                ],
             )
         })?;
         if changed == 0 {
-            return Err(anyhow!(
-                "failed marking order failed: order_id={} not found",
-                order_id
-            ));
+            return Err(self.unexpected_order_status_error(
+                order_id,
+                "marking order failed",
+                EXPECTED,
+            )?);
         }
         Ok(())
     }
 
     pub fn mark_order_reconcile_pending(&self, order_id: &str, err_code: &str) -> Result<()> {
+        const EXPECTED: &[&str] = &[
+            "execution_submitted",
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+        ];
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE orders
                  SET status = ?1,
                      err_code = ?2
-                 WHERE order_id = ?3",
+                 WHERE order_id = ?3
+                   AND status IN ('execution_submitted', ?1)",
                 params![
                     EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
                     err_code,
@@ -505,10 +603,11 @@ impl SqliteStore {
             )
         })?;
         if changed == 0 {
-            return Err(anyhow!(
-                "failed marking order reconcile-pending: order_id={} not found",
-                order_id
-            ));
+            return Err(self.unexpected_order_status_error(
+                order_id,
+                "marking order reconcile-pending",
+                EXPECTED,
+            )?);
         }
         Ok(())
     }

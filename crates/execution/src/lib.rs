@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{ExecutionConfig, RiskConfig};
 use copybot_storage::{
-    CopySignalRow, InsertExecutionOrderPendingOutcome, SqliteStore,
+    CopySignalRow, InsertExecutionOrderPendingOutcome, MarkOrderDroppedOutcome, SqliteStore,
     EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 use serde_json::json;
@@ -50,6 +50,12 @@ pub(crate) enum SignalResult {
     Skipped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropOrSyncSignalOutcome {
+    Dropped,
+    Synced(SignalResult),
+}
+
 pub struct ExecutionRuntime {
     enabled: bool,
     mode: String,
@@ -72,6 +78,48 @@ pub struct ExecutionRuntime {
 }
 
 impl ExecutionRuntime {
+    fn signal_result_for_order_status(status: &str) -> SignalResult {
+        match status {
+            "execution_confirmed" => SignalResult::Confirmed,
+            "execution_dropped" => SignalResult::Dropped,
+            "execution_failed" => SignalResult::Failed,
+            _ => SignalResult::Skipped,
+        }
+    }
+
+    fn drop_pre_submit_order_or_sync_signal(
+        &self,
+        store: &SqliteStore,
+        signal_id: &str,
+        order_id: &str,
+        err_code: &str,
+        detail: Option<&str>,
+    ) -> Result<DropOrSyncSignalOutcome> {
+        match store.try_mark_order_dropped(order_id, err_code, detail)? {
+            MarkOrderDroppedOutcome::Applied => {
+                store.update_copy_signal_status(signal_id, "execution_dropped")?;
+                Ok(DropOrSyncSignalOutcome::Dropped)
+            }
+            MarkOrderDroppedOutcome::UnexpectedStatus(latest_status) => {
+                warn!(
+                    signal_id = %signal_id,
+                    order_id = %order_id,
+                    err_code,
+                    latest_status = %latest_status,
+                    "pre-submit drop lost race; syncing signal to actual order status"
+                );
+                store.update_copy_signal_status(signal_id, latest_status.as_str())?;
+                Ok(DropOrSyncSignalOutcome::Synced(
+                    Self::signal_result_for_order_status(latest_status.as_str()),
+                ))
+            }
+            MarkOrderDroppedOutcome::NotFound => Err(anyhow::anyhow!(
+                "missing order after guarded drop transition: order_id={}",
+                order_id
+            )),
+        }
+    }
+
     pub fn from_config(config: ExecutionConfig, risk: RiskConfig) -> Self {
         let route = if config.default_route.trim().is_empty() {
             "paper".to_string()
@@ -412,9 +460,19 @@ impl ExecutionRuntime {
         if self.is_pre_submit_status(lifecycle_status) {
             if now - intent.signal_ts > Duration::seconds(self.max_copy_delay_sec as i64) {
                 if let Some(existing) = order.as_ref() {
-                    let _ = store.mark_order_dropped(&existing.order_id, "signal_stale", None);
+                    match self.drop_pre_submit_order_or_sync_signal(
+                        store,
+                        &intent.signal_id,
+                        &existing.order_id,
+                        "signal_stale",
+                        None,
+                    )? {
+                        DropOrSyncSignalOutcome::Dropped => {}
+                        DropOrSyncSignalOutcome::Synced(result) => return Ok(result),
+                    }
+                } else {
+                    store.update_copy_signal_status(&intent.signal_id, "execution_dropped")?;
                 }
-                store.update_copy_signal_status(&intent.signal_id, "execution_dropped")?;
                 let details = json!({
                     "signal_id": intent.signal_id,
                     "reason": "signal_stale",
@@ -428,13 +486,19 @@ impl ExecutionRuntime {
 
             if let Some(reason) = self.execution_risk_block_reason(store, &intent, now)? {
                 if let Some(existing) = order.as_ref() {
-                    let _ = store.mark_order_dropped(
+                    match self.drop_pre_submit_order_or_sync_signal(
+                        store,
+                        &intent.signal_id,
                         &existing.order_id,
                         "risk_blocked",
                         Some(reason.as_str()),
-                    );
+                    )? {
+                        DropOrSyncSignalOutcome::Dropped => {}
+                        DropOrSyncSignalOutcome::Synced(result) => return Ok(result),
+                    }
+                } else {
+                    store.update_copy_signal_status(&intent.signal_id, "execution_dropped")?;
                 }
-                store.update_copy_signal_status(&intent.signal_id, "execution_dropped")?;
                 let details = json!({
                     "signal_id": intent.signal_id,
                     "reason": reason,
@@ -1248,6 +1312,118 @@ mod tests {
 
         let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
         assert_eq!(confirmed.len(), 1);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn drop_pre_submit_order_or_sync_signal_keeps_signal_live_when_order_already_advanced(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("drop-pre-submit-syncs-live-status")?;
+        let now = Utc::now();
+        let signal = CopySignalRow {
+            signal_id: "shadow:sync:w:buy:t1".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-sync-live-status-1",
+                &signal.signal_id,
+                &client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let runtime = make_paper_runtime(RiskConfig::default());
+        store.mark_order_submitted(
+            "ord-sync-live-status-1",
+            "paper",
+            "paper:tx-sync-live-status",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let outcome = runtime.drop_pre_submit_order_or_sync_signal(
+            &store,
+            &signal.signal_id,
+            "ord-sync-live-status-1",
+            "signal_stale",
+            None,
+        )?;
+        assert_eq!(
+            outcome,
+            DropOrSyncSignalOutcome::Synced(SignalResult::Skipped)
+        );
+
+        let submitted = store.list_copy_signals_by_status("execution_submitted", 10)?;
+        assert_eq!(submitted.len(), 1);
+        assert_eq!(submitted[0].signal_id, signal.signal_id);
+        let dropped = store.list_copy_signals_by_status("execution_dropped", 10)?;
+        assert!(dropped.is_empty());
+
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("expected order row after sync")?;
+        assert_eq!(order.status, "execution_submitted");
+        assert_eq!(
+            order.tx_signature.as_deref(),
+            Some("paper:tx-sync-live-status")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn drop_pre_submit_order_or_sync_signal_errors_when_order_is_missing() -> Result<()> {
+        let (store, db_path) = make_test_store("drop-pre-submit-missing-order-errors")?;
+        let now = Utc::now();
+        let signal = CopySignalRow {
+            signal_id: "shadow:sync:w:buy:missing-order".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let runtime = make_paper_runtime(RiskConfig::default());
+        let error = runtime
+            .drop_pre_submit_order_or_sync_signal(
+                &store,
+                &signal.signal_id,
+                "ord-missing-live-status-1",
+                "signal_stale",
+                None,
+            )
+            .expect_err("missing guarded order must return an error");
+        assert!(
+            error
+                .to_string()
+                .contains("missing order after guarded drop transition"),
+            "unexpected error: {error}"
+        );
+
+        let pending = store.list_copy_signals_by_status("execution_pending", 10)?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].signal_id, signal.signal_id);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

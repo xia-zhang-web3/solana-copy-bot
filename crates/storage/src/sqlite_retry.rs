@@ -2,6 +2,7 @@ use super::{
     note_sqlite_busy_error, note_sqlite_write_retry, SqliteStore, SQLITE_WRITE_MAX_RETRIES,
     SQLITE_WRITE_RETRY_BACKOFF_MS,
 };
+use anyhow::{anyhow, Context, Result};
 use rusqlite::{Connection, ErrorCode};
 use std::time::Duration as StdDuration;
 
@@ -10,9 +11,16 @@ impl SqliteStore {
     where
         F: FnMut(&Connection) -> rusqlite::Result<usize>,
     {
+        self.execute_with_retry_result(|conn| operation(conn))
+    }
+
+    pub(crate) fn execute_with_retry_result<T, F>(&self, mut operation: F) -> rusqlite::Result<T>
+    where
+        F: FnMut(&Connection) -> rusqlite::Result<T>,
+    {
         for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
             match operation(&self.conn) {
-                Ok(changed) => return Ok(changed),
+                Ok(result) => return Ok(result),
                 Err(error) => {
                     let retryable = is_retryable_sqlite_error(&error);
                     if retryable {
@@ -26,6 +34,75 @@ impl SqliteStore {
                         continue;
                     }
                     return Err(error);
+                }
+            }
+        }
+        unreachable!("retry loop must return on success or terminal error");
+    }
+
+    pub(crate) fn with_immediate_transaction_retry<T, F>(
+        &self,
+        transaction_name: &str,
+        mut operation: F,
+    ) -> Result<T>
+    where
+        F: FnMut(&Connection) -> Result<T>,
+    {
+        for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
+            if let Err(error) = self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION") {
+                let error = anyhow!(error)
+                    .context(format!("failed to open {transaction_name} transaction"));
+                let retryable = is_retryable_sqlite_anyhow_error(&error);
+                if retryable {
+                    note_sqlite_busy_error();
+                }
+                if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                    note_sqlite_write_retry();
+                    std::thread::sleep(StdDuration::from_millis(
+                        SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                    ));
+                    continue;
+                }
+                return Err(error).with_context(|| format!("failed to run {transaction_name}"));
+            }
+
+            let tx_result = operation(&self.conn);
+            match tx_result {
+                Ok(result) => {
+                    if let Err(error) = self.conn.execute_batch("COMMIT") {
+                        let error = anyhow!(error)
+                            .context(format!("failed to commit {transaction_name} transaction"));
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                        let retryable = is_retryable_sqlite_anyhow_error(&error);
+                        if retryable {
+                            note_sqlite_busy_error();
+                        }
+                        if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                            note_sqlite_write_retry();
+                            std::thread::sleep(StdDuration::from_millis(
+                                SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                            ));
+                            continue;
+                        }
+                        return Err(error)
+                            .with_context(|| format!("failed to run {transaction_name}"));
+                    }
+                    return Ok(result);
+                }
+                Err(error) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    let retryable = is_retryable_sqlite_anyhow_error(&error);
+                    if retryable {
+                        note_sqlite_busy_error();
+                    }
+                    if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                        note_sqlite_write_retry();
+                        std::thread::sleep(StdDuration::from_millis(
+                            SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                        ));
+                        continue;
+                    }
+                    return Err(error).with_context(|| format!("failed to run {transaction_name}"));
                 }
             }
         }
