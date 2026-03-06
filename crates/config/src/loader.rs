@@ -255,15 +255,13 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
             config.execution.mode = trimmed.to_string();
         }
     }
-    if let Some(poll_interval_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_POLL_INTERVAL_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(poll_interval_ms) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_EXECUTION_POLL_INTERVAL_MS", "u64")?
     {
         config.execution.poll_interval_ms = poll_interval_ms;
     }
-    if let Some(batch_size) = env::var("SOLANA_COPY_BOT_EXECUTION_BATCH_SIZE")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
+    if let Some(batch_size) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_EXECUTION_BATCH_SIZE", "u32")?
     {
         config.execution.batch_size = batch_size;
     }
@@ -317,11 +315,10 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_adapter_hmac_secret_file = submit_adapter_hmac_secret_file;
     }
-    if let Some(submit_adapter_hmac_ttl_sec) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_TTL_SEC")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(submit_adapter_hmac_ttl_sec) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_HMAC_TTL_SEC",
+        "u64",
+    )? {
         config.execution.submit_adapter_hmac_ttl_sec = submit_adapter_hmac_ttl_sec;
     }
     if let Ok(submit_adapter_contract_version) =
@@ -417,11 +414,10 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_dynamic_cu_price_enabled = submit_dynamic_cu_price_enabled;
     }
-    if let Some(submit_dynamic_cu_price_percentile) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_PERCENTILE")
-            .ok()
-            .and_then(|value| value.parse::<u8>().ok())
-    {
+    if let Some(submit_dynamic_cu_price_percentile) = parse_env_number::<u8>(
+        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_PERCENTILE",
+        "u8",
+    )? {
         config.execution.submit_dynamic_cu_price_percentile = submit_dynamic_cu_price_percentile;
     }
     if let Ok(value) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL")
@@ -447,28 +443,25 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_dynamic_tip_lamports_enabled = submit_dynamic_tip_lamports_enabled;
     }
-    if let Some(submit_dynamic_tip_lamports_multiplier_bps) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_MULTIPLIER_BPS")
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok())
-    {
+    if let Some(submit_dynamic_tip_lamports_multiplier_bps) = parse_env_number::<u32>(
+        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_MULTIPLIER_BPS",
+        "u32",
+    )? {
         config.execution.submit_dynamic_tip_lamports_multiplier_bps =
             submit_dynamic_tip_lamports_multiplier_bps;
     }
-    if let Some(submit_timeout_ms) = env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(submit_timeout_ms) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_EXECUTION_SUBMIT_TIMEOUT_MS", "u64")?
     {
         config.execution.submit_timeout_ms = submit_timeout_ms;
     }
     if let Ok(execution_signer_pubkey) = env::var("SOLANA_COPY_BOT_EXECUTION_SIGNER_PUBKEY") {
         config.execution.execution_signer_pubkey = execution_signer_pubkey;
     }
-    if let Some(pretrade_min_sol_reserve) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-    {
+    if let Some(pretrade_min_sol_reserve) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE",
+        "f64",
+    )? {
         config.execution.pretrade_min_sol_reserve = pretrade_min_sol_reserve;
     }
     if let Some(pretrade_require_token_account) =
@@ -476,35 +469,30 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.pretrade_require_token_account = pretrade_require_token_account;
     }
-    if let Some(pretrade_max_priority_fee_micro_lamports) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    if let Some(pretrade_max_priority_fee_micro_lamports) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS",
+        "u64",
+    )? {
         config.execution.pretrade_max_priority_fee_lamports =
             pretrade_max_priority_fee_micro_lamports;
-    } else if let Some(pretrade_max_priority_fee_lamports) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-    {
+    } else if let Some(pretrade_max_priority_fee_lamports) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS",
+        "u64",
+    )? {
         config.execution.pretrade_max_priority_fee_lamports = pretrade_max_priority_fee_lamports;
     }
-    if let Some(slippage_bps) = env::var("SOLANA_COPY_BOT_EXECUTION_SLIPPAGE_BPS")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
+    if let Some(slippage_bps) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_EXECUTION_SLIPPAGE_BPS", "f64")?
     {
         config.execution.slippage_bps = slippage_bps;
     }
-    if let Some(max_confirm_seconds) = env::var("SOLANA_COPY_BOT_EXECUTION_MAX_CONFIRM_SECONDS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    if let Some(max_confirm_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_EXECUTION_MAX_CONFIRM_SECONDS", "u64")?
     {
         config.execution.max_confirm_seconds = max_confirm_seconds;
     }
-    if let Some(max_submit_attempts) = env::var("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
+    if let Some(max_submit_attempts) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS", "u32")?
     {
         config.execution.max_submit_attempts = max_submit_attempts;
     }

@@ -398,6 +398,84 @@ fn load_from_env_rejects_invalid_discovery_retention_override() {
 }
 
 #[test]
+fn load_from_env_rejects_invalid_execution_poll_interval_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_EXECUTION_POLL_INTERVAL_MS", "12.5", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("invalid execution poll interval override must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_EXECUTION_POLL_INTERVAL_MS"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_execution_pretrade_min_sol_reserve_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE", "abc", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err(
+                        "invalid execution pretrade min sol reserve override must fail config load",
+                    )
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_execution_pretrade_fee_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS",
+                "-1",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid execution pretrade fee lamports override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_execution_max_submit_attempts_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS", "nope", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err(
+                        "invalid execution max submit attempts override must fail config load",
+                    )
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
 fn load_from_path_rejects_invalid_ingestion_queue_overflow_policy() {
     with_temp_config_file(
         r#"
