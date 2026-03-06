@@ -762,6 +762,54 @@ mod tests {
     }
 
     #[test]
+    fn insert_shadow_lot_returns_inserted_row_id_after_retryable_lock() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-insert-rowid-retry.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        drop(seed_store);
+
+        let blocker_store = SqliteStore::open(Path::new(&db_path))?;
+        blocker_store
+            .conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_store.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_path = db_path.clone();
+        let worker_barrier = barrier.clone();
+        let worker = std::thread::spawn(move || -> Result<i64> {
+            let store = SqliteStore::open(Path::new(&worker_path))?;
+            store
+                .conn
+                .busy_timeout(StdDuration::from_millis(1))
+                .context("failed to shorten worker busy timeout")?;
+            worker_barrier.wait();
+            let opened_ts = DateTime::parse_from_rfc3339("2026-02-15T10:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc);
+            store.insert_shadow_lot("wallet", "token", 100.0, 1.0, opened_ts)
+        });
+
+        barrier.wait();
+        std::thread::sleep(StdDuration::from_millis(250));
+        blocker_store.conn.execute_batch("COMMIT")?;
+
+        let lot_id = worker
+            .join()
+            .expect("worker thread panicked")
+            .context("worker insert failed")?;
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let lots = verify_store.list_shadow_lots("wallet", "token")?;
+        assert_eq!(lots.len(), 1, "expected exactly one inserted shadow lot");
+        assert_eq!(lots[0].id, lot_id, "returned row id must match persisted shadow lot");
+        Ok(())
+    }
+
+    #[test]
     fn execution_lifecycle_updates_orders_signals_and_positions() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("execution-lifecycle.db");

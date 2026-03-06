@@ -10,9 +10,16 @@ impl SqliteStore {
     where
         F: FnMut(&Connection) -> rusqlite::Result<usize>,
     {
+        self.execute_with_retry_result(|conn| operation(conn))
+    }
+
+    pub(crate) fn execute_with_retry_result<T, F>(&self, mut operation: F) -> rusqlite::Result<T>
+    where
+        F: FnMut(&Connection) -> rusqlite::Result<T>,
+    {
         for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
             match operation(&self.conn) {
-                Ok(changed) => return Ok(changed),
+                Ok(result) => return Ok(result),
                 Err(error) => {
                     let retryable = is_retryable_sqlite_error(&error);
                     if retryable {
