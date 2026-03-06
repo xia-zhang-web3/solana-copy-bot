@@ -815,6 +815,43 @@ mod tests {
     }
 
     #[test]
+    fn has_shadow_lots_ignores_zero_and_dust_qty_rows() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-dust-open-check.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-02-15T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let lot_id = store.insert_shadow_lot("wallet", "token", 10.0, 1.0, opened_ts)?;
+        assert!(store.has_shadow_lots("wallet", "token")?);
+
+        store.update_shadow_lot(lot_id, 1e-13, 1e-15)?;
+
+        assert!(
+            !store.has_shadow_lots("wallet", "token")?,
+            "dust lots should not count as open inventory"
+        );
+        assert!(
+            !store
+                .list_shadow_open_pairs()?
+                .contains(&("wallet".to_string(), "token".to_string())),
+            "dust lots should not appear in open pair queries"
+        );
+        assert!(
+            store
+                .list_open_shadow_lots_older_than(opened_ts + chrono::Duration::minutes(1), 10)?
+                .is_empty(),
+            "dust lots should not be returned as stale open lots"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn execution_lifecycle_updates_orders_signals_and_positions() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("execution-lifecycle.db");

@@ -9,6 +9,8 @@ use rusqlite::params;
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
 
+const SHADOW_LOT_OPEN_EPS: f64 = 1e-12;
+
 impl SqliteStore {
     pub fn insert_shadow_lot(
         &self,
@@ -73,14 +75,18 @@ impl SqliteStore {
             .prepare(
                 "SELECT id, wallet_id, token, qty, cost_sol, opened_ts
                  FROM shadow_lots
-                 WHERE qty > 0
-                   AND opened_ts <= ?1
+                 WHERE qty > ?1
+                   AND opened_ts <= ?2
                  ORDER BY opened_ts ASC, id ASC
-                 LIMIT ?2",
+                 LIMIT ?3",
             )
             .context("failed to prepare stale shadow lot query")?;
         let mut rows = stmt
-            .query(params![cutoff.to_rfc3339(), limit.max(1) as i64])
+            .query(params![
+                SHADOW_LOT_OPEN_EPS,
+                cutoff.to_rfc3339(),
+                limit.max(1) as i64
+            ])
             .context("failed querying stale shadow lots")?;
 
         let mut lots = Vec::new();
@@ -105,15 +111,21 @@ impl SqliteStore {
     }
 
     pub fn has_shadow_lots(&self, wallet_id: &str, token: &str) -> Result<bool> {
-        let count: i64 = self
+        let has_lots: i64 = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM shadow_lots WHERE wallet_id = ?1 AND token = ?2",
-                params![wallet_id, token],
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM shadow_lots
+                    WHERE wallet_id = ?1
+                      AND token = ?2
+                      AND qty > ?3
+                )",
+                params![wallet_id, token, SHADOW_LOT_OPEN_EPS],
                 |row| row.get(0),
             )
             .context("failed querying shadow lots existence")?;
-        Ok(count > 0)
+        Ok(has_lots > 0)
     }
 
     pub fn list_shadow_open_pairs(&self) -> Result<HashSet<(String, String)>> {
@@ -122,10 +134,12 @@ impl SqliteStore {
             .prepare(
                 "SELECT DISTINCT wallet_id, token
                  FROM shadow_lots
-                 WHERE qty > 0",
+                 WHERE qty > ?1",
             )
             .context("failed to prepare shadow open lots query")?;
-        let mut rows = stmt.query([]).context("failed querying shadow open lots")?;
+        let mut rows = stmt
+            .query(params![SHADOW_LOT_OPEN_EPS])
+            .context("failed querying shadow open lots")?;
 
         let mut pairs = HashSet::new();
         while let Some(row) = rows.next().context("failed iterating shadow open lots")? {
@@ -149,7 +163,7 @@ impl SqliteStore {
         exit_price_sol: f64,
         closed_ts: DateTime<Utc>,
     ) -> Result<ShadowCloseOutcome> {
-        const EPS: f64 = 1e-12;
+        const EPS: f64 = SHADOW_LOT_OPEN_EPS;
 
         if target_qty <= EPS {
             return Ok(ShadowCloseOutcome {
@@ -197,7 +211,7 @@ impl SqliteStore {
         exit_price_sol: f64,
         closed_ts: DateTime<Utc>,
     ) -> rusqlite::Result<ShadowCloseOutcome> {
-        const EPS: f64 = 1e-12;
+        const EPS: f64 = SHADOW_LOT_OPEN_EPS;
 
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
         let close_result = (|| -> rusqlite::Result<ShadowCloseOutcome> {
@@ -280,8 +294,8 @@ impl SqliteStore {
             let remaining_lots: i64 = self.conn.query_row(
                 "SELECT COUNT(*)
                  FROM shadow_lots
-                 WHERE wallet_id = ?1 AND token = ?2 AND qty > 0",
-                params![wallet_id, token],
+                 WHERE wallet_id = ?1 AND token = ?2 AND qty > ?3",
+                params![wallet_id, token, SHADOW_LOT_OPEN_EPS],
                 |row| row.get(0),
             )?;
 

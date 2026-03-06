@@ -526,6 +526,87 @@ mod tests {
     }
 
     #[test]
+    fn sell_does_not_treat_dust_lot_as_unfollowed_exit() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-unfollowed-dust-exit.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut follow = follow_snapshot(&["leader-wallet"]);
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let sell_ts = DateTime::parse_from_rfc3339("2026-02-12T12:05:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            buy_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
+
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMint".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-dust-demote".to_string(),
+            slot: 20,
+            ts_utc: buy_ts,
+        };
+        service
+            .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
+            .expect_recorded("buy signal expected");
+
+        let lots = store.list_shadow_lots("leader-wallet", "TokenMint")?;
+        assert_eq!(lots.len(), 1, "expected single open lot before dusting");
+        store.update_shadow_lot(lots[0].id, 1e-13, 1e-15)?;
+        assert!(
+            !store.has_shadow_lots("leader-wallet", "TokenMint")?,
+            "dust lot should not count as open inventory"
+        );
+
+        follow.active.clear();
+        follow
+            .demoted_at
+            .insert("leader-wallet".to_string(), sell_ts - Duration::seconds(30));
+        store.deactivate_follow_wallet(
+            "leader-wallet",
+            sell_ts - Duration::seconds(30),
+            "test-demote",
+        )?;
+
+        let sell = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "TokenMint".to_string(),
+            token_out: SOL_MINT.to_string(),
+            amount_in: 1000.0,
+            amount_out: 1.0,
+            signature: "sig-sell-dust-demote".to_string(),
+            slot: 21,
+            ts_utc: sell_ts,
+        };
+        let outcome =
+            service.process_swap(&store, &sell, &follow, sell_ts + Duration::seconds(1))?;
+        outcome.expect_dropped(
+            ShadowDropReason::NotFollowed,
+            "dust lot should not unlock unfollowed sell exit",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn buy_uses_temporal_follow_membership_when_runtime_set_is_stale() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("shadow-temporal-follow.db");

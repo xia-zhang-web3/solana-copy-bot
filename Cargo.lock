@@ -233,6 +233,7 @@ dependencies = [
  "copybot-ingestion",
  "copybot-shadow",
  "copybot-storage",
+ "rusqlite",
  "tokio",
  "tracing",
  "tracing-subscriber",
