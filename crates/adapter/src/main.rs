@@ -816,7 +816,7 @@ async fn submit(
 ) -> impl IntoResponse {
     if let Err(reject) = state.auth.verify(&headers, raw_body.as_ref()).await {
         return (
-            StatusCode::OK,
+            submit_http_status_for_reject(&reject),
             Json(reject_to_json(
                 &reject,
                 None,
@@ -828,13 +828,14 @@ async fn submit(
     let request: SubmitRequest = match serde_json::from_slice(raw_body.as_ref()) {
         Ok(value) => value,
         Err(error) => {
+            let reject = Reject::terminal(
+                "invalid_json",
+                format!("request body is not valid JSON: {}", error),
+            );
             return (
-                StatusCode::OK,
+                submit_http_status_for_reject(&reject),
                 Json(reject_to_json(
-                    &Reject::terminal(
-                        "invalid_json",
-                        format!("request body is not valid JSON: {}", error),
-                    ),
+                    &reject,
                     None,
                     &state.config.contract_version,
                 )),
@@ -846,7 +847,7 @@ async fn submit(
     match handle_submit(&state, &request, raw_body.as_ref()).await {
         Ok(value) => (StatusCode::OK, Json(value)),
         Err(reject) => (
-            StatusCode::OK,
+            submit_http_status_for_reject(&reject),
             Json(reject_to_json(
                 &reject,
                 Some(client_order_id.as_str()),
@@ -1617,6 +1618,14 @@ fn reject_to_json(reject: &Reject, client_order_id: Option<&str>, contract_versi
 }
 
 fn simulate_http_status_for_reject(reject: &Reject) -> StatusCode {
+    if reject.retryable {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    }
+}
+
+fn submit_http_status_for_reject(reject: &Reject) -> StatusCode {
     if reject.retryable {
         StatusCode::SERVICE_UNAVAILABLE
     } else {
@@ -2429,6 +2438,17 @@ mod tests {
         );
         let reject = Reject::terminal("invalid", "bad request");
         assert_eq!(simulate_http_status_for_reject(&reject), StatusCode::OK);
+    }
+
+    #[test]
+    fn submit_status_is_503_for_retryable_reject() {
+        let reject = Reject::retryable("busy", "upstream temporary issue");
+        assert_eq!(
+            submit_http_status_for_reject(&reject),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let reject = Reject::terminal("invalid", "bad request");
+        assert_eq!(submit_http_status_for_reject(&reject), StatusCode::OK);
     }
 
     #[tokio::test]
