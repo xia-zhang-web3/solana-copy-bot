@@ -1270,6 +1270,222 @@ mod tests {
     }
 
     #[test]
+    fn mark_order_simulated_rejects_status_regression_from_submitted() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-simulated-regression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-sim-regress:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-sim-regress-1",
+                &signal.signal_id,
+                "cb_sim_regress_a1",
+                "rpc",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-sim-regress-1",
+            "rpc",
+            "sig-sim-regress",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let error = store
+            .mark_order_simulated("ord-sim-regress-1", "ok", Some("late simulation"))
+            .expect_err("submitted order must not regress to execution_simulated");
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_submitted"));
+        let order = store
+            .execution_order_by_client_order_id("cb_sim_regress_a1")?
+            .context("expected order row after rejected regression")?;
+        assert_eq!(order.status, "execution_submitted");
+        Ok(())
+    }
+
+    #[test]
+    fn mark_order_submitted_rejects_status_regression_from_confirmed() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-submitted-regression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-submit-regress:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-submit-regress-1",
+                &signal.signal_id,
+                "cb_submit_regress_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-submit-regress-1",
+            "paper",
+            "paper:tx-submit-regress",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        let _ = store.finalize_execution_confirmed_order(
+            "ord-submit-regress-1",
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            1.0,
+            0.25,
+            0.25,
+            0.0,
+            50.0,
+            now + Duration::seconds(1),
+        )?;
+
+        let error = store
+            .mark_order_submitted(
+                "ord-submit-regress-1",
+                "paper",
+                "paper:tx-submit-regress-2",
+                now + Duration::seconds(2),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("confirmed order must not regress to execution_submitted");
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_confirmed"));
+        let order = store
+            .execution_order_by_client_order_id("cb_submit_regress_a1")?
+            .context("expected order row after rejected regression")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(
+            order.tx_signature.as_deref(),
+            Some("paper:tx-submit-regress")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mark_order_failed_rejects_status_regression_from_confirmed() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-failed-regression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-failed-regress:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-failed-regress-1",
+                &signal.signal_id,
+                "cb_failed_regress_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-failed-regress-1",
+            "paper",
+            "paper:tx-failed-regress",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        let _ = store.finalize_execution_confirmed_order(
+            "ord-failed-regress-1",
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            1.0,
+            0.25,
+            0.25,
+            0.0,
+            50.0,
+            now + Duration::seconds(1),
+        )?;
+
+        let error = store
+            .mark_order_failed(
+                "ord-failed-regress-1",
+                "late_failure",
+                Some("should not overwrite confirmed"),
+            )
+            .expect_err("confirmed order must not regress to execution_failed");
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_confirmed"));
+        let order = store
+            .execution_order_by_client_order_id("cb_failed_regress_a1")?
+            .context("expected order row after rejected failed regression")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(order.err_code, None);
+        Ok(())
+    }
+
+    #[test]
     fn parse_non_negative_i64_rejects_negative_values() {
         let error = parse_non_negative_i64("orders.ata_create_rent_lamports", "ord-1", Some(-7))
             .expect_err("negative sqlite value must be rejected");
