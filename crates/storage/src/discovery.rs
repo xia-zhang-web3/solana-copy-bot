@@ -110,6 +110,7 @@ impl SqliteStore {
         wallets: &[WalletUpsertRow],
         metrics: &[WalletMetricRow],
         desired_wallets: &[String],
+        allow_followlist_deactivate: bool,
         now: DateTime<Utc>,
         reason: &str,
     ) -> Result<FollowlistUpdateResult> {
@@ -211,12 +212,12 @@ impl SqliteStore {
 
             let now_raw = now.to_rfc3339();
             let mut result = FollowlistUpdateResult::default();
-            {
+            if allow_followlist_deactivate {
                 let mut deactivate_stmt = conn
                     .prepare_cached(
-                    "UPDATE followlist
-                     SET active = 0, removed_at = ?1, reason = ?2
-                     WHERE wallet_id = ?3 AND active = 1",
+                        "UPDATE followlist
+                         SET active = 0, removed_at = ?1, reason = ?2
+                         WHERE wallet_id = ?3 AND active = 1",
                     )
                     .context("failed to prepare followlist deactivate statement")?;
                 for wallet_id in active_wallets.iter() {

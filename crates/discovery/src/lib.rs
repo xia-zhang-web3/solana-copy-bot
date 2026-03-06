@@ -150,7 +150,13 @@ impl DiscoveryService {
         let mut swaps_warm_loaded = 0usize;
         let max_window_swaps_in_memory = self.config.max_window_swaps_in_memory.max(1);
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
-        let (snapshots, cached_summary, swaps_window, swaps_query_rows) = {
+        let (
+            snapshots,
+            cached_summary,
+            swaps_window,
+            swaps_query_rows,
+            followlist_deactivations_suppressed,
+        ) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -159,6 +165,7 @@ impl DiscoveryService {
                 }
             };
             state.evict_before(window_start);
+            state.clear_cap_truncation_if_window_caught_up(window_start);
             let mut out_of_order = false;
             let mut cursor_restored_from_store = false;
             if state.cursor.is_none() {
@@ -264,12 +271,14 @@ impl DiscoveryService {
             }
             swaps_evicted_due_cap = swaps_evicted_due_cap
                 .saturating_add(state.enforce_max_swaps(max_window_swaps_in_memory));
+            let followlist_deactivations_suppressed = state.cap_truncation_floor.is_some();
 
             let swaps_window = state.swaps.len();
             if swaps_window == 0 {
+                state.cap_truncation_floor = None;
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
-                (None, None, swaps_window, swaps_query_rows)
+                (None, None, swaps_window, swaps_query_rows, false)
             } else if state.last_snapshot_bucket == Some(metrics_window_start)
                 && state.last_summary.is_some()
             {
@@ -278,10 +287,17 @@ impl DiscoveryService {
                     state.last_summary.clone(),
                     swaps_window,
                     swaps_query_rows,
+                    followlist_deactivations_suppressed,
                 )
             } else {
                 let snapshots = self.build_wallet_snapshots_from_cached(store, &state.swaps, now);
-                (Some(snapshots), None, swaps_window, swaps_query_rows)
+                (
+                    Some(snapshots),
+                    None,
+                    swaps_window,
+                    swaps_query_rows,
+                    followlist_deactivations_suppressed,
+                )
             }
         };
 
@@ -302,6 +318,7 @@ impl DiscoveryService {
                 swaps_evicted_due_cap,
                 swaps_fetch_limit = fetch_limit,
                 discovery_cycle_duration_ms = elapsed_ms,
+                followlist_deactivations_suppressed,
                 "discovery cycle completed"
             );
             return Ok(DiscoverySummary {
@@ -340,6 +357,7 @@ impl DiscoveryService {
                 metrics_window_start = %metrics_window_start,
                 metrics_persisted = false,
                 snapshot_recomputed = false,
+                followlist_deactivations_suppressed,
                 discovery_cycle_duration_ms = elapsed_ms,
                 top_wallets = ?summary.top_wallets,
                 "discovery cycle completed"
@@ -397,6 +415,7 @@ impl DiscoveryService {
             &wallet_rows,
             metrics_to_persist,
             &desired_wallets,
+            !followlist_deactivations_suppressed,
             now,
             "discovery_score_refresh",
         )?;
@@ -444,6 +463,7 @@ impl DiscoveryService {
             metrics_window_start = %metrics_window_start,
             metrics_persisted = should_persist_metrics,
             snapshot_recomputed = true,
+            followlist_deactivations_suppressed,
             discovery_cycle_duration_ms = elapsed_ms,
             top_wallets = ?summary.top_wallets,
             "discovery cycle completed"
@@ -1692,6 +1712,106 @@ mod tests {
             "next snapshot bucket must recompute and include swaps accumulated while cached"
         );
         assert_eq!(summary_third.metrics_written, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn cap_truncation_suppresses_false_followlist_demotions_until_window_catches_up() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-cap-truncation-followlist-suppression.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let base_ts = DateTime::parse_from_rfc3339("2026-03-04T10:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for idx in 0..4 {
+            let buy_ts = base_ts + Duration::minutes((idx * 20) as i64);
+            let sell_ts = buy_ts + Duration::minutes(6);
+            store.insert_observed_swap(&swap(
+                "wallet_leader",
+                &format!("leader-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenLeader111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_leader",
+                &format!("leader-sell-{idx}"),
+                sell_ts,
+                "TokenLeader111111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.3,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_window_swaps_in_memory = 8;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.thin_market_min_unique_traders = 1;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let first_now = DateTime::parse_from_rfc3339("2026-03-04T15:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let second_now = first_now + Duration::minutes(1);
+
+        let first_summary = discovery.run_cycle(&store, first_now)?;
+        assert!(
+            first_summary.follow_promoted >= 1,
+            "seed cycle should promote the profitable leader"
+        );
+        let active_before = store.list_active_follow_wallets()?;
+        assert!(active_before.contains("wallet_leader"));
+
+        for idx in 0..8 {
+            let ts = first_now + Duration::seconds((idx + 1) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_noise",
+                &format!("noise-buy-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenNoise11111111111111111111111111111111",
+                0.2,
+                20.0,
+            ))?;
+        }
+
+        let second_summary = discovery.run_cycle(&store, second_now)?;
+        assert_eq!(
+            second_summary.follow_demoted, 0,
+            "cap-truncated recompute must suppress followlist demotions"
+        );
+        let active_after = store.list_active_follow_wallets()?;
+        assert!(
+            active_after.contains("wallet_leader"),
+            "leader must remain active while discovery window is known truncated by the cap"
+        );
+        let state = discovery
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert!(
+            state.cap_truncation_floor.is_some(),
+            "cap eviction should leave a truncation marker until the time window catches up"
+        );
         Ok(())
     }
 

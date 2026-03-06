@@ -2030,6 +2030,7 @@ mod tests {
                 &wallets,
                 &metrics,
                 &desired,
+                true,
                 window_start,
                 "retention-test",
             )?;
@@ -2094,6 +2095,7 @@ mod tests {
                 &wallets,
                 &metrics,
                 &desired,
+                true,
                 window_start,
                 "cold-start-retention-test",
             )?;
@@ -2153,6 +2155,7 @@ mod tests {
             &wallets,
             &metrics,
             &desired,
+            true,
             window_start,
             "seed-metrics",
         )?;
@@ -2164,6 +2167,7 @@ mod tests {
             &wallets,
             &[],
             &desired,
+            true,
             window_start + Duration::minutes(10),
             "skip-metrics",
         )?;
@@ -2174,6 +2178,62 @@ mod tests {
             .latest_wallet_metrics_window_start()?
             .expect("wallet_metrics window should survive empty batch");
         assert_eq!(latest_after, latest_before);
+        Ok(())
+    }
+
+    #[test]
+    fn persist_discovery_cycle_can_suppress_followlist_deactivations() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("discovery-followlist-deactivation-suppression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let wallet_id = "wallet-keep-active".to_string();
+        store.activate_follow_wallet(&wallet_id, now, "seed-follow")?;
+        assert!(store.list_active_follow_wallets()?.contains(&wallet_id));
+
+        let wallets = vec![WalletUpsertRow {
+            wallet_id: wallet_id.clone(),
+            first_seen: now,
+            last_seen: now,
+            status: "observed".to_string(),
+        }];
+
+        let suppressed = store.persist_discovery_cycle(
+            &wallets,
+            &[],
+            &[],
+            false,
+            now + Duration::minutes(1),
+            "suppressed-demotions",
+        )?;
+        assert_eq!(suppressed.activated, 0);
+        assert_eq!(suppressed.deactivated, 0);
+        assert!(
+            store.list_active_follow_wallets()?.contains(&wallet_id),
+            "active wallet must remain followed when deactivations are suppressed"
+        );
+
+        let unsuppressed = store.persist_discovery_cycle(
+            &wallets,
+            &[],
+            &[],
+            true,
+            now + Duration::minutes(2),
+            "allow-demotions",
+        )?;
+        assert_eq!(unsuppressed.activated, 0);
+        assert_eq!(unsuppressed.deactivated, 1);
+        assert!(
+            !store.list_active_follow_wallets()?.contains(&wallet_id),
+            "active wallet should deactivate again once suppression is lifted"
+        );
         Ok(())
     }
 
@@ -2344,6 +2404,7 @@ mod tests {
                 &wallets,
                 &metrics,
                 &desired_wallets,
+                true,
                 window_start,
                 "retry-test",
             )

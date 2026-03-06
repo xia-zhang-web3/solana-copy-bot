@@ -4,7 +4,7 @@ use copybot_core_types::SwapEvent;
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct DiscoveryCursor {
     pub(super) ts_utc: DateTime<Utc>,
     pub(super) slot: u64,
@@ -34,6 +34,7 @@ pub(super) struct DiscoveryWindowState {
     pub(super) swaps: VecDeque<SwapEvent>,
     pub(super) signatures: HashSet<String>,
     pub(super) cursor: Option<DiscoveryCursor>,
+    pub(super) cap_truncation_floor: Option<DiscoveryCursor>,
     pub(super) last_snapshot_bucket: Option<DateTime<Utc>>,
     pub(super) last_summary: Option<DiscoverySummary>,
 }
@@ -49,6 +50,15 @@ impl DiscoveryWindowState {
         }
     }
 
+    pub(super) fn clear_cap_truncation_if_window_caught_up(&mut self, window_start: DateTime<Utc>) {
+        let Some(floor) = self.cap_truncation_floor.as_ref() else {
+            return;
+        };
+        if DiscoveryCursor::bootstrap(window_start) > floor.clone() {
+            self.cap_truncation_floor = None;
+        }
+    }
+
     pub(super) fn enforce_max_swaps(&mut self, max_swaps: usize) -> usize {
         let max_swaps = max_swaps.max(1);
         let mut evicted = 0usize;
@@ -58,6 +68,9 @@ impl DiscoveryWindowState {
             };
             self.signatures.remove(expired.signature.as_str());
             evicted = evicted.saturating_add(1);
+        }
+        if evicted > 0 {
+            self.cap_truncation_floor = self.swaps.front().map(DiscoveryCursor::from_swap);
         }
         evicted
     }
