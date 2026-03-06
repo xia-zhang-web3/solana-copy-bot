@@ -2,7 +2,7 @@ use crate::batch_report::bump_route_counter;
 use crate::intent::ExecutionIntent;
 use crate::pretrade::PreTradeDecisionKind;
 use crate::submitter::{DynamicCuPriceHintSource, SubmitErrorKind};
-use crate::{ExecutionBatchReport, ExecutionRuntime, SignalResult};
+use crate::{ExecutionBatchReport, ExecutionRuntime, RetryOrSyncSignalOutcome, SignalResult};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_storage::{ExecutionOrderRow, SqliteStore};
@@ -78,8 +78,18 @@ impl ExecutionRuntime {
                 let detail = format!("{}: {}", reason_code, detail_text);
                 if attempt < self.max_submit_attempts {
                     let next_attempt = attempt.saturating_add(1);
-                    store.set_order_attempt(&order.order_id, next_attempt, Some(&detail))?;
-                    store.update_copy_signal_status(&intent.signal_id, "execution_pending")?;
+                    match self.schedule_order_retry_or_sync_signal(
+                        store,
+                        &intent.signal_id,
+                        &order.order_id,
+                        "execution_pending",
+                        "execution_pending",
+                        next_attempt,
+                        &detail,
+                    )? {
+                        RetryOrSyncSignalOutcome::Scheduled => {}
+                        RetryOrSyncSignalOutcome::Synced(result) => return Ok(result),
+                    }
                     bump_route_counter(
                         &mut report.pretrade_retry_scheduled_by_route,
                         selected_route,
@@ -168,8 +178,18 @@ impl ExecutionRuntime {
                     let detail = error.to_string();
                     if attempt < self.max_submit_attempts {
                         let next_attempt = attempt.saturating_add(1);
-                        store.set_order_attempt(&order.order_id, next_attempt, Some(&detail))?;
-                        store.update_copy_signal_status(&intent.signal_id, "execution_pending")?;
+                        match self.schedule_order_retry_or_sync_signal(
+                            store,
+                            &intent.signal_id,
+                            &order.order_id,
+                            "execution_pending",
+                            "execution_pending",
+                            next_attempt,
+                            &detail,
+                        )? {
+                            RetryOrSyncSignalOutcome::Scheduled => {}
+                            RetryOrSyncSignalOutcome::Synced(result) => return Ok(result),
+                        }
                         bump_route_counter(
                             &mut report.simulation_retry_scheduled_by_route,
                             selected_route,
@@ -326,8 +346,18 @@ impl ExecutionRuntime {
                         );
                         return Ok(SignalResult::Failed);
                     }
-                    store.set_order_attempt(&order.order_id, next_attempt, Some(&detail))?;
-                    store.update_copy_signal_status(&intent.signal_id, "execution_simulated")?;
+                    match self.schedule_order_retry_or_sync_signal(
+                        store,
+                        &intent.signal_id,
+                        &order.order_id,
+                        "execution_simulated",
+                        "execution_simulated",
+                        next_attempt,
+                        &detail,
+                    )? {
+                        RetryOrSyncSignalOutcome::Scheduled => {}
+                        RetryOrSyncSignalOutcome::Synced(result) => return Ok(result),
+                    }
                     bump_route_counter(&mut report.submit_retry_scheduled_by_route, selected_route);
                     let details = json!({
                         "signal_id": intent.signal_id,
