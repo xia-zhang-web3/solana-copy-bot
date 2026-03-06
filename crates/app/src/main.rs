@@ -1718,7 +1718,7 @@ async fn run_app_loop(
                     }
                 };
 
-                match insert_observed_swap_with_retry(&store, &swap).await {
+                match insert_observed_swap_with_retry(&sqlite_path, &swap).await {
                     Ok(true) => {
                         debug!(
                             signature = %swap.signature,

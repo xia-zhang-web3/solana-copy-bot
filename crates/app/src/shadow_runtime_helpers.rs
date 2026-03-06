@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
-use tokio::task::JoinSet;
+use tokio::task::{self, JoinSet};
 use tokio::time::Duration;
 use tracing::{info, warn};
 
@@ -13,10 +13,19 @@ use crate::telemetry::{reason_to_key, reason_to_stage};
 use copybot_shadow::ShadowProcessOutcome;
 
 pub(crate) async fn insert_observed_swap_with_retry(
-    store: &SqliteStore,
+    sqlite_path: &str,
     swap: &SwapEvent,
 ) -> Result<bool> {
-    store.insert_observed_swap(swap)
+    let sqlite_path = sqlite_path.to_string();
+    let swap = swap.clone();
+    task::spawn_blocking(move || {
+        let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
+            format!("failed to open sqlite db for observed swap write: {sqlite_path}")
+        })?;
+        store.insert_observed_swap(&swap)
+    })
+    .await
+    .context("observed swap write task failed")?
 }
 
 pub(crate) fn apply_follow_snapshot_update(
@@ -162,5 +171,103 @@ fn shadow_task(
         signature,
         key,
         outcome,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::insert_observed_swap_with_retry;
+    use anyhow::{Context, Result};
+    use chrono::{DateTime, Utc};
+    use copybot_core_types::SwapEvent;
+    use copybot_storage::SqliteStore;
+    use rusqlite::Connection;
+    use std::path::Path;
+    use std::thread;
+    use std::time::Duration as StdDuration;
+    use tokio::runtime::Builder;
+    use tokio::time::{sleep, timeout, Duration};
+
+    #[test]
+    fn insert_observed_swap_with_retry_does_not_block_runtime_under_sqlite_lock() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-async-write-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let blocker_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open blocker sqlite connection")?;
+        blocker_conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let sqlite_path = db_path
+            .to_str()
+            .context("sqlite path must be valid utf-8")?
+            .to_string();
+        let swap = SwapEvent {
+            wallet: "wallet-async".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-async".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-async".to_string(),
+            slot: 123,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        };
+
+        let runtime_handle = thread::spawn(move || -> Result<bool> {
+            let runtime = Builder::new_current_thread().enable_all().build()?;
+            runtime.block_on(async move {
+                let sqlite_path_for_task = sqlite_path.clone();
+                let swap_for_task = swap.clone();
+                let insert_task = tokio::spawn(async move {
+                    insert_observed_swap_with_retry(&sqlite_path_for_task, &swap_for_task).await
+                });
+
+                timeout(Duration::from_millis(50), sleep(Duration::from_millis(10)))
+                    .await
+                    .context(
+                        "current-thread runtime stalled while observed swap write was blocked",
+                    )?;
+
+                insert_task
+                    .await
+                    .context("observed swap task join failed")?
+            })
+        });
+
+        std::thread::sleep(StdDuration::from_millis(250));
+        blocker_conn.execute_batch("COMMIT")?;
+
+        let inserted = runtime_handle
+            .join()
+            .expect("runtime thread panicked")
+            .context("observed swap write should succeed after lock release")?;
+        assert!(inserted, "observed swap insert should report a fresh write");
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-06T11:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].signature, "sig-observed-swap-async");
+        let _ = std::fs::remove_file(db_path);
+
+        Ok(())
     }
 }
