@@ -22,6 +22,8 @@ pub(crate) fn log_execution_batch_report(report: &ExecutionBatchReport) {
         || !report.pretrade_retry_scheduled_by_route.is_empty()
         || !report.pretrade_terminal_rejected_by_route.is_empty()
         || !report.pretrade_failed_by_route.is_empty()
+        || !report.simulation_retry_scheduled_by_route.is_empty()
+        || !report.simulation_failed_by_route.is_empty()
         || !report.confirm_confirmed_by_route.is_empty()
         || !report.confirm_retry_scheduled_by_route.is_empty()
         || !report.confirm_failed_by_route.is_empty()
@@ -63,6 +65,8 @@ pub(crate) fn log_execution_batch_report(report: &ExecutionBatchReport) {
         pretrade_retry_scheduled_by_route = ?report.pretrade_retry_scheduled_by_route,
         pretrade_terminal_rejected_by_route = ?report.pretrade_terminal_rejected_by_route,
         pretrade_failed_by_route = ?report.pretrade_failed_by_route,
+        simulation_retry_scheduled_by_route = ?report.simulation_retry_scheduled_by_route,
+        simulation_failed_by_route = ?report.simulation_failed_by_route,
         confirm_confirmed_by_route = ?report.confirm_confirmed_by_route,
         confirm_retry_scheduled_by_route = ?report.confirm_retry_scheduled_by_route,
         confirm_failed_by_route = ?report.confirm_failed_by_route,

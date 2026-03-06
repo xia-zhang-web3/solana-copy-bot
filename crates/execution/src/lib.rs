@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{ExecutionConfig, RiskConfig};
 use copybot_storage::{
-    CopySignalRow, InsertExecutionOrderPendingOutcome, MarkOrderDroppedOutcome, SqliteStore,
-    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+    CopySignalRow, InsertExecutionOrderPendingOutcome, MarkOrderDroppedOutcome,
+    ScheduleOrderRetryOutcome, SqliteStore, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -53,6 +53,12 @@ pub(crate) enum SignalResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DropOrSyncSignalOutcome {
     Dropped,
+    Synced(SignalResult),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryOrSyncSignalOutcome {
+    Scheduled,
     Synced(SignalResult),
 }
 
@@ -115,6 +121,48 @@ impl ExecutionRuntime {
             }
             MarkOrderDroppedOutcome::NotFound => Err(anyhow::anyhow!(
                 "missing order after guarded drop transition: order_id={}",
+                order_id
+            )),
+        }
+    }
+
+    fn schedule_order_retry_or_sync_signal(
+        &self,
+        store: &SqliteStore,
+        signal_id: &str,
+        order_id: &str,
+        expected_order_status: &str,
+        retry_signal_status: &str,
+        next_attempt: u32,
+        detail: &str,
+    ) -> Result<RetryOrSyncSignalOutcome> {
+        match store.try_schedule_order_retry(
+            order_id,
+            expected_order_status,
+            next_attempt,
+            Some(detail),
+        )? {
+            ScheduleOrderRetryOutcome::Applied => {
+                store.update_copy_signal_status(signal_id, retry_signal_status)?;
+                Ok(RetryOrSyncSignalOutcome::Scheduled)
+            }
+            ScheduleOrderRetryOutcome::UnexpectedStatus(latest_status) => {
+                warn!(
+                    signal_id = %signal_id,
+                    order_id = %order_id,
+                    expected_order_status,
+                    retry_signal_status,
+                    latest_status = %latest_status,
+                    next_attempt,
+                    "retry scheduling lost race; syncing signal to actual order status"
+                );
+                store.update_copy_signal_status(signal_id, latest_status.as_str())?;
+                Ok(RetryOrSyncSignalOutcome::Synced(
+                    Self::signal_result_for_order_status(latest_status.as_str()),
+                ))
+            }
+            ScheduleOrderRetryOutcome::NotFound => Err(anyhow::anyhow!(
+                "missing order after guarded retry transition: order_id={}",
                 order_id
             )),
         }
@@ -859,6 +907,21 @@ mod tests {
         }
     }
 
+    struct ErrorIntentSimulator;
+
+    impl IntentSimulator for ErrorIntentSimulator {
+        fn simulate(
+            &self,
+            intent: &ExecutionIntent,
+            _route: &str,
+        ) -> Result<simulator::SimulationResult> {
+            Err(anyhow::anyhow!(
+                "forced simulation transport error for signal {}",
+                intent.signal_id
+            ))
+        }
+    }
+
     struct FailedConfirmer;
 
     impl OrderConfirmer for FailedConfirmer {
@@ -1424,6 +1487,78 @@ mod tests {
         let pending = store.list_copy_signals_by_status("execution_pending", 10)?;
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].signal_id, signal.signal_id);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn schedule_order_retry_or_sync_signal_keeps_live_signal_when_order_already_advanced(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("schedule-retry-syncs-live-status")?;
+        let now = Utc::now();
+        let signal = CopySignalRow {
+            signal_id: "shadow:retry-sync:w:buy:t1".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-retry-sync-live-status-1",
+                &signal.signal_id,
+                &client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-retry-sync-live-status-1",
+            "paper",
+            "paper:tx-retry-sync-live-status",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let runtime = make_paper_runtime(RiskConfig::default());
+        let outcome = runtime.schedule_order_retry_or_sync_signal(
+            &store,
+            &signal.signal_id,
+            "ord-retry-sync-live-status-1",
+            "execution_pending",
+            "execution_pending",
+            2,
+            "late retry scheduling",
+        )?;
+        assert_eq!(
+            outcome,
+            RetryOrSyncSignalOutcome::Synced(SignalResult::Skipped)
+        );
+
+        let submitted = store.list_copy_signals_by_status("execution_submitted", 10)?;
+        assert_eq!(submitted.len(), 1);
+        assert_eq!(submitted[0].signal_id, signal.signal_id);
+        let pending = store.list_copy_signals_by_status("execution_pending", 10)?;
+        assert!(pending.is_empty());
+
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("expected order row after retry sync")?;
+        assert_eq!(order.status, "execution_submitted");
+        assert_eq!(order.attempt, 1);
+        assert_eq!(order.simulation_error, None);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -2229,6 +2364,84 @@ mod tests {
         assert_eq!(
             after_second.err_code.as_deref(),
             Some("pretrade_attempts_exhausted")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_bounds_retryable_simulation_failures() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-simulation-retries")?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:sim-retry:w:buy:t1".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: Utc::now(),
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "paper".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: false,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(ErrorIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let first = runtime.process_batch(&store, Utc::now(), None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
+        assert_eq!(
+            first.simulation_retry_scheduled_by_route.get("paper"),
+            Some(&1),
+            "first simulation error should schedule retry"
+        );
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        let after_first = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should exist after first simulation attempt")?;
+        assert_eq!(after_first.status, "execution_pending");
+        assert_eq!(after_first.attempt, 2);
+
+        let second = runtime.process_batch(&store, Utc::now(), None)?;
+        assert_eq!(second.failed, 1);
+        assert_eq!(
+            second.simulation_failed_by_route.get("paper"),
+            Some(&1),
+            "simulation exhaustion should be attributed to active route"
+        );
+
+        let after_second = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should remain present after simulation exhaustion")?;
+        assert_eq!(after_second.status, "execution_failed");
+        assert_eq!(after_second.attempt, 2);
+        assert_eq!(
+            after_second.err_code.as_deref(),
+            Some("simulation_attempts_exhausted")
         );
 
         let _ = std::fs::remove_file(db_path);

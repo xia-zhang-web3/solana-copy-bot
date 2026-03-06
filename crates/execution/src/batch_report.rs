@@ -23,6 +23,8 @@ pub struct ExecutionBatchReport {
     pub pretrade_retry_scheduled_by_route: BTreeMap<String, u64>,
     pub pretrade_terminal_rejected_by_route: BTreeMap<String, u64>,
     pub pretrade_failed_by_route: BTreeMap<String, u64>,
+    pub simulation_retry_scheduled_by_route: BTreeMap<String, u64>,
+    pub simulation_failed_by_route: BTreeMap<String, u64>,
     pub confirm_confirmed_by_route: BTreeMap<String, u64>,
     pub confirm_retry_scheduled_by_route: BTreeMap<String, u64>,
     pub confirm_failed_by_route: BTreeMap<String, u64>,

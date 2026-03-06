@@ -13,6 +13,13 @@ pub enum MarkOrderDroppedOutcome {
     NotFound,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduleOrderRetryOutcome {
+    Applied,
+    UnexpectedStatus(String),
+    NotFound,
+}
+
 impl SqliteStore {
     fn current_order_status(&self, order_id: &str, action: &str) -> Result<Option<String>> {
         self.conn
@@ -445,28 +452,31 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn set_order_attempt(
+    pub fn try_schedule_order_retry(
         &self,
         order_id: &str,
+        expected_status: &str,
         attempt: u32,
         detail: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<ScheduleOrderRetryOutcome> {
+        const ACTION: &str = "scheduling order retry";
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE orders
                  SET attempt = ?1,
                      simulation_error = COALESCE(?2, simulation_error)
-                 WHERE order_id = ?3",
-                params![attempt.max(1) as i64, detail, order_id],
+                 WHERE order_id = ?3
+                   AND status = ?4",
+                params![attempt.max(1) as i64, detail, order_id, expected_status],
             )
         })?;
-        if changed == 0 {
-            return Err(anyhow!(
-                "failed setting order attempt: order_id={} not found",
-                order_id
-            ));
+        if changed > 0 {
+            return Ok(ScheduleOrderRetryOutcome::Applied);
         }
-        Ok(())
+        Ok(match self.current_order_status(order_id, ACTION)? {
+            Some(status) => ScheduleOrderRetryOutcome::UnexpectedStatus(status),
+            None => ScheduleOrderRetryOutcome::NotFound,
+        })
     }
 
     pub fn mark_order_confirmed(&self, order_id: &str, confirm_ts: DateTime<Utc>) -> Result<()> {
