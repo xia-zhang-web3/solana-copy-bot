@@ -2995,6 +2995,127 @@ mod tests {
     }
 
     #[test]
+    fn insert_observed_swaps_batch_returns_insert_flags_in_order() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-batch-flags.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let swap_a = SwapEvent {
+            wallet: "wallet-batch".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-batch-a".to_string(),
+            slot: 100,
+            ts_utc: now,
+        };
+        let swap_b = SwapEvent {
+            wallet: "wallet-batch".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-b".to_string(),
+            amount_in: 2.0,
+            amount_out: 20.0,
+            signature: "sig-batch-b".to_string(),
+            slot: 101,
+            ts_utc: now + Duration::seconds(1),
+        };
+
+        let inserted =
+            store.insert_observed_swaps_batch(&[swap_a.clone(), swap_a.clone(), swap_b.clone()])?;
+        assert_eq!(inserted, vec![true, false, true]);
+
+        let swaps = store.load_observed_swaps_since(now - Duration::seconds(1))?;
+        assert_eq!(swaps.len(), 2);
+        assert_eq!(swaps[0].signature, "sig-batch-a");
+        assert_eq!(swaps[1].signature, "sig-batch-b");
+        Ok(())
+    }
+
+    #[test]
+    fn insert_observed_swaps_batch_retries_after_write_lock() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-batch-retry.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let blocker_store = SqliteStore::open(Path::new(&db_path))?;
+        blocker_store
+            .conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_store
+            .conn
+            .execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_db_path = db_path.clone();
+        let worker_barrier = barrier.clone();
+        let handle = std::thread::spawn(move || -> Result<()> {
+            let worker_store = SqliteStore::open(Path::new(&worker_db_path))?;
+            worker_store
+                .conn
+                .busy_timeout(StdDuration::from_millis(1))
+                .context("failed to shorten worker busy timeout")?;
+            worker_barrier.wait();
+            let now = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc);
+            let inserted = worker_store.insert_observed_swaps_batch(&[
+                SwapEvent {
+                    wallet: "wallet-retry".to_string(),
+                    dex: "raydium".to_string(),
+                    token_in: "So11111111111111111111111111111111111111112".to_string(),
+                    token_out: "token-retry-a".to_string(),
+                    amount_in: 1.0,
+                    amount_out: 10.0,
+                    signature: "sig-observed-swap-batch-retry-a".to_string(),
+                    slot: 999,
+                    ts_utc: now,
+                },
+                SwapEvent {
+                    wallet: "wallet-retry".to_string(),
+                    dex: "raydium".to_string(),
+                    token_in: "So11111111111111111111111111111111111111112".to_string(),
+                    token_out: "token-retry-b".to_string(),
+                    amount_in: 2.0,
+                    amount_out: 20.0,
+                    signature: "sig-observed-swap-batch-retry-b".to_string(),
+                    slot: 1000,
+                    ts_utc: now + Duration::seconds(1),
+                },
+            ])?;
+            assert_eq!(inserted, vec![true, true]);
+            Ok(())
+        });
+
+        barrier.wait();
+        std::thread::sleep(StdDuration::from_millis(250));
+        blocker_store.conn.execute_batch("COMMIT")?;
+        handle
+            .join()
+            .expect("worker thread panicked")
+            .context("worker batch insert should succeed after retry")?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-06T11:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(swaps.len(), 2);
+        Ok(())
+    }
+
+    #[test]
     fn record_heartbeat_retries_after_write_lock() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("heartbeat-retry.db");
