@@ -115,10 +115,41 @@ pub(super) fn redacted_url_for_log(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         String::new()
-    } else if let Some((prefix, _)) = trimmed.split_once('?') {
-        format!("{prefix}?<redacted>")
     } else {
-        trimmed.to_string()
+        match Url::parse(trimmed) {
+            Ok(mut parsed) => {
+                let had_query = parsed.query().is_some();
+                let had_password = parsed.password().is_some();
+                let had_username = !parsed.username().is_empty();
+                if had_username {
+                    let _ = parsed.set_username("");
+                }
+                if had_password {
+                    let _ = parsed.set_password(None);
+                }
+                if had_query {
+                    parsed.set_query(None);
+                }
+
+                let sanitized = parsed.to_string();
+                if had_query {
+                    if let Some((base, fragment)) = sanitized.split_once('#') {
+                        format!("{base}?<redacted>#{fragment}")
+                    } else {
+                        format!("{sanitized}?<redacted>")
+                    }
+                } else {
+                    sanitized
+                }
+            }
+            Err(_) => {
+                if let Some((prefix, _)) = trimmed.split_once('?') {
+                    format!("{prefix}?<redacted>")
+                } else {
+                    trimmed.to_string()
+                }
+            }
+        }
     }
 }
 
@@ -727,6 +758,18 @@ mod tests {
         assert_eq!(
             redacted_url_for_log("https://rpc.example.com/v1?token=abc&x=1"),
             "https://rpc.example.com/v1?<redacted>"
+        );
+    }
+
+    #[test]
+    fn redacted_url_for_log_redacts_userinfo_and_query() {
+        assert_eq!(
+            redacted_url_for_log("https://user:secret@rpc.example.com/v1?api-key=secret"),
+            "https://rpc.example.com/v1?<redacted>"
+        );
+        assert_eq!(
+            redacted_url_for_log("wss://token@mainnet.helius-rpc.com/socket"),
+            "wss://mainnet.helius-rpc.com/socket"
         );
     }
 
