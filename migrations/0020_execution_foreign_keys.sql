@@ -1,11 +1,11 @@
-DELETE FROM fills
-WHERE order_id NOT IN (
-    SELECT order_id FROM orders
-);
-
 DELETE FROM orders
 WHERE signal_id NOT IN (
     SELECT signal_id FROM copy_signals
+);
+
+DELETE FROM fills
+WHERE order_id NOT IN (
+    SELECT order_id FROM orders
 );
 
 ALTER TABLE orders RENAME TO orders_old;

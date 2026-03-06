@@ -2396,6 +2396,18 @@ mod tests {
             "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
+                "ord-orphan",
+                "token-orphan-chain",
+                0.5_f64,
+                0.20_f64,
+                0.0_f64,
+                0.0_f64,
+            ],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
                 "ord-missing",
                 "token-b",
                 2.0_f64,
