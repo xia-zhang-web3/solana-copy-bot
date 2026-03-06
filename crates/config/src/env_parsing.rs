@@ -19,9 +19,7 @@ pub(crate) fn parse_env_bool(env_name: &str) -> Result<Option<bool>> {
     };
     let trimmed = raw.trim();
     parse_bool_value(trimmed).map(Some).ok_or_else(|| {
-        anyhow!(
-            "{env_name} must be a valid bool (1/0/true/false/yes/no/on/off), got {trimmed:?}"
-        )
+        anyhow!("{env_name} must be a valid bool (1/0/true/false/yes/no/on/off), got {trimmed:?}")
     })
 }
 
@@ -201,6 +199,11 @@ where
         }
         values.insert(route, parsed_value);
     }
+    if values.is_empty() {
+        return Err(anyhow!(
+            "{env_name} must contain at least one route:value entry"
+        ));
+    }
     Ok(values)
 }
 
@@ -220,6 +223,34 @@ pub(crate) fn parse_execution_route_list_env(csv: &str, env_name: &str) -> Resul
             ));
         }
         values.push(route.to_string());
+    }
+    if values.is_empty() {
+        return Err(anyhow!("{env_name} must contain at least one route entry"));
+    }
+    Ok(values)
+}
+
+pub(crate) fn parse_env_string_list(csv: &str, env_name: &str) -> Result<Vec<String>> {
+    let mut values = Vec::new();
+    let mut seen = HashSet::new();
+    for token in csv.trim().trim_matches('"').trim_matches('\'').split(',') {
+        let value = token.trim().trim_matches('"').trim_matches('\'');
+        if value.is_empty() {
+            continue;
+        }
+        let normalized = value.to_string();
+        if !seen.insert(normalized.clone()) {
+            return Err(anyhow!(
+                "{env_name} contains duplicate value after normalization: {}",
+                normalized
+            ));
+        }
+        values.push(normalized);
+    }
+    if values.is_empty() {
+        return Err(anyhow!(
+            "{env_name} must contain at least one non-empty value"
+        ));
     }
     Ok(values)
 }

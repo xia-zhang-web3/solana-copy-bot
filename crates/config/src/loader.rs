@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use super::env_parsing::{
     normalize_ingestion_queue_overflow_policy, normalize_ingestion_source, parse_env_bool,
-    parse_env_number, parse_execution_route_list_env, parse_execution_route_map_env,
-    validate_adapter_route_policy_completeness,
+    parse_env_number, parse_env_string_list, parse_execution_route_list_env,
+    parse_execution_route_map_env, validate_adapter_route_policy_completeness,
 };
 use super::AppConfig;
 
@@ -72,34 +72,12 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         config.ingestion.yellowstone_reconnect_max_ms = reconnect_max_ms;
     }
     if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_YELLOWSTONE_PROGRAM_IDS") {
-        let values: Vec<String> = program_ids_csv
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .split(',')
-            .map(str::trim)
-            .map(|value| value.trim_matches('"').trim_matches('\''))
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .collect();
-        if !values.is_empty() {
-            config.ingestion.yellowstone_program_ids = values;
-        }
+        config.ingestion.yellowstone_program_ids =
+            parse_env_string_list(&program_ids_csv, "SOLANA_COPY_BOT_YELLOWSTONE_PROGRAM_IDS")?;
     }
     if let Ok(http_urls_csv) = env::var("SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS") {
-        let values: Vec<String> = http_urls_csv
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .split(',')
-            .map(str::trim)
-            .map(|value| value.trim_matches('"').trim_matches('\''))
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .collect();
-        if !values.is_empty() {
-            config.ingestion.helius_http_urls = values;
-        }
+        config.ingestion.helius_http_urls =
+            parse_env_string_list(&http_urls_csv, "SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS")?;
     }
     if let Some(fetch_concurrency) =
         parse_env_number::<usize>("SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY", "usize")?
@@ -111,10 +89,9 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.ingestion.ws_queue_capacity = ws_queue_capacity;
     }
-    if let Some(output_queue_capacity) = parse_env_number::<usize>(
-        "SOLANA_COPY_BOT_INGESTION_OUTPUT_QUEUE_CAPACITY",
-        "usize",
-    )? {
+    if let Some(output_queue_capacity) =
+        parse_env_number::<usize>("SOLANA_COPY_BOT_INGESTION_OUTPUT_QUEUE_CAPACITY", "usize")?
+    {
         config.ingestion.output_queue_capacity = output_queue_capacity;
     }
     if let Some(prefetch_stale_drop_ms) =
@@ -141,10 +118,9 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.ingestion.reorder_max_buffer = reorder_max_buffer;
     }
-    if let Some(telemetry_report_seconds) = parse_env_number::<u64>(
-        "SOLANA_COPY_BOT_INGESTION_TELEMETRY_REPORT_SECONDS",
-        "u64",
-    )? {
+    if let Some(telemetry_report_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_INGESTION_TELEMETRY_REPORT_SECONDS", "u64")?
+    {
         config.ingestion.telemetry_report_seconds = telemetry_report_seconds;
     }
     if let Some(tx_fetch_retries) =
@@ -435,10 +411,9 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(execution_signer_pubkey) = env::var("SOLANA_COPY_BOT_EXECUTION_SIGNER_PUBKEY") {
         config.execution.execution_signer_pubkey = execution_signer_pubkey;
     }
-    if let Some(pretrade_min_sol_reserve) = parse_env_number::<f64>(
-        "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE",
-        "f64",
-    )? {
+    if let Some(pretrade_min_sol_reserve) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE", "f64")?
+    {
         config.execution.pretrade_min_sol_reserve = pretrade_min_sol_reserve;
     }
     if let Some(pretrade_require_token_account) =
@@ -498,8 +473,7 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.shadow.min_token_age_seconds = min_token_age_seconds;
     }
-    if let Some(min_holders) =
-        parse_env_number::<u64>("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "u64")?
+    if let Some(min_holders) = parse_env_number::<u64>("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "u64")?
     {
         config.shadow.min_holders = min_holders;
     }
@@ -563,10 +537,9 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.risk.shadow_killswitch_enabled = shadow_killswitch_enabled;
     }
-    if let Some(shadow_soft_exposure_cap_sol) = parse_env_number::<f64>(
-        "SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL",
-        "f64",
-    )? {
+    if let Some(shadow_soft_exposure_cap_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL", "f64")?
+    {
         config.risk.shadow_soft_exposure_cap_sol = shadow_soft_exposure_cap_sol;
     }
     if let Some(shadow_soft_pause_minutes) =
@@ -574,10 +547,9 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.risk.shadow_soft_pause_minutes = shadow_soft_pause_minutes;
     }
-    if let Some(shadow_hard_exposure_cap_sol) = parse_env_number::<f64>(
-        "SOLANA_COPY_BOT_RISK_SHADOW_HARD_EXPOSURE_CAP_SOL",
-        "f64",
-    )? {
+    if let Some(shadow_hard_exposure_cap_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_SHADOW_HARD_EXPOSURE_CAP_SOL", "f64")?
+    {
         config.risk.shadow_hard_exposure_cap_sol = shadow_hard_exposure_cap_sol;
     }
     if let Some(shadow_drawdown_1h_stop_sol) =
@@ -602,10 +574,9 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     )? {
         config.risk.shadow_drawdown_6h_pause_minutes = shadow_drawdown_6h_pause_minutes;
     }
-    if let Some(shadow_drawdown_24h_stop_sol) = parse_env_number::<f64>(
-        "SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_24H_STOP_SOL",
-        "f64",
-    )? {
+    if let Some(shadow_drawdown_24h_stop_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_SHADOW_DRAWDOWN_24H_STOP_SOL", "f64")?
+    {
         config.risk.shadow_drawdown_24h_stop_sol = shadow_drawdown_24h_stop_sol;
     }
     if let Some(shadow_rug_loss_return_threshold) = parse_env_number::<f64>(
@@ -614,10 +585,9 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     )? {
         config.risk.shadow_rug_loss_return_threshold = shadow_rug_loss_return_threshold;
     }
-    if let Some(shadow_rug_loss_window_minutes) = parse_env_number::<u64>(
-        "SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_WINDOW_MINUTES",
-        "u64",
-    )? {
+    if let Some(shadow_rug_loss_window_minutes) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_WINDOW_MINUTES", "u64")?
+    {
         config.risk.shadow_rug_loss_window_minutes = shadow_rug_loss_window_minutes;
     }
     if let Some(shadow_rug_loss_count_threshold) = parse_env_number::<u64>(
@@ -632,16 +602,14 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     )? {
         config.risk.shadow_rug_loss_rate_sample_size = shadow_rug_loss_rate_sample_size;
     }
-    if let Some(shadow_rug_loss_rate_threshold) = parse_env_number::<f64>(
-        "SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_THRESHOLD",
-        "f64",
-    )? {
+    if let Some(shadow_rug_loss_rate_threshold) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_SHADOW_RUG_LOSS_RATE_THRESHOLD", "f64")?
+    {
         config.risk.shadow_rug_loss_rate_threshold = shadow_rug_loss_rate_threshold;
     }
-    if let Some(shadow_infra_window_minutes) = parse_env_number::<u64>(
-        "SOLANA_COPY_BOT_RISK_SHADOW_INFRA_WINDOW_MINUTES",
-        "u64",
-    )? {
+    if let Some(shadow_infra_window_minutes) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_WINDOW_MINUTES", "u64")?
+    {
         config.risk.shadow_infra_window_minutes = shadow_infra_window_minutes;
     }
     if let Some(shadow_infra_lag_p95_threshold_ms) = parse_env_number::<u64>(
@@ -687,22 +655,14 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     )? {
         config.risk.shadow_universe_min_eligible_wallets = shadow_universe_min_eligible_wallets;
     }
-    if let Some(shadow_universe_breach_cycles) = parse_env_number::<u64>(
-        "SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES",
-        "u64",
-    )? {
+    if let Some(shadow_universe_breach_cycles) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES", "u64")?
+    {
         config.risk.shadow_universe_breach_cycles = shadow_universe_breach_cycles;
     }
     if let Ok(program_ids_csv) = env::var("SOLANA_COPY_BOT_PROGRAM_IDS") {
-        let values: Vec<String> = program_ids_csv
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .collect();
-        if !values.is_empty() {
-            config.ingestion.subscribe_program_ids = values;
-        }
+        config.ingestion.subscribe_program_ids =
+            parse_env_string_list(&program_ids_csv, "SOLANA_COPY_BOT_PROGRAM_IDS")?;
     }
 
     normalize_loaded_config(&mut config)?;

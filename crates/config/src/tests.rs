@@ -103,6 +103,51 @@ fn load_from_env_rejects_invalid_route_map_numeric_value() {
 }
 
 #[test]
+fn load_from_env_rejects_empty_submit_allowed_routes_override() {
+    assert_string_list_env_rejected_contains(
+        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ALLOWED_ROUTES",
+        ", ,",
+        "must contain at least one route entry",
+    );
+}
+
+#[test]
+fn load_from_env_rejects_empty_submit_route_map_override() {
+    assert_route_map_env_rejected_contains(
+        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ROUTE_TIP_LAMPORTS",
+        ", ,",
+        "must contain at least one route:value entry",
+    );
+}
+
+#[test]
+fn load_from_env_rejects_empty_yellowstone_program_ids_override() {
+    assert_string_list_env_rejected_contains(
+        "SOLANA_COPY_BOT_YELLOWSTONE_PROGRAM_IDS",
+        "\"\", '' ,",
+        "must contain at least one non-empty value",
+    );
+}
+
+#[test]
+fn load_from_env_rejects_duplicate_helius_http_urls_override() {
+    assert_string_list_env_rejected_contains(
+        "SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS",
+        "https://rpc.example.com, https://rpc.example.com",
+        "duplicate value after normalization",
+    );
+}
+
+#[test]
+fn load_from_env_rejects_duplicate_program_ids_override() {
+    assert_string_list_env_rejected_contains(
+        "SOLANA_COPY_BOT_PROGRAM_IDS",
+        "program-a, program-a",
+        "duplicate value after normalization",
+    );
+}
+
+#[test]
 fn load_from_env_rejects_incomplete_route_policy_for_allowed_routes() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
@@ -418,17 +463,21 @@ fn load_from_env_rejects_invalid_execution_poll_interval_override() {
 fn load_from_env_rejects_invalid_execution_pretrade_min_sol_reserve_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE", "abc", || {
-                let err = load_from_env_or_default(config_path)
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE",
+                "abc",
+                || {
+                    let err = load_from_env_or_default(config_path)
                     .expect_err(
                         "invalid execution pretrade min sol reserve override must fail config load",
                     )
                     .to_string();
-                assert!(
-                    err.contains("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE"),
-                    "unexpected error: {err}"
-                );
-            });
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }
@@ -447,7 +496,9 @@ fn load_from_env_rejects_invalid_execution_pretrade_fee_override() {
                         )
                         .to_string();
                     assert!(
-                        err.contains("SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS"),
+                        err.contains(
+                            "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_LAMPORTS"
+                        ),
                         "unexpected error: {err}"
                     );
                 },
@@ -460,17 +511,21 @@ fn load_from_env_rejects_invalid_execution_pretrade_fee_override() {
 fn load_from_env_rejects_invalid_execution_max_submit_attempts_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS", "nope", || {
-                let err = load_from_env_or_default(config_path)
-                    .expect_err(
-                        "invalid execution max submit attempts override must fail config load",
-                    )
-                    .to_string();
-                assert!(
-                    err.contains("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS"),
-                    "unexpected error: {err}"
-                );
-            });
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS",
+                "nope",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid execution max submit attempts override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_EXECUTION_MAX_SUBMIT_ATTEMPTS"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }
@@ -479,15 +534,21 @@ fn load_from_env_rejects_invalid_execution_max_submit_attempts_override() {
 fn load_from_env_rejects_invalid_yellowstone_connect_timeout_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS", "12.5", || {
-                let err = load_from_env_or_default(config_path)
-                    .expect_err("invalid yellowstone connect timeout override must fail config load")
-                    .to_string();
-                assert!(
-                    err.contains("SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS"),
-                    "unexpected error: {err}"
-                );
-            });
+            with_env_var(
+                "SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS",
+                "12.5",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid yellowstone connect timeout override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }
@@ -498,7 +559,9 @@ fn load_from_env_rejects_invalid_ingestion_fetch_concurrency_override() {
         with_clean_copybot_env(|| {
             with_env_var("SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY", "abc", || {
                 let err = load_from_env_or_default(config_path)
-                    .expect_err("invalid ingestion fetch_concurrency override must fail config load")
+                    .expect_err(
+                        "invalid ingestion fetch_concurrency override must fail config load",
+                    )
                     .to_string();
                 assert!(
                     err.contains("SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY"),
@@ -530,17 +593,21 @@ fn load_from_env_rejects_invalid_ingestion_tx_fetch_retries_override() {
 fn load_from_env_rejects_invalid_ingestion_global_rpc_rps_limit_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT", "many", || {
-                let err = load_from_env_or_default(config_path)
-                    .expect_err(
-                        "invalid ingestion global_rpc_rps_limit override must fail config load",
-                    )
-                    .to_string();
-                assert!(
-                    err.contains("SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT"),
-                    "unexpected error: {err}"
-                );
-            });
+            with_env_var(
+                "SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT",
+                "many",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid ingestion global_rpc_rps_limit override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }
@@ -549,17 +616,21 @@ fn load_from_env_rejects_invalid_ingestion_global_rpc_rps_limit_override() {
 fn load_from_env_rejects_invalid_shadow_min_token_age_seconds_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS", "soon", || {
-                let err = load_from_env_or_default(config_path)
-                    .expect_err(
-                        "invalid shadow min_token_age_seconds override must fail config load",
-                    )
-                    .to_string();
-                assert!(
-                    err.contains("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS"),
-                    "unexpected error: {err}"
-                );
-            });
+            with_env_var(
+                "SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS",
+                "soon",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid shadow min_token_age_seconds override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_SHADOW_MIN_TOKEN_AGE_SECONDS"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }
@@ -585,17 +656,21 @@ fn load_from_env_rejects_invalid_shadow_min_liquidity_sol_override() {
 fn load_from_env_rejects_invalid_risk_max_concurrent_positions_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS", "-1", || {
-                let err = load_from_env_or_default(config_path)
-                    .expect_err(
-                        "invalid risk max_concurrent_positions override must fail config load",
-                    )
-                    .to_string();
-                assert!(
-                    err.contains("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS"),
-                    "unexpected error: {err}"
-                );
-            });
+            with_env_var(
+                "SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS",
+                "-1",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid risk max_concurrent_positions override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }
@@ -604,17 +679,21 @@ fn load_from_env_rejects_invalid_risk_max_concurrent_positions_override() {
 fn load_from_env_rejects_invalid_risk_shadow_soft_exposure_cap_sol_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL", "cap", || {
-                let err = load_from_env_or_default(config_path)
-                    .expect_err(
-                        "invalid risk shadow soft exposure cap override must fail config load",
-                    )
-                    .to_string();
-                assert!(
-                    err.contains("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL"),
-                    "unexpected error: {err}"
-                );
-            });
+            with_env_var(
+                "SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL",
+                "cap",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid risk shadow soft exposure cap override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }
@@ -623,17 +702,21 @@ fn load_from_env_rejects_invalid_risk_shadow_soft_exposure_cap_sol_override() {
 fn load_from_env_rejects_invalid_risk_shadow_universe_breach_cycles_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES", "many", || {
-                let err = load_from_env_or_default(config_path)
+            with_env_var(
+                "SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES",
+                "many",
+                || {
+                    let err = load_from_env_or_default(config_path)
                     .expect_err(
                         "invalid risk shadow universe breach cycles override must fail config load",
                     )
                     .to_string();
-                assert!(
-                    err.contains("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES"),
-                    "unexpected error: {err}"
-                );
-            });
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_RISK_SHADOW_UNIVERSE_BREACH_CYCLES"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }
@@ -1028,6 +1111,26 @@ fn assert_route_map_env_rejected_contains(env_name: &'static str, env_value: &st
             with_env_var(env_name, env_value, || {
                 let err = load_from_env_or_default(config_path)
                     .expect_err("invalid route map env should fail")
+                    .to_string();
+                assert!(
+                    err.contains(env_name),
+                    "error should mention env var, got: {err}"
+                );
+                assert!(
+                    err.contains(needle),
+                    "error should contain '{needle}', got: {err}"
+                );
+            });
+        });
+    });
+}
+
+fn assert_string_list_env_rejected_contains(env_name: &'static str, env_value: &str, needle: &str) {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(env_name, env_value, || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("invalid string-list env should fail")
                     .to_string();
                 assert!(
                     err.contains(env_name),
