@@ -32,6 +32,16 @@ impl SubmitClaimGuard {
     pub(crate) fn release_claim_on_drop(&mut self) {
         self.release_on_drop = true;
     }
+
+    pub(crate) async fn release_now(&mut self) -> anyhow::Result<bool> {
+        if !self.release_on_drop {
+            return Ok(false);
+        }
+        self.release_on_drop = false;
+        self.idempotency
+            .release_submit_claim_async(self.client_order_id.as_str(), self.request_id.as_str())
+            .await
+    }
 }
 
 impl Drop for SubmitClaimGuard {
@@ -39,26 +49,46 @@ impl Drop for SubmitClaimGuard {
         if !self.release_on_drop {
             return;
         }
-        match self
-            .idempotency
-            .release_submit_claim(self.client_order_id.as_str(), self.request_id.as_str())
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                warn!(
-                    client_order_id = %self.client_order_id,
-                    request_id = %self.request_id,
-                    "idempotency submit claim release had no owner-match row"
+        let idempotency = self.idempotency.clone();
+        let client_order_id = self.client_order_id.clone();
+        let request_id = self.request_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                log_release_result(
+                    client_order_id.as_str(),
+                    request_id.as_str(),
+                    idempotency
+                        .release_submit_claim_async(client_order_id.as_str(), request_id.as_str())
+                        .await,
                 );
-            }
-            Err(error) => {
-                warn!(
-                    client_order_id = %self.client_order_id,
-                    request_id = %self.request_id,
-                    error = %error,
-                    "failed to release idempotency submit claim"
-                );
-            }
+            });
+        } else {
+            log_release_result(
+                client_order_id.as_str(),
+                request_id.as_str(),
+                idempotency.release_submit_claim(client_order_id.as_str(), request_id.as_str()),
+            );
+        }
+    }
+}
+
+fn log_release_result(client_order_id: &str, request_id: &str, release_result: anyhow::Result<bool>) {
+    match release_result {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(
+                client_order_id = %client_order_id,
+                request_id = %request_id,
+                "idempotency submit claim release had no owner-match row"
+            );
+        }
+        Err(error) => {
+            warn!(
+                client_order_id = %client_order_id,
+                request_id = %request_id,
+                error = %error,
+                "failed to release idempotency submit claim"
+            );
         }
     }
 }

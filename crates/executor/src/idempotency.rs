@@ -10,6 +10,7 @@ use std::{
         Mutex, TryLockError,
     },
 };
+use tokio::task;
 use tracing::debug;
 
 #[cfg(test)]
@@ -129,6 +130,17 @@ impl SubmitIdempotencyStore {
         Ok(Some(parsed))
     }
 
+    pub(crate) async fn load_submit_response_async(
+        self: &std::sync::Arc<Self>,
+        client_order_id: &str,
+    ) -> Result<Option<Value>> {
+        let store = std::sync::Arc::clone(self);
+        let client_order_id = client_order_id.to_string();
+        task::spawn_blocking(move || store.load_submit_response(client_order_id.as_str()))
+            .await
+            .context("idempotency blocking task join failed")?
+    }
+
     pub(crate) fn load_cached_or_claim_submit(
         &self,
         client_order_id: &str,
@@ -228,6 +240,26 @@ impl SubmitIdempotencyStore {
         Ok(SubmitClaimOutcome::InFlight)
     }
 
+    pub(crate) async fn load_cached_or_claim_submit_async(
+        self: &std::sync::Arc<Self>,
+        client_order_id: &str,
+        request_id: &str,
+        claim_ttl_sec: u64,
+    ) -> Result<SubmitClaimOutcome> {
+        let store = std::sync::Arc::clone(self);
+        let client_order_id = client_order_id.to_string();
+        let request_id = request_id.to_string();
+        task::spawn_blocking(move || {
+            store.load_cached_or_claim_submit(
+                client_order_id.as_str(),
+                request_id.as_str(),
+                claim_ttl_sec,
+            )
+        })
+        .await
+        .context("idempotency blocking task join failed")?
+    }
+
     pub(crate) fn claim_hmac_nonce(
         &self,
         nonce_key: &str,
@@ -295,6 +327,22 @@ impl SubmitIdempotencyStore {
         } else {
             Ok(HmacNonceClaimOutcome::Replay)
         }
+    }
+
+    pub(crate) async fn claim_hmac_nonce_async(
+        self: &std::sync::Arc<Self>,
+        nonce_key: &str,
+        now_unix: i64,
+        expires_at_unix: i64,
+        max_entries: usize,
+    ) -> Result<HmacNonceClaimOutcome> {
+        let store = std::sync::Arc::clone(self);
+        let nonce_key = nonce_key.to_string();
+        task::spawn_blocking(move || {
+            store.claim_hmac_nonce(nonce_key.as_str(), now_unix, expires_at_unix, max_entries)
+        })
+        .await
+        .context("idempotency blocking task join failed")?
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -423,6 +471,13 @@ impl SubmitIdempotencyStore {
             .context("idempotency probe query failed")
     }
 
+    pub(crate) async fn probe_async(self: &std::sync::Arc<Self>) -> Result<()> {
+        let store = std::sync::Arc::clone(self);
+        task::spawn_blocking(move || store.probe())
+            .await
+            .context("idempotency blocking task join failed")?
+    }
+
     pub(crate) fn store_submit_response(
         &self,
         client_order_id: &str,
@@ -475,6 +530,27 @@ impl SubmitIdempotencyStore {
         Ok(changed > 0)
     }
 
+    pub(crate) async fn store_submit_response_async(
+        self: &std::sync::Arc<Self>,
+        client_order_id: &str,
+        request_id: &str,
+        response: &Value,
+    ) -> Result<bool> {
+        let store = std::sync::Arc::clone(self);
+        let client_order_id = client_order_id.to_string();
+        let request_id = request_id.to_string();
+        let response = response.clone();
+        task::spawn_blocking(move || {
+            store.store_submit_response(
+                client_order_id.as_str(),
+                request_id.as_str(),
+                &response,
+            )
+        })
+        .await
+        .context("idempotency blocking task join failed")?
+    }
+
     pub(crate) fn release_submit_claim(
         &self,
         client_order_id: &str,
@@ -496,6 +572,21 @@ impl SubmitIdempotencyStore {
             )
             .context("idempotency claim release failed")?;
         Ok(removed > 0)
+    }
+
+    pub(crate) async fn release_submit_claim_async(
+        self: &std::sync::Arc<Self>,
+        client_order_id: &str,
+        request_id: &str,
+    ) -> Result<bool> {
+        let store = std::sync::Arc::clone(self);
+        let client_order_id = client_order_id.to_string();
+        let request_id = request_id.to_string();
+        task::spawn_blocking(move || {
+            store.release_submit_claim(client_order_id.as_str(), request_id.as_str())
+        })
+        .await
+        .context("idempotency blocking task join failed")?
     }
 }
 
@@ -689,7 +780,9 @@ mod tests {
     use serde_json::json;
     use std::{
         path::PathBuf,
+        sync::Arc,
         sync::atomic::{AtomicU64, Ordering},
+        time::Duration as StdDuration,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1356,6 +1449,34 @@ mod tests {
             !ran_cleanup,
             "nonblocking cleanup should report skipped when mutex is busy"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn load_cached_or_claim_submit_async_does_not_block_runtime_on_mutex_contention() {
+        let store = Arc::new(SubmitIdempotencyStore::open(":memory:").expect("open in-memory store"));
+        let held_lock = store.conn.lock().expect("hold idempotency lock");
+
+        let worker_store = store.clone();
+        let claim_task = tokio::spawn(async move {
+            worker_store
+                .load_cached_or_claim_submit_async("order-async-1", "req-async-1", 30)
+                .await
+        });
+
+        tokio::time::timeout(
+            StdDuration::from_millis(50),
+            tokio::time::sleep(StdDuration::from_millis(10)),
+        )
+        .await
+        .expect("runtime should stay responsive while blocking task waits on sqlite mutex");
+
+        drop(held_lock);
+
+        let outcome = claim_task
+            .await
+            .expect("claim task join")
+            .expect("claim task result");
+        assert!(matches!(outcome, SubmitClaimOutcome::Claimed));
     }
 
     #[test]

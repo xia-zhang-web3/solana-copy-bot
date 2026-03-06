@@ -125,11 +125,15 @@ pub(crate) async fn handle_submit(
         "handling submit request"
     );
     let submit_deadline = SubmitDeadline::new(state.config.submit_total_budget_ms);
-    let mut submit_claim_guard = match state.idempotency.load_cached_or_claim_submit(
-        request.client_order_id.as_str(),
-        request.request_id.as_str(),
-        state.config.idempotency_claim_ttl_sec,
-    ) {
+    let mut submit_claim_guard = match state
+        .idempotency
+        .load_cached_or_claim_submit_async(
+            request.client_order_id.as_str(),
+            request.request_id.as_str(),
+            state.config.idempotency_claim_ttl_sec,
+        )
+        .await
+    {
         Ok(SubmitClaimOutcome::Cached(cached_response)) => {
             debug!(
                 route = %route,
@@ -291,11 +295,12 @@ pub(crate) async fn handle_submit(
     });
     let inserted = state
         .idempotency
-        .store_submit_response(
+        .store_submit_response_async(
             request.client_order_id.as_str(),
             request.request_id.as_str(),
             &response,
         )
+        .await
         .map_err(|error| {
             warn!(
                 route = %route,
@@ -315,7 +320,8 @@ pub(crate) async fn handle_submit(
         );
         let canonical = state
             .idempotency
-            .load_submit_response(request.client_order_id.as_str())
+            .load_submit_response_async(request.client_order_id.as_str())
+            .await
             .map_err(map_idempotency_error_to_reject)?
             .ok_or_else(|| {
                 Reject::retryable(
@@ -324,8 +330,26 @@ pub(crate) async fn handle_submit(
                 )
             })?;
         submit_claim_guard.release_claim_on_drop();
+        if let Err(error) = submit_claim_guard.release_now().await {
+            warn!(
+                route = %route,
+                signal_id = %request.signal_id,
+                client_order_id = %request.client_order_id,
+                error = %error,
+                "failed to release submit claim after idempotency conflict"
+            );
+        }
         return Ok(canonical);
     }
     submit_claim_guard.release_claim_on_drop();
+    if let Err(error) = submit_claim_guard.release_now().await {
+        warn!(
+            route = %route,
+            signal_id = %request.signal_id,
+            client_order_id = %request.client_order_id,
+            error = %error,
+            "failed to release submit claim after storing idempotency response"
+        );
+    }
     Ok(response)
 }
