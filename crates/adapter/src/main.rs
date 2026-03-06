@@ -1683,27 +1683,22 @@ fn resolve_secret_source(
 fn read_trimmed_secret_file(path: &str) -> Result<String> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("secret file not found/readable path={}", path))?;
-    match secret_file_has_restrictive_permissions(path) {
-        Ok(false) => {
-            warn!(
-                path = %path,
-                "secret file permissions are broader than recommended; expected owner-only access (e.g. 0600/0400)"
-            );
-        }
-        Ok(true) => {}
-        Err(error) => {
-            warn!(
-                path = %path,
-                error = %error,
-                "unable to inspect secret file permissions"
-            );
-        }
-    }
+    ensure_secret_file_has_restrictive_permissions(path)?;
     let secret = raw.trim().to_string();
     if secret.is_empty() {
         return Err(anyhow!("secret file is empty path={}", path));
     }
     Ok(secret)
+}
+
+fn ensure_secret_file_has_restrictive_permissions(path: &str) -> Result<()> {
+    if !secret_file_has_restrictive_permissions(path)? {
+        return Err(anyhow!(
+            "secret file must use owner-only permissions (0600/0400) path={}",
+            path
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -2090,6 +2085,31 @@ mod tests {
         let message = format!("{:#}", error);
         assert!(message.contains("COPYBOT_ADAPTER_HMAC_SECRET_FILE"));
         assert!(message.contains("secret file not found/readable"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_secret_source_rejects_broad_permissions_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = write_temp_secret_file("secret");
+        let mut perms = stdfs::metadata(&path)
+            .expect("stat temp secret")
+            .permissions();
+        perms.set_mode(0o644);
+        stdfs::set_permissions(&path, perms).expect("set relaxed mode");
+
+        let error = resolve_secret_source(
+            "COPYBOT_ADAPTER_BEARER_TOKEN",
+            None,
+            "COPYBOT_ADAPTER_BEARER_TOKEN_FILE",
+            Some(path.to_str().expect("utf8 path")),
+        )
+        .expect_err("broad secret file permissions must fail");
+        let message = format!("{:#}", error);
+        assert!(message.contains("COPYBOT_ADAPTER_BEARER_TOKEN_FILE"));
+
+        cleanup_temp_secret_file(path);
     }
 
     #[cfg(unix)]
@@ -3327,6 +3347,15 @@ mod tests {
     fn write_temp_secret_file(contents: &str) -> PathBuf {
         let path = temp_secret_path("value");
         stdfs::write(&path, contents).expect("write temp secret");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = stdfs::metadata(&path)
+                .expect("stat temp secret")
+                .permissions();
+            perms.set_mode(0o600);
+            stdfs::set_permissions(&path, perms).expect("set temp secret perms");
+        }
         path
     }
 

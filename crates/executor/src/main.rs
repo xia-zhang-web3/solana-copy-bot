@@ -864,6 +864,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn resolve_secret_source_rejects_broad_permissions_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = write_temp_secret_file("secret");
+        let mut perms = stdfs::metadata(&path)
+            .expect("stat temp secret")
+            .permissions();
+        perms.set_mode(0o644);
+        stdfs::set_permissions(&path, perms).expect("set relaxed mode");
+
+        let error = resolve_secret_source(
+            "COPYBOT_EXECUTOR_BEARER_TOKEN",
+            None,
+            "COPYBOT_EXECUTOR_BEARER_TOKEN_FILE",
+            Some(path.to_str().expect("utf8 path")),
+        )
+        .expect_err("broad secret file permissions must fail");
+        let message = format!("{:#}", error);
+        assert!(message.contains("COPYBOT_EXECUTOR_BEARER_TOKEN_FILE"));
+
+        cleanup_temp_secret_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn secret_file_permissions_check_detects_relaxed_mode() {
         use std::os::unix::fs::PermissionsExt;
 
