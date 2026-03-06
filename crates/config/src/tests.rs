@@ -197,6 +197,38 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
 }
 
 #[test]
+fn load_from_env_rejects_shadow_min_holders_below_floor_when_enabled() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "1", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("shadow min_holders below floor must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains(
+                        "shadow.min_holders (1) must be either 0 (disable holder gate) or >= 5"
+                    ),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_allows_shadow_min_holders_zero_to_disable_holder_gate() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "0", || {
+                let (cfg, _) = load_from_env_or_default(config_path)
+                    .expect("shadow min_holders=0 should remain allowed");
+                assert_eq!(cfg.shadow.min_holders, 0);
+            });
+        });
+    });
+}
+
+#[test]
 fn load_from_env_applies_discovery_window_memory_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
