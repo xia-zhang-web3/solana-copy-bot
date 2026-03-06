@@ -8,6 +8,22 @@ use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
 impl SqliteStore {
+    pub fn wallet_metrics_window_exists(&self, window_start: DateTime<Utc>) -> Result<bool> {
+        let exists = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM wallet_metrics
+                    WHERE window_start = ?1
+                )",
+                params![window_start.to_rfc3339()],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed querying wallet_metrics window_start existence")?;
+        Ok(exists != 0)
+    }
+
     pub fn latest_wallet_metrics_window_start(&self) -> Result<Option<DateTime<Utc>>> {
         let raw: Option<String> = self
             .conn

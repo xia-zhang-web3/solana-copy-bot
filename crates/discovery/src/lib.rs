@@ -323,10 +323,7 @@ impl DiscoveryService {
             });
         }
 
-        let should_persist_metrics = store
-            .latest_wallet_metrics_window_start()?
-            .map(|latest| latest < metrics_window_start)
-            .unwrap_or(true);
+        let should_persist_metrics = !store.wallet_metrics_window_exists(metrics_window_start)?;
         let metrics_to_persist = if should_persist_metrics {
             metric_rows.as_slice()
         } else {
@@ -1440,6 +1437,89 @@ mod tests {
             .latest_wallet_metrics_window_start()?
             .expect("next snapshot bucket must persist a new wallet_metrics window");
         assert!(third_window > second_window);
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_persists_wallet_metrics_after_scoring_window_change_moves_window_backward(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-metric-window-config-change.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let sell_ts = buy_ts + Duration::minutes(6);
+        for idx in 0..6 {
+            let offset = Duration::minutes((idx * 20) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_config_shift",
+                &format!("shift-buy-{idx}"),
+                buy_ts + offset,
+                SOL_MINT,
+                "TokenShift11111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_config_shift",
+                &format!("shift-sell-{idx}"),
+                sell_ts + offset,
+                "TokenShift11111111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.metric_snapshot_interval_seconds = 3600;
+        config.thin_market_min_unique_traders = 1;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-04T12:40:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let discovery_initial = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let summary_initial = discovery_initial.run_cycle(&store, now)?;
+        assert_eq!(summary_initial.metrics_written, 1);
+
+        let first_window = store
+            .latest_wallet_metrics_window_start()?
+            .expect("expected first metrics window to persist");
+
+        config.scoring_window_days = 30;
+        config.decay_window_days = 30;
+        let discovery_shifted = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary_shifted = discovery_shifted.run_cycle(&store, now)?;
+        assert_eq!(
+            summary_shifted.metrics_written, 1,
+            "a backward-shifted metrics window caused by config change must still persist"
+        );
+
+        let second_window = store
+            .latest_wallet_metrics_window_start()?
+            .expect("expected second metrics window to persist");
+        assert_eq!(
+            second_window, first_window,
+            "an older config-shifted bucket should not advance the global MAX(window_start)"
+        );
+        assert!(
+            store.wallet_metrics_window_exists(discovery_shifted.metrics_window_start(now))?,
+            "the backward-shifted metrics bucket must still be inserted"
+        );
         Ok(())
     }
 
