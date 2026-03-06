@@ -5,6 +5,7 @@ use rusqlite::{params, OptionalExtension};
 
 #[derive(Debug, Clone)]
 pub struct RiskEventRow {
+    pub rowid: i64,
     pub event_id: String,
     pub event_type: String,
     pub severity: String,
@@ -62,45 +63,46 @@ impl SqliteStore {
 
     pub fn list_risk_events_after_cursor(
         &self,
-        cursor: Option<(&str, &str)>,
+        cursor: Option<i64>,
         limit: u32,
     ) -> Result<Vec<RiskEventRow>> {
         let mut events = Vec::new();
-        if let Some((last_ts, last_event_id)) = cursor {
+        if let Some(last_rowid) = cursor {
             let mut stmt = self
                 .conn
                 .prepare(
-                    "SELECT event_id, type, severity, ts, details_json
+                    "SELECT rowid, event_id, type, severity, ts, details_json
                      FROM risk_events
                      WHERE severity IN ('warn', 'error')
-                       AND (ts > ?1 OR (ts = ?1 AND event_id > ?2))
-                     ORDER BY ts ASC, event_id ASC
-                     LIMIT ?3",
+                       AND rowid > ?1
+                     ORDER BY rowid ASC
+                     LIMIT ?2",
                 )
                 .context("failed to prepare risk events cursor query")?;
             let mut rows = stmt
-                .query(params![last_ts, last_event_id, limit])
+                .query(params![last_rowid, limit])
                 .context("failed to query risk events after cursor")?;
             while let Some(row) = rows
                 .next()
                 .context("failed to iterate risk events after cursor")?
             {
                 events.push(RiskEventRow {
-                    event_id: row.get(0)?,
-                    event_type: row.get(1)?,
-                    severity: row.get(2)?,
-                    ts: row.get(3)?,
-                    details_json: row.get(4)?,
+                    rowid: row.get(0)?,
+                    event_id: row.get(1)?,
+                    event_type: row.get(2)?,
+                    severity: row.get(3)?,
+                    ts: row.get(4)?,
+                    details_json: row.get(5)?,
                 });
             }
         } else {
             let mut stmt = self
                 .conn
                 .prepare(
-                    "SELECT event_id, type, severity, ts, details_json
+                    "SELECT rowid, event_id, type, severity, ts, details_json
                      FROM risk_events
                      WHERE severity IN ('warn', 'error')
-                     ORDER BY ts ASC, event_id ASC
+                     ORDER BY rowid ASC
                      LIMIT ?1",
                 )
                 .context("failed to prepare initial risk events query")?;
@@ -112,45 +114,40 @@ impl SqliteStore {
                 .context("failed to iterate initial risk events")?
             {
                 events.push(RiskEventRow {
-                    event_id: row.get(0)?,
-                    event_type: row.get(1)?,
-                    severity: row.get(2)?,
-                    ts: row.get(3)?,
-                    details_json: row.get(4)?,
+                    rowid: row.get(0)?,
+                    event_id: row.get(1)?,
+                    event_type: row.get(2)?,
+                    severity: row.get(3)?,
+                    ts: row.get(4)?,
+                    details_json: row.get(5)?,
                 });
             }
         }
         Ok(events)
     }
 
-    pub fn load_alert_delivery_cursor(&self, channel: &str) -> Result<Option<(String, String)>> {
+    pub fn load_alert_delivery_cursor(&self, channel: &str) -> Result<Option<i64>> {
         self.conn
             .query_row(
-                "SELECT last_ts, last_event_id
+                "SELECT last_rowid
                  FROM alert_delivery_state
                  WHERE channel = ?1",
                 params![channel],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .optional()
             .context("failed to load alert delivery cursor")
     }
 
-    pub fn upsert_alert_delivery_cursor(
-        &self,
-        channel: &str,
-        last_ts: &str,
-        last_event_id: &str,
-    ) -> Result<()> {
+    pub fn upsert_alert_delivery_cursor(&self, channel: &str, last_rowid: i64) -> Result<()> {
         self.execute_with_retry(|conn| {
             conn.execute(
-                "INSERT INTO alert_delivery_state(channel, last_ts, last_event_id, updated_at)
-                 VALUES (?1, ?2, ?3, datetime('now'))
+                "INSERT INTO alert_delivery_state(channel, last_rowid, updated_at)
+                 VALUES (?1, ?2, datetime('now'))
                  ON CONFLICT(channel) DO UPDATE SET
-                     last_ts = excluded.last_ts,
-                     last_event_id = excluded.last_event_id,
+                     last_rowid = excluded.last_rowid,
                      updated_at = datetime('now')",
-                params![channel, last_ts, last_event_id],
+                params![channel, last_rowid],
             )
         })
         .context("failed to upsert alert delivery cursor")?;

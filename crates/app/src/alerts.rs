@@ -104,12 +104,7 @@ impl AlertDispatcher {
             .load_alert_delivery_cursor(ALERT_DELIVERY_CHANNEL)
             .context("failed reading alert delivery cursor")?;
         let events = store
-            .list_risk_events_after_cursor(
-                cursor
-                    .as_ref()
-                    .map(|(last_ts, last_event_id)| (last_ts.as_str(), last_event_id.as_str())),
-                ALERT_DELIVERY_BATCH_LIMIT,
-            )
+            .list_risk_events_after_cursor(cursor, ALERT_DELIVERY_BATCH_LIMIT)
             .context("failed reading pending risk events for alert delivery")?;
         let mut delivered = 0usize;
         for event in events {
@@ -122,7 +117,7 @@ impl AlertDispatcher {
                     )
                 })?;
             store
-                .upsert_alert_delivery_cursor(ALERT_DELIVERY_CHANNEL, &event.ts, &event.event_id)
+                .upsert_alert_delivery_cursor(ALERT_DELIVERY_CHANNEL, event.rowid)
                 .context("failed to advance alert delivery cursor")?;
             delivered += 1;
         }
@@ -188,6 +183,7 @@ mod tests {
     use anyhow::Result;
     use chrono::Utc;
     use copybot_storage::SqliteStore;
+    use rusqlite::params;
     use std::ffi::OsString;
     use std::path::Path;
     use std::sync::Arc;
@@ -346,7 +342,7 @@ mod tests {
         let cursor = store
             .load_alert_delivery_cursor(ALERT_DELIVERY_CHANNEL)?
             .context("cursor must be stored after delivery")?;
-        assert!(cursor.1.len() > 5);
+        assert!(cursor > 0);
         assert_eq!(dispatcher.deliver_pending(&store).await?, 0);
 
         handle.abort();
@@ -369,6 +365,40 @@ mod tests {
         assert!(body.contains("\"kind\":\"alert_delivery_test\""));
         assert!(body.contains("\"env\":\"prod\""));
         handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn late_same_ts_event_with_lower_lexical_id_is_still_delivered() -> Result<()> {
+        let (server_url, captured, handle) = spawn_capture_server(2).await?;
+        let dispatcher = AlertDispatcher {
+            client: Client::builder()
+                .timeout(Duration::from_millis(1_000))
+                .build()?,
+            webhook_url: Url::parse(&server_url)?,
+            test_on_startup: false,
+        };
+        let (store, db_path) = make_test_store("alert-rowid-cursor")?;
+        let ts = "2026-03-06T12:00:00+00:00";
+        let conn = rusqlite::Connection::open(Path::new(&db_path))?;
+        conn.execute(
+            "INSERT INTO risk_events(event_id, type, severity, ts, details_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["z-event", "warn_event_a", "warn", ts, "{\"k\":\"a\"}"],
+        )?;
+        assert_eq!(dispatcher.deliver_pending(&store).await?, 1);
+        conn.execute(
+            "INSERT INTO risk_events(event_id, type, severity, ts, details_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["a-event", "warn_event_b", "warn", ts, "{\"k\":\"b\"}"],
+        )?;
+        assert_eq!(dispatcher.deliver_pending(&store).await?, 1);
+        let payloads = captured.lock().await.clone();
+        assert_eq!(payloads.len(), 2);
+        assert!(payloads.iter().any(|body| body.contains("\"event_type\":\"warn_event_a\"")));
+        assert!(payloads.iter().any(|body| body.contains("\"event_type\":\"warn_event_b\"")));
+        handle.abort();
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 
