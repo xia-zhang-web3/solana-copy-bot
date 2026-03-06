@@ -502,6 +502,33 @@ fn load_from_env_rejects_invalid_ingestion_queue_overflow_policy_override() {
 }
 
 #[test]
+fn load_from_env_rejects_invalid_execution_enabled_override() {
+    assert_bool_env_rejected(
+        "SOLANA_COPY_BOT_EXECUTION_ENABLED",
+        "tru",
+        "invalid execution.enabled env override must fail config load",
+    );
+}
+
+#[test]
+fn load_from_env_rejects_invalid_shadow_quality_gates_enabled_override() {
+    assert_bool_env_rejected(
+        "SOLANA_COPY_BOT_SHADOW_QUALITY_GATES_ENABLED",
+        "enabled",
+        "invalid shadow quality_gates_enabled env override must fail config load",
+    );
+}
+
+#[test]
+fn load_from_env_rejects_invalid_risk_shadow_killswitch_enabled_override() {
+    assert_bool_env_rejected(
+        "SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED",
+        "maybe",
+        "invalid risk shadow_killswitch env override must fail config load",
+    );
+}
+
+#[test]
 fn load_from_env_applies_discovery_window_memory_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
@@ -768,6 +795,26 @@ fn assert_route_map_env_rejected_contains(env_name: &'static str, env_value: &st
                 assert!(
                     err.contains(needle),
                     "error should contain '{needle}', got: {err}"
+                );
+            });
+        });
+    });
+}
+
+fn assert_bool_env_rejected(env_name: &'static str, env_value: &str, context: &str) {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(env_name, env_value, || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err(context)
+                    .to_string();
+                assert!(
+                    err.contains(env_name),
+                    "error should mention env var, got: {err}"
+                );
+                assert!(
+                    err.contains("must be a valid bool"),
+                    "error should describe bool parse failure, got: {err}"
                 );
             });
         });

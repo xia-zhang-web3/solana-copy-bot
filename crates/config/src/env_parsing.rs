@@ -5,12 +5,24 @@ use std::str::FromStr;
 
 use super::ExecutionConfig;
 
-pub(crate) fn parse_env_bool(value: String) -> Option<bool> {
+pub(crate) fn parse_bool_value(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+pub(crate) fn parse_env_bool(env_name: &str) -> Result<Option<bool>> {
+    let Some(raw) = std::env::var(env_name).ok() else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    parse_bool_value(trimmed).map(Some).ok_or_else(|| {
+        anyhow!(
+            "{env_name} must be a valid bool (1/0/true/false/yes/no/on/off), got {trimmed:?}"
+        )
+    })
 }
 
 pub(crate) fn parse_env_number<T>(env_name: &str, type_name: &str) -> Result<Option<T>>

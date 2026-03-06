@@ -246,10 +246,7 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(shadow_http_url) = env::var("SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL") {
         config.shadow.helius_http_url = shadow_http_url;
     }
-    if let Some(enabled) = env::var("SOLANA_COPY_BOT_EXECUTION_ENABLED")
-        .ok()
-        .and_then(parse_env_bool)
-    {
+    if let Some(enabled) = parse_env_bool("SOLANA_COPY_BOT_EXECUTION_ENABLED")? {
         config.execution.enabled = enabled;
     }
     if let Ok(mode) = env::var("SOLANA_COPY_BOT_EXECUTION_MODE") {
@@ -336,16 +333,12 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         }
     }
     if let Some(submit_adapter_require_policy_echo) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO")
-            .ok()
-            .and_then(parse_env_bool)
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_REQUIRE_POLICY_ECHO")?
     {
         config.execution.submit_adapter_require_policy_echo = submit_adapter_require_policy_echo;
     }
     if let Some(submit_fastlane_enabled) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED")
-            .ok()
-            .and_then(parse_env_bool)
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_SUBMIT_FASTLANE_ENABLED")?
     {
         config.execution.submit_fastlane_enabled = submit_fastlane_enabled;
     }
@@ -420,9 +413,7 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         }
     }
     if let Some(submit_dynamic_cu_price_enabled) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED")
-            .ok()
-            .and_then(parse_env_bool)
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED")?
     {
         config.execution.submit_dynamic_cu_price_enabled = submit_dynamic_cu_price_enabled;
     }
@@ -452,9 +443,7 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         config.execution.submit_dynamic_cu_price_api_auth_token_file = value;
     }
     if let Some(submit_dynamic_tip_lamports_enabled) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED")
-            .ok()
-            .and_then(parse_env_bool)
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED")?
     {
         config.execution.submit_dynamic_tip_lamports_enabled = submit_dynamic_tip_lamports_enabled;
     }
@@ -483,9 +472,7 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         config.execution.pretrade_min_sol_reserve = pretrade_min_sol_reserve;
     }
     if let Some(pretrade_require_token_account) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_PRETRADE_REQUIRE_TOKEN_ACCOUNT")
-            .ok()
-            .and_then(parse_env_bool)
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_PRETRADE_REQUIRE_TOKEN_ACCOUNT")?
     {
         config.execution.pretrade_require_token_account = pretrade_require_token_account;
     }
@@ -522,15 +509,12 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         config.execution.max_submit_attempts = max_submit_attempts;
     }
     if let Some(simulate_before_submit) =
-        env::var("SOLANA_COPY_BOT_EXECUTION_SIMULATE_BEFORE_SUBMIT")
-            .ok()
-            .and_then(parse_env_bool)
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_SIMULATE_BEFORE_SUBMIT")?
     {
         config.execution.simulate_before_submit = simulate_before_submit;
     }
-    if let Some(holdback_enabled) = env::var("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED")
-        .ok()
-        .and_then(parse_env_bool)
+    if let Some(holdback_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED")?
     {
         config.shadow.causal_holdback_enabled = holdback_enabled;
     }
@@ -540,9 +524,8 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.shadow.causal_holdback_ms = holdback_ms;
     }
-    if let Some(quality_gates_enabled) = env::var("SOLANA_COPY_BOT_SHADOW_QUALITY_GATES_ENABLED")
-        .ok()
-        .and_then(parse_env_bool)
+    if let Some(quality_gates_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_SHADOW_QUALITY_GATES_ENABLED")?
     {
         config.shadow.quality_gates_enabled = quality_gates_enabled;
     }
@@ -627,9 +610,7 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         config.risk.max_copy_delay_sec = max_copy_delay_sec;
     }
     if let Some(shadow_killswitch_enabled) =
-        env::var("SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED")
-            .ok()
-            .and_then(parse_env_bool)
+        parse_env_bool("SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED")?
     {
         config.risk.shadow_killswitch_enabled = shadow_killswitch_enabled;
     }
