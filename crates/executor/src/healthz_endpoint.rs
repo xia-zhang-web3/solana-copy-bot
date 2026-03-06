@@ -6,7 +6,7 @@ use crate::healthz_payload::{build_healthz_payload, HealthzPayloadInputs};
 use crate::AppState;
 
 pub(crate) async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let idempotency_store_status = match state.idempotency.probe() {
+    let idempotency_store_status = match state.idempotency.probe_async().await {
         Ok(()) => "ok",
         Err(error) => {
             warn!(

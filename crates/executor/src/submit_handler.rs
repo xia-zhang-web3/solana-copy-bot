@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 use crate::backend_mode::ExecutorBackendMode;
 use crate::common_contract::{validate_common_contract_inputs, CommonContractInputs};
 use crate::fee_hints::{parse_response_fee_hint_fields, resolve_fee_hints, FeeHintInputs};
-use crate::idempotency::SubmitClaimOutcome;
+use crate::idempotency::SubmitClaimGuardOutcome;
 use crate::reject_mapping::{
     map_common_contract_validation_error_to_reject, map_compute_budget_validation_error_to_reject,
     map_fee_hint_error_to_reject, map_fee_hint_field_parse_error_to_reject,
@@ -38,6 +38,26 @@ use crate::tx_build::{
 };
 use crate::upstream_outcome::{parse_upstream_outcome, UpstreamOutcome};
 use crate::{AppState, Reject};
+
+async fn reject_after_claimed_submit_error<T>(
+    submit_claim_guard: &mut SubmitClaimGuard,
+    route: &str,
+    request: &SubmitRequest,
+    stage: &str,
+    reject: Reject,
+) -> std::result::Result<T, Reject> {
+    if let Err(error) = submit_claim_guard.release_now().await {
+        warn!(
+            route = %route,
+            signal_id = %request.signal_id,
+            client_order_id = %request.client_order_id,
+            stage = %stage,
+            error = %error,
+            "failed to release submit claim before returning submit error"
+        );
+    }
+    Err(reject)
+}
 
 pub(crate) async fn handle_submit(
     state: &AppState,
@@ -125,12 +145,16 @@ pub(crate) async fn handle_submit(
         "handling submit request"
     );
     let submit_deadline = SubmitDeadline::new(state.config.submit_total_budget_ms);
-    let mut submit_claim_guard = match state.idempotency.load_cached_or_claim_submit(
-        request.client_order_id.as_str(),
-        request.request_id.as_str(),
-        state.config.idempotency_claim_ttl_sec,
-    ) {
-        Ok(SubmitClaimOutcome::Cached(cached_response)) => {
+    let mut submit_claim_guard = match state
+        .idempotency
+        .load_cached_or_claim_submit_guard_async(
+            request.client_order_id.as_str(),
+            request.request_id.as_str(),
+            state.config.idempotency_claim_ttl_sec,
+        )
+        .await
+    {
+        Ok(SubmitClaimGuardOutcome::Cached(cached_response)) => {
             debug!(
                 route = %route,
                 signal_id = %request.signal_id,
@@ -139,12 +163,8 @@ pub(crate) async fn handle_submit(
             );
             return Ok(cached_response);
         }
-        Ok(SubmitClaimOutcome::Claimed) => SubmitClaimGuard::new(
-            state.idempotency.clone(),
-            request.client_order_id.as_str(),
-            request.request_id.as_str(),
-        ),
-        Ok(SubmitClaimOutcome::InFlight) => {
+        Ok(SubmitClaimGuardOutcome::Claimed(submit_claim_guard)) => submit_claim_guard,
+        Ok(SubmitClaimGuardOutcome::InFlight) => {
             return Err(Reject::retryable(
                 "submit_in_flight",
                 format!(
@@ -155,7 +175,7 @@ pub(crate) async fn handle_submit(
         }
         Err(error) => return Err(map_idempotency_error_to_reject(error)),
     };
-    let backend_response = execute_route_action(
+    let backend_response = match execute_route_action(
         state,
         route.as_str(),
         UpstreamAction::Submit,
@@ -175,14 +195,47 @@ pub(crate) async fn handle_submit(
             expected_route_slippage_cap_bps: Some(request.route_slippage_cap_bps),
         },
     )
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        Err(reject) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "forward_submit",
+                reject,
+            )
+            .await;
+        }
+    };
     match parse_upstream_outcome(&backend_response, "submit_adapter_rejected") {
-        UpstreamOutcome::Reject(reject) => return Err(map_parsed_upstream_reject(reject)),
+        UpstreamOutcome::Reject(reject) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "parse_upstream_outcome",
+                map_parsed_upstream_reject(reject),
+            )
+            .await;
+        }
         UpstreamOutcome::Success => {}
     }
 
-    let submit_transport_artifact = extract_submit_transport_artifact(&backend_response)
-        .map_err(map_submit_transport_artifact_error_to_reject)?;
+    let submit_transport_artifact = match extract_submit_transport_artifact(&backend_response) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "extract_submit_transport_artifact",
+                map_submit_transport_artifact_error_to_reject(error),
+            )
+            .await;
+        }
+    };
 
     if matches!(
         submit_transport_artifact,
@@ -191,27 +244,54 @@ pub(crate) async fn handle_submit(
         submit_claim_guard.retain_claim_on_drop();
     }
 
-    validate_submit_response_route_and_contract(
+    if let Err(error) = validate_submit_response_route_and_contract(
         &backend_response,
         route.as_str(),
         state.config.contract_version.as_str(),
     )
-    .map_err(map_submit_response_validation_error_to_reject)?;
+    {
+        return reject_after_claimed_submit_error(
+            &mut submit_claim_guard,
+            route.as_str(),
+            request,
+            "validate_submit_response_route_and_contract",
+            map_submit_response_validation_error_to_reject(error),
+        )
+        .await;
+    }
 
-    validate_submit_response_request_identity(
+    if let Err(error) = validate_submit_response_request_identity(
         &backend_response,
         request.client_order_id.as_str(),
         request.request_id.as_str(),
     )
-    .map_err(map_submit_response_validation_error_to_reject)?;
+    {
+        return reject_after_claimed_submit_error(
+            &mut submit_claim_guard,
+            route.as_str(),
+            request,
+            "validate_submit_response_request_identity",
+            map_submit_response_validation_error_to_reject(error),
+        )
+        .await;
+    }
 
-    validate_submit_response_extended_identity(
+    if let Err(error) = validate_submit_response_extended_identity(
         &backend_response,
         request.signal_id.as_str(),
         request.side.as_str(),
         request.token.as_str(),
     )
-    .map_err(map_submit_response_validation_error_to_reject)?;
+    {
+        return reject_after_claimed_submit_error(
+            &mut submit_claim_guard,
+            route.as_str(),
+            request,
+            "validate_submit_response_extended_identity",
+            map_submit_response_validation_error_to_reject(error),
+        )
+        .await;
+    }
 
     let (tx_signature, submit_transport) = match submit_transport_artifact {
         SubmitTransportArtifact::UpstreamSignature(value) => {
@@ -225,13 +305,26 @@ pub(crate) async fn handle_submit(
             (value, submit_transport)
         }
         SubmitTransportArtifact::SignedTransactionBase64(value) => {
-            let signature = send_signed_transaction_via_rpc(
+            let signature = match send_signed_transaction_via_rpc(
                 state,
                 route.as_str(),
                 value.as_str(),
                 Some(&submit_deadline),
             )
-            .await?;
+            .await
+            {
+                Ok(signature) => signature,
+                Err(reject) => {
+                    return reject_after_claimed_submit_error(
+                        &mut submit_claim_guard,
+                        route.as_str(),
+                        request,
+                        "send_signed_transaction_via_rpc",
+                        reject,
+                    )
+                    .await;
+                }
+            };
             submit_claim_guard.retain_claim_on_drop();
             (signature, "adapter_send_rpc")
         }
@@ -240,22 +333,57 @@ pub(crate) async fn handle_submit(
     let submit_signature_verify = if bypass_submit_verify {
         SubmitSignatureVerification::Skipped
     } else {
-        verify_submitted_signature_visibility(
+        match verify_submitted_signature_visibility(
             state,
             route.as_str(),
             tx_signature.as_str(),
             Some(&submit_deadline),
         )
-        .await?
+        .await
+        {
+            Ok(verification) => verification,
+            Err(reject) => {
+                return reject_after_claimed_submit_error(
+                    &mut submit_claim_guard,
+                    route.as_str(),
+                    request,
+                    "verify_submitted_signature_visibility",
+                    reject,
+                )
+                .await;
+            }
+        }
     };
 
-    let submitted_at = resolve_submit_response_submitted_at(&backend_response, Utc::now())
-        .map_err(map_submit_response_validation_error_to_reject)?;
+    let submitted_at = match resolve_submit_response_submitted_at(&backend_response, Utc::now()) {
+        Ok(submitted_at) => submitted_at,
+        Err(error) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "resolve_submit_response_submitted_at",
+                map_submit_response_validation_error_to_reject(error),
+            )
+            .await;
+        }
+    };
 
-    let parsed_response_fee_hints = parse_response_fee_hint_fields(&backend_response)
-        .map_err(map_fee_hint_field_parse_error_to_reject)?;
+    let parsed_response_fee_hints = match parse_response_fee_hint_fields(&backend_response) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "parse_response_fee_hint_fields",
+                map_fee_hint_field_parse_error_to_reject(error),
+            )
+            .await;
+        }
+    };
 
-    let resolved_fee_hints = resolve_fee_hints(FeeHintInputs {
+    let resolved_fee_hints = match resolve_fee_hints(FeeHintInputs {
         response_network_fee_lamports: parsed_response_fee_hints.network_fee_lamports,
         response_base_fee_lamports: parsed_response_fee_hints.base_fee_lamports,
         response_priority_fee_lamports: parsed_response_fee_hints.priority_fee_lamports,
@@ -264,7 +392,19 @@ pub(crate) async fn handle_submit(
         request_cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
         default_base_fee_lamports: crate::DEFAULT_BASE_FEE_LAMPORTS,
     })
-    .map_err(map_fee_hint_error_to_reject)?;
+    {
+        Ok(fee_hints) => fee_hints,
+        Err(error) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "resolve_fee_hints",
+                map_fee_hint_error_to_reject(error),
+            )
+            .await;
+        }
+    };
 
     let submit_signature_verify_json =
         submit_signature_verification_to_json(&submit_signature_verify);
@@ -289,14 +429,17 @@ pub(crate) async fn handle_submit(
         resolved_fee_hints,
         submit_signature_verify: submit_signature_verify_json,
     });
-    let inserted = state
+    let inserted = match state
         .idempotency
-        .store_submit_response(
+        .store_submit_response_async(
             request.client_order_id.as_str(),
             request.request_id.as_str(),
             &response,
         )
-        .map_err(|error| {
+        .await
+    {
+        Ok(inserted) => inserted,
+        Err(error) => {
             warn!(
                 route = %route,
                 signal_id = %request.signal_id,
@@ -304,8 +447,16 @@ pub(crate) async fn handle_submit(
                 error = %error,
                 "failed to persist submit idempotency record"
             );
-            map_idempotency_error_to_reject(error)
-        })?;
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "store_submit_response",
+                map_idempotency_error_to_reject(error),
+            )
+            .await;
+        }
+    };
     if !inserted {
         warn!(
             route = %route,
@@ -313,19 +464,57 @@ pub(crate) async fn handle_submit(
             client_order_id = %request.client_order_id,
             "idempotency row already exists; keeping first stored response"
         );
-        let canonical = state
+        let canonical = match state
             .idempotency
-            .load_submit_response(request.client_order_id.as_str())
-            .map_err(map_idempotency_error_to_reject)?
-            .ok_or_else(|| {
-                Reject::retryable(
-                    "idempotency_store_unavailable",
-                    "idempotency conflict detected but canonical response missing",
+            .load_submit_response_async(request.client_order_id.as_str())
+            .await
+        {
+            Ok(Some(canonical)) => canonical,
+            Ok(None) => {
+                return reject_after_claimed_submit_error(
+                    &mut submit_claim_guard,
+                    route.as_str(),
+                    request,
+                    "load_canonical_submit_response_missing",
+                    Reject::retryable(
+                        "idempotency_store_unavailable",
+                        "idempotency conflict detected but canonical response missing",
+                    ),
                 )
-            })?;
+                .await;
+            }
+            Err(error) => {
+                return reject_after_claimed_submit_error(
+                    &mut submit_claim_guard,
+                    route.as_str(),
+                    request,
+                    "load_canonical_submit_response",
+                    map_idempotency_error_to_reject(error),
+                )
+                .await;
+            }
+        };
         submit_claim_guard.release_claim_on_drop();
+        if let Err(error) = submit_claim_guard.release_now().await {
+            warn!(
+                route = %route,
+                signal_id = %request.signal_id,
+                client_order_id = %request.client_order_id,
+                error = %error,
+                "failed to release submit claim after idempotency conflict"
+            );
+        }
         return Ok(canonical);
     }
     submit_claim_guard.release_claim_on_drop();
+    if let Err(error) = submit_claim_guard.release_now().await {
+        warn!(
+            route = %route,
+            signal_id = %request.signal_id,
+            client_order_id = %request.client_order_id,
+            error = %error,
+            "failed to release submit claim after storing idempotency response"
+        );
+    }
     Ok(response)
 }
