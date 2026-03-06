@@ -788,6 +788,7 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
 fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_adapter_route_policy_completeness(&config.execution)?;
     validate_shadow_universe_config(config)?;
+    validate_shadow_quality_thresholds(config)?;
     Ok(())
 }
 
@@ -797,6 +798,16 @@ fn validate_shadow_universe_config(config: &AppConfig) -> Result<()> {
     if follow_top_n < min_active {
         return Err(anyhow!(
             "discovery.follow_top_n ({follow_top_n}) must be >= risk.shadow_universe_min_active_follow_wallets ({min_active})"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_shadow_quality_thresholds(config: &AppConfig) -> Result<()> {
+    let min_holders = config.shadow.min_holders;
+    if (1..5).contains(&min_holders) {
+        return Err(anyhow!(
+            "shadow.min_holders ({min_holders}) must be either 0 (disable holder gate) or >= 5"
         ));
     }
     Ok(())
