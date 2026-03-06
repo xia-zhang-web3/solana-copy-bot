@@ -213,17 +213,18 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_millis(config.request_timeout_ms.max(500)))
         .build()
         .context("failed to build reqwest client")?;
-    let auth = Arc::new(AuthVerifier::new(
+    let idempotency = Arc::new(
+        SubmitIdempotencyStore::open(config.idempotency_db_path.as_str())
+            .context("failed to open idempotency store")?,
+    );
+    let auth = Arc::new(AuthVerifier::new_with_nonce_store(
         config.bearer_token.take(),
         config.hmac_key_id.clone(),
         config.hmac_secret.take(),
         config.hmac_ttl_sec,
         config.hmac_nonce_cache_max_entries,
+        idempotency.clone(),
     ));
-    let idempotency = Arc::new(
-        SubmitIdempotencyStore::open(config.idempotency_db_path.as_str())
-            .context("failed to open idempotency store")?,
-    );
 
     let state = Arc::new(AppState {
         config,
@@ -12248,17 +12249,18 @@ mod tests {
             allow_nonzero_tip: true,
             submit_signature_verify: None,
         };
-        let auth = Arc::new(AuthVerifier::new(
+        let idempotency = Arc::new(
+            SubmitIdempotencyStore::open(config.idempotency_db_path.as_str())
+                .expect("idempotency store"),
+        );
+        let auth = Arc::new(AuthVerifier::new_with_nonce_store(
             config.bearer_token.clone(),
             config.hmac_key_id.clone(),
             config.hmac_secret.clone(),
             config.hmac_ttl_sec,
             config.hmac_nonce_cache_max_entries,
+            idempotency.clone(),
         ));
-        let idempotency = Arc::new(
-            SubmitIdempotencyStore::open(config.idempotency_db_path.as_str())
-                .expect("idempotency store"),
-        );
         let http = Client::builder()
             .timeout(Duration::from_millis(2_000))
             .build()

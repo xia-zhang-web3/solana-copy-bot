@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     auth_crypto::{compute_hmac_signature_hex, constant_time_eq},
+    idempotency::{HmacNonceClaimOutcome, SubmitIdempotencyStore},
     secret_value::SecretValue,
     Reject,
 };
@@ -14,6 +15,7 @@ use crate::{
 pub(crate) struct AuthVerifier {
     bearer_token: Option<SecretValue>,
     hmac: Option<HmacConfig>,
+    persistent_nonce_store: Option<Arc<SubmitIdempotencyStore>>,
     nonce_seen_until_epoch: Arc<Mutex<HashMap<String, i64>>>,
     nonce_cache_max_entries: usize,
 }
@@ -26,12 +28,49 @@ struct HmacConfig {
 }
 
 impl AuthVerifier {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(
         bearer_token: Option<SecretValue>,
         hmac_key_id: Option<String>,
         hmac_secret: Option<SecretValue>,
         hmac_ttl_sec: u64,
         hmac_nonce_cache_max_entries: u64,
+    ) -> Self {
+        Self::build(
+            bearer_token,
+            hmac_key_id,
+            hmac_secret,
+            hmac_ttl_sec,
+            hmac_nonce_cache_max_entries,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_nonce_store(
+        bearer_token: Option<SecretValue>,
+        hmac_key_id: Option<String>,
+        hmac_secret: Option<SecretValue>,
+        hmac_ttl_sec: u64,
+        hmac_nonce_cache_max_entries: u64,
+        persistent_nonce_store: Arc<SubmitIdempotencyStore>,
+    ) -> Self {
+        Self::build(
+            bearer_token,
+            hmac_key_id,
+            hmac_secret,
+            hmac_ttl_sec,
+            hmac_nonce_cache_max_entries,
+            Some(persistent_nonce_store),
+        )
+    }
+
+    fn build(
+        bearer_token: Option<SecretValue>,
+        hmac_key_id: Option<String>,
+        hmac_secret: Option<SecretValue>,
+        hmac_ttl_sec: u64,
+        hmac_nonce_cache_max_entries: u64,
+        persistent_nonce_store: Option<Arc<SubmitIdempotencyStore>>,
     ) -> Self {
         let hmac = match (hmac_key_id, hmac_secret) {
             (Some(key_id), Some(secret)) => Some(HmacConfig {
@@ -44,6 +83,7 @@ impl AuthVerifier {
         Self {
             bearer_token,
             hmac,
+            persistent_nonce_store,
             nonce_seen_until_epoch: Arc::new(Mutex::new(HashMap::new())),
             nonce_cache_max_entries: usize::try_from(hmac_nonce_cache_max_entries)
                 .unwrap_or(usize::MAX)
@@ -84,12 +124,8 @@ impl AuthVerifier {
         }
 
         if let Some(hmac) = self.hmac.as_ref() {
-            let provided_key_id = get_required_header(
-                headers,
-                "x-copybot-key-id",
-                "hmac_missing",
-                "hmac_invalid",
-            )?;
+            let provided_key_id =
+                get_required_header(headers, "x-copybot-key-id", "hmac_missing", "hmac_invalid")?;
             if !constant_time_eq(provided_key_id.as_bytes(), hmac.key_id.as_bytes()) {
                 return Err(Reject::terminal(
                     "hmac_invalid",
@@ -135,12 +171,8 @@ impl AuthVerifier {
                     "x-copybot-auth-ttl-sec mismatch",
                 ));
             }
-            let nonce = get_required_header(
-                headers,
-                "x-copybot-nonce",
-                "hmac_missing",
-                "hmac_invalid",
-            )?;
+            let nonce =
+                get_required_header(headers, "x-copybot-nonce", "hmac_missing", "hmac_invalid")?;
             if nonce.is_empty() || nonce.len() > 128 {
                 return Err(Reject::terminal(
                     "hmac_invalid",
@@ -170,10 +202,41 @@ impl AuthVerifier {
                 return Err(Reject::terminal("hmac_invalid", "HMAC signature mismatch"));
             }
 
-            {
+            let nonce_key = format!("{}:{}", provided_key_id, nonce);
+            let expires_at = timestamp.saturating_add(max_skew);
+            if let Some(store) = self.persistent_nonce_store.as_ref() {
+                match store.claim_hmac_nonce(
+                    nonce_key.as_str(),
+                    now_epoch,
+                    expires_at,
+                    self.nonce_cache_max_entries,
+                ) {
+                    Ok(HmacNonceClaimOutcome::Claimed) => {}
+                    Ok(HmacNonceClaimOutcome::Replay) => {
+                        return Err(Reject::terminal(
+                            "hmac_replay",
+                            "HMAC nonce replay detected",
+                        ));
+                    }
+                    Ok(HmacNonceClaimOutcome::CapacityOverflow) => {
+                        return Err(Reject::retryable(
+                            "hmac_replay_cache_overflow",
+                            format!(
+                                "HMAC nonce replay cache capacity reached (max_entries={})",
+                                self.nonce_cache_max_entries
+                            ),
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(Reject::retryable(
+                            "hmac_replay_store_unavailable",
+                            format!("persistent HMAC nonce claim failed: {}", error),
+                        ));
+                    }
+                }
+            } else {
                 let mut seen = self.nonce_seen_until_epoch.lock().await;
                 seen.retain(|_, expires_at| *expires_at >= now_epoch);
-                let nonce_key = format!("{}:{}", provided_key_id, nonce);
                 if seen.contains_key(&nonce_key) {
                     return Err(Reject::terminal(
                         "hmac_replay",
@@ -189,7 +252,6 @@ impl AuthVerifier {
                         ),
                     ));
                 }
-                let expires_at = timestamp.saturating_add(max_skew);
                 seen.insert(nonce_key, expires_at);
             }
         }
@@ -200,7 +262,8 @@ impl AuthVerifier {
 
 fn build_hmac_payload_bytes(timestamp: &str, ttl: &str, nonce: &str, raw_body: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(
-        timestamp.len()
+        timestamp
+            .len()
             .saturating_add(ttl.len())
             .saturating_add(nonce.len())
             .saturating_add(raw_body.len())
@@ -233,7 +296,10 @@ fn get_required_header<'a>(
     })?;
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err(Reject::terminal(missing_code, format!("missing header {}", key)));
+        return Err(Reject::terminal(
+            missing_code,
+            format!("missing header {}", key),
+        ));
     }
     Ok(trimmed)
 }
@@ -242,8 +308,14 @@ fn get_required_header<'a>(
 mod tests {
     use super::{build_hmac_payload_bytes, AuthVerifier};
     use crate::auth_crypto::compute_hmac_signature_hex;
+    use crate::idempotency::SubmitIdempotencyStore;
     use axum::http::{HeaderMap, HeaderValue};
     use chrono::Utc;
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        sync::Arc,
+    };
 
     fn build_hmac_headers(
         key_id: &str,
@@ -274,6 +346,21 @@ mod tests {
         headers
     }
 
+    fn temp_db_path() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "copybot_executor_hmac_replay_{}_{}_{}.sqlite3",
+            std::process::id(),
+            nanos,
+            seq
+        ))
+    }
+
     #[tokio::test]
     async fn auth_verifier_hmac_accepts_valid_signature_and_detects_replay() {
         let verifier = AuthVerifier::new(
@@ -285,11 +372,15 @@ mod tests {
         );
         let body = br#"{"status":"ok"}"#;
         let timestamp = Utc::now().timestamp();
-        let payload = build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-1", body);
+        let payload =
+            build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-1", body);
         let signature = compute_hmac_signature_hex(b"secret-1", payload.as_slice()).unwrap();
         let headers = build_hmac_headers("kid-1", 30, "nonce-1", timestamp, signature.as_str());
 
-        verifier.verify(&headers, body).await.expect("first verify must pass");
+        verifier
+            .verify(&headers, body)
+            .await
+            .expect("first verify must pass");
         let reject = verifier
             .verify(&headers, body)
             .await
@@ -299,13 +390,8 @@ mod tests {
 
     #[tokio::test]
     async fn auth_verifier_rejects_non_ascii_authorization_header() {
-        let verifier = AuthVerifier::new(
-            Some("token-1".to_string().into()),
-            None,
-            None,
-            30,
-            100_000,
-        );
+        let verifier =
+            AuthVerifier::new(Some("token-1".to_string().into()), None, None, 30, 100_000);
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
@@ -318,7 +404,9 @@ mod tests {
             .expect_err("non-ascii Authorization header must reject");
         assert_eq!(reject.code, "auth_invalid");
         assert!(
-            reject.detail.contains("Authorization header must be valid ASCII"),
+            reject
+                .detail
+                .contains("Authorization header must be valid ASCII"),
             "detail={}",
             reject.detail
         );
@@ -343,9 +431,11 @@ mod tests {
             .expect_err("bad signature must reject");
         assert_eq!(reject.code, "hmac_invalid");
 
-        let payload = build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-2", body);
+        let payload =
+            build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-2", body);
         let signature = compute_hmac_signature_hex(b"secret-2", payload.as_slice()).unwrap();
-        let good_headers = build_hmac_headers("kid-2", 30, "nonce-2", timestamp, signature.as_str());
+        let good_headers =
+            build_hmac_headers("kid-2", 30, "nonce-2", timestamp, signature.as_str());
         verifier
             .verify(&good_headers, body)
             .await
@@ -396,8 +486,13 @@ mod tests {
         let payload =
             build_hmac_payload_bytes(timestamp.to_string().as_str(), "30", "nonce-ascii", body);
         let signature = compute_hmac_signature_hex(b"secret-ascii", payload.as_slice()).unwrap();
-        let mut headers =
-            build_hmac_headers("kid-ascii", 30, "nonce-ascii", timestamp, signature.as_str());
+        let mut headers = build_hmac_headers(
+            "kid-ascii",
+            30,
+            "nonce-ascii",
+            timestamp,
+            signature.as_str(),
+        );
         headers.insert(
             "x-copybot-key-id",
             HeaderValue::from_bytes(&[0xff]).expect("non-ascii header value fixture"),
@@ -437,7 +532,8 @@ mod tests {
             body,
         );
         let signature = compute_hmac_signature_hex(b"secret-3", payload.as_slice()).unwrap();
-        let headers = build_hmac_headers("kid-3", ttl_sec, "nonce-3", timestamp, signature.as_str());
+        let headers =
+            build_hmac_headers("kid-3", ttl_sec, "nonce-3", timestamp, signature.as_str());
 
         verifier
             .verify_with_now_epoch(&headers, body, now_epoch)
@@ -471,8 +567,13 @@ mod tests {
             body,
         );
         let signature_1 = compute_hmac_signature_hex(b"secret-cap", payload_1.as_slice()).unwrap();
-        let headers_1 =
-            build_hmac_headers("kid-cap", ttl_sec, "nonce-cap-1", timestamp, signature_1.as_str());
+        let headers_1 = build_hmac_headers(
+            "kid-cap",
+            ttl_sec,
+            "nonce-cap-1",
+            timestamp,
+            signature_1.as_str(),
+        );
         verifier
             .verify(&headers_1, body)
             .await
@@ -485,8 +586,13 @@ mod tests {
             body,
         );
         let signature_2 = compute_hmac_signature_hex(b"secret-cap", payload_2.as_slice()).unwrap();
-        let headers_2 =
-            build_hmac_headers("kid-cap", ttl_sec, "nonce-cap-2", timestamp, signature_2.as_str());
+        let headers_2 = build_hmac_headers(
+            "kid-cap",
+            ttl_sec,
+            "nonce-cap-2",
+            timestamp,
+            signature_2.as_str(),
+        );
         let reject = verifier
             .verify(&headers_2, body)
             .await
@@ -534,5 +640,147 @@ mod tests {
             .verify(&headers_2, body)
             .await
             .expect("expired nonce entry must be evicted before capacity check");
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_persistent_nonce_rejects_replay_after_restart() {
+        let ttl_sec = 30;
+        let db_path = temp_db_path();
+        let db_path_str = db_path.to_string_lossy().to_string();
+        let body = br#"{"status":"ok"}"#;
+        let timestamp = 1_000_i64;
+        let payload = build_hmac_payload_bytes(
+            timestamp.to_string().as_str(),
+            ttl_sec.to_string().as_str(),
+            "nonce-restart",
+            body,
+        );
+        let signature = compute_hmac_signature_hex(b"secret-restart", payload.as_slice()).unwrap();
+        let headers = build_hmac_headers(
+            "kid-restart",
+            ttl_sec,
+            "nonce-restart",
+            timestamp,
+            signature.as_str(),
+        );
+
+        {
+            let store = Arc::new(
+                SubmitIdempotencyStore::open(db_path_str.as_str())
+                    .expect("persistent replay store"),
+            );
+            let verifier = AuthVerifier::new_with_nonce_store(
+                None,
+                Some("kid-restart".to_string()),
+                Some("secret-restart".to_string().into()),
+                ttl_sec,
+                100_000,
+                store,
+            );
+            verifier
+                .verify_with_now_epoch(&headers, body, timestamp)
+                .await
+                .expect("first verify must pass");
+        }
+
+        let reopened_store = Arc::new(
+            SubmitIdempotencyStore::open(db_path_str.as_str())
+                .expect("reopened persistent replay store"),
+        );
+        let reopened = AuthVerifier::new_with_nonce_store(
+            None,
+            Some("kid-restart".to_string()),
+            Some("secret-restart".to_string().into()),
+            ttl_sec,
+            100_000,
+            reopened_store,
+        );
+        let reject = reopened
+            .verify_with_now_epoch(&headers, body, timestamp)
+            .await
+            .expect_err("replay after restart must reject");
+        assert_eq!(reject.code, "hmac_replay");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn auth_verifier_hmac_persistent_nonce_evicts_expired_entry_after_restart() {
+        let ttl_sec = 1;
+        let db_path = temp_db_path();
+        let db_path_str = db_path.to_string_lossy().to_string();
+        let body = br#"{"status":"ok"}"#;
+        let first_timestamp = 1_000_i64;
+        let first_payload = build_hmac_payload_bytes(
+            first_timestamp.to_string().as_str(),
+            ttl_sec.to_string().as_str(),
+            "nonce-expire-restart",
+            body,
+        );
+        let first_signature =
+            compute_hmac_signature_hex(b"secret-expire-restart", first_payload.as_slice()).unwrap();
+        let first_headers = build_hmac_headers(
+            "kid-expire-restart",
+            ttl_sec,
+            "nonce-expire-restart",
+            first_timestamp,
+            first_signature.as_str(),
+        );
+
+        {
+            let store = Arc::new(
+                SubmitIdempotencyStore::open(db_path_str.as_str())
+                    .expect("persistent replay store"),
+            );
+            let verifier = AuthVerifier::new_with_nonce_store(
+                None,
+                Some("kid-expire-restart".to_string()),
+                Some("secret-expire-restart".to_string().into()),
+                ttl_sec,
+                100_000,
+                store,
+            );
+            verifier
+                .verify_with_now_epoch(&first_headers, body, first_timestamp)
+                .await
+                .expect("first verify must pass");
+        }
+
+        let second_timestamp = first_timestamp.saturating_add(ttl_sec as i64 + 1);
+        let second_payload = build_hmac_payload_bytes(
+            second_timestamp.to_string().as_str(),
+            ttl_sec.to_string().as_str(),
+            "nonce-expire-restart",
+            body,
+        );
+        let second_signature =
+            compute_hmac_signature_hex(b"secret-expire-restart", second_payload.as_slice())
+                .unwrap();
+        let second_headers = build_hmac_headers(
+            "kid-expire-restart",
+            ttl_sec,
+            "nonce-expire-restart",
+            second_timestamp,
+            second_signature.as_str(),
+        );
+
+        let reopened_store = Arc::new(
+            SubmitIdempotencyStore::open(db_path_str.as_str())
+                .expect("reopened persistent replay store"),
+        );
+        let reopened = AuthVerifier::new_with_nonce_store(
+            None,
+            Some("kid-expire-restart".to_string()),
+            Some("secret-expire-restart".to_string().into()),
+            ttl_sec,
+            100_000,
+            reopened_store,
+        );
+        reopened
+            .verify_with_now_epoch(&second_headers, body, second_timestamp)
+            .await
+            .expect("expired persistent nonce should be evicted after restart");
+
+        let _ = std::fs::remove_file(db_path);
     }
 }
