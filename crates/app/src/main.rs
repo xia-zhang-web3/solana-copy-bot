@@ -2,7 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use copybot_config::ExecutionConfig;
-use copybot_config::{load_from_env_or_default, RiskConfig, ShadowConfig};
+use copybot_config::{
+    load_from_env_or_default, normalize_ingestion_source, RiskConfig, ShadowConfig,
+};
 #[cfg(test)]
 use copybot_core_types::SwapEvent;
 use copybot_discovery::DiscoveryService;
@@ -203,7 +205,7 @@ fn parse_ingestion_source_override(content: &str) -> Option<String> {
             .trim_matches('\'')
             .to_string();
         if !source.is_empty() {
-            return Some(source);
+            return normalize_ingestion_source(&source).ok();
         }
     }
     None
@@ -4486,6 +4488,25 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=
 this-is-not-a-valid-line
 "#;
         assert!(parse_ingestion_source_override(content).is_none());
+    }
+
+    #[test]
+    fn parse_ingestion_source_override_rejects_invalid_source_value() {
+        let content = r#"
+SOLANA_COPY_BOT_INGESTION_SOURCE=laserstream
+"#;
+        assert!(parse_ingestion_source_override(content).is_none());
+    }
+
+    #[test]
+    fn parse_ingestion_source_override_normalizes_alias() {
+        let content = r#"
+SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
+"#;
+        assert_eq!(
+            parse_ingestion_source_override(content).as_deref(),
+            Some("yellowstone_grpc")
+        );
     }
 
     #[test]

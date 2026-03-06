@@ -4,8 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::env_parsing::{
-    normalize_ingestion_queue_overflow_policy, parse_env_bool, parse_env_number,
-    parse_execution_route_list_env, parse_execution_route_map_env,
+    normalize_ingestion_queue_overflow_policy, normalize_ingestion_source, parse_env_bool,
+    parse_env_number, parse_execution_route_list_env, parse_execution_route_map_env,
     validate_adapter_route_policy_completeness,
 };
 use super::AppConfig;
@@ -807,6 +807,7 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
 }
 
 fn normalize_loaded_config(config: &mut AppConfig) -> Result<()> {
+    config.ingestion.source = normalize_ingestion_source(&config.ingestion.source)?;
     config.ingestion.queue_overflow_policy =
         normalize_ingestion_queue_overflow_policy(&config.ingestion.queue_overflow_policy)?;
     Ok(())
