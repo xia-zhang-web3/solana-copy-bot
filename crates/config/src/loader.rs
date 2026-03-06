@@ -4,14 +4,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::env_parsing::{
-    parse_env_bool, parse_env_number, parse_execution_route_list_env,
-    parse_execution_route_map_env, validate_adapter_route_policy_completeness,
+    normalize_ingestion_queue_overflow_policy, parse_env_bool, parse_env_number,
+    parse_execution_route_list_env, parse_execution_route_map_env,
+    validate_adapter_route_policy_completeness,
 };
 use super::AppConfig;
 
 pub fn load_from_path(path: impl AsRef<Path>) -> Result<AppConfig> {
     let path = path.as_ref();
-    let cfg = parse_from_path(path)?;
+    let mut cfg = parse_from_path(path)?;
+    normalize_loaded_config(&mut cfg)?;
     validate_loaded_config(&cfg)?;
     Ok(cfg)
 }
@@ -137,10 +139,8 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         config.ingestion.seen_signatures_ttl_ms = seen_signatures_ttl_ms;
     }
     if let Ok(policy) = env::var("SOLANA_COPY_BOT_INGESTION_QUEUE_OVERFLOW_POLICY") {
-        let trimmed = policy.trim();
-        if !trimmed.is_empty() {
-            config.ingestion.queue_overflow_policy = trimmed.to_string();
-        }
+        config.ingestion.queue_overflow_policy =
+            normalize_ingestion_queue_overflow_policy(&policy)?;
     }
     if let Some(reorder_hold_ms) = env::var("SOLANA_COPY_BOT_INGESTION_REORDER_HOLD_MS")
         .ok()
@@ -800,9 +800,16 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         }
     }
 
+    normalize_loaded_config(&mut config)?;
     validate_loaded_config(&config)?;
 
     Ok((config, configured))
+}
+
+fn normalize_loaded_config(config: &mut AppConfig) -> Result<()> {
+    config.ingestion.queue_overflow_policy =
+        normalize_ingestion_queue_overflow_policy(&config.ingestion.queue_overflow_policy)?;
+    Ok(())
 }
 
 fn validate_loaded_config(config: &AppConfig) -> Result<()> {

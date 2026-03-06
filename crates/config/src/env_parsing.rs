@@ -27,6 +27,16 @@ where
     })
 }
 
+pub(crate) fn normalize_ingestion_queue_overflow_policy(value: &str) -> Result<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "block" => Ok(String::from("block")),
+        "drop_oldest" | "drop-oldest" => Ok(String::from("drop_oldest")),
+        other => Err(anyhow!(
+            "ingestion.queue_overflow_policy must be one of: block, drop_oldest; got {other:?}"
+        )),
+    }
+}
+
 pub(crate) fn validate_adapter_route_policy_completeness(config: &ExecutionConfig) -> Result<()> {
     if !config.enabled
         || !config

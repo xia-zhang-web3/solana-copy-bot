@@ -398,6 +398,65 @@ fn load_from_env_rejects_invalid_discovery_retention_override() {
 }
 
 #[test]
+fn load_from_path_rejects_invalid_ingestion_queue_overflow_policy() {
+    with_temp_config_file(
+        r#"
+[ingestion]
+queue_overflow_policy = "drop_newest"
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                let err = load_from_path(config_path)
+                    .expect_err("invalid ingestion queue_overflow_policy in config must fail")
+                    .to_string();
+                assert!(
+                    err.contains("ingestion.queue_overflow_policy"),
+                    "unexpected error: {err}"
+                );
+            });
+        },
+    );
+}
+
+#[test]
+fn load_from_env_normalizes_ingestion_queue_overflow_policy_alias() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_INGESTION_QUEUE_OVERFLOW_POLICY",
+                "drop-oldest",
+                || {
+                    let (cfg, _) = load_from_env_or_default(config_path)
+                        .expect("known queue overflow alias should load");
+                    assert_eq!(cfg.ingestion.queue_overflow_policy, "drop_oldest");
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_ingestion_queue_overflow_policy_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_INGESTION_QUEUE_OVERFLOW_POLICY",
+                "drop_newest",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("invalid queue overflow policy override must fail config load")
+                        .to_string();
+                    assert!(
+                        err.contains("ingestion.queue_overflow_policy"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
 fn load_from_env_applies_discovery_window_memory_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
