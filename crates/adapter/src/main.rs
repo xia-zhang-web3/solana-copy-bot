@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -53,6 +53,7 @@ const CU_PRICE_MAX: u64 = 10_000_000;
 const POLICY_FLOAT_EPSILON: f64 = 1e-6;
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_TIMEOUT_MS: u64 = 8_000;
+const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
 const DEFAULT_MAX_NOTIONAL_SOL: f64 = 10.0;
 const DEFAULT_HMAC_NONCE_CACHE_MAX_ENTRIES: usize = 100_000;
 const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
@@ -691,11 +692,7 @@ async fn main() -> Result<()> {
 
     let state = AppState { config, http, auth };
 
-    let router = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/simulate", post(simulate))
-        .route("/submit", post(submit))
-        .with_state(state.clone());
+    let router = build_router(state.clone());
 
     info!(
         bind_addr = %state.config.bind_addr,
@@ -718,6 +715,15 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("adapter server crashed")
+}
+
+fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/simulate", post(simulate))
+        .route("/submit", post(submit))
+        .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
+        .with_state(state)
 }
 
 async fn shutdown_signal() {
@@ -1916,6 +1922,7 @@ fn require_authenticated_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
     use axum::http::HeaderValue;
     use std::{
         fs as stdfs,
@@ -1926,6 +1933,7 @@ mod tests {
         thread,
         time::{SystemTime, UNIX_EPOCH},
     };
+    use tower::ServiceExt;
 
     static TEMP_SECRET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -2459,6 +2467,26 @@ mod tests {
                 assert_eq!(reject.code, "hmac_replay_cache_overflow");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn router_rejects_oversized_request_body_before_handler() {
+        let app = build_router(test_state("http://127.0.0.1:1/upstream"));
+        let oversized_payload = format!(
+            r#"{{"padding":"{}"}}"#,
+            "x".repeat(DEFAULT_MAX_REQUEST_BODY_BYTES + 1024)
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/simulate")
+            .header("content-type", "application/json")
+            .body(Body::from(oversized_payload))
+            .expect("request");
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("router should produce response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[test]
