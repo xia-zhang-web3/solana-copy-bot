@@ -37,6 +37,7 @@ mod shadow;
 mod sqlite_retry;
 mod system_events;
 
+pub use execution_orders::MarkOrderDroppedOutcome;
 pub use sqlite_retry::is_retryable_sqlite_anyhow_error;
 
 pub struct SqliteStore {
@@ -1407,6 +1408,71 @@ mod tests {
             order.tx_signature.as_deref(),
             Some("paper:tx-submit-regress")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn try_mark_order_dropped_reports_unexpected_status_without_masking_as_error() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("execution-dropped-guard-unexpected-status.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-drop-guard:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-drop-guard-1",
+                &signal.signal_id,
+                "cb_drop_guard_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-drop-guard-1",
+            "paper",
+            "paper:tx-drop-guard",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let outcome = store.try_mark_order_dropped(
+            "ord-drop-guard-1",
+            "signal_stale",
+            Some("late status sync"),
+        )?;
+        assert_eq!(
+            outcome,
+            MarkOrderDroppedOutcome::UnexpectedStatus("execution_submitted".to_string())
+        );
+        let order = store
+            .execution_order_by_client_order_id("cb_drop_guard_a1")?
+            .context("expected order row after guarded drop rejection")?;
+        assert_eq!(order.status, "execution_submitted");
+        assert_eq!(order.err_code, None);
+
         Ok(())
     }
 

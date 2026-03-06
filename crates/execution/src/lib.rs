@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{ExecutionConfig, RiskConfig};
 use copybot_storage::{
-    CopySignalRow, InsertExecutionOrderPendingOutcome, SqliteStore,
+    CopySignalRow, InsertExecutionOrderPendingOutcome, MarkOrderDroppedOutcome, SqliteStore,
     EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 use serde_json::json;
@@ -91,33 +91,32 @@ impl ExecutionRuntime {
         &self,
         store: &SqliteStore,
         signal_id: &str,
-        client_order_id: &str,
         order_id: &str,
         err_code: &str,
         detail: Option<&str>,
     ) -> Result<DropOrSyncSignalOutcome> {
-        match store.mark_order_dropped(order_id, err_code, detail) {
-            Ok(()) => {
+        match store.try_mark_order_dropped(order_id, err_code, detail)? {
+            MarkOrderDroppedOutcome::Applied => {
                 store.update_copy_signal_status(signal_id, "execution_dropped")?;
                 Ok(DropOrSyncSignalOutcome::Dropped)
             }
-            Err(error) => {
-                let latest = store
-                    .execution_order_by_client_order_id(client_order_id)?
-                    .context("missing order after drop transition conflict")?;
+            MarkOrderDroppedOutcome::UnexpectedStatus(latest_status) => {
                 warn!(
                     signal_id = %signal_id,
                     order_id = %order_id,
                     err_code,
-                    latest_status = %latest.status,
-                    error = %error,
+                    latest_status = %latest_status,
                     "pre-submit drop lost race; syncing signal to actual order status"
                 );
-                store.update_copy_signal_status(signal_id, latest.status.as_str())?;
+                store.update_copy_signal_status(signal_id, latest_status.as_str())?;
                 Ok(DropOrSyncSignalOutcome::Synced(
-                    Self::signal_result_for_order_status(latest.status.as_str()),
+                    Self::signal_result_for_order_status(latest_status.as_str()),
                 ))
             }
+            MarkOrderDroppedOutcome::NotFound => Err(anyhow::anyhow!(
+                "missing order after guarded drop transition: order_id={}",
+                order_id
+            )),
         }
     }
 
@@ -464,7 +463,6 @@ impl ExecutionRuntime {
                     match self.drop_pre_submit_order_or_sync_signal(
                         store,
                         &intent.signal_id,
-                        &client_order_id,
                         &existing.order_id,
                         "signal_stale",
                         None,
@@ -491,7 +489,6 @@ impl ExecutionRuntime {
                     match self.drop_pre_submit_order_or_sync_signal(
                         store,
                         &intent.signal_id,
-                        &client_order_id,
                         &existing.order_id,
                         "risk_blocked",
                         Some(reason.as_str()),
@@ -1364,7 +1361,6 @@ mod tests {
         let outcome = runtime.drop_pre_submit_order_or_sync_signal(
             &store,
             &signal.signal_id,
-            &client_order_id,
             "ord-sync-live-status-1",
             "signal_stale",
             None,
@@ -1388,6 +1384,46 @@ mod tests {
             order.tx_signature.as_deref(),
             Some("paper:tx-sync-live-status")
         );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn drop_pre_submit_order_or_sync_signal_errors_when_order_is_missing() -> Result<()> {
+        let (store, db_path) = make_test_store("drop-pre-submit-missing-order-errors")?;
+        let now = Utc::now();
+        let signal = CopySignalRow {
+            signal_id: "shadow:sync:w:buy:missing-order".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let runtime = make_paper_runtime(RiskConfig::default());
+        let error = runtime
+            .drop_pre_submit_order_or_sync_signal(
+                &store,
+                &signal.signal_id,
+                "ord-missing-live-status-1",
+                "signal_stale",
+                None,
+            )
+            .expect_err("missing guarded order must return an error");
+        assert!(
+            error
+                .to_string()
+                .contains("missing order after guarded drop transition"),
+            "unexpected error: {error}"
+        );
+
+        let pending = store.list_copy_signals_by_status("execution_pending", 10)?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].signal_id, signal.signal_id);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
