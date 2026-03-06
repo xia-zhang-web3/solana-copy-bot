@@ -108,7 +108,7 @@ Expected key values:
 
 1. `SOLANA_COPY_BOT_CONFIG=/etc/solana-copy-bot/live.server.toml`
 2. `SOLANA_COPY_BOT_EXECUTION_ENABLED=false`
-3. `RUST_LOG=info`
+3. `COPYBOT_APP_LOG_FILTER=info`
 
 ## 5) Secret files
 

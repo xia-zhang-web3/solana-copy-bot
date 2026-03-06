@@ -14,9 +14,13 @@ use copybot_shadow::{FollowSnapshot, ShadowService};
 use copybot_storage::{sqlite_contention_snapshot, SqliteStore};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
+#[cfg(test)]
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::Instant as StdInstant;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
@@ -65,6 +69,10 @@ const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
 const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
 const DEFAULT_OPERATOR_EMERGENCY_STOP_PATH: &str = "state/operator_emergency_stop.flag";
 const DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS: u64 = 500;
+const APP_LOG_FILTER_ENV: &str = "COPYBOT_APP_LOG_FILTER";
+const LEGACY_RUST_LOG_ENV: &str = "RUST_LOG";
+#[cfg(test)]
+static APP_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -77,7 +85,7 @@ async fn main() -> Result<()> {
     );
     resolve_execution_adapter_secrets(&mut config.execution, loaded_config_path.as_path())?;
 
-    init_tracing(&config.system.log_level, config.system.log_json);
+    init_tracing(&config.system.log_level, config.system.log_json)?;
     info!(
         config_path = %loaded_config_path.display(),
         env = %config.system.env,
@@ -621,8 +629,13 @@ fn resolve_migrations_dir(config_path: &Path, configured_migrations_dir: &str) -
     configured
 }
 
-fn init_tracing(log_level: &str, json: bool) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+fn init_tracing(log_level: &str, json: bool) -> Result<()> {
+    if env::var_os(LEGACY_RUST_LOG_ENV).is_some() && env::var_os(APP_LOG_FILTER_ENV).is_none() {
+        eprintln!(
+            "ignoring RUST_LOG for copybot-app; use {APP_LOG_FILTER_ENV} or system.log_level instead"
+        );
+    }
+    let filter = parse_app_log_env_filter(log_level)?;
     if json {
         tracing_subscriber::fmt()
             .with_target(false)
@@ -637,6 +650,19 @@ fn init_tracing(log_level: &str, json: bool) {
             .compact()
             .init();
     }
+    Ok(())
+}
+
+fn parse_app_log_env_filter(default_log_level: &str) -> Result<EnvFilter> {
+    let raw = match env::var(APP_LOG_FILTER_ENV) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(EnvFilter::new(default_log_level)),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(anyhow!("{APP_LOG_FILTER_ENV} must be valid UTF-8"));
+        }
+    };
+    EnvFilter::try_new(raw.as_str())
+        .map_err(|error| anyhow!("{APP_LOG_FILTER_ENV} is invalid: {}", error))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4510,6 +4536,58 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
+    fn parse_app_log_env_filter_uses_default_when_missing() {
+        with_app_log_filter_env(None, None, || {
+            parse_app_log_env_filter("info").expect("missing env must use default app log filter");
+        });
+    }
+
+    #[test]
+    fn parse_app_log_env_filter_rejects_invalid_syntax() {
+        with_app_log_filter_env(Some(OsString::from("[")), None, || {
+            assert_eq!(
+                env::var(APP_LOG_FILTER_ENV).as_deref(),
+                Ok("["),
+                "test helper failed to set app log filter env"
+            );
+            let error = parse_app_log_env_filter("info").expect_err("invalid filter must reject");
+            assert!(
+                error.to_string().contains(APP_LOG_FILTER_ENV),
+                "unexpected error: {}",
+                error
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_app_log_env_filter_rejects_non_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+
+        with_app_log_filter_env(Some(OsString::from_vec(vec![0xff])), None, || {
+            let error = parse_app_log_env_filter("info").expect_err("non-UTF8 filter must reject");
+            assert!(
+                error.to_string().contains(APP_LOG_FILTER_ENV),
+                "unexpected error: {}",
+                error
+            );
+            assert!(
+                error.to_string().contains("UTF-8"),
+                "unexpected error: {}",
+                error
+            );
+        });
+    }
+
+    #[test]
+    fn parse_app_log_env_filter_ignores_rust_log() {
+        with_app_log_filter_env(None, Some(OsString::from("error")), || {
+            parse_app_log_env_filter("info")
+                .expect("ambient RUST_LOG should not affect app log filter");
+        });
+    }
+
+    #[test]
     fn ingestion_error_backoff_ms_uses_progressive_schedule() {
         assert_eq!(ingestion_error_backoff_ms(0), 100);
         assert_eq!(ingestion_error_backoff_ms(1), 100);
@@ -4635,5 +4713,38 @@ manual override by operator
             &key,
             &open_lots_yes,
         ));
+    }
+
+    fn with_app_log_filter_env<T>(
+        app_value: Option<OsString>,
+        rust_log_value: Option<OsString>,
+        run: impl FnOnce() -> T,
+    ) -> T {
+        let _guard = APP_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved_app = env::var_os(APP_LOG_FILTER_ENV);
+        let saved_rust_log = env::var_os(LEGACY_RUST_LOG_ENV);
+        env::remove_var(APP_LOG_FILTER_ENV);
+        env::remove_var(LEGACY_RUST_LOG_ENV);
+        if let Some(value) = app_value {
+            env::set_var(APP_LOG_FILTER_ENV, value);
+        }
+        if let Some(value) = rust_log_value {
+            env::set_var(LEGACY_RUST_LOG_ENV, value);
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        env::remove_var(APP_LOG_FILTER_ENV);
+        env::remove_var(LEGACY_RUST_LOG_ENV);
+        if let Some(value) = saved_app {
+            env::set_var(APP_LOG_FILTER_ENV, value);
+        }
+        if let Some(value) = saved_rust_log {
+            env::set_var(LEGACY_RUST_LOG_ENV, value);
+        }
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 }
