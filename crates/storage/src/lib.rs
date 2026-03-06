@@ -1728,6 +1728,111 @@ mod tests {
     }
 
     #[test]
+    fn positions_single_open_guard_migration_merges_duplicate_open_rows() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("positions-single-open-guard.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0018_followlist_single_active_guard.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        legacy_store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 'open')",
+            params![
+                "pos-open-a",
+                "token-dup",
+                1.5_f64,
+                0.30_f64,
+                "2026-03-01T00:00:00+00:00",
+                0.05_f64,
+            ],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 'open')",
+            params![
+                "pos-open-b",
+                "token-dup",
+                2.0_f64,
+                0.45_f64,
+                "2026-03-01T00:05:00+00:00",
+                0.07_f64,
+            ],
+        )?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut migrated_store = SqliteStore::open(Path::new(&db_path))?;
+        migrated_store.run_migrations(&migration_dir)?;
+
+        let open_rows: Vec<(String, f64, f64, String, Option<f64>)> = {
+            let mut stmt = migrated_store.conn.prepare(
+                "SELECT position_id, qty, cost_sol, opened_ts, pnl_sol
+                 FROM positions
+                 WHERE token = ?1
+                   AND state = 'open'
+                 ORDER BY opened_ts ASC",
+            )?;
+            let mapped_rows = stmt.query_map(params!["token-dup"], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?;
+            mapped_rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        assert_eq!(open_rows.len(), 1, "migration must leave exactly one open row");
+        assert!(
+            (open_rows[0].1 - 3.5).abs() < 1e-9,
+            "qty should be merged into surviving open row"
+        );
+        assert!(
+            (open_rows[0].2 - 0.75).abs() < 1e-9,
+            "cost_sol should be merged into surviving open row"
+        );
+        assert_eq!(
+            open_rows[0].3,
+            "2026-03-01T00:00:00+00:00",
+            "merged row should preserve earliest opened_ts"
+        );
+        assert!(
+            (open_rows[0].4.unwrap_or_default() - 0.12).abs() < 1e-9,
+            "pnl_sol should be preserved across merged open rows"
+        );
+        assert_eq!(
+            migrated_store.live_open_positions_count()?,
+            1,
+            "runtime open position count should observe deduplicated schema invariant"
+        );
+        assert_eq!(
+            migrated_store.live_open_position_qty_cost("token-dup")?,
+            Some((3.5, 0.75)),
+            "runtime open position lookup should see merged aggregate row"
+        );
+
+        let duplicate_insert = migrated_store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, state, pnl_sol)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', 0.0)",
+            params![
+                "pos-open-c",
+                "token-dup",
+                0.5_f64,
+                0.10_f64,
+                "2026-03-01T00:10:00+00:00",
+            ],
+        );
+        assert!(
+            duplicate_insert.is_err(),
+            "unique partial index must reject a second open position row for the same token"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn live_max_drawdown_since_respects_subsecond_closed_ts_order() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("live-max-drawdown-subsecond-order.db");
