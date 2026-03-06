@@ -476,6 +476,76 @@ fn load_from_env_rejects_invalid_execution_max_submit_attempts_override() {
 }
 
 #[test]
+fn load_from_env_rejects_invalid_yellowstone_connect_timeout_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS", "12.5", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("invalid yellowstone connect timeout override must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_ingestion_fetch_concurrency_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY", "abc", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("invalid ingestion fetch_concurrency override must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_ingestion_tx_fetch_retries_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRIES", "-1", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("invalid ingestion tx_fetch_retries override must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRIES"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_ingestion_global_rpc_rps_limit_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT", "many", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err(
+                        "invalid ingestion global_rpc_rps_limit override must fail config load",
+                    )
+                    .to_string();
+                assert!(
+                    err.contains("SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
 fn load_from_path_rejects_invalid_ingestion_queue_overflow_policy() {
     with_temp_config_file(
         r#"
