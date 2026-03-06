@@ -10097,6 +10097,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_releases_claim_before_returning_pre_submit_reject() {
+        let upstream_body = r#"{"status":"pending","ok":false,"accepted":false}"#;
+        let Some((first_upstream_url, first_upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+        let Some((second_upstream_url, second_upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            let _ = first_upstream_handle.join();
+            return;
+        };
+
+        let mut state = test_state_with_backends(
+            first_upstream_url.as_str(),
+            None,
+            first_upstream_url.as_str(),
+            None,
+        );
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-submit-pre-submit-retry-1",
+            "client_order_id": "client-order-submit-pre-submit-retry-1",
+            "request_id": "request-submit-pre-submit-retry-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let first_reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("first submit must reject before live submit");
+        assert!(!first_reject.retryable);
+        assert_eq!(first_reject.code, "upstream_invalid_status");
+
+        let backend = state
+            .config
+            .route_backends
+            .get_mut("rpc")
+            .expect("rpc backend config");
+        backend.submit_url = second_upstream_url.clone();
+        backend.simulate_url = second_upstream_url.clone();
+
+        let second_reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("immediate retry must not see stale submit_in_flight");
+        assert!(!second_reject.retryable);
+        assert_eq!(second_reject.code, "upstream_invalid_status");
+
+        let _ = first_upstream_handle.join();
+        let _ = second_upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_unknown_upstream_status_before_reject_code_type_validation() {
         let upstream_body = r#"{"status":"pending","ok":false,"accepted":false,"retryable":false,"code":123,"detail":"busy"}"#;
         let Some((upstream_url, upstream_handle)) =
