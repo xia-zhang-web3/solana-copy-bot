@@ -28,6 +28,7 @@ impl ExecutionRuntime {
         intent: &ExecutionIntent,
         order_id: &str,
         lifecycle_status: &str,
+        current_err_code: Option<&str>,
         route: &str,
         now: DateTime<Utc>,
         report: &mut ExecutionBatchReport,
@@ -35,18 +36,16 @@ impl ExecutionRuntime {
         risk_event_type: &str,
         details: serde_json::Value,
     ) -> Result<SignalResult> {
-        if lifecycle_status != EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS {
-            store.mark_order_reconcile_pending(order_id, err_code)?;
-            store.update_copy_signal_status(
-                &intent.signal_id,
-                EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
-            )?;
-            let _ = store.insert_risk_event(
-                risk_event_type,
-                "error",
-                now,
-                Some(&details.to_string()),
-            );
+        let surface_changed = lifecycle_status != EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+            || current_err_code != Some(err_code);
+        store.mark_order_reconcile_pending(order_id, err_code)?;
+        store.update_copy_signal_status(
+            &intent.signal_id,
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+        )?;
+        if surface_changed {
+            let _ =
+                store.insert_risk_event(risk_event_type, "error", now, Some(&details.to_string()));
         }
         bump_route_counter(&mut report.confirm_retry_scheduled_by_route, route);
         Ok(SignalResult::Skipped)
@@ -79,7 +78,8 @@ impl ExecutionRuntime {
                             None
                         }
                     });
-                let Some((fallback, source)) = fallback_price_and_source(open_position_avg_cost) else {
+                let Some((fallback, source)) = fallback_price_and_source(open_position_avg_cost)
+                else {
                     return Ok(None);
                 };
                 warn!(
@@ -108,6 +108,7 @@ impl ExecutionRuntime {
         route: &str,
         tx_signature: &str,
         lifecycle_status: &str,
+        current_err_code: Option<&str>,
         submit_ts: DateTime<Utc>,
         applied_tip_lamports: Option<u64>,
         ata_create_rent_lamports: Option<u64>,
@@ -151,6 +152,7 @@ impl ExecutionRuntime {
                         intent,
                         order_id,
                         lifecycle_status,
+                        current_err_code,
                         route,
                         now,
                         report,
@@ -205,78 +207,6 @@ impl ExecutionRuntime {
                 let resolved_total_fee_lamports = resolved_network_fee_lamports
                     .saturating_add(route_tip_lamports)
                     .saturating_add(ata_create_rent_lamports);
-                if self.mode == "adapter_submit_confirm" {
-                    if confirm.network_fee_lamports.is_some() {
-                        bump_route_counter(&mut report.confirm_network_fee_rpc_by_route, route);
-                    } else if network_fee_lamports_hint.is_some() {
-                        bump_route_counter(
-                            &mut report.confirm_network_fee_submit_hint_by_route,
-                            route,
-                        );
-                    } else {
-                        bump_route_counter(&mut report.confirm_network_fee_missing_by_route, route);
-                    }
-                    if let (
-                        Some(rpc_network_fee_lamports),
-                        Some(submit_network_fee_lamports_hint),
-                    ) = (confirm.network_fee_lamports, network_fee_lamports_hint)
-                    {
-                        if rpc_network_fee_lamports != submit_network_fee_lamports_hint {
-                            let details = json!({
-                                "signal_id": intent.signal_id,
-                                "order_id": order_id,
-                                "route": route,
-                                "rpc_network_fee_lamports": rpc_network_fee_lamports,
-                                "submit_network_fee_lamports_hint": submit_network_fee_lamports_hint,
-                                "base_fee_lamports_hint": base_fee_lamports_hint,
-                                "priority_fee_lamports_hint": priority_fee_lamports_hint,
-                                "absolute_diff_lamports": rpc_network_fee_lamports.abs_diff(submit_network_fee_lamports_hint),
-                                "reason": "rpc_network_fee_differs_from_submit_hint",
-                            })
-                            .to_string();
-                            let _ = store.insert_risk_event(
-                                "execution_network_fee_hint_mismatch",
-                                "warn",
-                                now,
-                                Some(&details),
-                            );
-                        }
-                    }
-                }
-                accumulate_route_sum(
-                    &mut report.confirm_network_fee_lamports_sum_by_route,
-                    route,
-                    resolved_network_fee_lamports,
-                );
-                accumulate_route_sum(
-                    &mut report.confirm_tip_lamports_sum_by_route,
-                    route,
-                    route_tip_lamports,
-                );
-                accumulate_route_sum(
-                    &mut report.confirm_ata_rent_lamports_sum_by_route,
-                    route,
-                    ata_create_rent_lamports,
-                );
-                accumulate_route_sum(
-                    &mut report.confirm_fee_total_lamports_sum_by_route,
-                    route,
-                    resolved_total_fee_lamports,
-                );
-                if let Some(base_fee_lamports_hint) = base_fee_lamports_hint {
-                    accumulate_route_sum(
-                        &mut report.confirm_base_fee_hint_lamports_sum_by_route,
-                        route,
-                        base_fee_lamports_hint,
-                    );
-                }
-                if let Some(priority_fee_lamports_hint) = priority_fee_lamports_hint {
-                    accumulate_route_sum(
-                        &mut report.confirm_priority_fee_hint_lamports_sum_by_route,
-                        route,
-                        priority_fee_lamports_hint,
-                    );
-                }
                 let execution_fee_sol = fee_sol_from_lamports(
                     resolved_network_fee_lamports,
                     route_tip_lamports,
@@ -284,20 +214,23 @@ impl ExecutionRuntime {
                 );
                 let live_manual_reconcile_fail_closed =
                     self.live_manual_reconcile_fail_closed_on_confirm_failure();
-                let build_synthetic_fill =
-                    |resolution: SyntheticPriceResolution| -> Result<(crate::reconcile::ExecutionFill, bool, Option<String>)> {
-                        Ok((
-                            build_fill_from_priced_intent(
-                                intent,
-                                order_id,
-                                resolution.avg_price_sol,
-                                self.slippage_bps,
-                                execution_fee_sol,
-                            )?,
-                            resolution.used_price_fallback,
-                            resolution.fallback_source,
-                        ))
-                    };
+                let build_synthetic_fill = |resolution: SyntheticPriceResolution| -> Result<(
+                    crate::reconcile::ExecutionFill,
+                    bool,
+                    Option<String>,
+                )> {
+                    Ok((
+                        build_fill_from_priced_intent(
+                            intent,
+                            order_id,
+                            resolution.avg_price_sol,
+                            self.slippage_bps,
+                            execution_fee_sol,
+                        )?,
+                        resolution.used_price_fallback,
+                        resolution.fallback_source,
+                    ))
+                };
                 let mut fail_confirm_price_unavailable = || -> Result<SignalResult> {
                     let manual_reconcile_required =
                         self.manual_reconcile_required_on_confirm_failure;
@@ -334,8 +267,9 @@ impl ExecutionRuntime {
                     Ok(SignalResult::Failed)
                 };
 
-                let (fill, used_price_fallback, fallback_source) =
-                    if let Some(observed_fill) = confirm.observed_fill {
+                let (fill, used_price_fallback, fallback_source) = if let Some(observed_fill) =
+                    confirm.observed_fill
+                {
                     match build_fill_from_confirmed_observation(
                         intent,
                         order_id,
@@ -348,25 +282,27 @@ impl ExecutionRuntime {
                             let synthetic_price =
                                 self.resolve_synthetic_price(store, intent, route, confirmed_at)?;
                             if live_manual_reconcile_fail_closed {
-                                let (err_code, risk_event_type, reason) =
-                                    if synthetic_price.is_some() {
-                                        (
+                                let (err_code, risk_event_type, reason) = if synthetic_price
+                                    .is_some()
+                                {
+                                    (
                                             "confirm_observed_fill_unavailable_manual_reconcile_required",
                                             "execution_confirm_observed_fill_unavailable_manual_reconcile_required",
                                             "unusable_observed_fill",
                                         )
-                                    } else {
-                                        (
+                                } else {
+                                    (
                                             "confirm_price_unavailable_manual_reconcile_required",
                                             "execution_confirm_price_unavailable_manual_reconcile_required",
                                             "missing_latest_price_no_fallback",
                                         )
-                                    };
+                                };
                                 return self.skip_confirm_manual_reconcile(
                                     store,
                                     intent,
                                     order_id,
                                     lifecycle_status,
+                                    current_err_code,
                                     route,
                                     now,
                                     report,
@@ -423,6 +359,7 @@ impl ExecutionRuntime {
                             intent,
                             order_id,
                             lifecycle_status,
+                            current_err_code,
                             route,
                             now,
                             report,
@@ -459,6 +396,78 @@ impl ExecutionRuntime {
                 let Some(fill) = fill else {
                     return Ok(SignalResult::Failed);
                 };
+                accumulate_route_sum(
+                    &mut report.confirm_network_fee_lamports_sum_by_route,
+                    route,
+                    resolved_network_fee_lamports,
+                );
+                accumulate_route_sum(
+                    &mut report.confirm_tip_lamports_sum_by_route,
+                    route,
+                    route_tip_lamports,
+                );
+                accumulate_route_sum(
+                    &mut report.confirm_ata_rent_lamports_sum_by_route,
+                    route,
+                    ata_create_rent_lamports,
+                );
+                accumulate_route_sum(
+                    &mut report.confirm_fee_total_lamports_sum_by_route,
+                    route,
+                    resolved_total_fee_lamports,
+                );
+                if let Some(base_fee_lamports_hint) = base_fee_lamports_hint {
+                    accumulate_route_sum(
+                        &mut report.confirm_base_fee_hint_lamports_sum_by_route,
+                        route,
+                        base_fee_lamports_hint,
+                    );
+                }
+                if let Some(priority_fee_lamports_hint) = priority_fee_lamports_hint {
+                    accumulate_route_sum(
+                        &mut report.confirm_priority_fee_hint_lamports_sum_by_route,
+                        route,
+                        priority_fee_lamports_hint,
+                    );
+                }
+                if self.mode == "adapter_submit_confirm" {
+                    if confirm.network_fee_lamports.is_some() {
+                        bump_route_counter(&mut report.confirm_network_fee_rpc_by_route, route);
+                    } else if network_fee_lamports_hint.is_some() {
+                        bump_route_counter(
+                            &mut report.confirm_network_fee_submit_hint_by_route,
+                            route,
+                        );
+                    } else {
+                        bump_route_counter(&mut report.confirm_network_fee_missing_by_route, route);
+                    }
+                    if let (
+                        Some(rpc_network_fee_lamports),
+                        Some(submit_network_fee_lamports_hint),
+                    ) = (confirm.network_fee_lamports, network_fee_lamports_hint)
+                    {
+                        if rpc_network_fee_lamports != submit_network_fee_lamports_hint {
+                            let details = json!({
+                                "signal_id": intent.signal_id,
+                                "order_id": order_id,
+                                "route": route,
+                                "rpc_network_fee_lamports": rpc_network_fee_lamports,
+                                "submit_network_fee_lamports_hint": submit_network_fee_lamports_hint,
+                                "base_fee_lamports_hint": base_fee_lamports_hint,
+                                "priority_fee_lamports_hint": priority_fee_lamports_hint,
+                                "absolute_diff_lamports": rpc_network_fee_lamports.abs_diff(submit_network_fee_lamports_hint),
+                                "reason": "rpc_network_fee_differs_from_submit_hint",
+                            })
+                            .to_string();
+                            let _ = store.insert_risk_event(
+                                "execution_network_fee_hint_mismatch",
+                                "warn",
+                                now,
+                                Some(&details),
+                            );
+                        }
+                    }
+                }
                 let mut post_confirm_risk_breach = None;
                 match store.finalize_execution_confirmed_order(
                     &fill.order_id,
