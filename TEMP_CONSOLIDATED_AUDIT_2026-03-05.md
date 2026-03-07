@@ -2,7 +2,7 @@
 
 Original snapshot date: 2026-03-05
 Last refreshed: 2026-03-07
-Current main baseline: `2bd62f8`
+Current main baseline: `4f118da`
 Status: working file, updated to reflect what is already closed in `main`
 
 ## Purpose
@@ -17,7 +17,7 @@ It is now the live working summary of:
 
 Important scope note:
 
-- every status below is relative to `origin/main` at baseline `2bd62f8`
+- every status below is relative to `origin/main` at baseline `4f118da`
 - this file is not a description of arbitrary local dirty worktrees or older batch branches
 - when a reviewer compares against a stale local checkout, it can legitimately disagree with this file without invalidating the file itself
 
@@ -36,12 +36,11 @@ Important scope note:
   - Status: `CLOSED IN MAIN`
 - `H-2` Synthetic confirm reconciliation instead of observed on-chain fills:
   - Status: `PARTIALLY CLOSED IN MAIN`
-  - Done: observed on-chain fill path exists and is preferred when usable transaction observation is present.
-  - Still open: confirmed tx without usable observed fill can still finalize via synthetic fill from intent/fallback price, which keeps a residual drift risk in fills / positions / exposure / PnL.
+  - Done: observed on-chain fill path exists and is preferred when usable transaction observation is present; the live/manual reconcile path no longer synthetic-finalizes missing or unusable observed fills.
+  - Still open: synthetic fallback still exists outside that live/manual boundary, so the broader money-state drift risk remains part of the `D-2` architecture item.
 - `H-3` Confirm-timeout can strand real positions:
-  - Status: `PARTIALLY CLOSED IN MAIN`
-  - Done: timeout path with manual reconcile now transitions to reconcile-pending instead of hard-failing.
-  - Still open: generic confirm error after deadline still marks the order `execution_failed` even when manual reconcile is enabled, so the "stranded live position" class is reduced but not fully closed.
+  - Status: `CLOSED IN MAIN`
+  - Done: timeout and generic confirm-error paths in the live/manual reconcile flow now stay reconcilable instead of dropping the order into `execution_failed`.
 - `H-4` Executor idempotency break after successful live submit:
   - Status: `CLOSED IN MAIN`
 - `H-5` Upstream fallback can duplicate live submit:
@@ -121,6 +120,12 @@ These were originally in the imported action inventory or later follow-up work a
   - closed
 - malformed shadow / risk numeric env overrides now fail-closed:
   - closed
+- residual confirm/reconcile semantics (`PRED2-1`):
+  - closed in main, including runtime/operator/reporting parity for reconcile-pending reason surfaces
+- history retention for `risk_events` / `copy_signals` / `orders` / `fills` / `shadow_closed_trades` (`PRED2-2`):
+  - closed in main with explicit config, child-first cleanup, protected-history guardrails, and alert-evidence preservation
+- narrow live ghost-position / residual-qty class (`PRED2-4`):
+  - closed in main; live dust rows no longer count as open positions and sub-threshold sell residue closes the row instead of leaving a ghost position
 - adapter inbound request body size limit:
   - closed
 - residual CSV / route-list / route-map config env parsing:
@@ -150,10 +155,10 @@ Closed in `main`:
 
 What still remains from that report is operational, not code-only:
 
-- deploy the new config/runtime knobs to the real server config
-- observe post-deploy runtime behavior
-- decide whether further redesign is still needed after real production-like measurements
-- decide whether the current "stable under cap" discovery design tradeoff is acceptable long-term, because scoring/followlist now operate on a capped in-memory tail rather than the full theoretical time-window
+- deploy the current discovery throughput / budget / telemetry stack from `main`
+- collect post-deploy runtime evidence over a production-like window of `>= 8h`
+- run the burndown comparison and decide whether backlog burn-down is now real
+- if burn-down is still not demonstrated, open the successor redesign item before `D-2` rather than treating the current capped-tail semantics as a normal long-term design
 
 ## 4. Still Open In This Audit File
 
@@ -161,24 +166,18 @@ What still remains from that report is operational, not code-only:
 
 - `D-2` `f64` financial-state architecture drift:
   - Status: `OPEN / LARGE ARCHITECTURE ITEM`
-  - Concrete pre-D-2 risk already visible today: partial sell / qty mismatch can leave tiny live residual positions ("ghost positions"), so there is value in deciding whether to ship a narrow dust/EPS fix before opening the full refactor.
+  - Remaining scope: exact ingress / quantity boundary, exact live sizing boundary, exact execution / shadow monetary storage, and explicit legacy `REAL` cutover policy.
 
-### Reopened / newly validated code work
+### Production-readiness hold / operational code evidence
 
-- residual confirm/reconcile correctness:
-  - Status: `OPEN`
-  - Scope:
-    1. deadline-passed generic confirm errors should follow reconcile-pending semantics when manual reconcile is enabled, not hard-fail into `execution_failed`;
-    2. live confirmed tx without usable observed fill should not silently finalize through synthetic pricing without a stronger policy boundary.
-- history retention outside `wallet_metrics` / `observed_swaps`:
-  - Status: `OPEN`
-  - Scope:
-    1. `risk_events`,
-    2. `copy_signals`,
-    3. `orders`,
-    4. `fills`,
-    5. `shadow_closed_trades`.
-  - Rationale: the main DB is already large in production-like runtime, and these tables still have no bounded lifecycle policy.
+- `PRED2-3` discovery throughput / burn-down evidence:
+  - Status: `OPEN / HOLD`
+  - Code/tooling state: the discovery throughput mitigation stack and re-review tooling are already merged into `main`.
+  - Remaining work:
+    1. deploy current `main`,
+    2. collect at least two trend snapshots over `>= 8h`,
+    3. run the burndown compare tool,
+    4. either close `PRED2-3` on demonstrated burn-down or open the successor redesign item before `D-2`.
 
 ### Operational / repo tasks
 
@@ -189,11 +188,10 @@ What still remains from that report is operational, not code-only:
 
 If coding continues off this audit file, the clean next order is:
 
-1. finish the residual confirm/reconcile correctness gaps (`H-2` / `H-3` partial reopen)
-2. add retention policy for `risk_events` / `copy_signals` / `orders` / `fills` / `shadow_closed_trades`
-3. decide whether capped-tail discovery semantics are acceptable or need a deeper redesign after more runtime evidence
-4. handle `C-1` as an ops / git-history / rotation task, not as routine code hardening
-5. then decide whether `D-2` (`f64` financial-state architecture) is worth opening as a dedicated refactor track
+1. deploy current `main` and collect `PRED2-3` evidence over a production-like window of `>= 8h`
+2. if backlog still does not burn down, open the successor redesign item before `D-2`
+3. handle `C-1` as an ops / git-history / rotation task, not as routine code hardening
+4. then open `D2-0` / `D-2` from the field-by-field mapping rather than from a vague "f64 everywhere" statement
 
 ## 5.1 Detailed Plan - `C-1`
 
@@ -296,35 +294,30 @@ Before opening the large `D-2` architecture refactor, there are smaller correctn
 
 ### `PRED2-1` Residual confirm/reconcile semantics
 
-Close the remaining `H-2` / `H-3` tails:
+Status: `CLOSED IN MAIN`
 
-1. deadline-passed generic confirm error must follow reconcile-pending semantics when manual reconcile is enabled,
-2. confirmed live tx without usable observed fill must not silently finalize through synthetic pricing without an explicit stronger policy.
+Closed in `main` by the audited reconcile-pending hardening stack.
 
-Acceptance:
+What changed:
 
-1. no live confirmed position can disappear into `execution_failed` solely because confirm errored after deadline with manual reconcile enabled,
-2. synthetic fill fallback in live mode is either prohibited or moved behind an explicit reconcile/manual boundary,
-3. reporting / query parity is explicit for the new reconcile-pending paths, including any `confirm_price_unavailable_manual_reconcile_required`-style status / reason surfaces used by runtime snapshots or operator tooling,
-4. regression tests cover both cases.
+1. deadline-passed generic confirm error in the live/manual path now stays reconcilable instead of hard-failing into `execution_failed`,
+2. missing or unusable observed fill in the live/manual path no longer synthetic-finalizes,
+3. runtime/operator/reporting parity was added for the new reconcile-pending reason surfaces,
+4. manual-reconcile runbook and evidence scripts were updated accordingly.
 
 ### `PRED2-2` History retention
 
-Add lifecycle policy for:
+Status: `CLOSED IN MAIN`
 
-1. `risk_events`,
-2. `copy_signals`,
-3. `orders`,
-4. `fills`,
-5. `shadow_closed_trades`.
+Closed in `main` by the audited history-retention runner and follow-up safety hardening.
 
-Acceptance:
+What changed:
 
-1. retention horizon is explicit per table,
-2. cleanup path is implemented and tested,
-3. no active runtime query or alert cursor is broken by cleanup,
-4. child-first delete order or equivalent FK-safe cleanup is explicit where table relationships matter,
-5. a protected history window, archive export, or snapshot rule exists before pruning evidence that may be needed for later validation or migration work.
+1. explicit retention policy now exists for `risk_events`, `copy_signals`, `orders`, `fills`, and `shadow_closed_trades`,
+2. cleanup is child-first / FK-safe where relationships matter,
+3. alert evidence is protected until delivery cursor progress exists,
+4. legacy configs without `[history_retention]` stay disabled by default,
+5. terminal execution history retention uses terminal time rather than only submit time.
 
 ### `PRED2-3` Discovery capped-tail decision
 
@@ -346,17 +339,16 @@ Acceptance:
 
 ### `PRED2-4` Narrow ghost-position fix
 
-There is value in closing the most operationally relevant `f64`-adjacent bug class before the full `D-2` refactor:
+Status: `CLOSED IN MAIN`
 
-1. partial sell / qty mismatch leaving tiny residual live positions,
-2. tiny residual positions causing ghost-position behavior.
+Closed in `main` by the audited live-dust accounting fix.
 
-Acceptance:
+What changed:
 
-1. if fixed before `D-2`, the runtime invariant is explicit:
-   "dust / residual qty below the agreed threshold must not count as an open live position",
-2. if fixed before `D-2`, regression tests cover the residual-qty / ghost-position class,
-3. otherwise it is explicitly deferred into `D-2` with that risk called out.
+1. the runtime invariant is now explicit in storage/risk accounting:
+   dust / residual qty below the agreed threshold does not count as an open live position,
+2. live read paths ignore dust rows,
+3. partial sell that leaves only sub-threshold residue closes the position instead of leaving a ghost row.
 
 ## 5.3 Detailed Plan - `D-2`
 
