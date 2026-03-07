@@ -950,7 +950,19 @@ route_kpi AS (
     ROUND(
       100.0 * SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
       2
-    ) AS timeout_rate_pct
+    ) AS timeout_rate_pct,
+    ROUND(
+      100.0 * SUM(CASE WHEN status = 'execution_submitted_reconcile_pending' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      2
+    ) AS reconcile_pending_rate_pct,
+    ROUND(
+      100.0 * SUM(CASE WHEN err_code = 'confirm_price_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      2
+    ) AS confirm_price_unavailable_rate_pct,
+    ROUND(
+      100.0 * SUM(CASE WHEN err_code = 'confirm_observed_fill_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      2
+    ) AS confirm_observed_fill_unavailable_rate_pct
   FROM window_orders
   GROUP BY route
 ),
@@ -1007,6 +1019,9 @@ scorecard AS (
     k.success_rate_pct,
     k.failure_rate_pct,
     k.timeout_rate_pct,
+    k.reconcile_pending_rate_pct,
+    k.confirm_price_unavailable_rate_pct,
+    k.confirm_observed_fill_unavailable_rate_pct,
     COALESCE(l.latency_samples, 0) AS latency_samples,
     l.avg_confirm_latency_ms,
     p.p95_confirm_latency_ms,
@@ -1019,7 +1034,10 @@ SELECT
   ROW_NUMBER() OVER (
     ORDER BY
       success_rate_pct DESC,
+      reconcile_pending_rate_pct ASC,
       timeout_rate_pct ASC,
+      confirm_price_unavailable_rate_pct ASC,
+      confirm_observed_fill_unavailable_rate_pct ASC,
       CASE WHEN p95_confirm_latency_ms IS NULL THEN 1 ELSE 0 END ASC,
       p95_confirm_latency_ms ASC,
       attempted_orders DESC,
@@ -1037,6 +1055,9 @@ SELECT
   success_rate_pct,
   failure_rate_pct,
   timeout_rate_pct,
+  reconcile_pending_rate_pct,
+  confirm_price_unavailable_rate_pct,
+  confirm_observed_fill_unavailable_rate_pct,
   latency_samples,
   avg_confirm_latency_ms,
   p95_confirm_latency_ms,
