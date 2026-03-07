@@ -1852,11 +1852,10 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 
 1. После consolidated audit от `2026-03-05` и discovery/sqlite incident-разбора от `2026-03-06` проект добивался серией маленьких audited batch-фиксoв.
 2. Каждый code batch проходил внешний review, и только после этого попадал в `main`.
-3. По состоянию на baseline `4f118da` основной code backlog из `TEMP_CONSOLIDATED_AUDIT_2026-03-05.md` уже не включает прежние pre-`D-2` correctness/storage хвосты:
-   1. `PRED2-1` confirm/reconcile semantics закрыт в `main`,
-   2. `PRED2-2` history retention закрыт в `main`,
-   3. `PRED2-4` narrow ghost-position fix закрыт в `main`.
-4. Этот summary описывает именно `origin/main` на baseline `4f118da`. Он не обязан совпадать с любым локальным checkout или старой batch-веткой, если reviewer сверяет не `main`, а устаревшее дерево.
+3. По состоянию на baseline `2bd62f8` основной code backlog из `TEMP_CONSOLIDATED_AUDIT_2026-03-05.md` фактически закрыт, кроме двух хвостов:
+   1. `C-1` как ops/history issue,
+   2. `D-2` как большой `f64` architecture item.
+4. Этот summary описывает именно `origin/main` на baseline `2bd62f8`. Он не обязан совпадать с любым локальным dirty checkout или старой batch-веткой, если reviewer сверяет не `main`, а устаревшее дерево.
 
 Что было реально закрыто этим путём:
 
@@ -1919,13 +1918,14 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 
 Что осталось после этой wave:
 
-1. `PRED2-3`: discovery throughput / backlog burn-down readiness gate.
-   1. code/tooling path уже в `main`,
-   2. closure зависит от deploy + evidence window, а не от ещё одного локального code batch.
-2. `C-1`: git history / credential rotation / server secret hygiene.
-3. `D-2`: большой `f64` financial-state refactor; это уже не точечный hardening, а отдельный архитектурный трек.
+1. `C-1`: git history / credential rotation / server secret hygiene.
+2. `D-2`: большой `f64` financial-state refactor; это уже не точечный hardening, а отдельный архитектурный трек.
+3. Но после вечернего runtime follow-up `2026-03-07` приоритет уже не "сразу `D-2`":
+   1. текущий capped-tail discovery режим нельзя принимать как normal production semantics,
+   2. он должен считаться temporary degraded stabilization only,
+   3. значит следующий blocker перед `D-2` — `PRED2-3` backlog burn-down / throughput recovery, а не monetary precision refactor.
 
-### 2026-03-07 — fresh pre-D-2 review after closure pass (Codex + external auditors, then closed follow-up work)
+### 2026-03-07 — fresh pre-D-2 review after closure pass (Codex + external auditors)
 
 После того как базовый audit backlog был фактически закрыт, проект прогнали ещё раз "на свежую голову" уже против текущего `main`, а не старых batch-веток.
 
@@ -1937,9 +1937,9 @@ NO-GO для server rollout (остаемся на текущем этапе, з
    3. ingestion observed-swap write path больше не пишет SQLite синхронно из async loop;
    4. значительная часть config/env silent-fallback paths уже переведена в fail-closed.
 2. Источник части расхождений был не в `main`, а в том, что review местами сверял текущий локальный checkout на старой ветке, а не `origin/main`.
-3. Но review всё же поднял несколько реальных хвостов, которые не стоило путать с `D-2`, потому что они уже тогда влияли на correctness и long-running runtime behavior.
+3. Но review всё же поднял несколько реальных хвостов, которые уже не стоит путать с `D-2`, потому что они уже сейчас влияют на correctness и long-running runtime behavior.
 
-На тот момент review подтвердил такие remaining code items до большого `D-2`:
+Подтверждённые remaining code items до большого `D-2`:
 
 1. Residual confirm/reconcile semantics:
    1. timeout path уже уходит в reconcile-pending, но generic confirm error после deadline всё ещё переводит live order в `execution_failed` даже при включённом manual reconcile;
@@ -1955,18 +1955,76 @@ NO-GO для server rollout (остаемся на текущем этапе, з
    1. partial sell / qty mismatch может оставлять tiny residual live position,
    2. operationally это опаснее остальных sub-nano drift effects, потому что ведёт к ghost-position behavior.
 
-Что произошло дальше:
+Практический вывод:
 
-1. residual confirm/reconcile semantics (`PRED2-1`) были закрыты в `main`,
-2. history retention for `risk_events` / `copy_signals` / `orders` / `fills` / `shadow_closed_trades` (`PRED2-2`) была закрыта в `main`,
-3. narrow ghost-position / residual-qty fix (`PRED2-4`) был закрыт в `main`,
-4. `PRED2-3` code/tooling path тоже был смёржен в `main`, но сам item остаётся `HOLD` до post-deploy evidence.
-
-Практический вывод now:
-
-1. Следующий реальный readiness gate перед `D-2` — `PRED2-3`, а не ещё один локальный hardening batch.
+1. Перед открытием `D-2` логично сначала добить:
+   1. residual confirm/reconcile semantics,
+   2. retention policies для history/event tables.
 2. `C-1` остаётся чисто ops/history задачей:
    1. history rewrite,
    2. token rotation,
    3. server-side secret hygiene.
-3. Только после явного решения по `PRED2-3` проект уже честно входит не в "ещё один hardening backlog", а в большой архитектурный выбор по денежной модели.
+3. После этого проект уже честно входит не в "ещё один hardening backlog", а в большой архитектурный выбор по денежной модели.
+
+### 2026-03-07 — late-evening post-PRED2-4 follow-up (snapshot 21:34 UTC / 23:34 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-07_late_evening_post_pred24_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-07_post_pred24_followup_2134_snapshot/computed_summary.json`
+
+Контекст окна:
+
+1. В `2026-03-07 18:36:41 UTC` на сервер был выкачен `4f118da` (`PRED2-4` narrow ghost-position fix).
+2. Дифф против предыдущего live был маленький и storage-only:
+   1. `crates/storage/src/lib.rs`,
+   2. `crates/storage/src/risk_metrics.rs`.
+3. Конфиг и schema на этом rollout не менялись.
+
+Итог первого post-`PRED2-4` окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Discovery runtime: stable under expanded bounded fetch budget
+   1. `duration_ms_p50=4188`,
+   2. `duration_ms_p95=10483.95`,
+   3. `duration_ms_last=3978`,
+   4. `duration_ms_max=11804`,
+   5. `snapshot_recomputed=true` in `6/18` cycles,
+   6. `discovery cycle still running` warnings = `0`.
+3. Ingestion lag/backpressure: healthy
+   1. `ingestion_lag_ms_p95=1681`, `ingestion_lag_ms_p99=1740`,
+   2. `ws_to_fetch_queue_depth_last=1` (`max=567`),
+   3. `ws_notifications_backpressured_last=0`.
+4. Discovery throughput/backlog:
+   1. widened bounded fetch path is active:
+      1. `swaps_fetch_pages_last=5/5`,
+      2. `swaps_query_rows_last=100000`,
+      3. `swaps_query_rows_last_page=20000`,
+      4. `swaps_delta_fetched_last=100000`.
+   2. but saturation is still pinned:
+      1. `swaps_fetch_limit_reached_ratio=1.0` (`18/18`),
+      2. `swaps_fetch_page_budget_exhausted_ratio=1.0` (`18/18`).
+   3. direct cursor/head evidence is still negative:
+      1. `discovery_cursor_ts=2026-03-07T03:04:48.885805372+00:00`,
+      2. `observed_swaps_max_ts=2026-03-07T21:35:39.600998349+00:00`,
+      3. `cursor/head ts-gap ~= 66650 s` (`~18h 30m 50s`).
+   4. против pre-`PRED2-4` snapshot at `2026-03-07 15:28 UTC` gap все еще вырос на `+8128 s` (`+~2h 15m 28s`), хотя inferred `cursor_advance_ratio` заметно лучше прежнего (`~0.63` против старого sub-`0.3`), но все еще `< 1.0`.
+5. Direct I/O snapshot: healthy under the wider fetch budget
+   1. `pressure io some avg10=9.30`, `avg60=7.77`,
+   2. `vmstat wa last=7`,
+   3. `iostat nvme0n1 aqu-sz last=1.80`, `%util last=22.5`.
+6. Memory and DB:
+   1. `VmRSS ~92.6 MB`, `VmHWM ~181.1 MB`,
+   2. cgroup memory `~6.27 -> 6.28 GB`, still file-cache dominated,
+   3. `live_copybot.db ~65G`, `live_copybot.db-wal ~59M`, `live_copybot.db-shm ~128K`.
+7. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`,
+   3. `followlist_deactivations_suppressed=true`.
+
+Операционный вывод:
+
+1. `PRED2-4` rollout itself is clean: live service stable, ingestion healthy, and widened discovery fetch budget does not reintroduce the old OOM/skip-path incident.
+2. Это подтверждает, что `100k rows/cycle` bounded fetch path operationally держится на сервере.
+3. Но `PRED2-3` пока не закрыт: backlog burn-down все еще не доказан, потому что direct `cursor/head gap` продолжает расти, хоть и заметно медленнее.
+4. Корректная формулировка на этом этапе: **`PRED2-4` merged safely, discovery throughput materially improved, but `PRED2-3` remains open because cursor advance is still sub-real-time.**
