@@ -51,6 +51,11 @@ if [[ ! -f "$DB_PATH" ]]; then
   exit 1
 fi
 
+table_exists() {
+  local table="$1"
+  [[ "$(sqlite3 -noheader "$DB_PATH" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '$table' LIMIT 1;")" == "1" ]]
+}
+
 order_column_exists() {
   local column="$1"
   [[ "$(sqlite3 -noheader "$DB_PATH" "SELECT 1 FROM pragma_table_info('orders') WHERE name = '$column' LIMIT 1;")" == "1" ]]
@@ -81,6 +86,34 @@ KILLSWITCH_ENABLED="$(cfg_value risk shadow_killswitch_enabled)"
 sql_row() {
   sqlite3 -noheader -separator '|' "$DB_PATH" "$1"
 }
+
+DISCOVERY_CURSOR_TS="n/a"
+DISCOVERY_HEAD_TS="n/a"
+DISCOVERY_CURSOR_HEAD_GAP_SECONDS="n/a"
+if table_exists "discovery_runtime_state"; then
+  DISCOVERY_CURSOR_TS="$(sql_row "
+  SELECT COALESCE(
+    (SELECT cursor_ts FROM discovery_runtime_state WHERE id = 1),
+    'n/a'
+  );
+  ")"
+fi
+if table_exists "observed_swaps"; then
+  DISCOVERY_HEAD_TS="$(sql_row "
+  SELECT COALESCE(MAX(ts), 'n/a')
+  FROM observed_swaps;
+  ")"
+fi
+if [[ "$DISCOVERY_CURSOR_TS" != "n/a" && "$DISCOVERY_HEAD_TS" != "n/a" ]]; then
+  DISCOVERY_CURSOR_HEAD_GAP_SECONDS="$(sql_row "
+  SELECT CAST(
+    MAX(
+      0,
+      ROUND((julianday('$DISCOVERY_HEAD_TS') - julianday('$DISCOVERY_CURSOR_TS')) * 86400.0)
+    ) AS INTEGER
+  );
+  ")"
+fi
 
 open_row="$(sql_row "
 SELECT
@@ -338,9 +371,21 @@ def emit_discovery_sample(rows):
         print("discovery_cycle_duration_ms_last: n/a")
         print("eligible_wallets_last: n/a")
         print("active_follow_wallets_last: n/a")
+        print("swaps_query_rows_last: n/a")
+        print("swaps_query_rows_last_page_last: n/a")
         print("swaps_delta_fetched_last: n/a")
+        print("swaps_warm_loaded_last: n/a")
         print("swaps_evicted_due_cap_last: n/a")
+        print("swaps_fetch_pages_last: n/a")
+        print("swaps_fetch_page_limit_last: n/a")
+        print("swaps_fetch_time_budget_ms_last: n/a")
         print("swaps_fetch_limit_reached_last: n/a")
+        print("swaps_fetch_page_budget_exhausted_last: n/a")
+        print("swaps_fetch_time_budget_exhausted_last: n/a")
+        print("discovery_cycle_samples_in_journal: 0")
+        print("swaps_fetch_limit_reached_ratio: n/a")
+        print("swaps_fetch_page_budget_exhausted_ratio: n/a")
+        print("swaps_fetch_time_budget_exhausted_ratio: n/a")
         return
 
     last = rows[-1]
@@ -349,15 +394,34 @@ def emit_discovery_sample(rows):
         "discovery_cycle_duration_ms",
         "eligible_wallets",
         "active_follow_wallets",
+        "swaps_query_rows",
+        "swaps_query_rows_last_page",
         "swaps_delta_fetched",
+        "swaps_warm_loaded",
         "swaps_evicted_due_cap",
+        "swaps_fetch_pages",
+        "swaps_fetch_page_limit",
+        "swaps_fetch_time_budget_ms",
         "swaps_fetch_limit_reached",
+        "swaps_fetch_page_budget_exhausted",
+        "swaps_fetch_time_budget_exhausted",
     ]
     for key in keys:
         value = last.get(key)
         if isinstance(value, bool):
             value = str(value).lower()
         print(f"{key}_last: {value}")
+
+    samples = len(rows)
+    print(f"discovery_cycle_samples_in_journal: {samples}")
+    bool_keys = [
+        "swaps_fetch_limit_reached",
+        "swaps_fetch_page_budget_exhausted",
+        "swaps_fetch_time_budget_exhausted",
+    ]
+    for key in bool_keys:
+        seen = sum(1 for row in rows if row.get(key) is True)
+        print(f"{key}_ratio: {seen / samples:.4f}")
 
 if not rows:
     print("no ingestion metric samples found")
@@ -413,3 +477,9 @@ PY
 else
   echo "journal access unavailable for service '$SERVICE' (try running with sudo)"
 fi
+
+echo
+echo "=== Discovery Cursor State ==="
+echo "discovery_cursor_ts: $DISCOVERY_CURSOR_TS"
+echo "observed_swaps_head_ts: $DISCOVERY_HEAD_TS"
+echo "discovery_cursor_head_gap_seconds: $DISCOVERY_CURSOR_HEAD_GAP_SECONDS"

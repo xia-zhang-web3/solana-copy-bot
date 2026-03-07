@@ -49,9 +49,9 @@ if [[ "$args" == *"-n 250"* ]]; then
 LOGS
     exit 0
   fi
-  discovery_tail_line='2026-02-19T12:00:03Z INFO discovery cycle completed {"active_follow_wallets":0,"eligible_wallets":0,"discovery_cycle_duration_ms":8200,"swaps_delta_fetched":120000,"swaps_evicted_due_cap":120000,"swaps_fetch_limit_reached":true}'
+  discovery_tail_line='2026-02-19T12:00:03Z INFO discovery cycle completed {"active_follow_wallets":0,"eligible_wallets":0,"discovery_cycle_duration_ms":8200,"swaps_query_rows":20000,"swaps_query_rows_last_page":20000,"swaps_delta_fetched":120000,"swaps_warm_loaded":0,"swaps_evicted_due_cap":120000,"swaps_fetch_pages":5,"swaps_fetch_page_limit":5,"swaps_fetch_time_budget_ms":15000,"swaps_fetch_limit_reached":true,"swaps_fetch_page_budget_exhausted":true,"swaps_fetch_time_budget_exhausted":false}'
   if [[ "$mode" == "followlist_active" ]]; then
-    discovery_tail_line='2026-02-19T12:00:03Z INFO discovery cycle completed {"active_follow_wallets":4,"eligible_wallets":9,"discovery_cycle_duration_ms":7800,"swaps_delta_fetched":34000,"swaps_evicted_due_cap":32000,"swaps_fetch_limit_reached":false}'
+    discovery_tail_line='2026-02-19T12:00:03Z INFO discovery cycle completed {"active_follow_wallets":4,"eligible_wallets":9,"discovery_cycle_duration_ms":7800,"swaps_query_rows":34000,"swaps_query_rows_last_page":14000,"swaps_delta_fetched":34000,"swaps_warm_loaded":0,"swaps_evicted_due_cap":32000,"swaps_fetch_pages":2,"swaps_fetch_page_limit":5,"swaps_fetch_time_budget_ms":15000,"swaps_fetch_limit_reached":false,"swaps_fetch_page_budget_exhausted":false,"swaps_fetch_time_budget_exhausted":false}'
   fi
   cat <<'LOGS'
 2026-02-19T12:00:00Z INFO unrelated runtime line without json payload
@@ -1209,8 +1209,23 @@ run_ops_scripts_for_db() {
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
   assert_contains "$snapshot_output" "parse_fallback_by_reason: {\"missing_program_ids_fallback\": 1, \"missing_slot_fallback\": 2}"
   assert_contains "$snapshot_output" "discovery_cycle_sample_available: true"
+  assert_contains "$snapshot_output" "swaps_query_rows_last: 20000"
+  assert_contains "$snapshot_output" "swaps_query_rows_last_page_last: 20000"
   assert_contains "$snapshot_output" "eligible_wallets_last: 0"
   assert_contains "$snapshot_output" "active_follow_wallets_last: 0"
+  assert_contains "$snapshot_output" "swaps_fetch_pages_last: 5"
+  assert_contains "$snapshot_output" "swaps_fetch_page_limit_last: 5"
+  assert_contains "$snapshot_output" "swaps_fetch_time_budget_ms_last: 15000"
+  assert_contains "$snapshot_output" "swaps_fetch_page_budget_exhausted_last: true"
+  assert_contains "$snapshot_output" "swaps_fetch_time_budget_exhausted_last: false"
+  assert_contains "$snapshot_output" "discovery_cycle_samples_in_journal: 1"
+  assert_contains "$snapshot_output" "swaps_fetch_limit_reached_ratio: 1.0000"
+  assert_contains "$snapshot_output" "swaps_fetch_page_budget_exhausted_ratio: 1.0000"
+  assert_contains "$snapshot_output" "swaps_fetch_time_budget_exhausted_ratio: 0.0000"
+  assert_contains "$snapshot_output" "=== Discovery Cursor State ==="
+  assert_contains "$snapshot_output" "discovery_cursor_ts: n/a"
+  assert_contains "$snapshot_output" "observed_swaps_head_ts: n/a"
+  assert_contains "$snapshot_output" "discovery_cursor_head_gap_seconds: n/a"
   assert_contains "$snapshot_output" "execution_batch_sample_available: true"
   assert_contains "$snapshot_output" "submit_dynamic_cu_policy_enabled_by_route: {\"rpc\": 2}"
   assert_contains "$snapshot_output" "submit_dynamic_cu_hint_api_by_route: {\"rpc\": 1}"
@@ -1388,8 +1403,14 @@ run_runtime_snapshot_no_ingestion_case() {
   assert_contains "$snapshot_output" "=== Ingestion Runtime (latest samples) ==="
   assert_contains "$snapshot_output" "no ingestion metric samples found"
   assert_contains "$snapshot_output" "discovery_cycle_sample_available: false"
+  assert_contains "$snapshot_output" "swaps_query_rows_last: n/a"
+  assert_contains "$snapshot_output" "swaps_fetch_pages_last: n/a"
+  assert_contains "$snapshot_output" "swaps_fetch_limit_reached_ratio: n/a"
   assert_contains "$snapshot_output" "eligible_wallets_last: n/a"
   assert_contains "$snapshot_output" "active_follow_wallets_last: n/a"
+  assert_contains "$snapshot_output" "discovery_cursor_ts: n/a"
+  assert_contains "$snapshot_output" "observed_swaps_head_ts: n/a"
+  assert_contains "$snapshot_output" "discovery_cursor_head_gap_seconds: n/a"
   assert_contains "$snapshot_output" "execution_batch_sample_available: false"
   echo "[ok] runtime snapshot no-ingestion branch"
 }
