@@ -113,7 +113,7 @@ pub fn build_fill_from_confirmed_observation(
     }
     let fee_lamports = sol_to_lamports_ceil(fee_sol, "execution fill fee_sol")?;
     let notional_lamports_i128 = match intent.side.as_str() {
-        "buy" => i128::from(-observed_fill.signer_balance_delta_lamports)
+        "buy" => (-i128::from(observed_fill.signer_balance_delta_lamports))
             .checked_sub(i128::from(fee_lamports.as_u64()))
             .ok_or_else(|| anyhow!("observed buy notional_lamports overflow"))?,
         "sell" => i128::from(observed_fill.signer_balance_delta_lamports)
