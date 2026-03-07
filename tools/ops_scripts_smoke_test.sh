@@ -62,6 +62,9 @@ LOGS
 2026-02-19T12:00:01Z INFO sqlite contention counters {"sqlite_write_retry_total":0,"sqlite_busy_error_total":0}
 2026-02-19T12:00:02Z INFO execution batch processed {"attempted":3,"confirmed":2,"dropped":0,"failed":1,"skipped":0,"submit_attempted_by_route":{"rpc":3},"submit_retry_scheduled_by_route":{"rpc":1},"submit_failed_by_route":{"rpc":1},"submit_dynamic_cu_policy_enabled_by_route":{"rpc":2},"submit_dynamic_cu_hint_used_by_route":{"rpc":2},"submit_dynamic_cu_hint_api_by_route":{"rpc":1},"submit_dynamic_cu_hint_rpc_by_route":{"rpc":1},"submit_dynamic_cu_price_applied_by_route":{"rpc":1},"submit_dynamic_cu_static_fallback_by_route":{"rpc":1},"submit_dynamic_tip_policy_enabled_by_route":{"rpc":2},"submit_dynamic_tip_applied_by_route":{"rpc":1},"submit_dynamic_tip_static_floor_by_route":{"rpc":1}}
 LOGS
+  cat <<'DISCOVERY_OLD'
+2026-02-19T12:00:02Z INFO discovery cycle completed {"active_follow_wallets":0,"eligible_wallets":0,"discovery_cycle_duration_ms":8100,"swaps_delta_fetched":20000,"swaps_evicted_due_cap":20000,"swaps_fetch_limit_reached":true}
+DISCOVERY_OLD
   printf '%s\n' "$discovery_tail_line"
 fi
 exit 0
@@ -1218,7 +1221,7 @@ run_ops_scripts_for_db() {
   assert_contains "$snapshot_output" "swaps_fetch_time_budget_ms_last: 15000"
   assert_contains "$snapshot_output" "swaps_fetch_page_budget_exhausted_last: true"
   assert_contains "$snapshot_output" "swaps_fetch_time_budget_exhausted_last: false"
-  assert_contains "$snapshot_output" "discovery_cycle_samples_in_journal: 1"
+  assert_contains "$snapshot_output" "discovery_cycle_samples_in_journal: 2"
   assert_contains "$snapshot_output" "swaps_fetch_limit_reached_ratio: 1.0000"
   assert_contains "$snapshot_output" "swaps_fetch_page_budget_exhausted_ratio: 1.0000"
   assert_contains "$snapshot_output" "swaps_fetch_time_budget_exhausted_ratio: 0.0000"

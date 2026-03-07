@@ -420,8 +420,12 @@ def emit_discovery_sample(rows):
         "swaps_fetch_time_budget_exhausted",
     ]
     for key in bool_keys:
+        samples_with_key = sum(1 for row in rows if isinstance(row.get(key), bool))
+        if samples_with_key == 0:
+            print(f"{key}_ratio: n/a")
+            continue
         seen = sum(1 for row in rows if row.get(key) is True)
-        print(f"{key}_ratio: {seen / samples:.4f}")
+        print(f"{key}_ratio: {seen / samples_with_key:.4f}")
 
 if not rows:
     print("no ingestion metric samples found")
