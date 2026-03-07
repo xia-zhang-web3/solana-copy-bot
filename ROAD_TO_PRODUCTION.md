@@ -1798,6 +1798,54 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 2. При этом текущие данные уже дают более сильный вывод про backlog: burn-down пока не доказан, а backlog все еще material, потому что direct `cursor_ts` отстает от head примерно на `10h`.
 3. Корректная формулировка на этом этапе: **stable under cap, backlog still material**.
 
+### 2026-03-07 — evening post-deploy follow-up (snapshot 15:28 UTC / 17:28 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-07_evening_post_deploy_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-07_post_deploy_followup_1527_snapshot/computed_summary.json`
+
+Итог вечернего окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Discovery runtime: still stable and still far below pre-deploy incident
+   1. `duration_ms_p50=709`,
+   2. `duration_ms_p95=7663.95`,
+   3. `duration_ms_last=742`,
+   4. `duration_ms_max=11850`,
+   5. `snapshot_recomputed=true` in `41/122` cycles,
+   6. `discovery cycle still running` warnings = `0`.
+3. Ingestion lag/backpressure: latest state remains healthy
+   1. `ingestion_lag_ms_p95=1942`, `ingestion_lag_ms_p99=2047`,
+   2. `ws_to_fetch_queue_depth_last=1` (`max=2049`),
+   3. `ws_notifications_backpressured_last=39331`,
+   4. против утреннего follow-up cumulative backpressure counter не вырос.
+4. Direct backlog evidence: discovery cursor is still materially behind head, and gap widened
+   1. `swaps_fetch_limit_reached_ratio=1.0` (`122/122`),
+   2. `swaps_query_rows_last=20000`, `swaps_delta_fetched_last=20000`,
+   3. `discovery_cursor_ts=2026-03-06T23:14:36.732929390+00:00`,
+   4. `observed_swaps_max_ts=2026-03-07T15:29:59.106718151+00:00`,
+   5. direct `cursor/head ts-gap ~= 58522 s` (`~16h 15m 22s`),
+   6. это хуже утреннего `~10h 02m 55s` примерно на `+~6h 12m 27s`.
+5. Direct I/O snapshot: still much softer than pre-deploy degradation, but no longer improving
+   1. `pressure io some avg10=10.99`, `avg60=10.26`,
+   2. `vmstat wa last=11`,
+   3. `iostat nvme0n1 aqu-sz last=2.00`, `%util last=24.1`.
+6. Memory and DB:
+   1. `VmRSS ~151.1 MB`, `VmHWM ~221.3 MB`,
+   2. cgroup memory `~6.65 -> 6.66 GB`, still file-cache dominated,
+   3. `live_copybot.db ~61G`, `live_copybot.db-wal ~57M`, `live_copybot.db-shm ~128K`.
+7. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+   3. Это по-прежнему согласуется с фильтром `>=4 дней` активности.
+
+Операционный вывод:
+
+1. Вечернее окно подтверждает предыдущий positive вывод: runtime после `ac5c87b` реально стабилизирован, и преддеплойная incident-картина не вернулась.
+2. Но теперь у нас есть уже более сильное отрицательное evidence по backlog: при текущем `20k` cap discovery не догоняет head.
+3. Корректная формулировка на этом этапе уже строже утренней: **runtime stabilized, but backlog is still material and is not yet burning down at the current cap**.
+
 ### 2026-03-07 — consolidated audit closure summary (Codex + external auditors)
 
 Контекст:
