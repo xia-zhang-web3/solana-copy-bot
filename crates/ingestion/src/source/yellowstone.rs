@@ -26,6 +26,7 @@ struct MintDelta {
     amount_delta: f64,
     raw_delta: Option<i128>,
     decimals: Option<u8>,
+    exact_unavailable: bool,
 }
 
 impl MintDelta {
@@ -40,36 +41,51 @@ impl MintDelta {
     }
 
     fn apply_raw_delta(&mut self, amount: &ParsedUiAmount, sign: i8) {
+        if self.exact_unavailable {
+            return;
+        }
         let Some(raw_amount) = amount.raw_amount.as_deref() else {
-            self.raw_delta = None;
-            self.decimals = None;
+            self.invalidate_exact();
             return;
         };
         let Some(decimals) = amount.decimals else {
-            self.raw_delta = None;
-            self.decimals = None;
+            self.invalidate_exact();
             return;
         };
-        let Some(parsed_raw) = raw_amount.parse::<i128>().ok() else {
-            self.raw_delta = None;
-            self.decimals = None;
+        let Some(parsed_raw) = raw_amount.parse::<u64>().ok() else {
+            self.invalidate_exact();
+            return;
+        };
+        let parsed_raw = i128::from(parsed_raw);
+        let Some(signed_raw) = parsed_raw.checked_mul(i128::from(sign)) else {
+            self.invalidate_exact();
             return;
         };
         match self.decimals {
             Some(existing) if existing != decimals => {
-                self.raw_delta = None;
-                self.decimals = None;
+                self.invalidate_exact();
             }
             Some(_) => {
                 if let Some(current) = self.raw_delta {
-                    self.raw_delta = current.checked_add(parsed_raw * i128::from(sign));
+                    match current.checked_add(signed_raw) {
+                        Some(next) => self.raw_delta = Some(next),
+                        None => self.invalidate_exact(),
+                    }
+                } else {
+                    self.invalidate_exact();
                 }
             }
             None => {
                 self.decimals = Some(decimals);
-                self.raw_delta = Some(parsed_raw * i128::from(sign));
+                self.raw_delta = Some(signed_raw);
             }
         }
+    }
+
+    fn invalidate_exact(&mut self) {
+        self.raw_delta = None;
+        self.decimals = None;
+        self.exact_unavailable = true;
     }
 
     fn candidate(&self) -> ParsedUiAmount {
@@ -440,12 +456,13 @@ pub(super) fn infer_swap_from_proto_balances(
 
 fn parse_proto_ui_amount(ui_amount: Option<&UiTokenAmount>) -> Option<ParsedUiAmount> {
     let ui_amount = ui_amount?;
+    let decimals = u8::try_from(ui_amount.decimals).ok()?;
     if !ui_amount.ui_amount_string.is_empty() {
         let parsed = ui_amount.ui_amount_string.parse::<f64>().ok()?;
         return parsed.is_finite().then_some(ParsedUiAmount {
             amount: parsed,
             raw_amount: (!ui_amount.amount.is_empty()).then(|| ui_amount.amount.clone()),
-            decimals: Some(ui_amount.decimals as u8),
+            decimals: Some(decimals),
         });
     }
     if !ui_amount.amount.is_empty() {
@@ -454,14 +471,14 @@ fn parse_proto_ui_amount(ui_amount: Option<&UiTokenAmount>) -> Option<ParsedUiAm
         return normalized.is_finite().then_some(ParsedUiAmount {
             amount: normalized,
             raw_amount: Some(ui_amount.amount.clone()),
-            decimals: Some(ui_amount.decimals as u8),
+            decimals: Some(decimals),
         });
     }
     if ui_amount.ui_amount.is_finite() {
         return Some(ParsedUiAmount {
             amount: ui_amount.ui_amount,
             raw_amount: None,
-            decimals: Some(ui_amount.decimals as u8),
+            decimals: Some(decimals),
         });
     }
     None
@@ -476,12 +493,12 @@ fn signer_sol_delta_from_proto(
     let delta = post_sol - pre_sol;
     Some(ParsedUiAmount {
         amount: delta as f64 / 1_000_000_000.0,
-        raw_amount: Some(delta.abs().to_string()),
-        decimals: Some(9),
+        raw_amount: None,
+        decimals: None,
     })
 }
 
-fn build_exact_swap_amounts(
+pub(super) fn build_exact_swap_amounts(
     amount_in: &ParsedUiAmount,
     amount_out: &ParsedUiAmount,
 ) -> Option<ExactSwapAmounts> {
@@ -558,6 +575,21 @@ mod tests {
         assert!(
             parse_proto_ui_amount(Some(&amount)).is_none(),
             "non-finite ui_amount field must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_proto_ui_amount_rejects_decimals_out_of_u8_range() {
+        let amount = UiTokenAmount {
+            ui_amount: 1.0,
+            decimals: u32::from(u8::MAX) + 1,
+            amount: "1000000".to_string(),
+            ui_amount_string: "1".to_string(),
+        };
+
+        assert!(
+            parse_proto_ui_amount(Some(&amount)).is_none(),
+            "out-of-range decimals must be rejected"
         );
     }
 }

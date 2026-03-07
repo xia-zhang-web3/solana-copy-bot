@@ -19,6 +19,7 @@ struct MintDelta {
     amount_delta: f64,
     raw_delta: Option<i128>,
     decimals: Option<u8>,
+    exact_unavailable: bool,
 }
 
 impl MintDelta {
@@ -33,36 +34,51 @@ impl MintDelta {
     }
 
     fn apply_raw_delta(&mut self, amount: &ParsedUiAmount, sign: i8) {
+        if self.exact_unavailable {
+            return;
+        }
         let Some(raw_amount) = amount.raw_amount.as_deref() else {
-            self.raw_delta = None;
-            self.decimals = None;
+            self.invalidate_exact();
             return;
         };
         let Some(decimals) = amount.decimals else {
-            self.raw_delta = None;
-            self.decimals = None;
+            self.invalidate_exact();
             return;
         };
-        let Some(parsed_raw) = raw_amount.parse::<i128>().ok() else {
-            self.raw_delta = None;
-            self.decimals = None;
+        let Some(parsed_raw) = raw_amount.parse::<u64>().ok() else {
+            self.invalidate_exact();
+            return;
+        };
+        let parsed_raw = i128::from(parsed_raw);
+        let Some(signed_raw) = parsed_raw.checked_mul(i128::from(sign)) else {
+            self.invalidate_exact();
             return;
         };
         match self.decimals {
             Some(existing) if existing != decimals => {
-                self.raw_delta = None;
-                self.decimals = None;
+                self.invalidate_exact();
             }
             Some(_) => {
                 if let Some(current) = self.raw_delta {
-                    self.raw_delta = current.checked_add(parsed_raw * i128::from(sign));
+                    match current.checked_add(signed_raw) {
+                        Some(next) => self.raw_delta = Some(next),
+                        None => self.invalidate_exact(),
+                    }
+                } else {
+                    self.invalidate_exact();
                 }
             }
             None => {
                 self.decimals = Some(decimals);
-                self.raw_delta = Some(parsed_raw * i128::from(sign));
+                self.raw_delta = Some(signed_raw);
             }
         }
+    }
+
+    fn invalidate_exact(&mut self) {
+        self.raw_delta = None;
+        self.decimals = None;
+        self.exact_unavailable = true;
     }
 
     fn candidate(&self) -> ParsedUiAmount {
@@ -346,8 +362,8 @@ impl HeliusWsSource {
         let delta = post_sol as i128 - pre_sol as i128;
         Some(ParsedUiAmount {
             amount: delta as f64 / 1_000_000_000.0,
-            raw_amount: Some(delta.abs().to_string()),
-            decimals: Some(9),
+            raw_amount: None,
+            decimals: None,
         })
     }
 

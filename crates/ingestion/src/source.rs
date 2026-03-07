@@ -732,6 +732,16 @@ mod tests {
         })
     }
 
+    fn token_balance_without_raw(owner: &str, mint: &str, amount: &str) -> Value {
+        json!({
+            "owner": owner,
+            "mint": mint,
+            "uiTokenAmount": {
+                "uiAmountString": amount
+            }
+        })
+    }
+
     fn test_runtime_config(telemetry: Arc<IngestionTelemetry>) -> Arc<HeliusRuntimeConfig> {
         Arc::new(HeliusRuntimeConfig {
             ws_url: "wss://example".to_string(),
@@ -807,8 +817,27 @@ mod tests {
         assert!((inferred.1.amount - 1.0).abs() < 1e-9);
         assert_eq!(inferred.2, "TokenMintA");
         assert!((inferred.3.amount - 100.0).abs() < 1e-9);
-        assert_eq!(inferred.1.raw_amount.as_deref(), Some("1000000000"));
+        assert!(inferred.1.raw_amount.is_none());
         assert_eq!(inferred.3.raw_amount.as_deref(), Some("100000000"));
+        assert!(HeliusWsSource::build_exact_swap_amounts(&inferred.1, &inferred.3).is_none());
+    }
+
+    #[test]
+    fn infer_swap_does_not_reconstruct_exact_raw_delta_from_partial_json_balances() {
+        let signer = "Leader111111111111111111111111111111111";
+        let meta = json!({
+            "preTokenBalances": [token_balance_without_raw(signer, "TokenMintA", "80")],
+            "postTokenBalances": [token_balance(signer, "TokenMintA", "90")],
+            "preBalances": [2_000_000_000u64],
+            "postBalances": [1_900_000_000u64]
+        });
+
+        let inferred = HeliusWsSource::infer_swap_from_json_balances(&meta, 0, signer)
+            .expect("expected SOL buy inference");
+        assert_eq!(inferred.2, "TokenMintA");
+        assert!((inferred.3.amount - 10.0).abs() < 1e-9);
+        assert!(inferred.3.raw_amount.is_none());
+        assert!(HeliusWsSource::build_exact_swap_amounts(&inferred.1, &inferred.3).is_none());
     }
 
     #[test]
@@ -1240,7 +1269,51 @@ mod tests {
         assert_eq!(inferred.2, "TokenMintA");
         assert!((inferred.1.amount - 1.0).abs() < 1e-9);
         assert!((inferred.3.amount - 100.0).abs() < 1e-9);
-        assert_eq!(inferred.1.raw_amount.as_deref(), Some("1000000000"));
+        assert!(inferred.1.raw_amount.is_none());
         assert_eq!(inferred.3.raw_amount.as_deref(), Some("100000000"));
+        assert!(yellowstone::build_exact_swap_amounts(&inferred.1, &inferred.3).is_none());
+    }
+
+    #[test]
+    fn infer_swap_from_proto_does_not_reconstruct_exact_raw_delta_from_partial_balances() {
+        let signer = "Leader111111111111111111111111111111111";
+        let pre_token = yellowstone_grpc_proto::prelude::TokenBalance {
+            account_index: 0,
+            mint: "TokenMintA".to_string(),
+            ui_token_amount: Some(UiTokenAmount {
+                ui_amount: 80.0,
+                decimals: 6,
+                amount: String::new(),
+                ui_amount_string: "80".to_string(),
+            }),
+            owner: signer.to_string(),
+            program_id: String::new(),
+        };
+        let post_token = yellowstone_grpc_proto::prelude::TokenBalance {
+            account_index: 0,
+            mint: "TokenMintA".to_string(),
+            ui_token_amount: Some(UiTokenAmount {
+                ui_amount: 90.0,
+                decimals: 6,
+                amount: "90000000".to_string(),
+                ui_amount_string: "90".to_string(),
+            }),
+            owner: signer.to_string(),
+            program_id: String::new(),
+        };
+        let meta = TransactionStatusMeta {
+            pre_balances: vec![2_000_000_000],
+            post_balances: vec![1_900_000_000],
+            pre_token_balances: vec![pre_token],
+            post_token_balances: vec![post_token],
+            ..Default::default()
+        };
+
+        let inferred = infer_swap_from_proto_balances(&meta, 0, signer)
+            .expect("expected SOL->token inference");
+        assert_eq!(inferred.2, "TokenMintA");
+        assert!((inferred.3.amount - 10.0).abs() < 1e-9);
+        assert!(inferred.3.raw_amount.is_none());
+        assert!(yellowstone::build_exact_swap_amounts(&inferred.1, &inferred.3).is_none());
     }
 }
