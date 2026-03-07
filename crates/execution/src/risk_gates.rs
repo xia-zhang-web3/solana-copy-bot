@@ -1,6 +1,8 @@
 use crate::intent::{ExecutionIntent, ExecutionSide};
+use crate::money::{checked_add_lamports, lamports_to_sol, sol_to_lamports_ceil, sol_to_lamports_floor};
 use crate::ExecutionRuntime;
 use anyhow::Result;
+use copybot_core_types::Lamports;
 use chrono::{DateTime, Duration, Utc};
 use copybot_storage::{ExecutionConfirmStateSnapshot, SqliteStore};
 use tracing::debug;
@@ -14,6 +16,39 @@ pub(crate) struct ConfirmedBuyRiskBreach {
 }
 
 impl ExecutionRuntime {
+    fn max_position_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(self.risk.max_position_sol, "risk.max_position_sol")
+    }
+
+    fn max_total_exposure_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.risk.max_total_exposure_sol,
+            "risk.max_total_exposure_sol",
+        )
+    }
+
+    fn max_exposure_per_token_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.risk.max_exposure_per_token_sol,
+            "risk.max_exposure_per_token_sol",
+        )
+    }
+
+    fn current_total_exposure_lamports(&self, store: &SqliteStore) -> Result<Lamports> {
+        sol_to_lamports_ceil(store.live_open_exposure_sol()?, "live_open_exposure_sol")
+    }
+
+    fn current_token_exposure_lamports(
+        &self,
+        store: &SqliteStore,
+        token: &str,
+    ) -> Result<Lamports> {
+        sol_to_lamports_ceil(
+            store.live_open_exposure_sol_for_token(token)?,
+            "live_open_exposure_sol_for_token",
+        )
+    }
+
     pub(crate) fn should_pause_buy_submission(
         &self,
         intent: &ExecutionIntent,
@@ -62,32 +97,47 @@ impl ExecutionRuntime {
                 Ok(None)
             }
             ExecutionSide::Buy => {
-                if intent.notional_sol > self.risk.max_position_sol {
+                let notional_lamports = intent.notional_lamports()?;
+                let max_position_lamports = self.max_position_lamports()?;
+                if notional_lamports > max_position_lamports {
                     return Ok(Some(format!(
                         "max_position_sol_exceeded notional_sol={:.6} max_position_sol={:.6}",
-                        intent.notional_sol, self.risk.max_position_sol
+                        lamports_to_sol(notional_lamports),
+                        lamports_to_sol(max_position_lamports)
                     )));
                 }
 
-                let current_exposure = store.live_open_exposure_sol()?;
-                if current_exposure + intent.notional_sol > self.risk.max_total_exposure_sol {
+                let current_exposure_lamports = self.current_total_exposure_lamports(store)?;
+                let max_total_exposure_lamports = self.max_total_exposure_lamports()?;
+                let projected_total_exposure_lamports = checked_add_lamports(
+                    current_exposure_lamports,
+                    notional_lamports,
+                    "projected total exposure lamports",
+                )?;
+                if projected_total_exposure_lamports > max_total_exposure_lamports {
                     return Ok(Some(format!(
                         "max_total_exposure_exceeded current={:.6} notional={:.6} max_total={:.6}",
-                        current_exposure, intent.notional_sol, self.risk.max_total_exposure_sol
+                        lamports_to_sol(current_exposure_lamports),
+                        lamports_to_sol(notional_lamports),
+                        lamports_to_sol(max_total_exposure_lamports)
                     )));
                 }
 
-                let current_token_exposure =
-                    store.live_open_exposure_sol_for_token(&intent.token)?;
-                if current_token_exposure + intent.notional_sol
-                    > self.risk.max_exposure_per_token_sol
-                {
+                let current_token_exposure_lamports =
+                    self.current_token_exposure_lamports(store, &intent.token)?;
+                let max_exposure_per_token_lamports = self.max_exposure_per_token_lamports()?;
+                let projected_token_exposure_lamports = checked_add_lamports(
+                    current_token_exposure_lamports,
+                    notional_lamports,
+                    "projected token exposure lamports",
+                )?;
+                if projected_token_exposure_lamports > max_exposure_per_token_lamports {
                     return Ok(Some(format!(
                         "max_exposure_per_token_exceeded token={} current={:.6} notional={:.6} max_token={:.6}",
                         intent.token,
-                        current_token_exposure,
-                        intent.notional_sol,
-                        self.risk.max_exposure_per_token_sol
+                        lamports_to_sol(current_token_exposure_lamports),
+                        lamports_to_sol(notional_lamports),
+                        lamports_to_sol(max_exposure_per_token_lamports)
                     )));
                 }
 
@@ -161,24 +211,37 @@ impl ExecutionRuntime {
         &self,
         intent: &ExecutionIntent,
         snapshot: ExecutionConfirmStateSnapshot,
-    ) -> Option<ConfirmedBuyRiskBreach> {
+    ) -> Result<Option<ConfirmedBuyRiskBreach>> {
         if !matches!(intent.side, ExecutionSide::Buy) {
-            return None;
+            return Ok(None);
         }
 
         let mut reasons = Vec::new();
+        let total_exposure_lamports = sol_to_lamports_ceil(
+            snapshot.total_exposure_sol,
+            "execution confirm snapshot total_exposure_sol",
+        )?;
+        let token_exposure_lamports = sol_to_lamports_ceil(
+            snapshot.token_exposure_sol,
+            "execution confirm snapshot token_exposure_sol",
+        )?;
+        let max_total_exposure_lamports = self.max_total_exposure_lamports()?;
+        let max_exposure_per_token_lamports = self.max_exposure_per_token_lamports()?;
 
-        if snapshot.total_exposure_sol > self.risk.max_total_exposure_sol + 1e-9 {
+        if total_exposure_lamports > max_total_exposure_lamports {
             reasons.push(format!(
                 "max_total_exposure_exceeded current={:.6} max_total={:.6}",
-                snapshot.total_exposure_sol, self.risk.max_total_exposure_sol
+                lamports_to_sol(total_exposure_lamports),
+                lamports_to_sol(max_total_exposure_lamports)
             ));
         }
 
-        if snapshot.token_exposure_sol > self.risk.max_exposure_per_token_sol + 1e-9 {
+        if token_exposure_lamports > max_exposure_per_token_lamports {
             reasons.push(format!(
                 "max_exposure_per_token_exceeded token={} current={:.6} max_token={:.6}",
-                intent.token, snapshot.token_exposure_sol, self.risk.max_exposure_per_token_sol
+                intent.token,
+                lamports_to_sol(token_exposure_lamports),
+                lamports_to_sol(max_exposure_per_token_lamports)
             ));
         }
 
@@ -190,15 +253,15 @@ impl ExecutionRuntime {
         }
 
         if reasons.is_empty() {
-            return None;
+            return Ok(None);
         }
 
-        Some(ConfirmedBuyRiskBreach {
+        Ok(Some(ConfirmedBuyRiskBreach {
             total_exposure_sol: snapshot.total_exposure_sol,
             token_exposure_sol: snapshot.token_exposure_sol,
             open_positions: snapshot.open_positions,
             reasons,
-        })
+        }))
     }
 
     pub(crate) fn daily_loss_limit_sol(&self) -> Option<f64> {

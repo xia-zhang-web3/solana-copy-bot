@@ -484,7 +484,8 @@ impl ExecutionRuntime {
                     confirmed_at,
                 )? {
                     FinalizeExecutionConfirmOutcome::Applied(snapshot) => {
-                        post_confirm_risk_breach = self.confirmed_buy_risk_breach(intent, snapshot);
+                        post_confirm_risk_breach =
+                            self.confirmed_buy_risk_breach(intent, snapshot)?;
                     }
                     FinalizeExecutionConfirmOutcome::AlreadyConfirmed => {
                         store

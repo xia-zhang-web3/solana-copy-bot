@@ -734,6 +734,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_shadow_universe_config(config)?;
     validate_shadow_quality_thresholds(config)?;
     validate_discovery_storage_mitigation_config(config)?;
+    validate_execution_exact_sizing_config(config)?;
     validate_history_retention_config(config)?;
     Ok(())
 }
@@ -784,6 +785,49 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
         return Err(anyhow!(
             "discovery.fetch_time_budget_ms ({}) must be >= 1",
             config.discovery.fetch_time_budget_ms
+        ));
+    }
+    Ok(())
+}
+
+fn validate_execution_exact_sizing_config(config: &AppConfig) -> Result<()> {
+    validate_sol_boundary(
+        "execution.pretrade_min_sol_reserve",
+        config.execution.pretrade_min_sol_reserve,
+        true,
+    )?;
+    validate_sol_boundary("risk.max_position_sol", config.risk.max_position_sol, false)?;
+    validate_sol_boundary(
+        "risk.max_total_exposure_sol",
+        config.risk.max_total_exposure_sol,
+        false,
+    )?;
+    validate_sol_boundary(
+        "risk.max_exposure_per_token_sol",
+        config.risk.max_exposure_per_token_sol,
+        false,
+    )?;
+    Ok(())
+}
+
+fn validate_sol_boundary(label: &str, value: f64, allow_zero: bool) -> Result<()> {
+    if !value.is_finite() {
+        return Err(anyhow!("{label} must be finite, got {value}"));
+    }
+    if value < 0.0 || (!allow_zero && value <= 0.0) {
+        return Err(anyhow!(
+            "{label} must be {} 0, got {value}",
+            if allow_zero { ">=" } else { ">" }
+        ));
+    }
+
+    let lamports = value * 1_000_000_000.0;
+    if !lamports.is_finite() || lamports > u64::MAX as f64 {
+        return Err(anyhow!("{label} overflows lamports, got {value}"));
+    }
+    if !allow_zero && value > 0.0 && lamports < 1.0 {
+        return Err(anyhow!(
+            "{label} must be representable as at least 1 lamport, got {value}"
         ));
     }
     Ok(())

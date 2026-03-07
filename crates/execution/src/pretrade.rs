@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Context, Result};
+use copybot_core_types::Lamports;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
 
 use crate::intent::ExecutionIntent;
+use crate::money::{checked_add_lamports, lamports_to_sol, sol_to_lamports_ceil};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreTradeDecisionKind {
@@ -68,6 +70,12 @@ fn pretrade_contract_sanity(intent: &ExecutionIntent, route: &str) -> Option<Pre
             "execution intent has invalid notional",
         ));
     }
+    if intent.notional_lamports().is_err() {
+        return Some(PreTradeDecision::reject(
+            "invalid_notional",
+            "execution intent notional is not representable as lamports",
+        ));
+    }
     None
 }
 
@@ -114,7 +122,7 @@ impl PreTradeChecker for FailClosedPreTradeChecker {
 pub struct RpcPreTradeChecker {
     endpoints: Vec<String>,
     execution_signer_pubkey: String,
-    min_sol_reserve: f64,
+    min_sol_reserve_lamports: Lamports,
     require_token_account: bool,
     allow_missing_token_account_for_buy: bool,
     max_priority_fee_micro_lamports: Option<u64>,
@@ -145,9 +153,11 @@ impl RpcPreTradeChecker {
         if endpoints.is_empty() || signer.is_empty() {
             return None;
         }
-        if !min_sol_reserve.is_finite() || min_sol_reserve < 0.0 {
-            return None;
-        }
+        let min_sol_reserve_lamports =
+            match sol_to_lamports_ceil(min_sol_reserve, "execution.pretrade_min_sol_reserve") {
+                Ok(value) => value,
+                Err(_) => return None,
+            };
 
         let timeout = StdDuration::from_millis(timeout_ms.max(500));
         let client = match Client::builder().timeout(timeout).build() {
@@ -158,7 +168,7 @@ impl RpcPreTradeChecker {
         Some(Self {
             endpoints,
             execution_signer_pubkey: signer.to_string(),
-            min_sol_reserve,
+            min_sol_reserve_lamports,
             require_token_account,
             allow_missing_token_account_for_buy,
             max_priority_fee_micro_lamports: if pretrade_max_priority_fee_lamports == 0 {
@@ -244,9 +254,8 @@ impl RpcPreTradeChecker {
         blockhash: &str,
         balance_lamports: u64,
     ) -> Result<PreTradeDecision> {
-        let required_sol = self.required_sol_for_side(intent);
-        let required_lamports = sol_to_lamports(required_sol)?;
-        if balance_lamports < required_lamports {
+        let required_lamports = self.required_lamports_for_side(intent)?;
+        if balance_lamports < required_lamports.as_u64() {
             return Ok(PreTradeDecision::reject(
                 "pretrade_balance_insufficient",
                 format!(
@@ -254,9 +263,9 @@ impl RpcPreTradeChecker {
                     self.execution_signer_pubkey,
                     endpoint,
                     intent.side.as_str(),
-                    lamports_to_sol(balance_lamports),
+                    lamports_to_sol(Lamports::new(balance_lamports)),
                     lamports_to_sol(required_lamports),
-                    self.min_sol_reserve
+                    lamports_to_sol(self.min_sol_reserve_lamports)
                 ),
             ));
         }
@@ -265,14 +274,18 @@ impl RpcPreTradeChecker {
             endpoint,
             short_hash(blockhash),
             intent.side.as_str(),
-            lamports_to_sol(balance_lamports)
+            lamports_to_sol(Lamports::new(balance_lamports))
         )))
     }
 
-    fn required_sol_for_side(&self, intent: &ExecutionIntent) -> f64 {
+    fn required_lamports_for_side(&self, intent: &ExecutionIntent) -> Result<Lamports> {
         match intent.side {
-            crate::intent::ExecutionSide::Buy => intent.notional_sol + self.min_sol_reserve,
-            crate::intent::ExecutionSide::Sell => self.min_sol_reserve,
+            crate::intent::ExecutionSide::Buy => checked_add_lamports(
+                intent.notional_lamports()?,
+                self.min_sol_reserve_lamports,
+                "pretrade buy required lamports",
+            ),
+            crate::intent::ExecutionSide::Sell => Ok(self.min_sol_reserve_lamports),
         }
     }
 
@@ -452,21 +465,6 @@ fn parse_recent_priority_fee_micro_lamports_from_rpc_body(body: &Value) -> Resul
     Ok(max_fee)
 }
 
-fn sol_to_lamports(sol: f64) -> Result<u64> {
-    if !sol.is_finite() || sol < 0.0 {
-        return Err(anyhow!("invalid sol amount: {sol}"));
-    }
-    let lamports = (sol * 1_000_000_000.0).ceil();
-    if lamports > u64::MAX as f64 {
-        return Err(anyhow!("sol amount overflow: {sol}"));
-    }
-    Ok(lamports as u64)
-}
-
-fn lamports_to_sol(lamports: u64) -> f64 {
-    (lamports as f64) / 1_000_000_000.0
-}
-
 fn short_hash(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.len() <= 16 {
@@ -626,6 +624,29 @@ mod tests {
         )?;
         assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
         assert_eq!(decision.reason_code, "pretrade_balance_insufficient");
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_required_lamports_for_buy_is_exact_and_conservative() -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.0000000001,
+            false,
+            false,
+            0,
+        )
+        .expect("checker should initialize");
+
+        let required = checker.required_lamports_for_side(&make_intent(
+            ExecutionSide::Buy,
+            0.1000000001,
+        ))?;
+
+        assert_eq!(required.as_u64(), 100_000_002);
         Ok(())
     }
 

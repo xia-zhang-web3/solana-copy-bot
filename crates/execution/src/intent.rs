@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use copybot_core_types::Lamports;
 use copybot_storage::CopySignalRow;
+
+use crate::money::sol_to_lamports_ceil;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionSide {
@@ -39,6 +42,12 @@ pub struct ExecutionIntent {
     pub signal_ts: DateTime<Utc>,
 }
 
+impl ExecutionIntent {
+    pub fn notional_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_ceil(self.notional_sol, "execution intent notional_sol")
+    }
+}
+
 impl TryFrom<CopySignalRow> for ExecutionIntent {
     type Error = anyhow::Error;
 
@@ -51,13 +60,15 @@ impl TryFrom<CopySignalRow> for ExecutionIntent {
             ));
         }
 
-        Ok(Self {
+        let intent = Self {
             signal_id: row.signal_id,
             leader_wallet: row.wallet_id,
             side: ExecutionSide::try_from(row.side.as_str())?,
             token: row.token,
             notional_sol: row.notional_sol,
             signal_ts: row.ts,
-        })
+        };
+        intent.notional_lamports()?;
+        Ok(intent)
     }
 }

@@ -16,6 +16,7 @@ pub mod confirm;
 mod confirmation;
 pub mod idempotency;
 pub mod intent;
+mod money;
 mod pipeline;
 pub mod pretrade;
 pub mod reconcile;
@@ -1071,6 +1072,7 @@ mod tests {
             signature: signature.to_string(),
             slot: 1_000_000,
             ts_utc: ts,
+            exact_amounts: None,
         })?;
         Ok(())
     }
@@ -1129,6 +1131,42 @@ mod tests {
         )?;
 
         Ok(client_order_id)
+    }
+
+    #[test]
+    fn execution_risk_block_reason_uses_exact_lamport_caps_for_total_exposure() -> Result<()> {
+        let (store, db_path) = make_test_store("risk-block-exact-lamport-total-exposure")?;
+        let now = Utc::now();
+        store.apply_execution_fill_to_positions("token-seed", "buy", 1.0, 0.10000000005, now)?;
+
+        let runtime = make_paper_runtime(RiskConfig {
+            max_position_sol: 1.0,
+            max_total_exposure_sol: 0.1000000014,
+            max_exposure_per_token_sol: 1.0,
+            max_concurrent_positions: 10,
+            ..RiskConfig::default()
+        });
+
+        let intent = ExecutionIntent::try_from(CopySignalRow {
+            signal_id: "shadow:exact:wallet:buy:token-next".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-next".to_string(),
+            notional_sol: 0.00000000005,
+            ts: now,
+            status: "execution_pending".to_string(),
+        })?;
+
+        let reason = runtime
+            .execution_risk_block_reason(&store, &intent, now)?
+            .expect("exact lamport gating should reject projected total exposure");
+        assert!(
+            reason.contains("max_total_exposure_exceeded"),
+            "unexpected reason: {reason}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
     }
 
     #[test]

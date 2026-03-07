@@ -1095,6 +1095,44 @@ fn load_from_env_rejects_invalid_risk_shadow_killswitch_enabled_override() {
 }
 
 #[test]
+fn load_from_env_rejects_sub_lamport_risk_cap() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL", "0.0000000001", || {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("sub-lamport risk cap must fail exact sizing validation")
+                    .to_string();
+                assert!(
+                    err.contains("risk.max_position_sol must be representable as at least 1 lamport"),
+                    "unexpected error: {err}"
+                );
+            });
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_non_finite_pretrade_reserve() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE",
+                "NaN",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("non-finite reserve must fail exact sizing validation")
+                        .to_string();
+                    assert!(
+                        err.contains("execution.pretrade_min_sol_reserve must be finite"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
 fn load_from_env_applies_discovery_window_memory_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
