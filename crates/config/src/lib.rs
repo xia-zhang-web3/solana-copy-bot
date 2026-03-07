@@ -10,8 +10,8 @@ mod schema;
 pub use self::env_parsing::normalize_ingestion_source;
 pub use self::loader::{load_from_env_or_default, load_from_path};
 pub use self::schema::{
-    AppConfig, DiscoveryConfig, ExecutionConfig, IngestionConfig, RiskConfig, ShadowConfig,
-    SqliteConfig, SystemConfig,
+    AppConfig, DiscoveryConfig, ExecutionConfig, HistoryRetentionConfig, IngestionConfig,
+    RiskConfig, ShadowConfig, SqliteConfig, SystemConfig,
 };
 
 pub const EXECUTION_ROUTE_TIP_LAMPORTS_MAX: u64 = 100_000_000;

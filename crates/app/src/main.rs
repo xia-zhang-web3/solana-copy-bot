@@ -31,6 +31,7 @@ mod alerts;
 mod config_contract;
 mod execution_pause_helpers;
 mod execution_runtime_helpers;
+mod history_retention;
 mod observed_swap_writer;
 mod secrets;
 mod shadow_runtime_helpers;
@@ -44,6 +45,7 @@ use crate::config_contract::{contains_placeholder_value, validate_execution_runt
 use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
 use crate::alerts::AlertDispatcher;
+use crate::history_retention::HistoryRetentionRunner;
 use crate::observed_swap_writer::ObservedSwapWriter;
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
@@ -166,6 +168,7 @@ async fn main() -> Result<()> {
         config.risk.clone(),
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
+        config.history_retention.clone(),
         config.discovery.refresh_seconds,
         config.discovery.observed_swaps_retention_days,
         config.shadow.refresh_seconds,
@@ -1393,6 +1396,7 @@ async fn run_app_loop(
     risk_config: RiskConfig,
     sqlite_path: String,
     heartbeat_seconds: u64,
+    history_retention_config: copybot_config::HistoryRetentionConfig,
     discovery_refresh_seconds: u64,
     observed_swaps_retention_days: u32,
     shadow_refresh_seconds: u64,
@@ -1437,6 +1441,12 @@ async fn run_app_loop(
     let observed_swap_writer =
         ObservedSwapWriter::start(sqlite_path.clone(), observed_swaps_retention_days)
             .context("failed to start observed swap writer")?;
+    let history_retention = HistoryRetentionRunner::new(history_retention_config);
+    let history_retention_sweep_interval =
+        Duration::from_secs(history_retention.sweep_seconds());
+    let mut last_history_retention_sweep = StdInstant::now()
+        .checked_sub(history_retention_sweep_interval)
+        .unwrap_or_else(StdInstant::now);
     let mut operator_emergency_stop = OperatorEmergencyStop::from_env();
     let mut execution_emergency_stop_active_logged = false;
     let mut execution_hard_stop_pause_logged = false;
@@ -1654,6 +1664,27 @@ async fn run_app_loop(
                             warn!(error = %error, "alert delivery poll failed");
                         }
                     }
+                }
+                if history_retention.enabled()
+                    && last_history_retention_sweep.elapsed() >= history_retention_sweep_interval
+                {
+                    match history_retention.apply(&store, Utc::now()) {
+                        Ok(summary) if !summary.is_empty() => {
+                            info!(
+                                risk_events_deleted = summary.risk_events_deleted,
+                                copy_signals_deleted = summary.copy_signals_deleted,
+                                orders_deleted = summary.orders_deleted,
+                                fills_deleted = summary.fills_deleted,
+                                shadow_closed_trades_deleted = summary.shadow_closed_trades_deleted,
+                                "history retention sweep applied"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            warn!(error = %error, "history retention sweep failed");
+                        }
+                    }
+                    last_history_retention_sweep = StdInstant::now();
                 }
                 let sqlite_contention = sqlite_contention_snapshot();
                 info!(

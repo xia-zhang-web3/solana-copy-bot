@@ -79,6 +79,46 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
         config.ingestion.helius_http_urls =
             parse_env_string_list(&http_urls_csv, "SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS")?;
     }
+    if let Some(enabled) = parse_env_bool("SOLANA_COPY_BOT_HISTORY_RETENTION_ENABLED")? {
+        config.history_retention.enabled = enabled;
+    }
+    if let Some(sweep_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_HISTORY_RETENTION_SWEEP_SECONDS", "u64")?
+    {
+        config.history_retention.sweep_seconds = sweep_seconds;
+    }
+    if let Some(protected_history_days) = parse_env_number::<u32>(
+        "SOLANA_COPY_BOT_HISTORY_RETENTION_PROTECTED_HISTORY_DAYS",
+        "u32",
+    )? {
+        config.history_retention.protected_history_days = protected_history_days;
+    }
+    if let Some(risk_events_days) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_HISTORY_RETENTION_RISK_EVENTS_DAYS", "u32")?
+    {
+        config.history_retention.risk_events_days = risk_events_days;
+    }
+    if let Some(copy_signals_days) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_HISTORY_RETENTION_COPY_SIGNALS_DAYS", "u32")?
+    {
+        config.history_retention.copy_signals_days = copy_signals_days;
+    }
+    if let Some(orders_days) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_HISTORY_RETENTION_ORDERS_DAYS", "u32")?
+    {
+        config.history_retention.orders_days = orders_days;
+    }
+    if let Some(fills_days) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_HISTORY_RETENTION_FILLS_DAYS", "u32")?
+    {
+        config.history_retention.fills_days = fills_days;
+    }
+    if let Some(shadow_closed_trades_days) = parse_env_number::<u32>(
+        "SOLANA_COPY_BOT_HISTORY_RETENTION_SHADOW_CLOSED_TRADES_DAYS",
+        "u32",
+    )? {
+        config.history_retention.shadow_closed_trades_days = shadow_closed_trades_days;
+    }
     if let Some(fetch_concurrency) =
         parse_env_number::<usize>("SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY", "usize")?
     {
@@ -683,6 +723,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_shadow_universe_config(config)?;
     validate_shadow_quality_thresholds(config)?;
     validate_discovery_storage_mitigation_config(config)?;
+    validate_history_retention_config(config)?;
     Ok(())
 }
 
@@ -722,5 +763,73 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
             config.discovery.max_window_swaps_in_memory
         ));
     }
+    Ok(())
+}
+
+fn validate_history_retention_config(config: &AppConfig) -> Result<()> {
+    let retention = &config.history_retention;
+    if !retention.enabled {
+        return Ok(());
+    }
+
+    let protected_history_days = retention.protected_history_days;
+    if protected_history_days == 0 {
+        return Err(anyhow!(
+            "history_retention.protected_history_days ({protected_history_days}) must be >= 1"
+        ));
+    }
+
+    let sweep_seconds = retention.sweep_seconds;
+    if sweep_seconds == 0 {
+        return Err(anyhow!(
+            "history_retention.sweep_seconds ({sweep_seconds}) must be >= 1"
+        ));
+    }
+
+    for (name, value) in [
+        ("risk_events_days", retention.risk_events_days),
+        ("copy_signals_days", retention.copy_signals_days),
+        ("orders_days", retention.orders_days),
+        ("fills_days", retention.fills_days),
+        (
+            "shadow_closed_trades_days",
+            retention.shadow_closed_trades_days,
+        ),
+    ] {
+        if value == 0 {
+            return Err(anyhow!(
+                "history_retention.{name} ({value}) must be >= 1 when history_retention.enabled=true"
+            ));
+        }
+    }
+
+    let orders_days = retention.orders_days;
+    let fills_days = retention.fills_days;
+    if fills_days != orders_days {
+        return Err(anyhow!(
+            "history_retention.fills_days ({fills_days}) must equal history_retention.orders_days ({orders_days}) to preserve order/fill query parity"
+        ));
+    }
+
+    let copy_signals_days = retention.copy_signals_days;
+    if copy_signals_days < orders_days {
+        return Err(anyhow!(
+            "history_retention.copy_signals_days ({copy_signals_days}) must be >= history_retention.orders_days ({orders_days}) for FK-safe execution history retention"
+        ));
+    }
+
+    let effective_shadow_closed_trades_days = retention
+        .shadow_closed_trades_days
+        .max(protected_history_days);
+    let required_shadow_closed_trade_days =
+        ((config.risk.shadow_rug_loss_window_minutes.max(24 * 60) + 24 * 60 - 1) / (24 * 60))
+            as u32;
+    if effective_shadow_closed_trades_days < required_shadow_closed_trade_days {
+        return Err(anyhow!(
+            "effective shadow closed trade retention ({effective_shadow_closed_trades_days} days) must be >= {} days to preserve runtime risk windows",
+            required_shadow_closed_trade_days
+        ));
+    }
+
     Ok(())
 }

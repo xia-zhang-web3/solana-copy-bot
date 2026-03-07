@@ -7,6 +7,7 @@ use std::fmt;
 pub struct AppConfig {
     pub system: SystemConfig,
     pub sqlite: SqliteConfig,
+    pub history_retention: HistoryRetentionConfig,
     pub ingestion: IngestionConfig,
     pub discovery: DiscoveryConfig,
     pub shadow: ShadowConfig,
@@ -296,6 +297,34 @@ impl Default for SqliteConfig {
     fn default() -> Self {
         Self {
             path: "state/copybot.db".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct HistoryRetentionConfig {
+    pub enabled: bool,
+    pub sweep_seconds: u64,
+    pub protected_history_days: u32,
+    pub risk_events_days: u32,
+    pub copy_signals_days: u32,
+    pub orders_days: u32,
+    pub fills_days: u32,
+    pub shadow_closed_trades_days: u32,
+}
+
+impl Default for HistoryRetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            sweep_seconds: 60 * 60,
+            protected_history_days: 30,
+            risk_events_days: 30,
+            copy_signals_days: 30,
+            orders_days: 30,
+            fills_days: 30,
+            shadow_closed_trades_days: 90,
         }
     }
 }

@@ -9,6 +9,16 @@ pause_new_trades_on_outage = true
 [sqlite]
 path = "state/prod_copybot.db"
 
+[history_retention]
+enabled = true
+sweep_seconds = 3600
+protected_history_days = 30
+risk_events_days = 30
+copy_signals_days = 30
+orders_days = 30
+fills_days = 30
+shadow_closed_trades_days = 90
+
 [ingestion]
 source = "yellowstone_grpc"
 helius_ws_url = "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME"

@@ -29,6 +29,7 @@ static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 mod discovery;
 mod execution_orders;
+mod history_retention;
 mod market_data;
 mod migrations;
 mod pricing;
@@ -38,6 +39,7 @@ mod sqlite_retry;
 mod system_events;
 
 pub use execution_orders::{MarkOrderDroppedOutcome, ScheduleOrderRetryOutcome};
+pub use history_retention::{HistoryRetentionCutoffs, HistoryRetentionSummary};
 pub use sqlite_retry::is_retryable_sqlite_anyhow_error;
 pub use system_events::RiskEventRow;
 
@@ -3280,6 +3282,223 @@ mod tests {
         let swaps = store.load_observed_swaps_since(stale_ts - Duration::seconds(1))?;
         assert_eq!(swaps.len(), 1);
         assert_eq!(swaps[0].signature, "sig-observed-swap-recent");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_history_retention_preserves_undelivered_warn_events_after_cursor() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("risk-events-retention.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let stale_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let fresh_ts = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        for (event_id, event_type, severity, ts) in [
+            ("info-old", "info_event", "info", stale_ts),
+            ("warn-delivered", "warn_event", "warn", stale_ts),
+            ("warn-pending", "warn_event", "warn", stale_ts),
+            ("warn-fresh", "warn_event", "warn", fresh_ts),
+        ] {
+            store.conn.execute(
+                "INSERT INTO risk_events(event_id, type, severity, ts, details_json)
+                 VALUES (?1, ?2, ?3, ?4, NULL)",
+                params![event_id, event_type, severity, ts.to_rfc3339()],
+            )?;
+        }
+
+        let delivered_rowid: i64 = store.conn.query_row(
+            "SELECT rowid FROM risk_events WHERE event_id = 'warn-delivered'",
+            [],
+            |row| row.get(0),
+        )?;
+        store.upsert_alert_delivery_cursor("webhook", delivered_rowid)?;
+
+        let summary = store.apply_history_retention(HistoryRetentionCutoffs {
+            risk_events_before: fresh_ts - Duration::days(1),
+            copy_signals_before: fresh_ts - Duration::days(1),
+            orders_before: fresh_ts - Duration::days(1),
+            shadow_closed_trades_before: fresh_ts - Duration::days(1),
+        })?;
+        assert_eq!(summary.risk_events_deleted, 2);
+
+        let mut stmt = store.conn.prepare(
+            "SELECT event_id
+             FROM risk_events
+             ORDER BY rowid ASC",
+        )?;
+        let remaining = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(remaining, vec!["warn-pending", "warn-fresh"]);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_history_retention_deletes_terminal_execution_history_child_first() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-history-retention.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let stale_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let fresh_ts = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        for signal in [
+            ("sig-old-confirmed", "execution_confirmed", stale_ts),
+            ("sig-old-pending", "execution_submitted", stale_ts),
+            ("sig-fresh-confirmed", "execution_confirmed", fresh_ts),
+        ] {
+            store.conn.execute(
+                "INSERT INTO copy_signals(signal_id, wallet_id, side, token, notional_sol, ts, status)
+                 VALUES (?1, 'wallet-1', 'buy', 'token-1', 0.5, ?2, ?3)",
+                params![signal.0, signal.2.to_rfc3339(), signal.1],
+            )?;
+        }
+
+        for order in [
+            (
+                "ord-old-confirmed",
+                "sig-old-confirmed",
+                stale_ts,
+                Some(stale_ts + Duration::minutes(1)),
+                "execution_confirmed",
+                "cli-old-confirmed",
+            ),
+            (
+                "ord-old-pending",
+                "sig-old-pending",
+                stale_ts,
+                None,
+                "execution_submitted",
+                "cli-old-pending",
+            ),
+            (
+                "ord-fresh-confirmed",
+                "sig-fresh-confirmed",
+                fresh_ts,
+                Some(fresh_ts + Duration::minutes(1)),
+                "execution_confirmed",
+                "cli-fresh-confirmed",
+            ),
+        ] {
+            store.conn.execute(
+                "INSERT INTO orders(
+                    order_id, signal_id, route, submit_ts, confirm_ts, status, err_code,
+                    client_order_id, tx_signature, simulation_status, simulation_error, attempt
+                 ) VALUES (?1, ?2, 'rpc', ?3, ?4, ?5, NULL, ?6, 'sig', NULL, NULL, 1)",
+                params![
+                    order.0,
+                    order.1,
+                    order.2.to_rfc3339(),
+                    order.3.map(|ts| ts.to_rfc3339()),
+                    order.4,
+                    order.5,
+                ],
+            )?;
+        }
+
+        for fill in [
+            ("ord-old-confirmed", "token-1", 10.0, 0.05, 0.001, 10.0),
+            ("ord-fresh-confirmed", "token-1", 11.0, 0.05, 0.001, 10.0),
+        ] {
+            store.conn.execute(
+                "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![fill.0, fill.1, fill.2, fill.3, fill.4, fill.5],
+            )?;
+        }
+
+        let summary = store.apply_history_retention(HistoryRetentionCutoffs {
+            risk_events_before: fresh_ts - Duration::days(1),
+            copy_signals_before: fresh_ts - Duration::days(1),
+            orders_before: fresh_ts - Duration::days(1),
+            shadow_closed_trades_before: fresh_ts - Duration::days(1),
+        })?;
+
+        assert_eq!(summary.fills_deleted, 1);
+        assert_eq!(summary.orders_deleted, 1);
+        assert_eq!(summary.copy_signals_deleted, 1);
+
+        let remaining_orders: i64 =
+            store.conn.query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))?;
+        let remaining_fills: i64 =
+            store.conn.query_row("SELECT COUNT(*) FROM fills", [], |row| row.get(0))?;
+        let remaining_signals: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM copy_signals", [], |row| row.get(0))?;
+        assert_eq!(remaining_orders, 2);
+        assert_eq!(remaining_fills, 1);
+        assert_eq!(remaining_signals, 2);
+
+        let old_pending_status: String = store.conn.query_row(
+            "SELECT status FROM orders WHERE order_id = 'ord-old-pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(old_pending_status, "execution_submitted");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_history_retention_deletes_old_shadow_closed_trades() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-closed-trades-retention.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let stale_opened = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let stale_closed = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let fresh_opened = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let fresh_closed = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO shadow_closed_trades(
+                signal_id, wallet_id, token, qty, entry_cost_sol, exit_value_sol, pnl_sol, opened_ts, closed_ts
+             ) VALUES ('sig-old', 'wallet-1', 'token-1', 10.0, 0.10, 0.12, 0.02, ?1, ?2)",
+            params![stale_opened.to_rfc3339(), stale_closed.to_rfc3339()],
+        )?;
+        store.conn.execute(
+            "INSERT INTO shadow_closed_trades(
+                signal_id, wallet_id, token, qty, entry_cost_sol, exit_value_sol, pnl_sol, opened_ts, closed_ts
+             ) VALUES ('sig-fresh', 'wallet-1', 'token-1', 10.0, 0.10, 0.12, 0.02, ?1, ?2)",
+            params![fresh_opened.to_rfc3339(), fresh_closed.to_rfc3339()],
+        )?;
+
+        let summary = store.apply_history_retention(HistoryRetentionCutoffs {
+            risk_events_before: fresh_closed - Duration::days(1),
+            copy_signals_before: fresh_closed - Duration::days(1),
+            orders_before: fresh_closed - Duration::days(1),
+            shadow_closed_trades_before: fresh_closed - Duration::days(1),
+        })?;
+
+        assert_eq!(summary.shadow_closed_trades_deleted, 1);
+        let remaining: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM shadow_closed_trades",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(remaining, 1);
         Ok(())
     }
 
