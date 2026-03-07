@@ -38,11 +38,13 @@ impl ExecutionRuntime {
     ) -> Result<SignalResult> {
         let surface_changed = lifecycle_status != EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
             || current_err_code != Some(err_code);
-        store.mark_order_reconcile_pending(order_id, err_code)?;
-        store.update_copy_signal_status(
-            &intent.signal_id,
-            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
-        )?;
+        if surface_changed {
+            store.mark_order_reconcile_pending(order_id, err_code)?;
+            store.update_copy_signal_status(
+                &intent.signal_id,
+                EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+            )?;
+        }
         if surface_changed {
             let _ =
                 store.insert_risk_event(risk_event_type, "error", now, Some(&details.to_string()));
@@ -628,30 +630,26 @@ impl ExecutionRuntime {
                     "confirm_timeout"
                 };
                 if manual_reconcile_required {
-                    if lifecycle_status != EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS {
-                        store.mark_order_reconcile_pending(order_id, err_code)?;
-                        store.update_copy_signal_status(
-                            &intent.signal_id,
-                            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
-                        )?;
-                        let details = json!({
+                    return self.skip_confirm_manual_reconcile(
+                        store,
+                        intent,
+                        order_id,
+                        lifecycle_status,
+                        current_err_code,
+                        route,
+                        now,
+                        report,
+                        err_code,
+                        "execution_confirm_timeout_manual_reconcile_required",
+                        json!({
                             "signal_id": intent.signal_id,
                             "order_id": order_id,
                             "mode": self.mode,
                             "manual_reconcile_required": true,
                             "deadline": deadline.to_rfc3339(),
                             "detail": confirm.detail,
-                        })
-                        .to_string();
-                        let _ = store.insert_risk_event(
-                            "execution_confirm_timeout_manual_reconcile_required",
-                            "error",
-                            now,
-                            Some(&details),
-                        );
-                    }
-                    bump_route_counter(&mut report.confirm_retry_scheduled_by_route, route);
-                    return Ok(SignalResult::Skipped);
+                        }),
+                    );
                 }
                 store.mark_order_failed(order_id, err_code, Some(confirm.detail.as_str()))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;

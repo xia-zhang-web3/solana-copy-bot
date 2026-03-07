@@ -225,7 +225,7 @@ route_metrics_csv() {
   local route="$1"
   local escaped_route metrics_csv
   if [[ -z "$route" ]]; then
-    printf "0,0,0"
+    printf "0,0,0,0,0,0"
     return
   fi
   escaped_route="${route//\'/\'\'}"
@@ -248,13 +248,25 @@ SELECT
   ROUND(
     100.0 * SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
     2
-  ) AS timeout_rate_pct
+  ) AS timeout_rate_pct,
+  ROUND(
+    100.0 * SUM(CASE WHEN status = 'execution_submitted_reconcile_pending' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS reconcile_pending_rate_pct,
+  ROUND(
+    100.0 * SUM(CASE WHEN err_code = 'confirm_price_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS confirm_price_unavailable_rate_pct,
+  ROUND(
+    100.0 * SUM(CASE WHEN err_code = 'confirm_observed_fill_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    2
+  ) AS confirm_observed_fill_unavailable_rate_pct
 FROM window_orders
 WHERE LOWER(TRIM(route)) = '${escaped_route}';
 SQL
   )"
   if [[ -z "$metrics_csv" ]]; then
-    printf "0,0,0"
+    printf "0,0,0,0,0,0"
     return
   fi
   printf "%s" "$metrics_csv"
@@ -1062,7 +1074,19 @@ route_kpi AS (
     ROUND(
       100.0 * SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
       2
-    ) AS timeout_rate_pct
+    ) AS timeout_rate_pct,
+    ROUND(
+      100.0 * SUM(CASE WHEN status = 'execution_submitted_reconcile_pending' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      2
+    ) AS reconcile_pending_rate_pct,
+    ROUND(
+      100.0 * SUM(CASE WHEN err_code = 'confirm_price_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      2
+    ) AS confirm_price_unavailable_rate_pct,
+    ROUND(
+      100.0 * SUM(CASE WHEN err_code = 'confirm_observed_fill_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      2
+    ) AS confirm_observed_fill_unavailable_rate_pct
   FROM window_orders
   GROUP BY route
 ),
@@ -1107,7 +1131,10 @@ ranked_routes AS (
   WHERE TRIM(k.route) <> ''
   ORDER BY
     k.success_rate_pct DESC,
+    k.reconcile_pending_rate_pct ASC,
     k.timeout_rate_pct ASC,
+    k.confirm_price_unavailable_rate_pct ASC,
+    k.confirm_observed_fill_unavailable_rate_pct ASC,
     CASE WHEN p.p95_confirm_latency_ms IS NULL THEN 1 ELSE 0 END ASC,
     p.p95_confirm_latency_ms ASC,
     k.attempted_orders DESC,
@@ -1155,6 +1182,9 @@ else
   ROUTE_PROFILE_MIN_ATTEMPTED_FALLBACK=5
   ROUTE_PROFILE_MIN_SUCCESS_RATE_PCT=90.0
   ROUTE_PROFILE_MAX_TIMEOUT_RATE_PCT=5.0
+  ROUTE_PROFILE_MAX_RECONCILE_PENDING_RATE_PCT=5.0
+  ROUTE_PROFILE_MAX_CONFIRM_PRICE_UNAVAILABLE_RATE_PCT=5.0
+  ROUTE_PROFILE_MAX_CONFIRM_OBSERVED_FILL_UNAVAILABLE_RATE_PCT=5.0
 
   primary_route="$(csv_first_route "$RECOMMENDED_ROUTE_ORDER_CSV")"
   fallback_route="$(csv_second_route "$RECOMMENDED_ROUTE_ORDER_CSV")"
@@ -1169,6 +1199,9 @@ else
   echo "min_attempted_fallback: $ROUTE_PROFILE_MIN_ATTEMPTED_FALLBACK"
   echo "min_success_rate_pct: $ROUTE_PROFILE_MIN_SUCCESS_RATE_PCT"
   echo "max_timeout_rate_pct: $ROUTE_PROFILE_MAX_TIMEOUT_RATE_PCT"
+  echo "max_reconcile_pending_rate_pct: $ROUTE_PROFILE_MAX_RECONCILE_PENDING_RATE_PCT"
+  echo "max_confirm_price_unavailable_rate_pct: $ROUTE_PROFILE_MAX_CONFIRM_PRICE_UNAVAILABLE_RATE_PCT"
+  echo "max_confirm_observed_fill_unavailable_rate_pct: $ROUTE_PROFILE_MAX_CONFIRM_OBSERVED_FILL_UNAVAILABLE_RATE_PCT"
 
   route_profile_verdict="PASS"
   route_profile_reason="kpi thresholds are green for recommended route profile"
@@ -1177,13 +1210,19 @@ else
     route_profile_verdict="NO_DATA"
     route_profile_reason="recommended route order is empty for adapter mode"
   else
-    IFS=',' read -r primary_attempted_orders primary_success_rate_pct primary_timeout_rate_pct <<<"$(route_metrics_csv "$primary_route")"
+    IFS=',' read -r primary_attempted_orders primary_success_rate_pct primary_timeout_rate_pct primary_reconcile_pending_rate_pct primary_confirm_price_unavailable_rate_pct primary_confirm_observed_fill_unavailable_rate_pct <<<"$(route_metrics_csv "$primary_route")"
     primary_attempted_orders="${primary_attempted_orders:-0}"
     primary_success_rate_pct="${primary_success_rate_pct:-0}"
     primary_timeout_rate_pct="${primary_timeout_rate_pct:-0}"
+    primary_reconcile_pending_rate_pct="${primary_reconcile_pending_rate_pct:-0}"
+    primary_confirm_price_unavailable_rate_pct="${primary_confirm_price_unavailable_rate_pct:-0}"
+    primary_confirm_observed_fill_unavailable_rate_pct="${primary_confirm_observed_fill_unavailable_rate_pct:-0}"
     echo "primary_attempted_orders: $primary_attempted_orders"
     echo "primary_success_rate_pct: $primary_success_rate_pct"
     echo "primary_timeout_rate_pct: $primary_timeout_rate_pct"
+    echo "primary_reconcile_pending_rate_pct: $primary_reconcile_pending_rate_pct"
+    echo "primary_confirm_price_unavailable_rate_pct: $primary_confirm_price_unavailable_rate_pct"
+    echo "primary_confirm_observed_fill_unavailable_rate_pct: $primary_confirm_observed_fill_unavailable_rate_pct"
 
     if (( primary_attempted_orders < ROUTE_PROFILE_MIN_ATTEMPTED_PRIMARY )); then
       route_profile_verdict="WARN"
@@ -1191,19 +1230,34 @@ else
     elif float_lt "$primary_success_rate_pct" "$ROUTE_PROFILE_MIN_SUCCESS_RATE_PCT"; then
       route_profile_verdict="WARN"
       route_profile_reason="primary route success rate is below threshold"
+    elif float_gt "$primary_reconcile_pending_rate_pct" "$ROUTE_PROFILE_MAX_RECONCILE_PENDING_RATE_PCT"; then
+      route_profile_verdict="WARN"
+      route_profile_reason="primary route reconcile-pending rate is above threshold"
+    elif float_gt "$primary_confirm_price_unavailable_rate_pct" "$ROUTE_PROFILE_MAX_CONFIRM_PRICE_UNAVAILABLE_RATE_PCT"; then
+      route_profile_verdict="WARN"
+      route_profile_reason="primary route confirm price-unavailable rate is above threshold"
+    elif float_gt "$primary_confirm_observed_fill_unavailable_rate_pct" "$ROUTE_PROFILE_MAX_CONFIRM_OBSERVED_FILL_UNAVAILABLE_RATE_PCT"; then
+      route_profile_verdict="WARN"
+      route_profile_reason="primary route confirm observed-fill-unavailable rate is above threshold"
     elif float_gt "$primary_timeout_rate_pct" "$ROUTE_PROFILE_MAX_TIMEOUT_RATE_PCT"; then
       route_profile_verdict="WARN"
       route_profile_reason="primary route timeout rate is above threshold"
     fi
 
     if [[ -n "$fallback_route" ]]; then
-      IFS=',' read -r fallback_attempted_orders fallback_success_rate_pct fallback_timeout_rate_pct <<<"$(route_metrics_csv "$fallback_route")"
+      IFS=',' read -r fallback_attempted_orders fallback_success_rate_pct fallback_timeout_rate_pct fallback_reconcile_pending_rate_pct fallback_confirm_price_unavailable_rate_pct fallback_confirm_observed_fill_unavailable_rate_pct <<<"$(route_metrics_csv "$fallback_route")"
       fallback_attempted_orders="${fallback_attempted_orders:-0}"
       fallback_success_rate_pct="${fallback_success_rate_pct:-0}"
       fallback_timeout_rate_pct="${fallback_timeout_rate_pct:-0}"
+      fallback_reconcile_pending_rate_pct="${fallback_reconcile_pending_rate_pct:-0}"
+      fallback_confirm_price_unavailable_rate_pct="${fallback_confirm_price_unavailable_rate_pct:-0}"
+      fallback_confirm_observed_fill_unavailable_rate_pct="${fallback_confirm_observed_fill_unavailable_rate_pct:-0}"
       echo "fallback_attempted_orders: $fallback_attempted_orders"
       echo "fallback_success_rate_pct: $fallback_success_rate_pct"
       echo "fallback_timeout_rate_pct: $fallback_timeout_rate_pct"
+      echo "fallback_reconcile_pending_rate_pct: $fallback_reconcile_pending_rate_pct"
+      echo "fallback_confirm_price_unavailable_rate_pct: $fallback_confirm_price_unavailable_rate_pct"
+      echo "fallback_confirm_observed_fill_unavailable_rate_pct: $fallback_confirm_observed_fill_unavailable_rate_pct"
 
       if (( fallback_attempted_orders < ROUTE_PROFILE_MIN_ATTEMPTED_FALLBACK )) && [[ "$route_profile_verdict" == "PASS" ]]; then
         route_profile_verdict="WARN"
@@ -1211,6 +1265,15 @@ else
       elif float_lt "$fallback_success_rate_pct" "$ROUTE_PROFILE_MIN_SUCCESS_RATE_PCT" && [[ "$route_profile_verdict" == "PASS" ]]; then
         route_profile_verdict="WARN"
         route_profile_reason="fallback route success rate is below threshold"
+      elif float_gt "$fallback_reconcile_pending_rate_pct" "$ROUTE_PROFILE_MAX_RECONCILE_PENDING_RATE_PCT" && [[ "$route_profile_verdict" == "PASS" ]]; then
+        route_profile_verdict="WARN"
+        route_profile_reason="fallback route reconcile-pending rate is above threshold"
+      elif float_gt "$fallback_confirm_price_unavailable_rate_pct" "$ROUTE_PROFILE_MAX_CONFIRM_PRICE_UNAVAILABLE_RATE_PCT" && [[ "$route_profile_verdict" == "PASS" ]]; then
+        route_profile_verdict="WARN"
+        route_profile_reason="fallback route confirm price-unavailable rate is above threshold"
+      elif float_gt "$fallback_confirm_observed_fill_unavailable_rate_pct" "$ROUTE_PROFILE_MAX_CONFIRM_OBSERVED_FILL_UNAVAILABLE_RATE_PCT" && [[ "$route_profile_verdict" == "PASS" ]]; then
+        route_profile_verdict="WARN"
+        route_profile_reason="fallback route confirm observed-fill-unavailable rate is above threshold"
       elif float_gt "$fallback_timeout_rate_pct" "$ROUTE_PROFILE_MAX_TIMEOUT_RATE_PCT" && [[ "$route_profile_verdict" == "PASS" ]]; then
         route_profile_verdict="WARN"
         route_profile_reason="fallback route timeout rate is above threshold"

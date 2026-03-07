@@ -4498,6 +4498,133 @@ mod tests {
     }
 
     #[test]
+    fn process_batch_refreshes_timeout_surface_when_pending_reason_changes() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-timeout-surface-refresh")?;
+        let now = Utc::now();
+        let submit_ts = now - Duration::seconds(30);
+        seed_token_price(
+            &store,
+            "token-timeout-surface-refresh",
+            now,
+            "sig-price-timeout-surface-refresh",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s11b:w:buy:t-timeout-surface-refresh".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-timeout-surface-refresh".to_string(),
+            notional_sol: 0.1,
+            ts: submit_ts,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-confirm-timeout-surface-refresh-1",
+                &signal.signal_id,
+                &client_order_id,
+                "rpc",
+                submit_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-confirm-timeout-surface-refresh-1",
+            "rpc",
+            "sig-timeout-surface-refresh",
+            submit_ts,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 5,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(ResultSequenceConfirmer::new(vec![
+                Err(anyhow::anyhow!("forced confirmer rpc error")),
+                Ok(confirm::ConfirmationResult {
+                    status: ConfirmationStatus::Timeout,
+                    confirmed_at: None,
+                    network_fee_lamports: None,
+                    network_fee_lookup_error: None,
+                    observed_fill: None,
+                    detail: "forced_timeout_after_confirm_error".to_string(),
+                }),
+            ])),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
+        let pending_after_error = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context(
+                "order should remain present after confirm-error reconcile-pending transition",
+            )?;
+        assert_eq!(
+            pending_after_error.err_code.as_deref(),
+            Some("confirm_error_manual_reconcile_required")
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("execution_confirm_failed_manual_reconcile_required")?,
+            1
+        );
+
+        let second = runtime.process_batch(&store, now + Duration::seconds(1), None)?;
+        assert_eq!(second.failed, 0);
+        assert_eq!(second.skipped, 1);
+        let pending_after_timeout = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should remain present after timeout reconcile-pending refresh")?;
+        assert_eq!(
+            pending_after_timeout.status,
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+        );
+        assert_eq!(
+            pending_after_timeout.err_code.as_deref(),
+            Some("confirm_timeout_manual_reconcile_required")
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("execution_confirm_failed_manual_reconcile_required")?,
+            1
+        );
+        assert_eq!(
+            store
+                .risk_event_count_by_type("execution_confirm_timeout_manual_reconcile_required")?,
+            1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_does_not_duplicate_confirm_fee_metrics_for_reconcile_pending_confirmed_tx(
     ) -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-reconcile-fee-telemetry")?;
