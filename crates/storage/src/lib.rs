@@ -8,8 +8,8 @@ use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
     CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
-    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, TokenQualityCacheRow,
-    TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow, Lamports,
+    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, Lamports,
+    SignedLamports, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
     EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
@@ -84,6 +84,7 @@ pub struct ShadowLotRow {
     pub token: String,
     pub qty: f64,
     pub cost_sol: f64,
+    pub cost_lamports: Option<Lamports>,
     pub opened_ts: DateTime<Utc>,
 }
 
@@ -1010,6 +1011,110 @@ mod tests {
             "dust lots should not be returned as stale open lots"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_open_notional_sol_prefers_cost_lamports_sidecar() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-cost-lamports-preference.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-02-15T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.conn.execute(
+            "INSERT INTO shadow_lots(wallet_id, token, qty, cost_sol, cost_lamports, opened_ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "wallet",
+                "token",
+                10.0_f64,
+                0.100000001_f64,
+                100_000_123_i64,
+                opened_ts.to_rfc3339()
+            ],
+        )?;
+
+        let lots = store.list_shadow_lots("wallet", "token")?;
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].cost_lamports, Some(Lamports::new(100_000_123)));
+
+        let open_notional = store.shadow_open_notional_sol()?;
+        assert!(
+            (open_notional - 0.100000123).abs() < 1e-12,
+            "expected shadow open notional to prefer lamport sidecar, got {open_notional}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_risk_metrics_prefer_closed_trade_lamport_sidecars() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-closed-trade-lamports.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO shadow_closed_trades(
+                signal_id, wallet_id, token, qty,
+                entry_cost_sol, entry_cost_lamports,
+                exit_value_sol, exit_value_lamports,
+                pnl_sol, pnl_lamports,
+                opened_ts, closed_ts
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                "sig-shadow",
+                "wallet",
+                "token",
+                10.0_f64,
+                0.10_f64,
+                200_000_000_i64,
+                0.05_f64,
+                50_000_000_i64,
+                -0.05_f64,
+                -150_000_000_i64,
+                opened_ts.to_rfc3339(),
+                closed_ts.to_rfc3339()
+            ],
+        )?;
+
+        let (trades, pnl) = store.shadow_realized_pnl_since(opened_ts - Duration::minutes(1))?;
+        assert_eq!(trades, 1);
+        assert!(
+            (pnl + 0.15).abs() < 1e-12,
+            "expected realized pnl to prefer lamport sidecar, got {pnl}"
+        );
+
+        let rug_count = store.shadow_rug_loss_count_since(
+            opened_ts - Duration::minutes(1),
+            -0.70,
+        )?;
+        assert_eq!(
+            rug_count, 1,
+            "expected rug-loss count to prefer exact lamport sidecars"
+        );
+
+        let (recent_rug_count, total_count, rug_rate) = store.shadow_rug_loss_rate_recent(
+            opened_ts - Duration::minutes(1),
+            10,
+            -0.70,
+        )?;
+        assert_eq!(recent_rug_count, 1);
+        assert_eq!(total_count, 1);
+        assert!((rug_rate - 1.0).abs() < 1e-12);
         Ok(())
     }
 
@@ -4095,6 +4200,10 @@ pub(crate) fn lamports_to_sol(lamports: Lamports) -> f64 {
     lamports.as_u64() as f64 / LAMPORTS_PER_SOL
 }
 
+pub(crate) fn signed_lamports_to_sol(lamports: SignedLamports) -> f64 {
+    lamports.as_i128() as f64 / LAMPORTS_PER_SOL
+}
+
 pub(crate) fn sol_to_lamports_ceil_storage(sol: f64, label: &str) -> Result<Lamports> {
     if !sol.is_finite() || sol < 0.0 {
         return Err(anyhow!("invalid {}={} (must be finite and >= 0)", label, sol));
@@ -4108,6 +4217,44 @@ pub(crate) fn sol_to_lamports_ceil_storage(sol: f64, label: &str) -> Result<Lamp
         ));
     }
     Ok(Lamports::new(scaled.ceil() as u64))
+}
+
+pub(crate) fn sol_to_lamports_floor_storage(sol: f64, label: &str) -> Result<Lamports> {
+    if !sol.is_finite() || sol < 0.0 {
+        return Err(anyhow!("invalid {}={} (must be finite and >= 0)", label, sol));
+    }
+    let scaled = sol * LAMPORTS_PER_SOL;
+    if !scaled.is_finite() || scaled > u64::MAX as f64 {
+        return Err(anyhow!(
+            "invalid {}={} (exceeds representable lamports)",
+            label,
+            sol
+        ));
+    }
+    Ok(Lamports::new(scaled.floor() as u64))
+}
+
+pub(crate) fn sol_to_signed_lamports_conservative_storage(
+    sol: f64,
+    label: &str,
+) -> Result<SignedLamports> {
+    if !sol.is_finite() {
+        return Err(anyhow!("invalid {}={} (must be finite)", label, sol));
+    }
+    let magnitude = sol.abs() * LAMPORTS_PER_SOL;
+    if !magnitude.is_finite() || magnitude > i64::MAX as f64 {
+        return Err(anyhow!(
+            "invalid {}={} (exceeds representable signed lamports)",
+            label,
+            sol
+        ));
+    }
+    let signed = if sol >= 0.0 {
+        magnitude.floor() as i128
+    } else {
+        -(magnitude.ceil() as i128)
+    };
+    Ok(SignedLamports::new(signed))
 }
 
 pub(crate) fn position_cost_lamports(
@@ -4129,6 +4276,56 @@ pub(crate) fn position_cost_lamports(
         .with_context(|| format!("failed deriving cost_lamports in {context}"))
 }
 
+pub(crate) fn shadow_lot_cost_lamports(
+    cost_sol: f64,
+    cost_lamports_raw: Option<i64>,
+    context: &str,
+) -> Result<Lamports> {
+    if let Some(raw) = cost_lamports_raw {
+        if raw < 0 {
+            return Err(anyhow!(
+                "invalid negative shadow_lots.cost_lamports={} in {}",
+                raw,
+                context
+            ));
+        }
+        return Ok(Lamports::new(raw as u64));
+    }
+    sol_to_lamports_ceil_storage(cost_sol, "shadow_lots.cost_sol")
+        .with_context(|| format!("failed deriving shadow_lot cost_lamports in {context}"))
+}
+
+pub(crate) fn shadow_closed_trade_entry_cost_lamports(
+    entry_cost_sol: f64,
+    entry_cost_lamports_raw: Option<i64>,
+    context: &str,
+) -> Result<Lamports> {
+    if let Some(raw) = entry_cost_lamports_raw {
+        if raw < 0 {
+            return Err(anyhow!(
+                "invalid negative shadow_closed_trades.entry_cost_lamports={} in {}",
+                raw,
+                context
+            ));
+        }
+        return Ok(Lamports::new(raw as u64));
+    }
+    sol_to_lamports_ceil_storage(entry_cost_sol, "shadow_closed_trades.entry_cost_sol")
+        .with_context(|| format!("failed deriving shadow closed trade entry_cost_lamports in {context}"))
+}
+
+pub(crate) fn shadow_closed_trade_pnl_lamports(
+    pnl_sol: f64,
+    pnl_lamports_raw: Option<i64>,
+    context: &str,
+) -> Result<SignedLamports> {
+    if let Some(raw) = pnl_lamports_raw {
+        return Ok(SignedLamports::new(i128::from(raw)));
+    }
+    sol_to_signed_lamports_conservative_storage(pnl_sol, "shadow_closed_trades.pnl_sol")
+        .with_context(|| format!("failed deriving shadow closed trade pnl_lamports in {context}"))
+}
+
 fn parse_non_negative_i64(field: &str, order_id: &str, value: Option<i64>) -> Result<Option<u64>> {
     match value {
         Some(value) if value < 0 => Err(anyhow!(
@@ -4140,4 +4337,14 @@ fn parse_non_negative_i64(field: &str, order_id: &str, value: Option<i64>) -> Re
         Some(value) => Ok(Some(value as u64)),
         None => Ok(None),
     }
+}
+
+fn signed_lamports_to_sql_i64(field: &str, value: SignedLamports) -> Result<i64> {
+    i64::try_from(value.as_i128()).with_context(|| {
+        format!(
+            "{}={} exceeds sqlite INTEGER range (i64)",
+            field,
+            value.as_i128()
+        )
+    })
 }
