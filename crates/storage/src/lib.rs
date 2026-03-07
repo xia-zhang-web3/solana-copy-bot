@@ -3320,12 +3320,15 @@ mod tests {
         )?;
         store.upsert_alert_delivery_cursor("webhook", delivered_rowid)?;
 
-        let summary = store.apply_history_retention(HistoryRetentionCutoffs {
-            risk_events_before: fresh_ts - Duration::days(1),
-            copy_signals_before: fresh_ts - Duration::days(1),
-            orders_before: fresh_ts - Duration::days(1),
-            shadow_closed_trades_before: fresh_ts - Duration::days(1),
-        })?;
+        let summary = store.apply_history_retention(
+            HistoryRetentionCutoffs {
+                risk_events_before: fresh_ts - Duration::days(1),
+                copy_signals_before: fresh_ts - Duration::days(1),
+                orders_before: fresh_ts - Duration::days(1),
+                shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            },
+            true,
+        )?;
         assert_eq!(summary.risk_events_deleted, 2);
 
         let mut stmt = store.conn.prepare(
@@ -3337,6 +3340,57 @@ mod tests {
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         assert_eq!(remaining, vec!["warn-pending", "warn-fresh"]);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_history_retention_preserves_warn_events_before_first_alert_delivery() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("risk-events-retention-no-cursor.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let stale_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let fresh_ts = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        for (event_id, severity, ts) in [
+            ("info-old", "info", stale_ts),
+            ("warn-old", "warn", stale_ts),
+            ("error-old", "error", stale_ts),
+            ("warn-fresh", "warn", fresh_ts),
+        ] {
+            store.conn.execute(
+                "INSERT INTO risk_events(event_id, type, severity, ts, details_json)
+                 VALUES (?1, 'risk_event', ?2, ?3, NULL)",
+                params![event_id, severity, ts.to_rfc3339()],
+            )?;
+        }
+
+        let summary = store.apply_history_retention(
+            HistoryRetentionCutoffs {
+                risk_events_before: fresh_ts - Duration::days(1),
+                copy_signals_before: fresh_ts - Duration::days(1),
+                orders_before: fresh_ts - Duration::days(1),
+                shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            },
+            true,
+        )?;
+        assert_eq!(summary.risk_events_deleted, 1);
+
+        let mut stmt = store.conn.prepare(
+            "SELECT event_id
+             FROM risk_events
+             ORDER BY rowid ASC",
+        )?;
+        let remaining = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(remaining, vec!["warn-old", "error-old", "warn-fresh"]);
         Ok(())
     }
 
@@ -3358,6 +3412,11 @@ mod tests {
         for signal in [
             ("sig-old-confirmed", "execution_confirmed", stale_ts),
             ("sig-old-pending", "execution_submitted", stale_ts),
+            (
+                "sig-old-submit-recent-confirmed",
+                "execution_confirmed",
+                stale_ts,
+            ),
             ("sig-fresh-confirmed", "execution_confirmed", fresh_ts),
         ] {
             store.conn.execute(
@@ -3383,6 +3442,14 @@ mod tests {
                 None,
                 "execution_submitted",
                 "cli-old-pending",
+            ),
+            (
+                "ord-old-submit-recent-confirmed",
+                "sig-old-submit-recent-confirmed",
+                stale_ts,
+                Some(fresh_ts),
+                "execution_confirmed",
+                "cli-old-submit-recent-confirmed",
             ),
             (
                 "ord-fresh-confirmed",
@@ -3411,6 +3478,14 @@ mod tests {
 
         for fill in [
             ("ord-old-confirmed", "token-1", 10.0, 0.05, 0.001, 10.0),
+            (
+                "ord-old-submit-recent-confirmed",
+                "token-1",
+                10.5,
+                0.05,
+                0.001,
+                10.0,
+            ),
             ("ord-fresh-confirmed", "token-1", 11.0, 0.05, 0.001, 10.0),
         ] {
             store.conn.execute(
@@ -3420,27 +3495,35 @@ mod tests {
             )?;
         }
 
-        let summary = store.apply_history_retention(HistoryRetentionCutoffs {
-            risk_events_before: fresh_ts - Duration::days(1),
-            copy_signals_before: fresh_ts - Duration::days(1),
-            orders_before: fresh_ts - Duration::days(1),
-            shadow_closed_trades_before: fresh_ts - Duration::days(1),
-        })?;
+        let summary = store.apply_history_retention(
+            HistoryRetentionCutoffs {
+                risk_events_before: fresh_ts - Duration::days(1),
+                copy_signals_before: fresh_ts - Duration::days(1),
+                orders_before: fresh_ts - Duration::days(1),
+                shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            },
+            false,
+        )?;
 
         assert_eq!(summary.fills_deleted, 1);
         assert_eq!(summary.orders_deleted, 1);
         assert_eq!(summary.copy_signals_deleted, 1);
 
         let remaining_orders: i64 =
-            store.conn.query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))?;
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))?;
         let remaining_fills: i64 =
-            store.conn.query_row("SELECT COUNT(*) FROM fills", [], |row| row.get(0))?;
-        let remaining_signals: i64 = store
-            .conn
-            .query_row("SELECT COUNT(*) FROM copy_signals", [], |row| row.get(0))?;
-        assert_eq!(remaining_orders, 2);
-        assert_eq!(remaining_fills, 1);
-        assert_eq!(remaining_signals, 2);
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM fills", [], |row| row.get(0))?;
+        let remaining_signals: i64 =
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM copy_signals", [], |row| row.get(0))?;
+        assert_eq!(remaining_orders, 3);
+        assert_eq!(remaining_fills, 2);
+        assert_eq!(remaining_signals, 3);
 
         let old_pending_status: String = store.conn.query_row(
             "SELECT status FROM orders WHERE order_id = 'ord-old-pending'",
@@ -3448,6 +3531,13 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(old_pending_status, "execution_submitted");
+
+        let recent_confirm_status: String = store.conn.query_row(
+            "SELECT status FROM orders WHERE order_id = 'ord-old-submit-recent-confirmed'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(recent_confirm_status, "execution_confirmed");
         Ok(())
     }
 
@@ -3485,19 +3575,23 @@ mod tests {
             params![fresh_opened.to_rfc3339(), fresh_closed.to_rfc3339()],
         )?;
 
-        let summary = store.apply_history_retention(HistoryRetentionCutoffs {
-            risk_events_before: fresh_closed - Duration::days(1),
-            copy_signals_before: fresh_closed - Duration::days(1),
-            orders_before: fresh_closed - Duration::days(1),
-            shadow_closed_trades_before: fresh_closed - Duration::days(1),
-        })?;
+        let summary = store.apply_history_retention(
+            HistoryRetentionCutoffs {
+                risk_events_before: fresh_closed - Duration::days(1),
+                copy_signals_before: fresh_closed - Duration::days(1),
+                orders_before: fresh_closed - Duration::days(1),
+                shadow_closed_trades_before: fresh_closed - Duration::days(1),
+            },
+            false,
+        )?;
 
         assert_eq!(summary.shadow_closed_trades_deleted, 1);
-        let remaining: i64 = store.conn.query_row(
-            "SELECT COUNT(*) FROM shadow_closed_trades",
-            [],
-            |row| row.get(0),
-        )?;
+        let remaining: i64 =
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM shadow_closed_trades", [], |row| {
+                    row.get(0)
+                })?;
         assert_eq!(remaining, 1);
         Ok(())
     }

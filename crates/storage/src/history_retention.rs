@@ -40,15 +40,13 @@ impl SqliteStore {
     pub fn apply_history_retention(
         &self,
         cutoffs: HistoryRetentionCutoffs,
+        protect_undelivered_alerts: bool,
     ) -> Result<HistoryRetentionSummary> {
         let risk_events_deleted = self
-            .delete_risk_events_before(cutoffs.risk_events_before)
+            .delete_risk_events_before(cutoffs.risk_events_before, protect_undelivered_alerts)
             .context("failed to apply risk_events retention")?;
         let (fills_deleted, orders_deleted, copy_signals_deleted) = self
-            .delete_execution_history_before(
-                cutoffs.orders_before,
-                cutoffs.copy_signals_before,
-            )
+            .delete_execution_history_before(cutoffs.orders_before, cutoffs.copy_signals_before)
             .context("failed to apply execution history retention")?;
         let shadow_closed_trades_deleted = self
             .delete_shadow_closed_trades_before(cutoffs.shadow_closed_trades_before)
@@ -63,7 +61,11 @@ impl SqliteStore {
         })
     }
 
-    fn delete_risk_events_before(&self, cutoff: DateTime<Utc>) -> Result<u64> {
+    fn delete_risk_events_before(
+        &self,
+        cutoff: DateTime<Utc>,
+        protect_undelivered_alerts: bool,
+    ) -> Result<u64> {
         let cutoff = cutoff.to_rfc3339();
         self.execute_with_retry_result(|conn| -> rusqlite::Result<u64> {
             let delivered_cursor: Option<i64> = conn.query_row(
@@ -80,6 +82,13 @@ impl SqliteStore {
                             OR rowid <= ?2
                        )",
                     params![cutoff, delivered_cursor],
+                )?
+            } else if protect_undelivered_alerts {
+                conn.execute(
+                    "DELETE FROM risk_events
+                     WHERE ts < ?1
+                       AND severity NOT IN ('warn', 'error')",
+                    params![cutoff],
                 )?
             } else {
                 conn.execute("DELETE FROM risk_events WHERE ts < ?1", params![cutoff])?
@@ -103,7 +112,7 @@ impl SqliteStore {
                     SELECT order_id
                     FROM orders
                     WHERE status IN (?1, ?2, ?3)
-                      AND submit_ts < ?4
+                      AND COALESCE(confirm_ts, submit_ts) < ?4
                  )",
                 params![
                     TERMINAL_EXECUTION_STATUSES[0],
@@ -116,7 +125,7 @@ impl SqliteStore {
             let orders_deleted = conn.execute(
                 "DELETE FROM orders
                  WHERE status IN (?1, ?2, ?3)
-                   AND submit_ts < ?4",
+                   AND COALESCE(confirm_ts, submit_ts) < ?4",
                 params![
                     TERMINAL_EXECUTION_STATUSES[0],
                     TERMINAL_EXECUTION_STATUSES[1],

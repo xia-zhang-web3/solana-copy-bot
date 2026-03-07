@@ -317,7 +317,7 @@ pub struct HistoryRetentionConfig {
 impl Default for HistoryRetentionConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             sweep_seconds: 60 * 60,
             protected_history_days: 30,
             risk_events_days: 30,

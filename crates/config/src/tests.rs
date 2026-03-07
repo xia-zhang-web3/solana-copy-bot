@@ -39,7 +39,7 @@ fn discovery_defaults_use_storage_mitigation_limits() {
 #[test]
 fn history_retention_defaults_are_explicit_and_safe() {
     let retention = HistoryRetentionConfig::default();
-    assert!(retention.enabled);
+    assert!(!retention.enabled);
     assert_eq!(retention.sweep_seconds, 3_600);
     assert_eq!(retention.protected_history_days, 30);
     assert_eq!(retention.risk_events_days, 30);
@@ -47,6 +47,14 @@ fn history_retention_defaults_are_explicit_and_safe() {
     assert_eq!(retention.orders_days, 30);
     assert_eq!(retention.fills_days, 30);
     assert_eq!(retention.shadow_closed_trades_days, 90);
+}
+
+#[test]
+fn parse_from_path_uses_disabled_history_retention_for_legacy_config_without_block() {
+    with_temp_config_file("", |config_path| {
+        let config = load_from_path(config_path).expect("legacy config without block must parse");
+        assert!(!config.history_retention.enabled);
+    });
 }
 
 #[test]
@@ -459,24 +467,28 @@ fn load_from_env_rejects_invalid_discovery_retention_override() {
 fn load_from_env_applies_history_retention_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_SWEEP_SECONDS", "7200", || {
+            with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_ENABLED", "true", || {
                 with_env_var(
-                    "SOLANA_COPY_BOT_HISTORY_RETENTION_PROTECTED_HISTORY_DAYS",
-                    "45",
+                    "SOLANA_COPY_BOT_HISTORY_RETENTION_SWEEP_SECONDS",
+                    "7200",
                     || {
                         with_env_var(
-                            "SOLANA_COPY_BOT_HISTORY_RETENTION_RISK_EVENTS_DAYS",
-                            "60",
+                            "SOLANA_COPY_BOT_HISTORY_RETENTION_PROTECTED_HISTORY_DAYS",
+                            "45",
                             || {
                                 with_env_var(
-                                    "SOLANA_COPY_BOT_HISTORY_RETENTION_COPY_SIGNALS_DAYS",
-                                    "75",
+                                    "SOLANA_COPY_BOT_HISTORY_RETENTION_RISK_EVENTS_DAYS",
+                                    "60",
                                     || {
                                         with_env_var(
-                                            "SOLANA_COPY_BOT_HISTORY_RETENTION_ORDERS_DAYS",
-                                            "50",
+                                            "SOLANA_COPY_BOT_HISTORY_RETENTION_COPY_SIGNALS_DAYS",
+                                            "75",
                                             || {
                                                 with_env_var(
+                                                    "SOLANA_COPY_BOT_HISTORY_RETENTION_ORDERS_DAYS",
+                                                    "50",
+                                                    || {
+                                                        with_env_var(
                                                     "SOLANA_COPY_BOT_HISTORY_RETENTION_FILLS_DAYS",
                                                     "50",
                                                     || {
@@ -491,6 +503,9 @@ fn load_from_env_applies_history_retention_overrides() {
                                                                     .expect(
                                                                         "history retention env overrides must load",
                                                                     );
+                                                                assert!(
+                                                                    cfg.history_retention.enabled
+                                                                );
                                                                 assert_eq!(
                                                                     cfg.history_retention
                                                                         .sweep_seconds,
@@ -530,6 +545,8 @@ fn load_from_env_applies_history_retention_overrides() {
                                                         );
                                                     },
                                                 );
+                                                    },
+                                                );
                                             },
                                         );
                                     },
@@ -547,18 +564,26 @@ fn load_from_env_applies_history_retention_overrides() {
 fn load_from_env_rejects_history_retention_order_fill_mismatch() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_ORDERS_DAYS", "40", || {
-                with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_FILLS_DAYS", "30", || {
-                    let err = load_from_env_or_default(config_path)
-                        .expect_err(
-                            "history retention fills_days mismatch must fail config load",
-                        )
-                        .to_string();
-                    assert!(
-                        err.contains("history_retention.fills_days (30) must equal history_retention.orders_days (40)"),
-                        "unexpected error: {err}"
-                    );
-                });
+            with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_ENABLED", "true", || {
+                with_env_var(
+                    "SOLANA_COPY_BOT_HISTORY_RETENTION_ORDERS_DAYS",
+                    "40",
+                    || {
+                        with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_FILLS_DAYS", "30", || {
+                            let err = load_from_env_or_default(config_path)
+                                .expect_err(
+                                    "history retention fills_days mismatch must fail config load",
+                                )
+                                .to_string();
+                            assert!(
+                                err.contains(
+                                    "history_retention.fills_days (30) must equal history_retention.orders_days (40)"
+                                ),
+                                "unexpected error: {err}"
+                            );
+                        });
+                    },
+                );
             });
         });
     });
@@ -568,27 +593,37 @@ fn load_from_env_rejects_history_retention_order_fill_mismatch() {
 fn load_from_env_rejects_history_retention_copy_signal_horizon_shorter_than_orders() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var(
-                "SOLANA_COPY_BOT_HISTORY_RETENTION_COPY_SIGNALS_DAYS",
-                "20",
-                || {
-                    with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_ORDERS_DAYS", "30", || {
-                        with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_FILLS_DAYS", "30", || {
-                            let err = load_from_env_or_default(config_path)
-                                .expect_err(
-                                    "copy_signals horizon shorter than orders must fail config load",
-                                )
-                                .to_string();
-                            assert!(
-                                err.contains(
-                                    "history_retention.copy_signals_days (20) must be >= history_retention.orders_days (30)"
-                                ),
-                                "unexpected error: {err}"
-                            );
-                        });
-                    });
-                },
-            );
+            with_env_var("SOLANA_COPY_BOT_HISTORY_RETENTION_ENABLED", "true", || {
+                with_env_var(
+                    "SOLANA_COPY_BOT_HISTORY_RETENTION_COPY_SIGNALS_DAYS",
+                    "20",
+                    || {
+                        with_env_var(
+                            "SOLANA_COPY_BOT_HISTORY_RETENTION_ORDERS_DAYS",
+                            "30",
+                            || {
+                                with_env_var(
+                                    "SOLANA_COPY_BOT_HISTORY_RETENTION_FILLS_DAYS",
+                                    "30",
+                                    || {
+                                        let err = load_from_env_or_default(config_path)
+                                            .expect_err(
+                                                "copy_signals horizon shorter than orders must fail config load",
+                                            )
+                                            .to_string();
+                                        assert!(
+                                            err.contains(
+                                                "history_retention.copy_signals_days (20) must be >= history_retention.orders_days (30)"
+                                            ),
+                                            "unexpected error: {err}"
+                                        );
+                                    },
+                                );
+                            },
+                        );
+                    },
+                );
+            });
         });
     });
 }

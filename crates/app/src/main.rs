@@ -41,10 +41,10 @@ mod swap_classification;
 mod task_spawns;
 mod telemetry;
 
+use crate::alerts::AlertDispatcher;
 use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
 use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
-use crate::alerts::AlertDispatcher;
 use crate::history_retention::HistoryRetentionRunner;
 use crate::observed_swap_writer::ObservedSwapWriter;
 use crate::secrets::resolve_execution_adapter_secrets;
@@ -118,6 +118,9 @@ async fn main() -> Result<()> {
     let alert_dispatcher =
         AlertDispatcher::from_env().context("failed to initialize alert delivery")?;
     if let Some(dispatcher) = &alert_dispatcher {
+        store
+            .ensure_alert_delivery_cursor("webhook")
+            .context("failed to initialize alert delivery cursor")?;
         if dispatcher.test_on_startup() {
             dispatcher
                 .send_startup_test(&config.system.env)
@@ -1442,8 +1445,7 @@ async fn run_app_loop(
         ObservedSwapWriter::start(sqlite_path.clone(), observed_swaps_retention_days)
             .context("failed to start observed swap writer")?;
     let history_retention = HistoryRetentionRunner::new(history_retention_config);
-    let history_retention_sweep_interval =
-        Duration::from_secs(history_retention.sweep_seconds());
+    let history_retention_sweep_interval = Duration::from_secs(history_retention.sweep_seconds());
     let mut last_history_retention_sweep = StdInstant::now()
         .checked_sub(history_retention_sweep_interval)
         .unwrap_or_else(StdInstant::now);
@@ -1668,7 +1670,7 @@ async fn run_app_loop(
                 if history_retention.enabled()
                     && last_history_retention_sweep.elapsed() >= history_retention_sweep_interval
                 {
-                    match history_retention.apply(&store, Utc::now()) {
+                    match history_retention.apply(&store, Utc::now(), alert_dispatcher.is_some()) {
                         Ok(summary) if !summary.is_empty() => {
                             info!(
                                 risk_events_deleted = summary.risk_events_deleted,

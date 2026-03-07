@@ -25,16 +25,17 @@ impl HistoryRetentionRunner {
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
+        protect_undelivered_alerts: bool,
     ) -> Result<HistoryRetentionSummary> {
         let protected_history_days = self.config.protected_history_days.max(1);
         let cutoffs = HistoryRetentionCutoffs {
             risk_events_before: now
                 - ChronoDuration::days(
-                    self.config.risk_events_days.max(protected_history_days) as i64,
+                    self.config.risk_events_days.max(protected_history_days) as i64
                 ),
             copy_signals_before: now
                 - ChronoDuration::days(
-                    self.config.copy_signals_days.max(protected_history_days) as i64,
+                    self.config.copy_signals_days.max(protected_history_days) as i64
                 ),
             orders_before: now
                 - ChronoDuration::days(self.config.orders_days.max(protected_history_days) as i64),
@@ -45,6 +46,6 @@ impl HistoryRetentionRunner {
                         .max(protected_history_days) as i64,
                 ),
         };
-        store.apply_history_retention(cutoffs)
+        store.apply_history_retention(cutoffs, protect_undelivered_alerts)
     }
 }

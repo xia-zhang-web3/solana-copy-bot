@@ -153,4 +153,17 @@ impl SqliteStore {
         .context("failed to upsert alert delivery cursor")?;
         Ok(())
     }
+
+    pub fn ensure_alert_delivery_cursor(&self, channel: &str) -> Result<()> {
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO alert_delivery_state(channel, last_rowid, updated_at)
+                 VALUES (?1, 0, datetime('now'))
+                 ON CONFLICT(channel) DO NOTHING",
+                params![channel],
+            )
+        })
+        .context("failed to ensure alert delivery cursor")?;
+        Ok(())
+    }
 }
