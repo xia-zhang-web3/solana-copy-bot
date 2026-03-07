@@ -41,6 +41,7 @@ impl SwapParser {
             signature: raw.signature,
             slot: raw.slot,
             ts_utc: raw.ts_utc,
+            exact_amounts: raw.exact_amounts,
         })
     }
 
@@ -80,6 +81,7 @@ mod tests {
             token_out: "TokenMint".to_string(),
             amount_in: 1.0,
             amount_out: 100.0,
+            exact_amounts: None,
             program_ids: vec!["raydium-program".to_string()],
             dex_hint: String::new(),
             ts_utc: Utc::now(),

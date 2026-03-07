@@ -1,6 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExactSwapAmounts {
+    pub amount_in_raw: String,
+    pub amount_in_decimals: u8,
+    pub amount_out_raw: String,
+    pub amount_out_decimals: u8,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwapEvent {
     pub wallet: String,
@@ -12,6 +20,8 @@ pub struct SwapEvent {
     pub signature: String,
     pub slot: u64,
     pub ts_utc: DateTime<Utc>,
+    #[serde(default)]
+    pub exact_amounts: Option<ExactSwapAmounts>,
 }
 
 #[derive(Debug, Clone)]

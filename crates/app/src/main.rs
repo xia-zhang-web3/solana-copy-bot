@@ -3552,6 +3552,7 @@ mod app_tests {
             signature: "sig-price-1".to_string(),
             slot: 1,
             ts_utc: now - chrono::Duration::minutes(20),
+            exact_amounts: None,
         })?;
         store.insert_observed_swap(&SwapEvent {
             wallet: "leader-wallet".to_string(),
@@ -3563,6 +3564,7 @@ mod app_tests {
             signature: "sig-price-2".to_string(),
             slot: 2,
             ts_utc: now - chrono::Duration::minutes(12),
+            exact_amounts: None,
         })?;
         store.insert_observed_swap(&SwapEvent {
             wallet: "leader-wallet".to_string(),
@@ -3574,6 +3576,7 @@ mod app_tests {
             signature: "sig-price-3".to_string(),
             slot: 3,
             ts_utc: now - chrono::Duration::minutes(7),
+            exact_amounts: None,
         })?;
         store.insert_observed_swap(&SwapEvent {
             wallet: "leader-wallet".to_string(),
@@ -3585,6 +3588,7 @@ mod app_tests {
             signature: "sig-price-outlier".to_string(),
             slot: 4,
             ts_utc: now - chrono::Duration::minutes(1),
+            exact_amounts: None,
         })?;
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
@@ -3625,6 +3629,7 @@ mod app_tests {
             signature: "sig-only-one-sample".to_string(),
             slot: 1,
             ts_utc: now - chrono::Duration::minutes(5),
+            exact_amounts: None,
         })?;
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
@@ -3960,6 +3965,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4025,6 +4031,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4063,6 +4070,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4084,6 +4092,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4178,6 +4187,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4199,6 +4209,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4267,6 +4278,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4328,6 +4340,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4349,6 +4362,7 @@ mod app_tests {
                     signature: signature.to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: ShadowTaskKey {
@@ -4416,6 +4430,7 @@ mod app_tests {
                     signature: "sig-queued".to_string(),
                     slot: 1,
                     ts_utc: Utc::now(),
+                    exact_amounts: None,
                 },
                 follow_snapshot: Arc::new(FollowSnapshot::default()),
                 key: key.clone(),
@@ -4745,6 +4760,7 @@ manual override by operator
                 signature: "sig-pending".to_string(),
                 slot: 1,
                 ts_utc: Utc::now(),
+                exact_amounts: None,
             },
             follow_snapshot: Arc::new(FollowSnapshot::default()),
             key: key.clone(),

@@ -209,6 +209,7 @@ mod tests {
             ts_utc: DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
                 .expect("timestamp")
                 .with_timezone(&Utc),
+            exact_amounts: None,
         };
 
         let runtime_handle = thread::spawn(move || -> Result<bool> {
@@ -292,6 +293,7 @@ mod tests {
                 signature: "sig-observed-swap-old".to_string(),
                 slot: 100,
                 ts_utc: Utc::now() - ChronoDuration::days(3),
+                exact_amounts: None,
             };
             let fresh_swap = SwapEvent {
                 wallet: "wallet-new".to_string(),
@@ -303,6 +305,7 @@ mod tests {
                 signature: "sig-observed-swap-new".to_string(),
                 slot: 101,
                 ts_utc: Utc::now(),
+                exact_amounts: None,
             };
 
             writer.write(&stale_swap).await?;

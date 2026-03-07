@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
-    CopySignalRow, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
+    CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
     FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, TokenQualityCacheRow,
     TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
     EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
@@ -2387,6 +2387,7 @@ mod tests {
                 amount_out: 10.0,
                 slot: 100,
                 ts_utc: base,
+                exact_amounts: None,
             },
             SwapEvent {
                 signature: "sig-b".to_string(),
@@ -2398,6 +2399,7 @@ mod tests {
                 amount_out: 11.0,
                 slot: 100,
                 ts_utc: base,
+                exact_amounts: None,
             },
             SwapEvent {
                 signature: "sig-c".to_string(),
@@ -2409,6 +2411,7 @@ mod tests {
                 amount_out: 12.0,
                 slot: 101,
                 ts_utc: base,
+                exact_amounts: None,
             },
             SwapEvent {
                 signature: "sig-d".to_string(),
@@ -2420,6 +2423,7 @@ mod tests {
                 amount_out: 13.0,
                 slot: 1,
                 ts_utc: base + Duration::seconds(1),
+                exact_amounts: None,
             },
         ];
         for swap in &swaps {
@@ -2466,6 +2470,7 @@ mod tests {
             amount_out: 10.0,
             slot: 10,
             ts_utc: base,
+            exact_amounts: None,
         })?);
 
         let page = store.for_each_observed_swap_after_cursor_with_budget(
@@ -3033,6 +3038,7 @@ mod tests {
             signature: "sig-live-unrealized".to_string(),
             slot: 12345,
             ts_utc: now + Duration::seconds(1),
+            exact_amounts: None,
         })?;
 
         let (unrealized_pnl_sol, missing_price_count) =
@@ -3069,6 +3075,7 @@ mod tests {
             signature: "sig-live-unrealized-normal".to_string(),
             slot: 12346,
             ts_utc: now + Duration::seconds(1),
+            exact_amounts: None,
         })?;
         store.insert_observed_swap(&SwapEvent {
             wallet: "price-feed".to_string(),
@@ -3080,6 +3087,7 @@ mod tests {
             signature: "sig-live-unrealized-micro-outlier".to_string(),
             slot: 12347,
             ts_utc: now + Duration::seconds(2),
+            exact_amounts: None,
         })?;
 
         let (unrealized_pnl_sol, missing_price_count) =
@@ -3116,6 +3124,7 @@ mod tests {
             signature: "sig-live-unrealized-only-micro".to_string(),
             slot: 12348,
             ts_utc: now + Duration::seconds(1),
+            exact_amounts: None,
         })?;
 
         let (unrealized_pnl_sol, missing_price_count) =
@@ -3167,6 +3176,7 @@ mod tests {
             signature: "sig-drawdown-unrealized".to_string(),
             slot: 12346,
             ts_utc: now + Duration::seconds(1),
+            exact_amounts: None,
         })?;
 
         let (unrealized_pnl_sol, missing_price_count) =
@@ -3221,6 +3231,7 @@ mod tests {
                 signature: "sig-observed-swap-retry".to_string(),
                 slot: 999,
                 ts_utc: now,
+                exact_amounts: None,
             })?;
             assert!(
                 inserted,
@@ -3269,6 +3280,7 @@ mod tests {
             signature: "sig-batch-a".to_string(),
             slot: 100,
             ts_utc: now,
+            exact_amounts: None,
         };
         let swap_b = SwapEvent {
             wallet: "wallet-batch".to_string(),
@@ -3280,6 +3292,7 @@ mod tests {
             signature: "sig-batch-b".to_string(),
             slot: 101,
             ts_utc: now + Duration::seconds(1),
+            exact_amounts: None,
         };
 
         let inserted =
@@ -3290,6 +3303,42 @@ mod tests {
         assert_eq!(swaps.len(), 2);
         assert_eq!(swaps[0].signature, "sig-batch-a");
         assert_eq!(swaps[1].signature, "sig-batch-b");
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_roundtrip_preserves_exact_amounts() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-exact-roundtrip.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let swap = SwapEvent {
+            wallet: "wallet-exact".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-exact".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            signature: "sig-exact".to_string(),
+            slot: 100,
+            ts_utc: now,
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "1000000000".to_string(),
+                amount_in_decimals: 9,
+                amount_out_raw: "100000000".to_string(),
+                amount_out_decimals: 6,
+            }),
+        };
+
+        assert!(store.insert_observed_swap(&swap)?);
+        let swaps = store.load_observed_swaps_since(now - Duration::seconds(1))?;
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].exact_amounts, swap.exact_amounts);
         Ok(())
     }
 
@@ -3334,6 +3383,7 @@ mod tests {
                     signature: "sig-observed-swap-batch-retry-a".to_string(),
                     slot: 999,
                     ts_utc: now,
+                    exact_amounts: None,
                 },
                 SwapEvent {
                     wallet: "wallet-retry".to_string(),
@@ -3345,6 +3395,7 @@ mod tests {
                     signature: "sig-observed-swap-batch-retry-b".to_string(),
                     slot: 1000,
                     ts_utc: now + Duration::seconds(1),
+                    exact_amounts: None,
                 },
             ])?;
             assert_eq!(inserted, vec![true, true]);
@@ -3393,6 +3444,7 @@ mod tests {
             signature: "sig-observed-swap-stale".to_string(),
             slot: 1,
             ts_utc: stale_ts,
+            exact_amounts: None,
         })?;
         store.insert_observed_swap(&SwapEvent {
             wallet: "wallet-retention".to_string(),
@@ -3404,6 +3456,7 @@ mod tests {
             signature: "sig-observed-swap-recent".to_string(),
             slot: 2,
             ts_utc: recent_ts,
+            exact_amounts: None,
         })?;
 
         let deleted = store.delete_observed_swaps_before(recent_ts - Duration::days(1))?;

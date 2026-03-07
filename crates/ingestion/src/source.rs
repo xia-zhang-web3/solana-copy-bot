@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
+use copybot_core_types::ExactSwapAmounts;
 use copybot_config::IngestionConfig;
 use reqwest::{Client, Url};
 use std::collections::HashSet;
@@ -50,6 +51,7 @@ pub struct RawSwapObservation {
     pub token_out: String,
     pub amount_in: f64,
     pub amount_out: f64,
+    pub exact_amounts: Option<ExactSwapAmounts>,
     pub program_ids: Vec<String>,
     pub dex_hint: String,
     pub ts_utc: DateTime<Utc>,
@@ -184,6 +186,7 @@ impl MockSource {
             token_out: format!("MockTokenMint{n}"),
             amount_in: 0.5,
             amount_out: 1_000.0 + (n as f64),
+            exact_amounts: None,
             program_ids: vec![self.raydium_program_id.clone()],
             dex_hint: "raydium".to_string(),
             ts_utc: Utc::now(),
@@ -713,11 +716,17 @@ mod tests {
     use std::collections::{HashMap, VecDeque};
 
     fn token_balance(owner: &str, mint: &str, amount: &str) -> Value {
+        let raw_amount = amount
+            .parse::<u64>()
+            .expect("token balance fixture must be an integer ui amount")
+            .saturating_mul(1_000_000)
+            .to_string();
         json!({
             "owner": owner,
             "mint": mint,
             "uiTokenAmount": {
                 "uiAmountString": amount,
+                "amount": raw_amount,
                 "decimals": 6
             }
         })
@@ -795,9 +804,11 @@ mod tests {
         let inferred = HeliusWsSource::infer_swap_from_json_balances(&meta, 0, signer)
             .expect("expected SOL buy inference");
         assert_eq!(inferred.0, SOL_MINT);
-        assert!((inferred.1 - 1.0).abs() < 1e-9);
+        assert!((inferred.1.amount - 1.0).abs() < 1e-9);
         assert_eq!(inferred.2, "TokenMintA");
-        assert!((inferred.3 - 100.0).abs() < 1e-9);
+        assert!((inferred.3.amount - 100.0).abs() < 1e-9);
+        assert_eq!(inferred.1.raw_amount.as_deref(), Some("1000000000"));
+        assert_eq!(inferred.3.raw_amount.as_deref(), Some("100000000"));
     }
 
     #[test]
@@ -962,6 +973,7 @@ mod tests {
                 token_out: "t".to_string(),
                 amount_in: 1.0,
                 amount_out: 100.0,
+                exact_amounts: None,
                 program_ids: vec![],
                 dex_hint: "raydium".to_string(),
                 ts_utc: Utc::now(),
@@ -978,6 +990,7 @@ mod tests {
                 token_out: "t".to_string(),
                 amount_in: 1.0,
                 amount_out: 100.0,
+                exact_amounts: None,
                 program_ids: vec![],
                 dex_hint: "raydium".to_string(),
                 ts_utc: Utc::now(),
@@ -1021,6 +1034,7 @@ mod tests {
                 token_out: "mint".to_string(),
                 amount_in: 1.0,
                 amount_out: 100.0,
+                exact_amounts: None,
                 program_ids: vec![],
                 dex_hint: "raydium".to_string(),
                 ts_utc: Utc::now(),
@@ -1037,6 +1051,7 @@ mod tests {
                 token_out: "mint".to_string(),
                 amount_in: 1.0,
                 amount_out: 100.0,
+                exact_amounts: None,
                 program_ids: vec![],
                 dex_hint: "raydium".to_string(),
                 ts_utc: Utc::now(),
@@ -1223,7 +1238,9 @@ mod tests {
             .expect("expected SOL->token inference");
         assert_eq!(inferred.0, SOL_MINT);
         assert_eq!(inferred.2, "TokenMintA");
-        assert!((inferred.1 - 1.0).abs() < 1e-9);
-        assert!((inferred.3 - 100.0).abs() < 1e-9);
+        assert!((inferred.1.amount - 1.0).abs() < 1e-9);
+        assert!((inferred.3.amount - 100.0).abs() < 1e-9);
+        assert_eq!(inferred.1.raw_amount.as_deref(), Some("1000000000"));
+        assert_eq!(inferred.3.raw_amount.as_deref(), Some("100000000"));
     }
 }

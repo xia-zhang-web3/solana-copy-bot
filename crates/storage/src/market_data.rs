@@ -3,7 +3,7 @@ use crate::{
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use copybot_core_types::SwapEvent;
+use copybot_core_types::{ExactSwapAmounts, SwapEvent};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde_json::{json, Value};
@@ -52,9 +52,13 @@ impl SqliteStore {
                     token_out,
                     qty_in,
                     qty_out,
+                    qty_in_raw,
+                    qty_in_decimals,
+                    qty_out_raw,
+                    qty_out_decimals,
                     slot,
                     ts
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                     params![
                         &swap.signature,
                         &swap.wallet,
@@ -63,6 +67,16 @@ impl SqliteStore {
                         &swap.token_out,
                         swap.amount_in,
                         swap.amount_out,
+                        swap.exact_amounts.as_ref().map(|value| value.amount_in_raw.as_str()),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| i64::from(value.amount_in_decimals)),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| value.amount_out_raw.as_str()),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| i64::from(value.amount_out_decimals)),
                         swap.slot as i64,
                         swap.ts_utc.to_rfc3339(),
                     ],
@@ -88,9 +102,13 @@ impl SqliteStore {
                         token_out,
                         qty_in,
                         qty_out,
+                        qty_in_raw,
+                        qty_in_decimals,
+                        qty_out_raw,
+                        qty_out_decimals,
                         slot,
                         ts
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 )
                 .context("failed to prepare observed swap batch insert statement")?;
 
@@ -105,6 +123,16 @@ impl SqliteStore {
                         &swap.token_out,
                         swap.amount_in,
                         swap.amount_out,
+                        swap.exact_amounts.as_ref().map(|value| value.amount_in_raw.as_str()),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| i64::from(value.amount_in_decimals)),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| value.amount_out_raw.as_str()),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| i64::from(value.amount_out_decimals)),
                         swap.slot as i64,
                         swap.ts_utc.to_rfc3339(),
                     ])
@@ -131,7 +159,8 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
                  FROM observed_swaps
                  WHERE ts >= ?1
                  ORDER BY ts ASC, slot ASC",
@@ -163,7 +192,8 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
                  FROM observed_swaps
                  WHERE ts >= ?1
                  ORDER BY ts ASC, slot ASC",
@@ -234,7 +264,8 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
                  FROM observed_swaps
                  WHERE (ts, slot, signature) > (?1, ?2, ?3)
                  ORDER BY ts ASC, slot ASC, signature ASC
@@ -288,7 +319,8 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
                  FROM observed_swaps
                  WHERE ts >= ?1
                  ORDER BY ts DESC, slot DESC, signature DESC
@@ -410,6 +442,7 @@ impl SqliteStore {
             .with_context(|| format!("invalid observed_swaps.ts rfc3339 value: {ts_raw}"))?;
         let slot_raw: i64 = row.get(7).context("failed reading observed_swaps.slot")?;
         let slot = if slot_raw < 0 { 0 } else { slot_raw as u64 };
+        let exact_amounts = Self::read_exact_swap_amounts(row)?;
 
         Ok(SwapEvent {
             signature: row
@@ -431,7 +464,52 @@ impl SqliteStore {
                 .context("failed reading observed_swaps.qty_out")?,
             slot,
             ts_utc,
+            exact_amounts,
         })
+    }
+
+    fn read_exact_swap_amounts(row: &rusqlite::Row<'_>) -> Result<Option<ExactSwapAmounts>> {
+        let amount_in_raw: Option<String> = row
+            .get(9)
+            .context("failed reading observed_swaps.qty_in_raw")?;
+        let amount_in_decimals_raw: Option<i64> = row
+            .get(10)
+            .context("failed reading observed_swaps.qty_in_decimals")?;
+        let amount_out_raw: Option<String> = row
+            .get(11)
+            .context("failed reading observed_swaps.qty_out_raw")?;
+        let amount_out_decimals_raw: Option<i64> = row
+            .get(12)
+            .context("failed reading observed_swaps.qty_out_decimals")?;
+
+        match (
+            amount_in_raw,
+            amount_in_decimals_raw,
+            amount_out_raw,
+            amount_out_decimals_raw,
+        ) {
+            (Some(amount_in_raw), Some(amount_in_decimals_raw), Some(amount_out_raw), Some(amount_out_decimals_raw)) => {
+                let amount_in_decimals = u8::try_from(amount_in_decimals_raw).with_context(|| {
+                    format!("invalid observed_swaps.qty_in_decimals value: {amount_in_decimals_raw}")
+                })?;
+                let amount_out_decimals =
+                    u8::try_from(amount_out_decimals_raw).with_context(|| {
+                        format!(
+                            "invalid observed_swaps.qty_out_decimals value: {amount_out_decimals_raw}"
+                        )
+                    })?;
+                Ok(Some(ExactSwapAmounts {
+                    amount_in_raw,
+                    amount_in_decimals,
+                    amount_out_raw,
+                    amount_out_decimals,
+                }))
+            }
+            (None, None, None, None) => Ok(None),
+            _ => Err(anyhow!(
+                "observed_swaps exact amount columns must be fully populated or fully NULL"
+            )),
+        }
     }
 
     pub fn token_market_stats(

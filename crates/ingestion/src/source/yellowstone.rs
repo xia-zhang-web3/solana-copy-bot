@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use copybot_core_types::ExactSwapAmounts;
 use std::collections::{HashMap, HashSet};
 use yellowstone_grpc_proto::prelude::{
     subscribe_update, CommitmentLevel, CompiledInstruction, InnerInstruction,
@@ -12,6 +13,73 @@ use super::{
     normalize_program_ids_or_fallback, HeliusWsSource, RawSwapObservation, YellowstoneParsedUpdate,
     YellowstoneRuntimeConfig, SOL_MINT,
 };
+
+#[derive(Debug, Clone)]
+pub(super) struct ParsedUiAmount {
+    pub(super) amount: f64,
+    pub(super) raw_amount: Option<String>,
+    pub(super) decimals: Option<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MintDelta {
+    amount_delta: f64,
+    raw_delta: Option<i128>,
+    decimals: Option<u8>,
+}
+
+impl MintDelta {
+    fn apply_sub(&mut self, amount: &ParsedUiAmount) {
+        self.amount_delta -= amount.amount;
+        self.apply_raw_delta(amount, -1);
+    }
+
+    fn apply_add(&mut self, amount: &ParsedUiAmount) {
+        self.amount_delta += amount.amount;
+        self.apply_raw_delta(amount, 1);
+    }
+
+    fn apply_raw_delta(&mut self, amount: &ParsedUiAmount, sign: i8) {
+        let Some(raw_amount) = amount.raw_amount.as_deref() else {
+            self.raw_delta = None;
+            self.decimals = None;
+            return;
+        };
+        let Some(decimals) = amount.decimals else {
+            self.raw_delta = None;
+            self.decimals = None;
+            return;
+        };
+        let Some(parsed_raw) = raw_amount.parse::<i128>().ok() else {
+            self.raw_delta = None;
+            self.decimals = None;
+            return;
+        };
+        match self.decimals {
+            Some(existing) if existing != decimals => {
+                self.raw_delta = None;
+                self.decimals = None;
+            }
+            Some(_) => {
+                if let Some(current) = self.raw_delta {
+                    self.raw_delta = current.checked_add(parsed_raw * i128::from(sign));
+                }
+            }
+            None => {
+                self.decimals = Some(decimals);
+                self.raw_delta = Some(parsed_raw * i128::from(sign));
+            }
+        }
+    }
+
+    fn candidate(&self) -> ParsedUiAmount {
+        ParsedUiAmount {
+            amount: self.amount_delta.abs(),
+            raw_amount: self.raw_delta.map(|value| value.abs().to_string()),
+            decimals: self.decimals,
+        }
+    }
+}
 
 pub(super) fn build_yellowstone_subscribe_request(
     runtime_config: &YellowstoneRuntimeConfig,
@@ -121,7 +189,11 @@ fn parse_yellowstone_transaction_update(
             Some(value) => value,
             None => return Ok(None),
         };
-    if !amount_in.is_finite() || !amount_out.is_finite() || amount_in <= 0.0 || amount_out <= 0.0 {
+    if !amount_in.amount.is_finite()
+        || !amount_out.amount.is_finite()
+        || amount_in.amount <= 0.0
+        || amount_out.amount <= 0.0
+    {
         return Ok(None);
     }
 
@@ -151,8 +223,9 @@ fn parse_yellowstone_transaction_update(
         signer,
         token_in,
         token_out,
-        amount_in,
-        amount_out,
+        amount_in: amount_in.amount,
+        amount_out: amount_out.amount,
+        exact_amounts: build_exact_swap_amounts(&amount_in, &amount_out),
         program_ids: program_ids.into_iter().collect(),
         dex_hint,
         ts_utc,
@@ -245,17 +318,20 @@ pub(super) fn infer_swap_from_proto_balances(
     meta: &TransactionStatusMeta,
     signer_index: usize,
     signer: &str,
-) -> Option<(String, f64, String, f64)> {
+) -> Option<(String, ParsedUiAmount, String, ParsedUiAmount)> {
     const TOKEN_EPS: f64 = 1e-12;
     const SOL_EPS: f64 = 1e-8;
-    let mut mint_deltas: HashMap<String, f64> = HashMap::new();
+    let mut mint_deltas: HashMap<String, MintDelta> = HashMap::new();
 
     for item in &meta.pre_token_balances {
         if item.owner == signer {
             let Some(amount) = parse_proto_ui_amount(item.ui_token_amount.as_ref()) else {
                 continue;
             };
-            *mint_deltas.entry(item.mint.clone()).or_default() -= amount;
+            mint_deltas
+                .entry(item.mint.clone())
+                .or_default()
+                .apply_sub(&amount);
         }
     }
     for item in &meta.post_token_balances {
@@ -263,58 +339,83 @@ pub(super) fn infer_swap_from_proto_balances(
             let Some(amount) = parse_proto_ui_amount(item.ui_token_amount.as_ref()) else {
                 continue;
             };
-            *mint_deltas.entry(item.mint.clone()).or_default() += amount;
+            mint_deltas
+                .entry(item.mint.clone())
+                .or_default()
+                .apply_add(&amount);
         }
     }
 
     let mut token_in_candidates = Vec::new();
     let mut token_out_candidates = Vec::new();
     for (mint, delta) in &mint_deltas {
-        if *delta < -TOKEN_EPS {
-            token_in_candidates.push((mint.clone(), delta.abs()));
-        } else if *delta > TOKEN_EPS {
-            token_out_candidates.push((mint.clone(), *delta));
+        if delta.amount_delta < -TOKEN_EPS {
+            token_in_candidates.push((mint.clone(), delta.candidate()));
+        } else if delta.amount_delta > TOKEN_EPS {
+            token_out_candidates.push((mint.clone(), delta.candidate()));
         }
     }
-    token_in_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    token_out_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    token_in_candidates
+        .sort_by(|a, b| b.1.amount.partial_cmp(&a.1.amount).unwrap_or(std::cmp::Ordering::Equal));
+    token_out_candidates
+        .sort_by(|a, b| b.1.amount.partial_cmp(&a.1.amount).unwrap_or(std::cmp::Ordering::Equal));
 
-    let sol_token_delta = mint_deltas.get(SOL_MINT).copied().unwrap_or(0.0);
+    let sol_token_delta = mint_deltas
+        .get(SOL_MINT)
+        .map(|delta| delta.amount_delta)
+        .unwrap_or(0.0);
     if sol_token_delta < -TOKEN_EPS {
-        if let Some((out_mint, out_amt)) =
-            HeliusWsSource::dominant_non_sol_leg(&token_out_candidates)
-        {
+        if let Some((out_mint, out_amt)) = dominant_non_sol_leg(&token_out_candidates) {
             return Some((
                 SOL_MINT.to_string(),
-                sol_token_delta.abs(),
+                ParsedUiAmount {
+                    amount: sol_token_delta.abs(),
+                    raw_amount: mint_deltas
+                        .get(SOL_MINT)
+                        .and_then(|delta| delta.raw_delta.map(|value| value.abs().to_string())),
+                    decimals: mint_deltas.get(SOL_MINT).and_then(|delta| delta.decimals),
+                },
                 out_mint,
                 out_amt,
             ));
         }
     }
     if sol_token_delta > TOKEN_EPS {
-        if let Some((in_mint, in_amt)) = HeliusWsSource::dominant_non_sol_leg(&token_in_candidates)
-        {
-            return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_token_delta));
+        if let Some((in_mint, in_amt)) = dominant_non_sol_leg(&token_in_candidates) {
+            return Some((
+                in_mint,
+                in_amt,
+                SOL_MINT.to_string(),
+                ParsedUiAmount {
+                    amount: sol_token_delta,
+                    raw_amount: mint_deltas
+                        .get(SOL_MINT)
+                        .and_then(|delta| delta.raw_delta.map(|value| value.abs().to_string())),
+                    decimals: mint_deltas.get(SOL_MINT).and_then(|delta| delta.decimals),
+                },
+            ));
         }
     }
 
-    let sol_delta = signer_sol_delta_from_proto(meta, signer_index).unwrap_or(0.0);
-    if sol_delta < -SOL_EPS {
-        if let Some((out_mint, out_amt)) =
-            HeliusWsSource::dominant_non_sol_leg(&token_out_candidates)
-        {
-            return Some((SOL_MINT.to_string(), sol_delta.abs(), out_mint, out_amt));
+    let sol_delta = signer_sol_delta_from_proto(meta, signer_index);
+    let sol_amount = sol_delta.as_ref().map(|value| value.amount).unwrap_or(0.0);
+    let sol_exact = sol_delta.as_ref().map(|value| ParsedUiAmount {
+        amount: value.amount.abs(),
+        raw_amount: value.raw_amount.clone(),
+        decimals: value.decimals,
+    });
+    if sol_amount < -SOL_EPS {
+        if let Some((out_mint, out_amt)) = dominant_non_sol_leg(&token_out_candidates) {
+            return Some((SOL_MINT.to_string(), sol_exact.clone()?, out_mint, out_amt));
         }
     }
-    if sol_delta > SOL_EPS {
-        if let Some((in_mint, in_amt)) = HeliusWsSource::dominant_non_sol_leg(&token_in_candidates)
-        {
-            return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_delta));
+    if sol_amount > SOL_EPS {
+        if let Some((in_mint, in_amt)) = dominant_non_sol_leg(&token_in_candidates) {
+            return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_exact?));
         }
     }
 
-    if sol_delta.abs() <= SOL_EPS && sol_token_delta.abs() <= TOKEN_EPS {
+    if sol_amount.abs() <= SOL_EPS && sol_token_delta.abs() <= TOKEN_EPS {
         let token_in_non_sol: Vec<_> = token_in_candidates
             .iter()
             .filter(|(mint, _)| mint != SOL_MINT)
@@ -337,27 +438,77 @@ pub(super) fn infer_swap_from_proto_balances(
     None
 }
 
-fn parse_proto_ui_amount(ui_amount: Option<&UiTokenAmount>) -> Option<f64> {
+fn parse_proto_ui_amount(ui_amount: Option<&UiTokenAmount>) -> Option<ParsedUiAmount> {
     let ui_amount = ui_amount?;
     if !ui_amount.ui_amount_string.is_empty() {
         let parsed = ui_amount.ui_amount_string.parse::<f64>().ok()?;
-        return parsed.is_finite().then_some(parsed);
+        return parsed.is_finite().then_some(ParsedUiAmount {
+            amount: parsed,
+            raw_amount: (!ui_amount.amount.is_empty()).then(|| ui_amount.amount.clone()),
+            decimals: Some(ui_amount.decimals as u8),
+        });
     }
     if !ui_amount.amount.is_empty() {
         let raw = ui_amount.amount.parse::<f64>().ok()?;
         let normalized = raw / 10f64.powi(ui_amount.decimals as i32);
-        return normalized.is_finite().then_some(normalized);
+        return normalized.is_finite().then_some(ParsedUiAmount {
+            amount: normalized,
+            raw_amount: Some(ui_amount.amount.clone()),
+            decimals: Some(ui_amount.decimals as u8),
+        });
     }
     if ui_amount.ui_amount.is_finite() {
-        return Some(ui_amount.ui_amount);
+        return Some(ParsedUiAmount {
+            amount: ui_amount.ui_amount,
+            raw_amount: None,
+            decimals: Some(ui_amount.decimals as u8),
+        });
     }
     None
 }
 
-fn signer_sol_delta_from_proto(meta: &TransactionStatusMeta, signer_index: usize) -> Option<f64> {
-    let pre_sol = *meta.pre_balances.get(signer_index)? as f64 / 1_000_000_000.0;
-    let post_sol = *meta.post_balances.get(signer_index)? as f64 / 1_000_000_000.0;
-    Some(post_sol - pre_sol)
+fn signer_sol_delta_from_proto(
+    meta: &TransactionStatusMeta,
+    signer_index: usize,
+) -> Option<ParsedUiAmount> {
+    let pre_sol = *meta.pre_balances.get(signer_index)? as i128;
+    let post_sol = *meta.post_balances.get(signer_index)? as i128;
+    let delta = post_sol - pre_sol;
+    Some(ParsedUiAmount {
+        amount: delta as f64 / 1_000_000_000.0,
+        raw_amount: Some(delta.abs().to_string()),
+        decimals: Some(9),
+    })
+}
+
+fn build_exact_swap_amounts(
+    amount_in: &ParsedUiAmount,
+    amount_out: &ParsedUiAmount,
+) -> Option<ExactSwapAmounts> {
+    Some(ExactSwapAmounts {
+        amount_in_raw: amount_in.raw_amount.clone()?,
+        amount_in_decimals: amount_in.decimals?,
+        amount_out_raw: amount_out.raw_amount.clone()?,
+        amount_out_decimals: amount_out.decimals?,
+    })
+}
+
+fn dominant_non_sol_leg(entries: &[(String, ParsedUiAmount)]) -> Option<(String, ParsedUiAmount)> {
+    const EPS: f64 = 1e-12;
+    const SECOND_LEG_AMBIGUITY_RATIO: f64 = 0.15;
+    let non_sol: Vec<(String, ParsedUiAmount)> = entries
+        .iter()
+        .filter(|(mint, value)| mint != SOL_MINT && value.amount > EPS)
+        .cloned()
+        .collect();
+    let (primary_mint, primary_value) = non_sol.first()?.clone();
+    if non_sol.len() >= 2 {
+        let second_value = non_sol[1].1.amount;
+        if second_value > primary_value.amount * SECOND_LEG_AMBIGUITY_RATIO {
+            return None;
+        }
+    }
+    Some((primary_mint, primary_value))
 }
 
 #[cfg(test)]

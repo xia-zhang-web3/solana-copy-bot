@@ -2080,6 +2080,7 @@ mod tests {
             signature: signature.to_string(),
             slot: ts_utc.timestamp().max(0) as u64,
             ts_utc,
+            exact_amounts: None,
         }
     }
 }

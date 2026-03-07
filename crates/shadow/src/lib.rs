@@ -418,6 +418,7 @@ mod tests {
             signature: "sig-buy".to_string(),
             slot: 1,
             ts_utc: buy_ts,
+            exact_amounts: None,
         };
         let buy_signal = service
             .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
@@ -435,6 +436,7 @@ mod tests {
             signature: "sig-sell".to_string(),
             slot: 2,
             ts_utc: sell_ts,
+            exact_amounts: None,
         };
         let sell_signal = service
             .process_swap(&store, &sell, &follow, sell_ts + Duration::seconds(1))?
@@ -486,6 +488,7 @@ mod tests {
             signature: "sig-buy-demote".to_string(),
             slot: 10,
             ts_utc: buy_ts,
+            exact_amounts: None,
         };
         service
             .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
@@ -513,6 +516,7 @@ mod tests {
             signature: "sig-sell-demote".to_string(),
             slot: 11,
             ts_utc: sell_ts,
+            exact_amounts: None,
         };
         let sell_signal = service
             .process_swap(&store, &sell, &follow, sell_ts + Duration::seconds(1))?
@@ -563,6 +567,7 @@ mod tests {
             signature: "sig-buy-dust-demote".to_string(),
             slot: 20,
             ts_utc: buy_ts,
+            exact_amounts: None,
         };
         service
             .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
@@ -601,6 +606,7 @@ mod tests {
             signature: "sig-sell-dust-demote".to_string(),
             slot: 21,
             ts_utc: sell_ts,
+            exact_amounts: None,
         };
         let outcome =
             service.process_swap(&store, &sell, &follow, sell_ts + Duration::seconds(1))?;
@@ -644,6 +650,7 @@ mod tests {
             signature: "sig-buy-temporal-follow".to_string(),
             slot: 22,
             ts_utc: buy_ts,
+            exact_amounts: None,
         };
 
         let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
@@ -688,6 +695,7 @@ mod tests {
             signature: "sig-buy-runtime-stale".to_string(),
             slot: 55,
             ts_utc: buy_ts,
+            exact_amounts: None,
         };
 
         let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
@@ -732,6 +740,7 @@ mod tests {
             signature: "sig-buy-too-new".to_string(),
             slot: 101,
             ts_utc: buy_ts,
+            exact_amounts: None,
         };
 
         let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
