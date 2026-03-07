@@ -23,6 +23,9 @@ Owner: copybot runtime team
 7. Adapter auth hardening baseline готов: optional Bearer + optional HMAC request signing (`key_id/secret/ttl`) с fail-closed валидацией на старте; HMAC считается по точным bytes исходящего JSON-body; token/secret могут подниматься из file-based secret paths.
 8. Оставшиеся code-gaps до real-money submit: production adapter integration (реальный signed-tx backend + ops rollout по уже готовому runtime контракту).
 9. Для закрытия upstream execution backend добавлен отдельный мастер-план: `ops/executor_backend_master_plan_2026-02-24.md`.
+10. Большая post-audit hardening wave уже слита в `main`: execution/storage/discovery/config surfaces вычищены серией audited fixes, а discovery/sqlite hotfix path из отдельного runtime-расследования уже реализован кодом и проверен на сервере.
+11. Alert delivery больше не только "логи + SQLite": app уже имеет webhook delivery path поверх `risk_events` с persisted cursor и startup self-test.
+12. После hotfix deploy `2026-03-06` runtime больше не находится в деградировавшем состоянии с минутными discovery tails; текущая формулировка по серверу: **stable under cap, backlog still material**.
 
 Текущий статус этапов:
 
@@ -44,7 +47,7 @@ Owner: copybot runtime team
 | Фаза | Цель | Статус на 2026-02-24 | Главный блокер выхода |
 | --- | --- | --- | --- |
 | A | Закрыть Yellowstone migration observation | Done | закрыт; evidence архивирован (`ops/yellowstone_observation_closure_2026-02-24.md`) |
-| B | Закрыть security/ops baseline до первого submit | In progress | key policy + alert delivery + rollback drill |
+| B | Закрыть security/ops baseline до первого submit | In progress | key policy/history hygiene + rollback drill |
 | C | Поднять execution core MVP | In progress | закрыть live submit-path + real tx policy (CU-limit/CU-price + route slippage bounds) |
 | C.5 | Пройти devnet dress rehearsal | In progress | собрать Stage C.5 evidence через `tools/execution_devnet_rehearsal.sh` + устранить P0/P1 по отчету |
 | D | Подключить Jito как primary route | Pending | route policy + tip strategy + fallback policy |
@@ -1609,3 +1612,304 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 1. Пост-патч стабильность подтверждена уже на окне `~31h 58m` без OOM/restart regressions.
 2. Discovery saturation продолжает снижаться, но latency tail полностью не исчез и остается предметом наблюдения, а не incident.
 3. Нулевой followlist/output на этом этапе считается ожидаемым при фильтре `>=4 дней` активности; live execution evidence остается отложенным до созревания окна фильтра, а не blocked из-за runtime regression.
+
+### 2026-03-06 — morning post-patch follow-up (snapshot 07:07 UTC / 09:07 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-06_morning_post_patch_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-06_post_patch_followup_0706_snapshot/computed_summary.json`
+
+Итог утреннего окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Ingestion gates: PASS (`rpc_429 delta=0`, `rpc_5xx delta=0`, `parse_rejected delta=0`; throughput ~`362.82 msg/s`).
+3. Discovery pressure: IMPROVED further
+   1. `swaps_fetch_limit_reached_ratio=0.1218` (`104/854`) vs вечерних `0.1625` (`104/640`).
+4. Discovery duration: materially regressed overnight
+   1. `duration_ms_p50=8506.0`,
+   2. `duration_ms_p95=74436.6` (существенно хуже вечернего `25163.8`),
+   3. `duration_ms_last=107303`,
+   4. `duration_ms_max=109400` (новый худший максимум).
+5. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+   3. На этом этапе это по-прежнему считается ожидаемым состоянием при фильтре `>=4 дней` активности.
+6. Ingestion пережил кратковременный pressure spike около `2026-03-06 07:06 UTC`, но latest sample уже восстановился:
+   1. spike: `ingestion_lag_ms_p95=17969`, `ws_to_fetch_queue_depth=1486`,
+   2. current: `ingestion_lag_ms_p95=1831`, `ingestion_lag_ms_p99=1952`.
+7. Process memory remains stable:
+   1. `VmRSS ~251 MB`,
+   2. `VmHWM ~599 MB`,
+   3. cgroup memory `~7.39 -> 7.43 GB`, file-cache dominated.
+8. DB keeps growing and stays live:
+   1. `live_copybot.db ~39G`, `live_copybot.db-wal ~4.7G`,
+   2. `observed_swaps_max_ts=2026-03-06T07:08:33.404664545+00:00`,
+   3. business tables still empty and это пока согласуется с pre-filter состоянием.
+
+Операционный вывод:
+
+1. Пост-патч стабильность уже подтверждена на окне `~42h 42m` без OOM/restart regressions.
+2. Cap saturation продолжает снижаться, но discovery latency за ночь ушла в явную деградацию и требует отдельного наблюдения/разбора.
+3. Нулевой followlist/output по-прежнему трактуется как ожидаемый under-filter state, а не как runtime/business incident.
+
+### 2026-03-06 — evening post-patch follow-up (snapshot 16:41 UTC / 18:41 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-06_evening_post_patch_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-06_post_patch_followup_1623_snapshot/computed_summary.json`
+
+Итог вечернего окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Discovery pressure: IMPROVED further
+   1. `swaps_fetch_limit_reached_ratio=0.1030` (`104/1010`) vs утренних `0.1218` (`104/854`).
+3. Discovery duration: degraded further
+   1. `duration_ms_p50=11333.5`,
+   2. `duration_ms_p95=151088.0` (существенно хуже утреннего `74436.6`),
+   3. `duration_ms_last=190520`,
+   4. `duration_ms_max=592013` (около `9m 52s`, новый худший максимум).
+4. Ingestion lag/backpressure: degraded
+   1. `ingestion_lag_ms_p95=61630`, `ingestion_lag_ms_p99=62076`,
+   2. `ws_to_fetch_queue_depth_last=2049` (`max=2049`),
+   3. `ws_notifications_backpressured_last=1124975`.
+5. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+   3. На этом этапе это по-прежнему считается ожидаемым состоянием при фильтре `>=4 дней` активности.
+6. Process memory remains stable:
+   1. `VmRSS ~293 MB`,
+   2. `VmHWM ~599 MB`,
+   3. cgroup memory `~7.38 -> 7.43 GB`, file-cache dominated.
+7. DB keeps growing and stays live:
+   1. `live_copybot.db ~45G`, `live_copybot.db-shm ~7.3M`, `live_copybot.db-wal ~4.7G`,
+   2. `observed_swaps_max_ts=2026-03-06T16:42:25.257029360+00:00`,
+   3. business tables still empty and это пока согласуется с pre-filter состоянием.
+
+Операционный вывод:
+
+1. Пост-патч стабильность уже подтверждена на окне `~52h 16m` без OOM/restart regressions.
+2. Cap saturation продолжает снижаться, но к вечеру деградация уже видна одновременно в discovery duration и ingestion lag/backpressure; это активный runtime attention item, а не только “soft tail”.
+3. Нулевой followlist/output по-прежнему трактуется как ожидаемый under-filter state, а не как runtime/business incident.
+
+### 2026-03-06 — late-evening post-deploy follow-up (snapshot 21:23 UTC / 23:23 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-06_late_evening_post_deploy_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-06_post_deploy_followup_2121_snapshot/computed_summary.json`
+
+Контекст окна:
+
+1. После деградации вечернего окна был выполнен deploy `origin/main=ac5c87b`.
+2. Новый rollout стартовал в `2026-03-06 19:08:45 UTC`.
+3. На server runtime config были выровнены новые discovery knobs:
+   1. `refresh_seconds=600`,
+   2. `metric_snapshot_interval_seconds=1800`,
+   3. `max_window_swaps_in_memory=60000`,
+   4. `max_fetch_swaps_per_cycle=20000`,
+   5. `observed_swaps_retention_days=45`.
+
+Итог пост-деплойного окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Deploy/migration gates: PASS
+   1. service active on `ac5c87b`,
+   2. migrations `0018..0021` applied successfully at `2026-03-06 19:08:45 UTC`.
+3. Discovery runtime: materially improved
+   1. `duration_ms_p50=28`,
+   2. `duration_ms_p95=7290.25`,
+   3. `duration_ms_last=22`,
+   4. `duration_ms_max=11850`,
+   5. `snapshot_recomputed=true` only in `5/14` cycles,
+   6. `discovery cycle still running` warnings = `0`.
+4. Ingestion lag/backpressure: recovered
+   1. `ingestion_lag_ms_p95=1663`, `ingestion_lag_ms_p99=1720`,
+   2. `ws_to_fetch_queue_depth_last=1` (`max=74`),
+   3. `ws_notifications_backpressured_last=0`.
+5. Discovery cap pressure: still saturated under the new tighter cap
+   1. `swaps_fetch_limit_reached_ratio=1.0` (`14/14`),
+   2. `swaps_query_rows_last=20000`, `swaps_delta_fetched_last=20000`,
+   3. это подтверждает стабильную работу под новым `20k` cap, но еще не доказывает backlog burn-down само по себе; для этого нужен следующий trend snapshot по cursor lag / ts-gap.
+6. Direct I/O snapshot: materially softer than pre-deploy degradation
+   1. `pressure io some avg10=5.96`, `avg60=5.82`,
+   2. `vmstat wa last=11`,
+   3. `iostat nvme0n1 aqu-sz last=1.98`, `%util last=15.5`.
+7. Memory and DB:
+   1. `VmRSS ~120.9 MB`, `VmHWM ~184.0 MB`,
+   2. cgroup memory `~6.35 -> 6.36 GB`, still file-cache dominated (`~6.54 GB`) rather than RSS,
+   3. `live_copybot.db ~48G`, `live_copybot.db-wal ~52M`, `live_copybot.db-shm ~128K`.
+8. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+   3. Это по-прежнему согласуется с фильтром `>=4 дней` активности.
+
+Операционный вывод:
+
+1. Первый `~2h 14m` post-deploy window показывает реальное улучшение runtime, а не просто успешный restart.
+2. Самое важное изменение: discovery recompute больше не доминирует каждый цикл; recompute cycles занимают секунды, non-recompute cycles завершаются примерно за `22 ms`.
+3. Ingestion lag/backpressure и direct I/O pressure резко лучше, чем в деградировавшем преддеплойном окне.
+4. `swaps_fetch_limit_reached=1.0` еще не означает incident: при новом `20k` cap это сейчас подтвержденное stable-under-cap состояние. Backlog burn-down пока остается рабочей гипотезой, которую нужно подтвердить следующим trend snapshot на более длинном окне.
+
+### 2026-03-07 — morning post-deploy follow-up (snapshot 07:27 UTC / 09:27 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-07_morning_post_deploy_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-07_post_deploy_followup_0726_snapshot/computed_summary.json`
+
+Итог утреннего окна:
+
+1. Stability gates: PASS (`NRestarts=0`, `main_process_exited_count=0`, `oom_kernel_lines=0`).
+2. Discovery runtime: sustained improvement vs pre-deploy
+   1. `duration_ms_p50=302`,
+   2. `duration_ms_p95=6412.15`,
+   3. `duration_ms_last=652`,
+   4. `duration_ms_max=11850`,
+   5. `snapshot_recomputed=true` only in `25/74` cycles,
+   6. `discovery cycle still running` warnings = `0`.
+3. Ingestion lag/backpressure: latest state healthy, but overnight window not perfectly clean
+   1. current: `ingestion_lag_ms_p95=1845`, `ingestion_lag_ms_p99=1987`, `ws_to_fetch_queue_depth_last=1`,
+   2. overnight max: `ws_to_fetch_queue_depth_max=2049`,
+   3. cumulative `ws_notifications_backpressured_delta=39331`.
+4. Direct backlog evidence: discovery cursor still materially behind head
+   1. `swaps_fetch_limit_reached_ratio=1.0` (`74/74`),
+   2. `swaps_query_rows_last=20000`, `swaps_delta_fetched_last=20000`,
+   3. `discovery_cursor_ts=2026-03-06T21:24:42.987393790+00:00`,
+   4. `observed_swaps_max_ts=2026-03-07T07:27:38.295258094+00:00`,
+   5. direct `cursor/head ts-gap ~= 36175 s` (`~10h 02m 55s`).
+5. Direct I/O snapshot remains much softer than pre-deploy degradation:
+   1. `pressure io some avg10=8.92`, `avg60=8.19`,
+   2. `vmstat wa last=10`,
+   3. `iostat nvme0n1 aqu-sz last=1.87`, `%util last=17.8`.
+6. Memory and DB:
+   1. `VmRSS ~151.1 MB`, `VmHWM ~222.9 MB`,
+   2. cgroup memory `~6.66 -> 6.67 GB`, still file-cache dominated,
+   3. `live_copybot.db ~55G`, `live_copybot.db-wal ~57M`, `live_copybot.db-shm ~128K`.
+7. Followlist output пока без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`.
+   3. Это по-прежнему согласуется с фильтром `>=4 дней` активности.
+
+Операционный вывод:
+
+1. Утреннее окно подтверждает, что hotfix path действительно стабилизировал runtime: минутные discovery tails исчезли, skip warnings не вернулись, ingestion в latest samples healthy.
+2. При этом текущие данные уже дают более сильный вывод про backlog: burn-down пока не доказан, а backlog все еще material, потому что direct `cursor_ts` отстает от head примерно на `10h`.
+3. Корректная формулировка на этом этапе: **stable under cap, backlog still material**.
+
+### 2026-03-07 — consolidated audit closure summary (Codex + external auditors)
+
+Контекст:
+
+1. После consolidated audit от `2026-03-05` и discovery/sqlite incident-разбора от `2026-03-06` проект добивался серией маленьких audited batch-фиксoв.
+2. Каждый code batch проходил внешний review, и только после этого попадал в `main`.
+3. По состоянию на baseline `2bd62f8` основной code backlog из `TEMP_CONSOLIDATED_AUDIT_2026-03-05.md` фактически закрыт, кроме двух хвостов:
+   1. `C-1` как ops/history issue,
+   2. `D-2` как большой `f64` architecture item.
+4. Этот summary описывает именно `origin/main` на baseline `2bd62f8`. Он не обязан совпадать с любым локальным dirty checkout или старой batch-веткой, если reviewer сверяет не `main`, а устаревшее дерево.
+
+Что было реально закрыто этим путём:
+
+1. Execution / order-lifecycle correctness:
+   1. impossible config invariants и startup contradictions,
+   2. on-chain observed fills вместо synthetic-only confirm accounting,
+   3. timeout-path, который раньше мог оставить реальную позицию stranded,
+   4. duplicate-submit / duplicate-fallback risks в executor,
+   5. post-confirm exposure TOCTOU,
+   6. bounded retry / stale-writer hardening в pretrade / simulation / submit retry paths,
+   7. transactional confirm/drop/status guards в storage.
+2. Storage / schema hardening:
+   1. followlist single-active invariant,
+   2. single-open-position invariant,
+   3. foreign keys для execution chain,
+   4. `last_insert_rowid()` retry bug,
+   5. `persist_discovery_cycle()` transaction/retry hardening,
+   6. dust/open-lot semantics для shadow inventory.
+3. Discovery / ingestion hardening:
+   1. NaN poisoning removal,
+   2. rug gate больше не считает "not yet evaluated" как safe,
+   3. quality gates fail-closed при missing/stale RPC quality,
+   4. false demotion после `max_window_swaps_in_memory` truncation,
+   5. defensive ordering normalization перед snapshot rebuild,
+   6. dedicated observed-swap writer + bounded retention,
+   7. `wallet_metrics(window_start)` index + indexed retention rewrite,
+   8. tuple cursor query для `observed_swaps`,
+   9. metric snapshot throttling и reuse cached discovery summary внутри snapshot bucket.
+4. Security / config / secret handling:
+   1. secret-bearing `Debug` surfaces redacted,
+   2. secret-file permission checks переведены в fail-closed,
+   3. tracked credentials вычищены из live/template/playbook surfaces,
+   4. adapter/executor endpoint policy tightened to `https://` for external endpoints,
+   5. adapter request body limit сделан explicit,
+   6. inbound/config/env parsing systematically переведён из silent fallback в fail-closed:
+      1. discovery,
+      2. ingestion/yellowstone,
+      3. execution,
+      4. shadow/risk,
+      5. queue/source/CSV/non-scalar override paths.
+5. Alerting / ops visibility:
+   1. app больше не зависит от ambient `RUST_LOG`; используется явный `COPYBOT_APP_LOG_FILTER`,
+   2. roadmap-level alert delivery gap закрыт webhook path’ом по persisted `risk_events`,
+   3. alert cursor переведён на monotonic `rowid`, чтобы later same-ts events не терялись.
+6. Core cleanup:
+   1. dead wrappers в `core-types` (`EventEnvelope`, `CopyIntent`, obsolete `SignalSide`) удалены после того, как подтвердилось отсутствие downstream usage.
+
+Что этот путь дал practically:
+
+1. Audit backlog перестал быть "серией локальных гипотез" и стал набором уже смёрженных invariants в `main`.
+2. Discovery hotfix path не только закрыт кодом, но и дал measurable runtime-эффект на сервере:
+   1. исчезли минутные discovery tails,
+   2. `snapshot_recomputed` перестал доминировать каждый цикл,
+   3. ingestion/latest samples стали healthy,
+   4. при этом backlog по cursor/head still material и требует дальнейшего наблюдения, а не оптимистичных выводов.
+3. Stage B теперь упирается не в отсутствие code paths, а в ops tails:
+   1. key/history hygiene,
+   2. rollback discipline,
+   3. live adapter backend handoff.
+
+Что осталось после этой wave:
+
+1. `C-1`: git history / credential rotation / server secret hygiene.
+2. `D-2`: большой `f64` financial-state refactor; это уже не точечный hardening, а отдельный архитектурный трек.
+
+### 2026-03-07 — fresh pre-D-2 review after closure pass (Codex + external auditors)
+
+После того как базовый audit backlog был фактически закрыт, проект прогнали ещё раз "на свежую голову" уже против текущего `main`, а не старых batch-веток.
+
+Важно:
+
+1. Несколько claims из fresh-review оказались stale и в backlog не возвращаются:
+   1. tracked live/template/playbook surfaces больше не содержат живой provider token;
+   2. adapter request/response boundary уже hardened (`413` body limit, явный request cap, response-body limit, корректный `/submit` status mapping);
+   3. ingestion observed-swap write path больше не пишет SQLite синхронно из async loop;
+   4. значительная часть config/env silent-fallback paths уже переведена в fail-closed.
+2. Источник части расхождений был не в `main`, а в том, что review местами сверял текущий локальный checkout на старой ветке, а не `origin/main`.
+3. Но review всё же поднял несколько реальных хвостов, которые уже не стоит путать с `D-2`, потому что они уже сейчас влияют на correctness и long-running runtime behavior.
+
+Подтверждённые remaining code items до большого `D-2`:
+
+1. Residual confirm/reconcile semantics:
+   1. timeout path уже уходит в reconcile-pending, но generic confirm error после deadline всё ещё переводит live order в `execution_failed` даже при включённом manual reconcile;
+   2. confirmed tx без usable observed fill всё ещё может финализироваться synthetic fill’ом из intent/fallback price, что оставляет остаточный drift-риск в `fills` / `positions` / exposure / PnL.
+2. History retention gap:
+   1. bounded retention уже есть для `observed_swaps` и `wallet_metrics`,
+   2. но `risk_events`, `copy_signals`, `orders`, `fills` и `shadow_closed_trades` пока не имеют явной lifecycle policy.
+3. Discovery hotfix tradeoff всё ещё требует осознанного решения:
+   1. текущий runtime стабилен under cap,
+   2. но scoring/followlist уже работают по capped in-memory tail, а не по полному theoretical window,
+   3. значит это нужно считать либо accepted design tradeoff, либо следующим redesign item после дополнительного server evidence.
+4. До `D-2` есть один узкий f64-adjacent bug class, который можно закрыть отдельно:
+   1. partial sell / qty mismatch может оставлять tiny residual live position,
+   2. operationally это опаснее остальных sub-nano drift effects, потому что ведёт к ghost-position behavior.
+
+Практический вывод:
+
+1. Перед открытием `D-2` логично сначала добить:
+   1. residual confirm/reconcile semantics,
+   2. retention policies для history/event tables.
+2. `C-1` остаётся чисто ops/history задачей:
+   1. history rewrite,
+   2. token rotation,
+   3. server-side secret hygiene.
+3. После этого проект уже честно входит не в "ещё один hardening backlog", а в большой архитектурный выбор по денежной модели.

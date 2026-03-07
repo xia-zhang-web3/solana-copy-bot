@@ -1,0 +1,11 @@
+followlist_active = 0
+followlist_total = 0
+followlist_last_added_at = 
+copy_signals_rows = 0
+orders_rows = 0
+shadow_lots_rows = 0
+observed_swaps_max_ts|2026-03-06T16:42:25.257029360+00:00
+observed_swaps_min_ts|2026-03-03T17:05:37+00:00
+-rw-r--r-- 1 copybot copybot  45G Mar  6 16:41 /var/www/solana-copy-bot/state/live_copybot.db
+-rw-r--r-- 1 copybot copybot 7.3M Mar  6 16:42 /var/www/solana-copy-bot/state/live_copybot.db-shm
+-rw-r--r-- 1 copybot copybot 4.7G Mar  6 16:42 /var/www/solana-copy-bot/state/live_copybot.db-wal

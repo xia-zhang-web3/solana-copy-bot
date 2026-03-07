@@ -1,0 +1,24 @@
+=== db files ===
+-rw-r--r-- 1 copybot copybot  48G Mar  6 21:25 /var/www/solana-copy-bot/state/live_copybot.db
+-rw-r--r-- 1 copybot copybot 128K Mar  6 21:24 /var/www/solana-copy-bot/state/live_copybot.db-shm
+-rw-r--r-- 1 copybot copybot  52M Mar  6 21:25 /var/www/solana-copy-bot/state/live_copybot.db-wal
+
+=== db counts ===
+followlist_total|0
+copy_signals_rows|0
+orders_rows|0
+fills_rows|0
+shadow_lots_rows|0
+
+=== observed_swaps max ts ===
+2026-03-06T21:25:07.115081402+00:00
+
+=== latest migrations ===
+0021_wallet_metrics_window_start_index.sql|2026-03-06 19:08:45
+0020_execution_foreign_keys.sql|2026-03-06 19:08:45
+0019_positions_single_open_guard.sql|2026-03-06 19:08:45
+0018_followlist_single_active_guard.sql|2026-03-06 19:08:45
+0017_positions_closed_state_index.sql|2026-03-03 17:05:38
+0016_execution_fee_breakdown_hints_safety.sql|2026-03-03 17:05:38
+0015_execution_fee_breakdown_hints.sql|2026-03-03 17:05:38
+0014_execution_fee_breakdown_safety.sql|2026-03-03 17:05:38
