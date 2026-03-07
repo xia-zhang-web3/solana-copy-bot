@@ -510,6 +510,8 @@ pub struct DiscoveryConfig {
     pub thin_market_min_unique_traders: u32,
     pub max_window_swaps_in_memory: usize,
     pub max_fetch_swaps_per_cycle: usize,
+    pub max_fetch_pages_per_cycle: usize,
+    pub fetch_time_budget_ms: u64,
     pub observed_swaps_retention_days: u32,
 }
 
@@ -535,6 +537,8 @@ impl Default for DiscoveryConfig {
             thin_market_min_unique_traders: 10,
             max_window_swaps_in_memory: 60_000,
             max_fetch_swaps_per_cycle: 20_000,
+            max_fetch_pages_per_cycle: 5,
+            fetch_time_budget_ms: 15_000,
             observed_swaps_retention_days: 45,
         }
     }
@@ -577,6 +581,8 @@ impl fmt::Debug for DiscoveryConfig {
                 &self.max_window_swaps_in_memory,
             )
             .field("max_fetch_swaps_per_cycle", &self.max_fetch_swaps_per_cycle)
+            .field("max_fetch_pages_per_cycle", &self.max_fetch_pages_per_cycle)
+            .field("fetch_time_budget_ms", &self.fetch_time_budget_ms)
             .field(
                 "observed_swaps_retention_days",
                 &self.observed_swaps_retention_days,

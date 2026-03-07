@@ -33,6 +33,8 @@ fn discovery_defaults_use_storage_mitigation_limits() {
     assert_eq!(discovery.metric_snapshot_interval_seconds, 1_800);
     assert_eq!(discovery.max_window_swaps_in_memory, 60_000);
     assert_eq!(discovery.max_fetch_swaps_per_cycle, 20_000);
+    assert_eq!(discovery.max_fetch_pages_per_cycle, 5);
+    assert_eq!(discovery.fetch_time_budget_ms, 15_000);
     assert_eq!(discovery.observed_swaps_retention_days, 45);
 }
 
@@ -326,6 +328,14 @@ fn load_from_env_allows_discovery_runtime_storage_mitigation_overrides() {
                                             "15000",
                                             || {
                                                 with_env_var(
+                                                    "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_PAGES_PER_CYCLE",
+                                                    "6",
+                                                    || {
+                                                        with_env_var(
+                                                            "SOLANA_COPY_BOT_DISCOVERY_FETCH_TIME_BUDGET_MS",
+                                                            "21000",
+                                                            || {
+                                                with_env_var(
                                         "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
                                         "60",
                                         || {
@@ -336,9 +346,15 @@ fn load_from_env_allows_discovery_runtime_storage_mitigation_overrides() {
                                             assert_eq!(cfg.discovery.metric_snapshot_interval_seconds, 2_700);
                                             assert_eq!(cfg.discovery.max_window_swaps_in_memory, 50_000);
                                             assert_eq!(cfg.discovery.max_fetch_swaps_per_cycle, 15_000);
+                                            assert_eq!(cfg.discovery.max_fetch_pages_per_cycle, 6);
+                                            assert_eq!(cfg.discovery.fetch_time_budget_ms, 21_000);
                                             assert_eq!(cfg.discovery.observed_swaps_retention_days, 60);
                                         },
                                     );
+                                                            },
+                                                        );
+                                                    },
+                                                );
                                             },
                                         );
                                     },
@@ -397,6 +413,46 @@ fn load_from_env_rejects_discovery_fetch_cap_above_window_cap() {
                             "unexpected error: {err}"
                         );
                         },
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_path_rejects_zero_discovery_fetch_page_budget() {
+    with_temp_config_file(
+        r#"
+[discovery]
+max_fetch_pages_per_cycle = 0
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("zero discovery fetch page budget must fail config load")
+                .to_string();
+            assert!(
+                err.contains("discovery.max_fetch_pages_per_cycle (0) must be >= 1"),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_env_rejects_zero_discovery_fetch_time_budget_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_FETCH_TIME_BUDGET_MS",
+                "0",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("zero discovery fetch time budget must fail config load")
+                        .to_string();
+                    assert!(
+                        err.contains("discovery.fetch_time_budget_ms (0) must be >= 1"),
+                        "unexpected error: {err}"
                     );
                 },
             );

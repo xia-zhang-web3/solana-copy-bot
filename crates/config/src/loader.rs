@@ -230,6 +230,17 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     )? {
         config.discovery.max_fetch_swaps_per_cycle = max_fetch_swaps_per_cycle;
     }
+    if let Some(max_fetch_pages_per_cycle) = parse_env_number::<usize>(
+        "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_PAGES_PER_CYCLE",
+        "usize",
+    )? {
+        config.discovery.max_fetch_pages_per_cycle = max_fetch_pages_per_cycle;
+    }
+    if let Some(fetch_time_budget_ms) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_DISCOVERY_FETCH_TIME_BUDGET_MS", "u64")?
+    {
+        config.discovery.fetch_time_budget_ms = fetch_time_budget_ms;
+    }
     if let Some(observed_swaps_retention_days) = parse_env_number::<u32>(
         "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
         "u32",
@@ -761,6 +772,18 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
             "discovery.max_fetch_swaps_per_cycle ({}) must be <= discovery.max_window_swaps_in_memory ({})",
             config.discovery.max_fetch_swaps_per_cycle,
             config.discovery.max_window_swaps_in_memory
+        ));
+    }
+    if config.discovery.max_fetch_pages_per_cycle == 0 {
+        return Err(anyhow!(
+            "discovery.max_fetch_pages_per_cycle ({}) must be >= 1",
+            config.discovery.max_fetch_pages_per_cycle
+        ));
+    }
+    if config.discovery.fetch_time_budget_ms == 0 {
+        return Err(anyhow!(
+            "discovery.fetch_time_budget_ms ({}) must be >= 1",
+            config.discovery.fetch_time_budget_ms
         ));
     }
     Ok(())

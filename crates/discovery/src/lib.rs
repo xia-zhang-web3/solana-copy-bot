@@ -6,7 +6,7 @@ use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore, WalletMetricRow, Wall
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration as StdDuration, Instant};
 use tracing::{info, warn};
 
 mod followlist;
@@ -84,6 +84,16 @@ struct BuyObservation {
     quality_resolved: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct FetchProgress {
+    query_rows: usize,
+    query_rows_last_page: usize,
+    pages: usize,
+    saturated: bool,
+    page_budget_exhausted: bool,
+    time_budget_exhausted: bool,
+}
+
 #[derive(Debug, Clone)]
 struct SolLegTrade {
     ts: DateTime<Utc>,
@@ -150,11 +160,13 @@ impl DiscoveryService {
         let mut swaps_warm_loaded = 0usize;
         let max_window_swaps_in_memory = self.config.max_window_swaps_in_memory.max(1);
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
+        let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
+        let fetch_time_budget = StdDuration::from_millis(self.config.fetch_time_budget_ms.max(1));
         let (
             snapshots,
             cached_summary,
             swaps_window,
-            swaps_query_rows,
+            fetch_progress,
             followlist_deactivations_suppressed,
         ) = {
             let mut state = match self.window_state.lock() {
@@ -223,33 +235,57 @@ impl DiscoveryService {
                 }
             }
 
-            let cursor_signature = cursor.signature.clone();
-            let swaps_query_rows = store.for_each_observed_swap_after_cursor(
-                cursor.ts_utc,
-                cursor.slot,
-                cursor_signature.as_str(),
-                fetch_limit,
-                |swap| {
-                    cursor = DiscoveryCursor::from_swap(&swap);
-                    if swap.ts_utc < window_start {
-                        return Ok(());
-                    }
-                    if state.signatures.contains(&swap.signature) {
-                        return Ok(());
-                    }
-                    if let Some(back) = state.swaps.back() {
-                        if cmp_swap_order(&swap, back) == Ordering::Less {
-                            out_of_order = true;
-                        }
-                    }
-                    state.signatures.insert(swap.signature.clone());
-                    state.swaps.push_back(swap);
-                    delta_fetched = delta_fetched.saturating_add(1);
-                    Ok(())
-                },
-            )?;
+            let mut fetch_progress = FetchProgress::default();
+            let fetch_started = Instant::now();
+            loop {
+                if fetch_progress.pages >= fetch_page_limit {
+                    fetch_progress.page_budget_exhausted =
+                        fetch_progress.query_rows_last_page >= fetch_limit;
+                    break;
+                }
+                if fetch_progress.pages > 0 && fetch_started.elapsed() >= fetch_time_budget {
+                    fetch_progress.time_budget_exhausted =
+                        fetch_progress.query_rows_last_page >= fetch_limit;
+                    break;
+                }
 
-            if swaps_query_rows > 0 {
+                let cursor_signature = cursor.signature.clone();
+                let page_rows = store.for_each_observed_swap_after_cursor(
+                    cursor.ts_utc,
+                    cursor.slot,
+                    cursor_signature.as_str(),
+                    fetch_limit,
+                    |swap| {
+                        cursor = DiscoveryCursor::from_swap(&swap);
+                        if swap.ts_utc < window_start {
+                            return Ok(());
+                        }
+                        if state.signatures.contains(&swap.signature) {
+                            return Ok(());
+                        }
+                        if let Some(back) = state.swaps.back() {
+                            if cmp_swap_order(&swap, back) == Ordering::Less {
+                                out_of_order = true;
+                            }
+                        }
+                        state.signatures.insert(swap.signature.clone());
+                        state.swaps.push_back(swap);
+                        delta_fetched = delta_fetched.saturating_add(1);
+                        Ok(())
+                    },
+                )?;
+                fetch_progress.pages = fetch_progress.pages.saturating_add(1);
+                fetch_progress.query_rows = fetch_progress.query_rows.saturating_add(page_rows);
+                fetch_progress.query_rows_last_page = page_rows;
+
+                if page_rows < fetch_limit {
+                    break;
+                }
+            }
+            fetch_progress.saturated = fetch_progress.query_rows_last_page >= fetch_limit
+                && (fetch_progress.page_budget_exhausted || fetch_progress.time_budget_exhausted);
+
+            if fetch_progress.query_rows > 0 {
                 state.cursor = Some(cursor.clone());
                 let persisted = DiscoveryRuntimeCursor {
                     ts_utc: cursor.ts_utc,
@@ -278,7 +314,7 @@ impl DiscoveryService {
                 state.cap_truncation_floor = None;
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
-                (None, None, swaps_window, swaps_query_rows, false)
+                (None, None, swaps_window, fetch_progress, false)
             } else if state.last_snapshot_bucket == Some(metrics_window_start)
                 && state.last_summary.is_some()
             {
@@ -286,7 +322,7 @@ impl DiscoveryService {
                     None,
                     state.last_summary.clone(),
                     swaps_window,
-                    swaps_query_rows,
+                    fetch_progress,
                     followlist_deactivations_suppressed,
                 )
             } else {
@@ -295,7 +331,7 @@ impl DiscoveryService {
                     Some(snapshots),
                     None,
                     swaps_window,
-                    swaps_query_rows,
+                    fetch_progress,
                     followlist_deactivations_suppressed,
                 )
             }
@@ -312,11 +348,18 @@ impl DiscoveryService {
                 follow_demoted = 0usize,
                 active_follow_wallets = 0usize,
                 swaps_window = 0usize,
-                swaps_query_rows,
+                swaps_query_rows = fetch_progress.query_rows,
+                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
                 swaps_delta_fetched = delta_fetched,
                 swaps_warm_loaded,
                 swaps_evicted_due_cap,
                 swaps_fetch_limit = fetch_limit,
+                swaps_fetch_pages = fetch_progress.pages,
+                swaps_fetch_page_limit = fetch_page_limit,
+                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                swaps_fetch_limit_reached = fetch_progress.saturated,
+                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
                 discovery_cycle_duration_ms = elapsed_ms,
                 followlist_deactivations_suppressed,
                 "discovery cycle completed"
@@ -348,12 +391,18 @@ impl DiscoveryService {
                 follow_demoted = summary.follow_demoted,
                 active_follow_wallets = summary.active_follow_wallets,
                 swaps_window,
-                swaps_query_rows,
+                swaps_query_rows = fetch_progress.query_rows,
+                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
                 swaps_delta_fetched = delta_fetched,
                 swaps_warm_loaded,
                 swaps_evicted_due_cap,
                 swaps_fetch_limit = fetch_limit,
-                swaps_fetch_limit_reached = swaps_query_rows >= fetch_limit,
+                swaps_fetch_pages = fetch_progress.pages,
+                swaps_fetch_page_limit = fetch_page_limit,
+                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                swaps_fetch_limit_reached = fetch_progress.saturated,
+                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
                 metrics_window_start = %metrics_window_start,
                 metrics_persisted = false,
                 snapshot_recomputed = false,
@@ -362,11 +411,17 @@ impl DiscoveryService {
                 top_wallets = ?summary.top_wallets,
                 "discovery cycle completed"
             );
-            if swaps_query_rows >= fetch_limit {
+            if fetch_progress.saturated {
                 warn!(
-                    swaps_query_rows,
+                    swaps_query_rows = fetch_progress.query_rows,
+                    swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
                     swaps_fetch_limit = fetch_limit,
-                    "discovery swap fetch reached per-cycle limit; backlog processing continues next cycle"
+                    swaps_fetch_pages = fetch_progress.pages,
+                    swaps_fetch_page_limit = fetch_page_limit,
+                    swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                    swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                    swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                    "discovery swap fetch exhausted bounded per-cycle budget; backlog processing continues next cycle"
                 );
             }
             return Ok(summary);
@@ -454,12 +509,18 @@ impl DiscoveryService {
             follow_demoted = summary.follow_demoted,
             active_follow_wallets = summary.active_follow_wallets,
             swaps_window,
-            swaps_query_rows,
+            swaps_query_rows = fetch_progress.query_rows,
+            swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
             swaps_delta_fetched = delta_fetched,
             swaps_warm_loaded,
             swaps_evicted_due_cap,
             swaps_fetch_limit = fetch_limit,
-            swaps_fetch_limit_reached = swaps_query_rows >= fetch_limit,
+            swaps_fetch_pages = fetch_progress.pages,
+            swaps_fetch_page_limit = fetch_page_limit,
+            swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+            swaps_fetch_limit_reached = fetch_progress.saturated,
+            swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+            swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
             metrics_window_start = %metrics_window_start,
             metrics_persisted = should_persist_metrics,
             snapshot_recomputed = true,
@@ -469,11 +530,17 @@ impl DiscoveryService {
             "discovery cycle completed"
         );
 
-        if swaps_query_rows >= fetch_limit {
+        if fetch_progress.saturated {
             warn!(
-                swaps_query_rows,
+                swaps_query_rows = fetch_progress.query_rows,
+                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
                 swaps_fetch_limit = fetch_limit,
-                "discovery swap fetch reached per-cycle limit; backlog processing continues next cycle"
+                swaps_fetch_pages = fetch_progress.pages,
+                swaps_fetch_page_limit = fetch_page_limit,
+                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                "discovery swap fetch exhausted bounded per-cycle budget; backlog processing continues next cycle"
             );
         }
 
@@ -1049,6 +1116,7 @@ mod tests {
         config.scoring_window_days = 7;
         config.max_window_swaps_in_memory = 100;
         config.max_fetch_swaps_per_cycle = 4;
+        config.max_fetch_pages_per_cycle = 1;
 
         let discovery_first = DiscoveryService::new(config.clone(), permissive_shadow_quality());
         let _ = discovery_first.run_cycle(&store, now)?;
@@ -1064,6 +1132,97 @@ mod tests {
             .load_discovery_runtime_cursor()?
             .expect("cursor must stay persisted after second cycle");
         assert_eq!(cursor_after_second.signature, "cursor-sig-007");
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_fetches_multiple_cursor_pages_within_single_cycle() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-multi-page-fetch.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let start = now - Duration::minutes(20);
+        for idx in 0..10 {
+            let ts = start + Duration::seconds((idx * 10) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_multi_page",
+                &format!("multi-page-sig-{idx:03}"),
+                ts,
+                SOL_MINT,
+                "TokenMultiPage111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.max_window_swaps_in_memory = 100;
+        config.max_fetch_swaps_per_cycle = 4;
+        config.max_fetch_pages_per_cycle = 3;
+        config.fetch_time_budget_ms = 60_000;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let _ = discovery.run_cycle(&store, now)?;
+        let cursor = store
+            .load_discovery_runtime_cursor()?
+            .expect("cursor must be persisted after multi-page fetch");
+        assert_eq!(
+            cursor.signature, "multi-page-sig-009",
+            "single cycle should page through all cursor rows until the short final page"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_respects_fetch_page_budget_and_continues_next_cycle() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-fetch-page-budget.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let start = now - Duration::minutes(20);
+        for idx in 0..12 {
+            let ts = start + Duration::seconds((idx * 10) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_page_budget",
+                &format!("page-budget-sig-{idx:03}"),
+                ts,
+                SOL_MINT,
+                "TokenPageBudget1111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.max_window_swaps_in_memory = 100;
+        config.max_fetch_swaps_per_cycle = 4;
+        config.max_fetch_pages_per_cycle = 2;
+        config.fetch_time_budget_ms = 60_000;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let _ = discovery.run_cycle(&store, now)?;
+        let cursor_after_first = store
+            .load_discovery_runtime_cursor()?
+            .expect("cursor must be persisted after first bounded cycle");
+        assert_eq!(cursor_after_first.signature, "page-budget-sig-007");
+
+        let _ = discovery.run_cycle(&store, now + Duration::minutes(1))?;
+        let cursor_after_second = store
+            .load_discovery_runtime_cursor()?
+            .expect("cursor must advance on next cycle");
+        assert_eq!(cursor_after_second.signature, "page-budget-sig-011");
         Ok(())
     }
 
