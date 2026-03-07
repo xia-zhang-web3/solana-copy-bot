@@ -24,6 +24,8 @@ const LIVE_UNREALIZED_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
 const LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SOL_NOTIONAL: f64 = 0.05;
 const LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SAMPLES: usize = 1;
 const LIVE_UNREALIZED_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
+// Until D-2 exact quantities land, sub-nano residual qty should not count as an open live position.
+pub const LIVE_POSITION_OPEN_EPS: f64 = 1e-9;
 static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
@@ -116,8 +118,9 @@ impl SqliteStore {
             .query_row(
                 "SELECT COALESCE(SUM(cost_sol), 0.0)
                  FROM positions
-                 WHERE state = 'open'",
-                [],
+                 WHERE state = 'open'
+                   AND qty > ?1",
+                params![LIVE_POSITION_OPEN_EPS],
                 |row| row.get(0),
             )
             .context("failed querying live open exposure in finalize confirm transaction")?;
@@ -126,8 +129,9 @@ impl SqliteStore {
                 "SELECT COALESCE(SUM(cost_sol), 0.0)
                  FROM positions
                  WHERE state = 'open'
+                   AND qty > ?2
                    AND token = ?1",
-                params![token],
+                params![token, LIVE_POSITION_OPEN_EPS],
                 |row| row.get(0),
             )
             .context(
@@ -137,8 +141,9 @@ impl SqliteStore {
             .query_row(
                 "SELECT COUNT(*)
                  FROM positions
-                 WHERE state = 'open'",
-                [],
+                 WHERE state = 'open'
+                   AND qty > ?1",
+                params![LIVE_POSITION_OPEN_EPS],
                 |row| row.get(0),
             )
             .context("failed querying live open positions count in finalize confirm transaction")?;
@@ -375,8 +380,9 @@ impl SqliteStore {
             .query_row(
                 "SELECT COALESCE(SUM(cost_sol), 0.0)
                  FROM positions
-                 WHERE state = 'open'",
-                [],
+                 WHERE state = 'open'
+                   AND qty > ?1",
+                params![LIVE_POSITION_OPEN_EPS],
                 |row| row.get(0),
             )
             .context("failed querying live open exposure")?;
@@ -390,8 +396,9 @@ impl SqliteStore {
                 "SELECT COALESCE(SUM(cost_sol), 0.0)
                  FROM positions
                  WHERE state = 'open'
+                   AND qty > ?2
                    AND token = ?1",
-                params![token],
+                params![token, LIVE_POSITION_OPEN_EPS],
                 |row| row.get(0),
             )
             .context("failed querying live open exposure by token")?;
@@ -404,8 +411,9 @@ impl SqliteStore {
             .query_row(
                 "SELECT COUNT(*)
                  FROM positions
-                 WHERE state = 'open'",
-                [],
+                 WHERE state = 'open'
+                   AND qty > ?1",
+                params![LIVE_POSITION_OPEN_EPS],
                 |row| row.get(0),
             )
             .context("failed querying live open positions count")?;
@@ -420,8 +428,9 @@ impl SqliteStore {
                  FROM positions
                  WHERE token = ?1
                    AND state = 'open'
+                   AND qty > ?2
                  LIMIT 1",
-                params![token],
+                params![token, LIVE_POSITION_OPEN_EPS],
                 |row| row.get(0),
             )
             .optional()
@@ -437,14 +446,15 @@ impl SqliteStore {
                  FROM positions
                  WHERE token = ?1
                    AND state = 'open'
+                   AND qty > ?2
                  LIMIT 1",
-                params![token],
+                params![token, LIVE_POSITION_OPEN_EPS],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .context("failed querying live open position qty/cost by token")?;
         Ok(row.filter(|(qty, cost)| {
-            qty.is_finite() && *qty > 0.0 && cost.is_finite() && *cost >= 0.0
+            qty.is_finite() && *qty > LIVE_POSITION_OPEN_EPS && cost.is_finite() && *cost >= 0.0
         }))
     }
 
@@ -456,9 +466,11 @@ impl SqliteStore {
         notional_sol: f64,
         ts: DateTime<Utc>,
     ) -> Result<()> {
-        const EPS: f64 = 1e-12;
-
-        if qty <= EPS || notional_sol <= 0.0 || !qty.is_finite() || !notional_sol.is_finite() {
+        if qty <= LIVE_POSITION_OPEN_EPS
+            || notional_sol <= 0.0
+            || !qty.is_finite()
+            || !notional_sol.is_finite()
+        {
             return Ok(());
         }
         for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
@@ -539,8 +551,6 @@ impl SqliteStore {
         fee_sol: f64,
         ts: DateTime<Utc>,
     ) -> Result<()> {
-        const EPS: f64 = 1e-12;
-
         if !fee_sol.is_finite() || fee_sol < 0.0 {
             return Err(anyhow!(
                 "invalid execution fill fee token={} side={} fee_sol={}",
@@ -611,7 +621,7 @@ impl SqliteStore {
                         notional_sol
                     ));
                 };
-                if current_qty <= EPS || current_cost <= EPS {
+                if current_qty <= LIVE_POSITION_OPEN_EPS || current_cost <= 0.0 {
                     return Err(anyhow!(
                         "sell fill on non-positive open position token={} qty={} cost_sol={}",
                         token,
@@ -638,7 +648,7 @@ impl SqliteStore {
                 let next_cost = (current_cost - realized_cost).max(0.0);
                 let next_pnl = current_pnl.unwrap_or(0.0) + realized_pnl;
 
-                if next_qty <= EPS {
+                if next_qty <= LIVE_POSITION_OPEN_EPS {
                     conn.execute(
                         "UPDATE positions
                          SET qty = 0.0,
@@ -969,6 +979,89 @@ mod tests {
         assert_eq!(store.live_open_positions_count()?, 0);
         let exposure_after_sell = store.live_open_exposure_sol()?;
         assert!(exposure_after_sell <= 1e-9);
+
+        Ok(())
+    }
+
+    #[test]
+    fn live_position_queries_ignore_dust_open_row() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-dust-open-row.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, state, pnl_sol)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', 0.0)",
+            params![
+                "live-dust",
+                "token-dust",
+                LIVE_POSITION_OPEN_EPS / 10.0,
+                0.15_f64,
+                now.to_rfc3339(),
+            ],
+        )?;
+
+        assert!(!store.live_has_open_position("token-dust")?);
+        assert_eq!(store.live_open_positions_count()?, 0);
+        assert_eq!(store.live_open_exposure_sol()?, 0.0);
+        assert_eq!(store.live_open_exposure_sol_for_token("token-dust")?, 0.0);
+        assert_eq!(store.live_open_position_qty_cost("token-dust")?, None);
+
+        let snapshot =
+            SqliteStore::live_execution_state_snapshot_on_conn(&store.conn, "token-dust")?;
+        assert_eq!(snapshot.open_positions, 0);
+        assert_eq!(snapshot.total_exposure_sol, 0.0);
+        assert_eq!(snapshot.token_exposure_sol, 0.0);
+
+        let (unrealized_pnl_sol, missing_price_count) = store.live_unrealized_pnl_sol(now)?;
+        assert_eq!(unrealized_pnl_sol, 0.0);
+        assert_eq!(missing_price_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_execution_fill_closes_live_position_when_residual_qty_is_dust() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-dust-residual-close.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.apply_execution_fill_to_positions("token-dust-close", "buy", 1.0, 0.25, now)?;
+        let residual_qty = LIVE_POSITION_OPEN_EPS / 2.0;
+        let sell_qty = 1.0 - residual_qty;
+        store.apply_execution_fill_to_positions(
+            "token-dust-close",
+            "sell",
+            sell_qty,
+            0.30 * sell_qty,
+            now + Duration::seconds(1),
+        )?;
+
+        assert!(!store.live_has_open_position("token-dust-close")?);
+        assert_eq!(store.live_open_positions_count()?, 0);
+        assert_eq!(store.live_open_exposure_sol()?, 0.0);
+        assert_eq!(store.live_open_position_qty_cost("token-dust-close")?, None);
+
+        let row: (f64, f64, String) = store.conn.query_row(
+            "SELECT qty, cost_sol, state
+             FROM positions
+             WHERE token = ?1
+             LIMIT 1",
+            params!["token-dust-close"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(row.2, "closed");
+        assert_eq!(row.0, 0.0);
+        assert_eq!(row.1, 0.0);
 
         Ok(())
     }

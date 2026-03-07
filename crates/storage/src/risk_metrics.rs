@@ -1,5 +1,5 @@
-use super::{SqliteStore, shadow::SHADOW_LOT_OPEN_EPS};
-use anyhow::{Context, Result, anyhow};
+use super::{shadow::SHADOW_LOT_OPEN_EPS, SqliteStore, LIVE_POSITION_OPEN_EPS};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
@@ -115,12 +115,12 @@ impl SqliteStore {
                 "SELECT token, qty, cost_sol
                  FROM positions
                  WHERE state = 'open'
-                   AND qty > 0
+                   AND qty > ?1
                    AND cost_sol >= 0",
             )
             .context("failed to prepare live open positions query")?;
         let mut rows = stmt
-            .query([])
+            .query(params![LIVE_POSITION_OPEN_EPS])
             .context("failed querying live open positions")?;
 
         let mut unrealized_pnl_sol = 0.0_f64;
@@ -132,7 +132,11 @@ impl SqliteStore {
             let token: String = row.get(0).context("failed reading positions.token")?;
             let qty: f64 = row.get(1).context("failed reading positions.qty")?;
             let cost_sol: f64 = row.get(2).context("failed reading positions.cost_sol")?;
-            if !qty.is_finite() || !cost_sol.is_finite() || qty <= 0.0 || cost_sol < 0.0 {
+            if !qty.is_finite()
+                || !cost_sol.is_finite()
+                || qty <= LIVE_POSITION_OPEN_EPS
+                || cost_sol < 0.0
+            {
                 return Err(anyhow!(
                     "invalid open position row for unrealized pnl token={} qty={} cost_sol={}",
                     token,
