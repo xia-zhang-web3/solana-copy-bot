@@ -1,0 +1,60 @@
+=== sample_1 2026-03-07T15:30:00Z ===
+NRestarts=0
+MemoryCurrent=7137198080
+MemoryPeak=7346298880
+7137521664
+anon 150450176
+file 6773538816
+kernel 213209088
+inactive_file 6773407744
+active_file 131072
+slab 212620096
+
+=== sample_2 2026-03-07T15:30:02Z ===
+NRestarts=0
+MemoryCurrent=7139336192
+MemoryPeak=7346298880
+7139336192
+anon 150450176
+file 6775623680
+kernel 213262336
+inactive_file 6775492608
+active_file 131072
+slab 212676416
+
+=== sample_3 2026-03-07T15:30:04Z ===
+NRestarts=0
+MemoryCurrent=7141445632
+MemoryPeak=7346298880
+7141445632
+anon 150450176
+file 6777671680
+kernel 213323776
+inactive_file 6777540608
+active_file 131072
+slab 212733600
+
+=== sample_4 2026-03-07T15:30:06Z ===
+NRestarts=0
+MemoryCurrent=7143608320
+MemoryPeak=7346298880
+7143608320
+anon 150450176
+file 6779781120
+kernel 213377024
+inactive_file 6779650048
+active_file 131072
+slab 212790224
+
+=== sample_5 2026-03-07T15:30:08Z ===
+NRestarts=0
+MemoryCurrent=7145754624
+MemoryPeak=7346298880
+7145754624
+anon 150450176
+file 6781861888
+kernel 213442560
+inactive_file 6781730816
+active_file 131072
+slab 212854704
+

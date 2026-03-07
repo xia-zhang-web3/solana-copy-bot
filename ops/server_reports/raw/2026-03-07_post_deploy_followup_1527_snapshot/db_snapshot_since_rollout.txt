@@ -1,0 +1,24 @@
+2026-03-07T15:30:00Z
+
+-rw-r--r-- 1 copybot copybot  61G Mar  7 15:30 /var/www/solana-copy-bot/state/live_copybot.db
+-rw-r--r-- 1 copybot copybot 128K Mar  7 15:29 /var/www/solana-copy-bot/state/live_copybot.db-shm
+-rw-r--r-- 1 copybot copybot  57M Mar  7 15:30 /var/www/solana-copy-bot/state/live_copybot.db-wal
+
+followlist_total|0
+copy_signals_rows|0
+orders_rows|0
+fills_rows|0
+shadow_lots_rows|0
+
+2026-03-07T15:29:59.106718151+00:00
+
+2026-03-06T23:14:36.732929390+00:00|404694231|2026-03-07 15:28:46
+
+0021_wallet_metrics_window_start_index.sql|2026-03-06 19:08:45
+0020_execution_foreign_keys.sql|2026-03-06 19:08:45
+0019_positions_single_open_guard.sql|2026-03-06 19:08:45
+0018_followlist_single_active_guard.sql|2026-03-06 19:08:45
+0017_positions_closed_state_index.sql|2026-03-03 17:05:38
+0016_execution_fee_breakdown_hints_safety.sql|2026-03-03 17:05:38
+0015_execution_fee_breakdown_hints.sql|2026-03-03 17:05:38
+0014_execution_fee_breakdown_safety.sql|2026-03-03 17:05:38
