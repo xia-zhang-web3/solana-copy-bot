@@ -1119,6 +1119,83 @@ mod tests {
     }
 
     #[test]
+    fn shadow_rug_loss_rate_recent_keeps_zero_entry_rows_in_sample_size() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-rug-rate-denominator.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO shadow_closed_trades(
+                signal_id, wallet_id, token, qty,
+                entry_cost_sol, entry_cost_lamports,
+                exit_value_sol, exit_value_lamports,
+                pnl_sol, pnl_lamports,
+                opened_ts, closed_ts
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                "sig-rug",
+                "wallet",
+                "token",
+                10.0_f64,
+                0.10_f64,
+                200_000_000_i64,
+                0.05_f64,
+                50_000_000_i64,
+                -0.05_f64,
+                -150_000_000_i64,
+                opened_ts.to_rfc3339(),
+                closed_ts.to_rfc3339()
+            ],
+        )?;
+        store.conn.execute(
+            "INSERT INTO shadow_closed_trades(
+                signal_id, wallet_id, token, qty,
+                entry_cost_sol, entry_cost_lamports,
+                exit_value_sol, exit_value_lamports,
+                pnl_sol, pnl_lamports,
+                opened_ts, closed_ts
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                "sig-zero-entry",
+                "wallet",
+                "token",
+                1.0_f64,
+                0.0_f64,
+                0_i64,
+                0.01_f64,
+                10_000_000_i64,
+                0.01_f64,
+                10_000_000_i64,
+                opened_ts.to_rfc3339(),
+                (closed_ts + Duration::minutes(1)).to_rfc3339()
+            ],
+        )?;
+
+        let (rug_count, total_count, rug_rate) =
+            store.shadow_rug_loss_rate_recent(opened_ts - Duration::minutes(1), 10, -0.70)?;
+        assert_eq!(rug_count, 1, "only the positive-entry trade should count as rug");
+        assert_eq!(
+            total_count, 2,
+            "zero-entry trades should still remain in the recent sample size"
+        );
+        assert!(
+            (rug_rate - 0.5).abs() < 1e-12,
+            "expected denominator to include both sampled rows, got {rug_rate}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn execution_lifecycle_updates_orders_signals_and_positions() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("execution-lifecycle.db");

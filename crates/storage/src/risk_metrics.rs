@@ -342,6 +342,7 @@ impl SqliteStore {
             .next()
             .context("failed iterating shadow rug-loss recent sample rows")?
         {
+            total_count = total_count.saturating_add(1);
             let entry_cost_sol: f64 = row
                 .get(0)
                 .context("failed reading shadow_closed_trades.entry_cost_sol")?;
@@ -365,7 +366,6 @@ impl SqliteStore {
                 pnl_lamports_raw,
                 "shadow rug-loss recent sample",
             )?);
-            total_count = total_count.saturating_add(1);
             if pnl <= entry_cost * return_threshold {
                 rug_count = rug_count.saturating_add(1);
             }
