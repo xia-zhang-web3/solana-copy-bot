@@ -59,6 +59,11 @@ impl DiscoveryWindowState {
         }
     }
 
+    pub(super) fn push_swap_capped(&mut self, swap: SwapEvent, max_swaps: usize) -> usize {
+        self.swaps.push_back(swap);
+        self.enforce_max_swaps(max_swaps)
+    }
+
     pub(super) fn enforce_max_swaps(&mut self, max_swaps: usize) -> usize {
         let max_swaps = max_swaps.max(1);
         let mut evicted = 0usize;

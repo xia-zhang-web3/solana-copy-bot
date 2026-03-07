@@ -5,12 +5,40 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::SwapEvent;
 use reqwest::blocking::Client;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const OBSERVED_SWAP_CURSOR_PROGRESS_OPS: i32 = 2_000;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ObservedSwapCursorPage {
+    pub rows_seen: usize,
+    pub time_budget_exhausted: bool,
+}
+
+struct ProgressHandlerGuard<'a> {
+    conn: &'a Connection,
+}
+
+impl<'a> ProgressHandlerGuard<'a> {
+    fn install(conn: &'a Connection, time_budget: StdDuration) -> Self {
+        let deadline = Instant::now() + time_budget;
+        conn.progress_handler(
+            OBSERVED_SWAP_CURSOR_PROGRESS_OPS,
+            Some(move || Instant::now() >= deadline),
+        );
+        Self { conn }
+    }
+}
+
+impl Drop for ProgressHandlerGuard<'_> {
+    fn drop(&mut self) {
+        self.conn.progress_handler(0, None::<fn() -> bool>);
+    }
+}
 
 impl SqliteStore {
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
@@ -169,10 +197,36 @@ impl SqliteStore {
     where
         F: FnMut(SwapEvent) -> Result<()>,
     {
+        Ok(self
+            .for_each_observed_swap_after_cursor_with_budget(
+                cursor_ts,
+                cursor_slot,
+                cursor_signature,
+                limit,
+                StdDuration::from_secs(24 * 60 * 60),
+                |swap| on_swap(swap),
+            )?
+            .rows_seen)
+    }
+
+    pub fn for_each_observed_swap_after_cursor_with_budget<F>(
+        &self,
+        cursor_ts: DateTime<Utc>,
+        cursor_slot: u64,
+        cursor_signature: &str,
+        limit: usize,
+        time_budget: StdDuration,
+        mut on_swap: F,
+    ) -> Result<ObservedSwapCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
         if limit == 0 {
-            return Ok(0);
+            return Ok(ObservedSwapCursorPage::default());
         }
         let limit = (limit.min(i64::MAX as usize)) as i64;
+        let _progress_guard =
+            ProgressHandlerGuard::install(&self.conn, time_budget.max(StdDuration::from_millis(1)));
         let mut stmt = self
             .conn
             .prepare(
@@ -193,15 +247,29 @@ impl SqliteStore {
             .context("failed to query observed_swaps by cursor")?;
 
         let mut seen = 0usize;
-        while let Some(row) = rows
-            .next()
-            .context("failed iterating observed_swaps cursor rows")?
-        {
+        let mut time_budget_exhausted = false;
+        loop {
+            let next_row = match rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+                    return Err(error).context("failed iterating observed_swaps cursor rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
             let swap = Self::row_to_swap_event(row)?;
             on_swap(swap)?;
             seen = seen.saturating_add(1);
         }
-        Ok(seen)
+        Ok(ObservedSwapCursorPage {
+            rows_seen: seen,
+            time_budget_exhausted,
+        })
     }
 
     pub fn load_recent_observed_swaps_since(

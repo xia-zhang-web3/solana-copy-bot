@@ -20,7 +20,7 @@ edition = "2021"
 [workspace.dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["clock", "serde"] }
-rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "hooks"] }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "signal", "time"] }
 toml = "0.8"

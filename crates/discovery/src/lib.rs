@@ -221,7 +221,9 @@ impl DiscoveryService {
                                 }
                             }
                             if state.signatures.insert(swap.signature.clone()) {
-                                state.swaps.push_back(swap);
+                                swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
+                                    state.push_swap_capped(swap, max_window_swaps_in_memory),
+                                );
                                 swaps_warm_loaded = swaps_warm_loaded.saturating_add(1);
                             }
                         }
@@ -250,11 +252,12 @@ impl DiscoveryService {
                 }
 
                 let cursor_signature = cursor.signature.clone();
-                let page_rows = store.for_each_observed_swap_after_cursor(
+                let page_result = store.for_each_observed_swap_after_cursor_with_budget(
                     cursor.ts_utc,
                     cursor.slot,
                     cursor_signature.as_str(),
                     fetch_limit,
+                    fetch_time_budget,
                     |swap| {
                         cursor = DiscoveryCursor::from_swap(&swap);
                         if swap.ts_utc < window_start {
@@ -269,21 +272,29 @@ impl DiscoveryService {
                             }
                         }
                         state.signatures.insert(swap.signature.clone());
-                        state.swaps.push_back(swap);
+                        swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
+                            state.push_swap_capped(swap, max_window_swaps_in_memory),
+                        );
                         delta_fetched = delta_fetched.saturating_add(1);
                         Ok(())
                     },
                 )?;
+                let page_rows = page_result.rows_seen;
                 fetch_progress.pages = fetch_progress.pages.saturating_add(1);
                 fetch_progress.query_rows = fetch_progress.query_rows.saturating_add(page_rows);
                 fetch_progress.query_rows_last_page = page_rows;
+                fetch_progress.time_budget_exhausted |= page_result.time_budget_exhausted;
+
+                if page_result.time_budget_exhausted {
+                    break;
+                }
 
                 if page_rows < fetch_limit {
                     break;
                 }
             }
-            fetch_progress.saturated = fetch_progress.query_rows_last_page >= fetch_limit
-                && (fetch_progress.page_budget_exhausted || fetch_progress.time_budget_exhausted);
+            fetch_progress.saturated =
+                fetch_progress.page_budget_exhausted || fetch_progress.time_budget_exhausted;
 
             if fetch_progress.query_rows > 0 {
                 state.cursor = Some(cursor.clone());
@@ -305,8 +316,6 @@ impl DiscoveryService {
                 sorted.sort_by(cmp_swap_order);
                 state.swaps = sorted.into();
             }
-            swaps_evicted_due_cap = swaps_evicted_due_cap
-                .saturating_add(state.enforce_max_swaps(max_window_swaps_in_memory));
             let followlist_deactivations_suppressed = state.cap_truncation_floor.is_some();
 
             let swaps_window = state.swaps.len();
