@@ -14,7 +14,91 @@ use copybot_storage::{
 use serde_json::json;
 use tracing::warn;
 
+struct SyntheticPriceResolution {
+    avg_price_sol: f64,
+    used_price_fallback: bool,
+    fallback_source: Option<String>,
+}
+
 impl ExecutionRuntime {
+    #[allow(clippy::too_many_arguments)]
+    fn skip_confirm_manual_reconcile(
+        &self,
+        store: &SqliteStore,
+        intent: &ExecutionIntent,
+        order_id: &str,
+        lifecycle_status: &str,
+        route: &str,
+        now: DateTime<Utc>,
+        report: &mut ExecutionBatchReport,
+        err_code: &str,
+        risk_event_type: &str,
+        details: serde_json::Value,
+    ) -> Result<SignalResult> {
+        if lifecycle_status != EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS {
+            store.mark_order_reconcile_pending(order_id, err_code)?;
+            store.update_copy_signal_status(
+                &intent.signal_id,
+                EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+            )?;
+            let _ = store.insert_risk_event(
+                risk_event_type,
+                "error",
+                now,
+                Some(&details.to_string()),
+            );
+        }
+        bump_route_counter(&mut report.confirm_retry_scheduled_by_route, route);
+        Ok(SignalResult::Skipped)
+    }
+
+    fn live_manual_reconcile_fail_closed_on_confirm_failure(&self) -> bool {
+        self.mode == "adapter_submit_confirm" && self.manual_reconcile_required_on_confirm_failure
+    }
+
+    fn resolve_synthetic_price(
+        &self,
+        store: &SqliteStore,
+        intent: &ExecutionIntent,
+        route: &str,
+        confirmed_at: DateTime<Utc>,
+    ) -> Result<Option<SyntheticPriceResolution>> {
+        match store.latest_token_sol_price(&intent.token, confirmed_at)? {
+            Some(price) if price.is_finite() && price > 0.0 => Ok(Some(SyntheticPriceResolution {
+                avg_price_sol: price.max(1e-9),
+                used_price_fallback: false,
+                fallback_source: None,
+            })),
+            _ => {
+                let open_position_avg_cost = store
+                    .live_open_position_qty_cost(&intent.token)?
+                    .and_then(|(qty, cost_sol)| {
+                        if qty > 1e-9 && cost_sol > 0.0 {
+                            Some((cost_sol / qty).max(1e-9))
+                        } else {
+                            None
+                        }
+                    });
+                let Some((fallback, source)) = fallback_price_and_source(open_position_avg_cost) else {
+                    return Ok(None);
+                };
+                warn!(
+                    signal_id = %intent.signal_id,
+                    token = %intent.token,
+                    route,
+                    fallback_avg_price_sol = fallback,
+                    fallback_source = %source,
+                    "latest token price unavailable; using fallback price to keep confirmed reconcile/exposure consistent"
+                );
+                Ok(Some(SyntheticPriceResolution {
+                    avg_price_sol: fallback,
+                    used_price_fallback: true,
+                    fallback_source: Some(source),
+                }))
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn process_submitted_order_by_signature(
         &self,
@@ -50,7 +134,8 @@ impl ExecutionRuntime {
                     );
                     return Ok(SignalResult::Skipped);
                 }
-                let manual_reconcile_required = self.manual_reconcile_required_on_confirm_failure;
+                let manual_reconcile_required =
+                    self.live_manual_reconcile_fail_closed_on_confirm_failure();
                 let err_code = if manual_reconcile_required {
                     "confirm_error_manual_reconcile_required"
                 } else {
@@ -60,6 +145,27 @@ impl ExecutionRuntime {
                     "confirm_error deadline_passed mode={} manual_reconcile_required={} error={}",
                     self.mode, manual_reconcile_required, error
                 );
+                if manual_reconcile_required {
+                    return self.skip_confirm_manual_reconcile(
+                        store,
+                        intent,
+                        order_id,
+                        lifecycle_status,
+                        route,
+                        now,
+                        report,
+                        err_code,
+                        "execution_confirm_failed_manual_reconcile_required",
+                        json!({
+                            "signal_id": intent.signal_id,
+                            "order_id": order_id,
+                            "mode": self.mode,
+                            "manual_reconcile_required": true,
+                            "deadline": deadline.to_rfc3339(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
                 store.mark_order_failed(order_id, err_code, Some(&detail))?;
                 store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
                 bump_route_counter(&mut report.confirm_failed_by_route, route);
@@ -176,91 +282,60 @@ impl ExecutionRuntime {
                     route_tip_lamports,
                     ata_create_rent_lamports,
                 );
-                let mut synthetic_fill = || -> Result<_> {
-                    let (avg_price_sol, used_price_fallback, fallback_source) = match store
-                        .latest_token_sol_price(&intent.token, confirmed_at)?
-                    {
-                        Some(price) if price.is_finite() && price > 0.0 => {
-                            (price.max(1e-9), false, None)
-                        }
-                        _ => {
-                            let open_position_avg_cost = store
-                                .live_open_position_qty_cost(&intent.token)?
-                                .and_then(|(qty, cost_sol)| {
-                                    if qty > 1e-9 && cost_sol > 0.0 {
-                                        Some((cost_sol / qty).max(1e-9))
-                                    } else {
-                                        None
-                                    }
-                                });
-                            let Some((fallback, source)) =
-                                fallback_price_and_source(open_position_avg_cost)
-                            else {
-                                let manual_reconcile_required =
-                                    self.manual_reconcile_required_on_confirm_failure;
-                                let err_code = if manual_reconcile_required {
-                                    "confirm_price_unavailable_manual_reconcile_required"
-                                } else {
-                                    "confirm_price_unavailable"
-                                };
-                                let detail = "price_unavailable_no_position_avg";
-                                store.mark_order_failed(order_id, err_code, Some(detail))?;
-                                store.update_copy_signal_status(
-                                    &intent.signal_id,
-                                    "execution_failed",
-                                )?;
-                                bump_route_counter(&mut report.confirm_failed_by_route, route);
-
-                                let details = json!({
-                                    "signal_id": intent.signal_id,
-                                    "order_id": order_id,
-                                    "token": intent.token,
-                                    "route": route,
-                                    "err_code": err_code,
-                                    "reason": "missing_latest_price_no_fallback",
-                                    "manual_reconcile_required": manual_reconcile_required,
-                                })
-                                .to_string();
-                                let _ = store.insert_risk_event(
-                                    if manual_reconcile_required {
-                                        "execution_confirm_price_unavailable_manual_reconcile_required"
-                                    } else {
-                                        "execution_confirm_price_unavailable"
-                                    },
-                                    "error",
-                                    now,
-                                    Some(&details),
-                                );
-                                return Ok((None, false, None));
-                            };
-                            warn!(
-                                signal_id = %intent.signal_id,
-                                token = %intent.token,
-                                route,
-                                fallback_avg_price_sol = fallback,
-                                fallback_source = %source,
-                                "latest token price unavailable; using fallback price to keep confirmed reconcile/exposure consistent"
-                            );
-                            (fallback, true, Some(source))
-                        }
+                let live_manual_reconcile_fail_closed =
+                    self.live_manual_reconcile_fail_closed_on_confirm_failure();
+                let build_synthetic_fill =
+                    |resolution: SyntheticPriceResolution| -> Result<(crate::reconcile::ExecutionFill, bool, Option<String>)> {
+                        Ok((
+                            build_fill_from_priced_intent(
+                                intent,
+                                order_id,
+                                resolution.avg_price_sol,
+                                self.slippage_bps,
+                                execution_fee_sol,
+                            )?,
+                            resolution.used_price_fallback,
+                            resolution.fallback_source,
+                        ))
                     };
+                let mut fail_confirm_price_unavailable = || -> Result<SignalResult> {
+                    let manual_reconcile_required =
+                        self.manual_reconcile_required_on_confirm_failure;
+                    let err_code = if manual_reconcile_required {
+                        "confirm_price_unavailable_manual_reconcile_required"
+                    } else {
+                        "confirm_price_unavailable"
+                    };
+                    let detail = "price_unavailable_no_position_avg";
+                    store.mark_order_failed(order_id, err_code, Some(detail))?;
+                    store.update_copy_signal_status(&intent.signal_id, "execution_failed")?;
+                    bump_route_counter(&mut report.confirm_failed_by_route, route);
 
-                    Ok((
-                        Some(build_fill_from_priced_intent(
-                            intent,
-                            order_id,
-                            avg_price_sol,
-                            self.slippage_bps,
-                            execution_fee_sol,
-                        )?),
-                        used_price_fallback,
-                        fallback_source,
-                    ))
+                    let details = json!({
+                        "signal_id": intent.signal_id,
+                        "order_id": order_id,
+                        "token": intent.token,
+                        "route": route,
+                        "err_code": err_code,
+                        "reason": "missing_latest_price_no_fallback",
+                        "manual_reconcile_required": manual_reconcile_required,
+                    })
+                    .to_string();
+                    let _ = store.insert_risk_event(
+                        if manual_reconcile_required {
+                            "execution_confirm_price_unavailable_manual_reconcile_required"
+                        } else {
+                            "execution_confirm_price_unavailable"
+                        },
+                        "error",
+                        now,
+                        Some(&details),
+                    );
+                    Ok(SignalResult::Failed)
                 };
 
-                let (fill, used_price_fallback, fallback_source) = if let Some(observed_fill) =
-                    confirm.observed_fill
-                {
+                let (fill, used_price_fallback, fallback_source) =
+                    if let Some(observed_fill) = confirm.observed_fill {
                     match build_fill_from_confirmed_observation(
                         intent,
                         order_id,
@@ -270,6 +345,45 @@ impl ExecutionRuntime {
                     ) {
                         Ok(fill) => (Some(fill), false, None),
                         Err(error) => {
+                            let synthetic_price =
+                                self.resolve_synthetic_price(store, intent, route, confirmed_at)?;
+                            if live_manual_reconcile_fail_closed {
+                                let (err_code, risk_event_type, reason) =
+                                    if synthetic_price.is_some() {
+                                        (
+                                            "confirm_observed_fill_unavailable_manual_reconcile_required",
+                                            "execution_confirm_observed_fill_unavailable_manual_reconcile_required",
+                                            "unusable_observed_fill",
+                                        )
+                                    } else {
+                                        (
+                                            "confirm_price_unavailable_manual_reconcile_required",
+                                            "execution_confirm_price_unavailable_manual_reconcile_required",
+                                            "missing_latest_price_no_fallback",
+                                        )
+                                    };
+                                return self.skip_confirm_manual_reconcile(
+                                    store,
+                                    intent,
+                                    order_id,
+                                    lifecycle_status,
+                                    route,
+                                    now,
+                                    report,
+                                    err_code,
+                                    risk_event_type,
+                                    json!({
+                                        "signal_id": intent.signal_id,
+                                        "order_id": order_id,
+                                        "token": intent.token,
+                                        "route": route,
+                                        "err_code": err_code,
+                                        "reason": reason,
+                                        "manual_reconcile_required": true,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                            }
                             warn!(
                                 signal_id = %intent.signal_id,
                                 order_id,
@@ -278,10 +392,53 @@ impl ExecutionRuntime {
                                 error = %error,
                                 "observed confirmed fill unusable; falling back to synthetic execution fill"
                             );
-                            synthetic_fill()?
+                            let Some(resolution) = synthetic_price else {
+                                let result = fail_confirm_price_unavailable()?;
+                                return Ok(result);
+                            };
+                            let (fill, used_price_fallback, fallback_source) =
+                                build_synthetic_fill(resolution)?;
+                            (Some(fill), used_price_fallback, fallback_source)
                         }
                     }
                 } else {
+                    let synthetic_price =
+                        self.resolve_synthetic_price(store, intent, route, confirmed_at)?;
+                    if live_manual_reconcile_fail_closed {
+                        let (err_code, risk_event_type, reason) = if synthetic_price.is_some() {
+                            (
+                                "confirm_observed_fill_unavailable_manual_reconcile_required",
+                                "execution_confirm_observed_fill_unavailable_manual_reconcile_required",
+                                "missing_observed_fill",
+                            )
+                        } else {
+                            (
+                                "confirm_price_unavailable_manual_reconcile_required",
+                                "execution_confirm_price_unavailable_manual_reconcile_required",
+                                "missing_latest_price_no_fallback",
+                            )
+                        };
+                        return self.skip_confirm_manual_reconcile(
+                            store,
+                            intent,
+                            order_id,
+                            lifecycle_status,
+                            route,
+                            now,
+                            report,
+                            err_code,
+                            risk_event_type,
+                            json!({
+                                "signal_id": intent.signal_id,
+                                "order_id": order_id,
+                                "token": intent.token,
+                                "route": route,
+                                "err_code": err_code,
+                                "reason": reason,
+                                "manual_reconcile_required": true,
+                            }),
+                        );
+                    }
                     if self.mode == "adapter_submit_confirm" {
                         warn!(
                             signal_id = %intent.signal_id,
@@ -291,7 +448,13 @@ impl ExecutionRuntime {
                             "confirmed transaction missing observed on-chain fill; falling back to synthetic execution fill"
                         );
                     }
-                    synthetic_fill()?
+                    let Some(resolution) = synthetic_price else {
+                        let result = fail_confirm_price_unavailable()?;
+                        return Ok(result);
+                    };
+                    let (fill, used_price_fallback, fallback_source) =
+                        build_synthetic_fill(resolution)?;
+                    (Some(fill), used_price_fallback, fallback_source)
                 };
                 let Some(fill) = fill else {
                     return Ok(SignalResult::Failed);

@@ -955,11 +955,14 @@ mod tests {
         }
     }
 
-    struct NetworkFeeConfirmer {
-        network_fee_lamports: u64,
+    struct ObservedFillConfirmer {
+        network_fee_lamports: Option<u64>,
+        signer_balance_delta_lamports: i64,
+        token_delta_qty: f64,
+        detail: &'static str,
     }
 
-    impl OrderConfirmer for NetworkFeeConfirmer {
+    impl OrderConfirmer for ObservedFillConfirmer {
         fn confirm(
             &self,
             _tx_signature: &str,
@@ -969,10 +972,13 @@ mod tests {
             Ok(confirm::ConfirmationResult {
                 status: ConfirmationStatus::Confirmed,
                 confirmed_at: Some(Utc::now()),
-                network_fee_lamports: Some(self.network_fee_lamports),
+                network_fee_lamports: self.network_fee_lamports,
                 network_fee_lookup_error: None,
-                observed_fill: None,
-                detail: "forced_confirmed_with_fee".to_string(),
+                observed_fill: Some(confirm::ObservedExecutionFill {
+                    signer_balance_delta_lamports: self.signer_balance_delta_lamports,
+                    token_delta_qty: self.token_delta_qty,
+                }),
+                detail: self.detail.to_string(),
             })
         }
     }
@@ -1003,6 +1009,35 @@ mod tests {
             outcomes
                 .pop()
                 .ok_or_else(|| anyhow::anyhow!("sequence confirmer exhausted"))
+        }
+    }
+
+    struct ResultSequenceConfirmer {
+        outcomes: Arc<Mutex<Vec<Result<confirm::ConfirmationResult>>>>,
+    }
+
+    impl ResultSequenceConfirmer {
+        fn new(outcomes: Vec<Result<confirm::ConfirmationResult>>) -> Self {
+            Self {
+                outcomes: Arc::new(Mutex::new(outcomes.into_iter().rev().collect())),
+            }
+        }
+    }
+
+    impl OrderConfirmer for ResultSequenceConfirmer {
+        fn confirm(
+            &self,
+            _tx_signature: &str,
+            _token_mint: &str,
+            _deadline: DateTime<Utc>,
+        ) -> Result<confirm::ConfirmationResult> {
+            let mut outcomes = self
+                .outcomes
+                .lock()
+                .expect("result sequence confirmer outcomes mutex poisoned");
+            outcomes
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("result sequence confirmer exhausted"))?
         }
     }
 
@@ -1642,7 +1677,12 @@ mod tests {
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
             submitter: Box::new(RetryableFailSubmitter),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_route_submit_fallback",
+            }),
         };
 
         let first = runtime.process_batch(&store, Utc::now(), None)?;
@@ -1716,7 +1756,12 @@ mod tests {
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
             submitter: Box::new(RetryableOnceSubmitter::new(routes.clone())),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_route_fastlane_fallback",
+            }),
         };
 
         let first = runtime.process_batch(&store, now, None)?;
@@ -1812,7 +1857,12 @@ mod tests {
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
             submitter: Box::new(RetryableOnceSubmitter::new(routes.clone())),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_dynamic_policy_metrics",
+            }),
         };
 
         let first = runtime.process_batch(&store, now, None)?;
@@ -1906,7 +1956,12 @@ mod tests {
                 routes.clone(),
                 "submit_retryable_once",
             )),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_dynamic_cu_hint_floor",
+            }),
         };
 
         let first = runtime.process_batch(&store, now, None)?;
@@ -1993,7 +2048,12 @@ mod tests {
                 routes.clone(),
                 "submit_retryable_once",
             )),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_pretrade_route_fallback",
+            }),
         };
 
         let first = runtime.process_batch(&store, now, None)?;
@@ -2082,7 +2142,12 @@ mod tests {
                 dynamic_tip_policy_enabled: true,
                 dynamic_tip_applied: false,
             }),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_dynamic_policy_metrics",
+            }),
         };
 
         let report = runtime.process_batch(&store, now, None)?;
@@ -2173,7 +2238,12 @@ mod tests {
                 dynamic_tip_policy_enabled: false,
                 dynamic_tip_applied: false,
             }),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_dynamic_cu_hint_floor",
+            }),
         };
 
         let report = runtime.process_batch(&store, now, None)?;
@@ -2258,7 +2328,12 @@ mod tests {
                 dynamic_tip_policy_enabled: true,
                 dynamic_tip_applied: false,
             }),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_pretrade_route_fallback",
+            }),
         };
 
         let report = runtime.process_batch(&store, now, None)?;
@@ -2335,7 +2410,12 @@ mod tests {
             pretrade: Box::new(RetryableFailPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
             submitter: Box::new(PaperOrderSubmitter),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: Some(5_000),
+                signer_balance_delta_lamports: -100_012_000,
+                token_delta_qty: 1.0,
+                detail: "observed_fee_accounting",
+            }),
         };
 
         let first = runtime.process_batch(&store, Utc::now(), None)?;
@@ -2407,7 +2487,12 @@ mod tests {
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(ErrorIntentSimulator),
             submitter: Box::new(PaperOrderSubmitter),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -1_100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_fee_hint_fallback",
+            }),
         };
 
         let first = runtime.process_batch(&store, Utc::now(), None)?;
@@ -2485,7 +2570,12 @@ mod tests {
             pretrade: Box::new(TerminalRejectPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
             submitter: Box::new(PaperOrderSubmitter),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_manual_missing_fill",
+            }),
         };
 
         let report = runtime.process_batch(&store, Utc::now(), None)?;
@@ -3008,7 +3098,12 @@ mod tests {
             pretrade: Box::new(RetryableOncePreTradeChecker::new(routes.clone())),
             simulator: Box::new(PaperIntentSimulator),
             submitter: Box::new(PaperOrderSubmitter),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_pretrade_route_fallback",
+            }),
         };
 
         let first = runtime.process_batch(&store, now, None)?;
@@ -3173,7 +3268,7 @@ mod tests {
     }
 
     #[test]
-    fn process_batch_marks_manual_reconcile_when_price_unavailable_without_fallback() -> Result<()>
+    fn process_batch_keeps_manual_reconcile_order_pending_when_price_unavailable_without_fallback() -> Result<()>
     {
         let (store, db_path) = make_test_store("batch-confirm-price-missing-manual-reconcile")?;
         let now = Utc::now();
@@ -3240,15 +3335,31 @@ mod tests {
         };
 
         let report = runtime.process_batch(&store, now, None)?;
-        assert_eq!(report.failed, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.confirm_retry_scheduled_by_route.get("rpc"),
+            Some(&1)
+        );
         assert_eq!(report.confirmed, 0);
         let order = store
             .execution_order_by_client_order_id(&client_order_id)?
-            .context("order should remain present after missing-price manual-reconcile failure")?;
-        assert_eq!(order.status, "execution_failed");
+            .context("order should remain present after missing-price manual-reconcile pending")?;
+        assert_eq!(order.status, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS);
         assert_eq!(
             order.err_code.as_deref(),
             Some("confirm_price_unavailable_manual_reconcile_required")
+        );
+        assert_eq!(
+            store
+                .list_copy_signals_by_status(EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS, 10)?
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .risk_event_count_by_type("execution_confirm_price_unavailable_manual_reconcile_required")?,
+            1
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -3295,8 +3406,11 @@ mod tests {
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
             submitter: Box::new(FixedTipSubmitter { tip_lamports: 7000 }),
-            confirmer: Box::new(NetworkFeeConfirmer {
-                network_fee_lamports: 5000,
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: Some(5_000),
+                signer_balance_delta_lamports: -100_012_000,
+                token_delta_qty: 1.0,
+                detail: "observed_fee_accounting",
             }),
         };
 
@@ -3380,7 +3494,12 @@ mod tests {
                 tip_lamports: 0,
                 network_fee_lamports_hint: 1_000_000_000,
             }),
-            confirmer: Box::new(PaperOrderConfirmer),
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: None,
+                signer_balance_delta_lamports: -1_100_000_000,
+                token_delta_qty: 1.0,
+                detail: "observed_fee_hint_fallback",
+            }),
         };
 
         let report = runtime.process_batch(&store, now, None)?;
@@ -3468,8 +3587,11 @@ mod tests {
                 tip_lamports: 0,
                 network_fee_lamports_hint: 1_000_000_000,
             }),
-            confirmer: Box::new(NetworkFeeConfirmer {
-                network_fee_lamports: 5_000,
+            confirmer: Box::new(ObservedFillConfirmer {
+                network_fee_lamports: Some(5_000),
+                signer_balance_delta_lamports: -100_005_000,
+                token_delta_qty: 1.0,
+                detail: "observed_fee_rpc_priority",
             }),
         };
 
@@ -3762,7 +3884,81 @@ mod tests {
     }
 
     #[test]
-    fn process_batch_falls_back_when_observed_fill_sign_mismatches_intent() -> Result<()> {
+    fn process_batch_keeps_manual_reconcile_pending_when_observed_fill_missing() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-observed-missing-manual")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-obs-missing-manual",
+            now,
+            "sig-price-obs-missing-manual",
+        )?;
+        let client_order_id = seed_submitted_buy_signal(
+            &store,
+            "shadow:obs:wallet:buy:token-obs-missing-manual",
+            "token-obs-missing-manual",
+            0.1,
+            now,
+            "sig-obs-missing-manual",
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(PaperOrderConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.confirm_retry_scheduled_by_route.get("paper"),
+            Some(&1)
+        );
+        assert_eq!(store.live_open_exposure_sol()?, 0.0);
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("manual reconcile pending order should remain present when observed fill is missing")?;
+        assert_eq!(order.status, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS);
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_observed_fill_unavailable_manual_reconcile_required")
+        );
+        assert_eq!(
+            store
+                .risk_event_count_by_type(
+                    "execution_confirm_observed_fill_unavailable_manual_reconcile_required"
+                )?,
+            1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_keeps_manual_reconcile_pending_when_observed_fill_sign_mismatches_intent() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-observed-sign-mismatch")?;
         let now = Utc::now();
         seed_token_price(&store, "token-obs-sign", now, "sig-price-obs-sign")?;
@@ -3841,24 +4037,37 @@ mod tests {
         };
 
         let report = runtime.process_batch(&store, now, None)?;
-        assert_eq!(report.confirmed, 1);
+        assert_eq!(report.confirmed, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.confirm_retry_scheduled_by_route.get("paper"),
+            Some(&1)
+        );
         let (qty, cost_sol) = store
             .live_open_position_qty_cost("token-obs-sign")?
-            .context("position should remain after synthetic fallback")?;
+            .context("position should remain untouched while waiting for manual reconcile")?;
+        assert!((qty - 4.0).abs() < 1e-9, "unexpected qty drift {}", qty);
         assert!(
-            (qty - 3.0).abs() < 1e-9,
-            "expected wrong-sign observed fill to be rejected and synthetic sell qty=1.0 used, got {}",
-            qty
-        );
-        assert!(
-            (cost_sol - 0.15).abs() < 1e-9,
-            "expected synthetic fallback to preserve 0.15 remaining cost basis, got {}",
+            (cost_sol - 0.20).abs() < 1e-9,
+            "unexpected cost drift while waiting for manual reconcile {}",
             cost_sol
         );
         let order = store
             .execution_order_by_client_order_id(&client_order_id)?
-            .context("observed sign mismatch order should remain present after confirm")?;
-        assert_eq!(order.status, "execution_confirmed");
+            .context("observed sign mismatch order should remain present after reconcile-pending transition")?;
+        assert_eq!(order.status, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS);
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_observed_fill_unavailable_manual_reconcile_required")
+        );
+        assert_eq!(
+            store
+                .risk_event_count_by_type(
+                    "execution_confirm_observed_fill_unavailable_manual_reconcile_required"
+                )?,
+            1
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -4088,7 +4297,10 @@ mod tests {
                     confirmed_at: Some(now + Duration::seconds(1)),
                     network_fee_lamports: None,
                     network_fee_lookup_error: None,
-                    observed_fill: None,
+                    observed_fill: Some(confirm::ObservedExecutionFill {
+                        signer_balance_delta_lamports: -100_000_000,
+                        token_delta_qty: 1.0,
+                    }),
                     detail: "late_confirmed".to_string(),
                 },
             ])),
@@ -4235,7 +4447,7 @@ mod tests {
     }
 
     #[test]
-    fn process_batch_marks_manual_reconcile_required_on_adapter_confirm_error() -> Result<()> {
+    fn process_batch_keeps_manual_reconcile_order_pending_on_adapter_confirm_error() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-error-manual-reconcile")?;
         let now = Utc::now();
         let submit_ts = now - Duration::seconds(30);
@@ -4297,26 +4509,55 @@ mod tests {
             pretrade: Box::new(PaperPreTradeChecker),
             simulator: Box::new(PaperIntentSimulator),
             submitter: Box::new(PaperOrderSubmitter),
-            confirmer: Box::new(ErrorConfirmer),
+            confirmer: Box::new(ResultSequenceConfirmer::new(vec![
+                Err(anyhow::anyhow!("forced confirmer rpc error")),
+                Ok(confirm::ConfirmationResult {
+                    status: ConfirmationStatus::Confirmed,
+                    confirmed_at: Some(now + Duration::seconds(1)),
+                    network_fee_lamports: None,
+                    network_fee_lookup_error: None,
+                    observed_fill: Some(confirm::ObservedExecutionFill {
+                        signer_balance_delta_lamports: -100_000_000,
+                        token_delta_qty: 1.0,
+                    }),
+                    detail: "late_confirmed_after_error".to_string(),
+                }),
+            ])),
         };
 
-        let report = runtime.process_batch(&store, now, None)?;
-        assert_eq!(report.failed, 1);
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
         assert_eq!(
-            report.confirm_failed_by_route.get("rpc"),
+            first.confirm_retry_scheduled_by_route.get("rpc"),
             Some(&1),
-            "deadline-passed confirm error should be attributed to rpc route"
+            "deadline-passed confirm error should keep manual-reconcile order reconcilable"
         );
         let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
-        assert_eq!(failed.len(), 1);
+        assert_eq!(failed.len(), 0);
         let order = store
             .execution_order_by_client_order_id(&client_order_id)?
             .context("manual reconcile confirm error should leave order row")?;
-        assert_eq!(order.status, "execution_failed");
+        assert_eq!(order.status, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS);
         assert_eq!(
             order.err_code.as_deref(),
             Some("confirm_error_manual_reconcile_required")
         );
+        assert_eq!(
+            store
+                .risk_event_count_by_type("execution_confirm_failed_manual_reconcile_required")?,
+            1
+        );
+
+        let second = runtime.process_batch(&store, now + Duration::seconds(1), None)?;
+        assert_eq!(second.confirmed, 1);
+        let confirmed = store.list_copy_signals_by_status("execution_confirmed", 10)?;
+        assert_eq!(confirmed.len(), 1);
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("late confirm should finalize manual-reconcile pending order")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(order.err_code, None);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
