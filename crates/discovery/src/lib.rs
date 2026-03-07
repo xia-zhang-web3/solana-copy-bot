@@ -238,16 +238,15 @@ impl DiscoveryService {
             }
 
             let mut fetch_progress = FetchProgress::default();
-            let fetch_started = Instant::now();
+            let fetch_deadline = Instant::now() + fetch_time_budget;
             loop {
                 if fetch_progress.pages >= fetch_page_limit {
                     fetch_progress.page_budget_exhausted =
                         fetch_progress.query_rows_last_page >= fetch_limit;
                     break;
                 }
-                if fetch_progress.pages > 0 && fetch_started.elapsed() >= fetch_time_budget {
-                    fetch_progress.time_budget_exhausted =
-                        fetch_progress.query_rows_last_page >= fetch_limit;
+                if Instant::now() >= fetch_deadline {
+                    fetch_progress.time_budget_exhausted = true;
                     break;
                 }
 
@@ -257,7 +256,7 @@ impl DiscoveryService {
                     cursor.slot,
                     cursor_signature.as_str(),
                     fetch_limit,
-                    fetch_time_budget,
+                    fetch_deadline,
                     |swap| {
                         cursor = DiscoveryCursor::from_swap(&swap);
                         if swap.ts_utc < window_start {

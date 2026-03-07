@@ -2352,6 +2352,43 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_cursor_query_respects_expired_deadline() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-expired-deadline.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        assert!(store.insert_observed_swap(&SwapEvent {
+            signature: "sig-deadline".to_string(),
+            wallet: "wallet-deadline".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-deadline".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            slot: 10,
+            ts_utc: base,
+        })?);
+
+        let page = store.for_each_observed_swap_after_cursor_with_budget(
+            base - Duration::seconds(1),
+            0,
+            "",
+            10,
+            std::time::Instant::now(),
+            |_swap| Ok(()),
+        )?;
+        assert_eq!(page.rows_seen, 0);
+        assert!(page.time_budget_exhausted);
+        Ok(())
+    }
+
+    #[test]
     fn persist_discovery_cycle_retries_after_immediate_write_lock() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("discovery-write-retry.db");

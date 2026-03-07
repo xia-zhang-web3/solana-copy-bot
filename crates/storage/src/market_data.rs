@@ -24,8 +24,7 @@ struct ProgressHandlerGuard<'a> {
 }
 
 impl<'a> ProgressHandlerGuard<'a> {
-    fn install(conn: &'a Connection, time_budget: StdDuration) -> Self {
-        let deadline = Instant::now() + time_budget;
+    fn install(conn: &'a Connection, deadline: Instant) -> Self {
         conn.progress_handler(
             OBSERVED_SWAP_CURSOR_PROGRESS_OPS,
             Some(move || Instant::now() >= deadline),
@@ -203,7 +202,7 @@ impl SqliteStore {
                 cursor_slot,
                 cursor_signature,
                 limit,
-                StdDuration::from_secs(24 * 60 * 60),
+                Instant::now() + StdDuration::from_secs(24 * 60 * 60),
                 |swap| on_swap(swap),
             )?
             .rows_seen)
@@ -215,7 +214,7 @@ impl SqliteStore {
         cursor_slot: u64,
         cursor_signature: &str,
         limit: usize,
-        time_budget: StdDuration,
+        deadline: Instant,
         mut on_swap: F,
     ) -> Result<ObservedSwapCursorPage>
     where
@@ -224,9 +223,14 @@ impl SqliteStore {
         if limit == 0 {
             return Ok(ObservedSwapCursorPage::default());
         }
+        if Instant::now() >= deadline {
+            return Ok(ObservedSwapCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
         let limit = (limit.min(i64::MAX as usize)) as i64;
-        let _progress_guard =
-            ProgressHandlerGuard::install(&self.conn, time_budget.max(StdDuration::from_millis(1)));
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let mut stmt = self
             .conn
             .prepare(
