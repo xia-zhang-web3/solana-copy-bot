@@ -351,6 +351,13 @@ PRIORITY_FEE_HINT_RAW_EXPR="$(order_column_expr_or_null priority_fee_lamports_hi
 
 SUBMIT_ALLOWED_ROUTES_CSV="$(cfg_list_csv execution submit_allowed_routes)"
 ALLOWED_ROUTES_VALUES="$(build_allowed_routes_values "$SUBMIT_ALLOWED_ROUTES_CSV")"
+if [[ -z "$ALLOWED_ROUTES_VALUES" ]]; then
+  SCORECARD_ALLOWED_ROUTES_SQL="SELECT '' WHERE 0"
+  SCORECARD_ALLOWLIST_ENABLED=0
+else
+  SCORECARD_ALLOWED_ROUTES_SQL="VALUES ${ALLOWED_ROUTES_VALUES}"
+  SCORECARD_ALLOWLIST_ENABLED=1
+fi
 DEFAULT_ROUTE="$(normalize_route_token "$(cfg_value execution default_route)")"
 if [[ -z "$DEFAULT_ROUTE" ]]; then
   DEFAULT_ROUTE="paper"
@@ -966,6 +973,9 @@ route_kpi AS (
   FROM window_orders
   GROUP BY route
 ),
+allowed_routes(route) AS (
+  ${SCORECARD_ALLOWED_ROUTES_SQL}
+),
 confirmed_latencies AS (
   SELECT
     COALESCE(route, '') AS route,
@@ -1029,6 +1039,19 @@ scorecard AS (
   FROM route_kpi k
   LEFT JOIN latency_by_route l ON l.route = k.route
   LEFT JOIN p95 p ON p.route = k.route
+),
+filtered_scorecard AS (
+  SELECT *
+  FROM scorecard
+  WHERE TRIM(route) <> ''
+    AND (
+      ${SCORECARD_ALLOWLIST_ENABLED} = 0
+      OR EXISTS (
+        SELECT 1
+        FROM allowed_routes a
+        WHERE LOWER(TRIM(scorecard.route)) = a.route
+      )
+    )
 )
 SELECT
   ROW_NUMBER() OVER (
@@ -1062,7 +1085,7 @@ SELECT
   avg_confirm_latency_ms,
   p95_confirm_latency_ms,
   max_confirm_latency_ms
-FROM scorecard
+FROM filtered_scorecard
 ORDER BY recommended_rank ASC;
 SQL
 
