@@ -9,7 +9,7 @@ use std::time::Duration as StdDuration;
 pub use copybot_core_types::{
     CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
     FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, TokenQualityCacheRow,
-    TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
+    TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow, Lamports,
     EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
@@ -26,6 +26,7 @@ const LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SAMPLES: usize = 1;
 const LIVE_UNREALIZED_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
 // Until D-2 exact quantities land, sub-nano residual qty should not count as an open live position.
 pub const LIVE_POSITION_OPEN_EPS: f64 = 1e-9;
+const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
@@ -110,33 +111,70 @@ pub struct DiscoveryRuntimeCursor {
 }
 
 impl SqliteStore {
-    fn live_execution_state_snapshot_on_conn(
+    fn live_open_exposure_lamports_on_conn(
         conn: &Connection,
-        token: &str,
-    ) -> Result<ExecutionConfirmStateSnapshot> {
-        let total_exposure_sol: f64 = conn
-            .query_row(
-                "SELECT COALESCE(SUM(cost_sol), 0.0)
-                 FROM positions
-                 WHERE state = 'open'
-                   AND qty > ?1",
-                params![LIVE_POSITION_OPEN_EPS],
-                |row| row.get(0),
-            )
-            .context("failed querying live open exposure in finalize confirm transaction")?;
-        let token_exposure_sol: f64 = conn
-            .query_row(
-                "SELECT COALESCE(SUM(cost_sol), 0.0)
+        token: Option<&str>,
+    ) -> Result<Lamports> {
+        let (query, params): (&str, Vec<rusqlite::types::Value>) = if let Some(token) = token {
+            (
+                "SELECT cost_sol, cost_lamports
                  FROM positions
                  WHERE state = 'open'
                    AND qty > ?2
                    AND token = ?1",
-                params![token, LIVE_POSITION_OPEN_EPS],
-                |row| row.get(0),
+                vec![
+                    rusqlite::types::Value::from(token.to_string()),
+                    rusqlite::types::Value::from(LIVE_POSITION_OPEN_EPS),
+                ],
             )
-            .context(
-                "failed querying live open exposure by token in finalize confirm transaction",
+        } else {
+            (
+                "SELECT cost_sol, cost_lamports
+                 FROM positions
+                 WHERE state = 'open'
+                   AND qty > ?1",
+                vec![rusqlite::types::Value::from(LIVE_POSITION_OPEN_EPS)],
+            )
+        };
+        let mut stmt = conn
+            .prepare(query)
+            .context("failed to prepare live open exposure lamports query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed querying live open exposure lamports")?;
+
+        let mut total = Lamports::ZERO;
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating live open exposure lamports rows")?
+        {
+            let cost_sol: f64 = row.get(0).context("failed reading positions.cost_sol")?;
+            let cost_lamports_raw: Option<i64> =
+                row.get(1).context("failed reading positions.cost_lamports")?;
+            let cost_lamports = position_cost_lamports(
+                cost_sol,
+                cost_lamports_raw,
+                "live open exposure",
             )?;
+            total = total.checked_add(cost_lamports).ok_or_else(|| {
+                anyhow!("live open exposure lamports overflow while summing positions")
+            })?;
+        }
+
+        Ok(total)
+    }
+
+    fn live_execution_state_snapshot_on_conn(
+        conn: &Connection,
+        token: &str,
+    ) -> Result<ExecutionConfirmStateSnapshot> {
+        let total_exposure_sol = lamports_to_sol(Self::live_open_exposure_lamports_on_conn(
+            conn, None,
+        )?);
+        let token_exposure_sol = lamports_to_sol(Self::live_open_exposure_lamports_on_conn(
+            conn,
+            Some(token),
+        )?);
         let open_positions: i64 = conn
             .query_row(
                 "SELECT COUNT(*)
@@ -197,6 +235,41 @@ impl SqliteStore {
         slippage_bps: f64,
         confirmed_ts: DateTime<Utc>,
     ) -> Result<FinalizeExecutionConfirmOutcome> {
+        let notional_lamports =
+            sol_to_lamports_ceil_storage(notional_sol, "execution fill notional_sol")?;
+        let fee_lamports = sol_to_lamports_ceil_storage(fee, "execution fill fee_sol")?;
+        self.finalize_execution_confirmed_order_exact(
+            order_id,
+            signal_id,
+            token,
+            side,
+            qty,
+            notional_sol,
+            notional_lamports,
+            avg_price,
+            fee,
+            fee_lamports,
+            slippage_bps,
+            confirmed_ts,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn finalize_execution_confirmed_order_exact(
+        &self,
+        order_id: &str,
+        signal_id: &str,
+        token: &str,
+        side: &str,
+        qty: f64,
+        notional_sol: f64,
+        notional_lamports: Lamports,
+        avg_price: f64,
+        fee: f64,
+        fee_lamports: Lamports,
+        slippage_bps: f64,
+        confirmed_ts: DateTime<Utc>,
+    ) -> Result<FinalizeExecutionConfirmOutcome> {
         const CONFIRM_ACTION: &str = "marking order confirmed in finalize confirm transaction";
         const CONFIRM_EXPECTED: &[&str] = &[
             "execution_submitted",
@@ -250,9 +323,18 @@ impl SqliteStore {
 
                 self.conn
                     .execute(
-                        "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        params![order_id, token, qty, avg_price, fee, slippage_bps],
+                        "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps, notional_lamports, fee_lamports)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        params![
+                            order_id,
+                            token,
+                            qty,
+                            avg_price,
+                            fee,
+                            slippage_bps,
+                            u64_to_sql_i64("fills.notional_lamports", notional_lamports.as_u64())?,
+                            u64_to_sql_i64("fills.fee_lamports", fee_lamports.as_u64())?,
+                        ],
                     )
                     .context("failed inserting execution fill in finalize confirm transaction")?;
 
@@ -262,7 +344,9 @@ impl SqliteStore {
                     side,
                     qty,
                     notional_sol,
+                    notional_lamports,
                     fee,
+                    fee_lamports,
                     confirmed_ts,
                 )?;
 
@@ -365,8 +449,8 @@ impl SqliteStore {
     ) -> Result<()> {
         self.execute_with_retry(|conn| {
             conn.execute(
-                "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps, notional_lamports, fee_lamports)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL)",
                 params![order_id, token, qty, avg_price, fee, slippage_bps],
             )
         })
@@ -374,35 +458,22 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn live_open_exposure_lamports(&self) -> Result<Lamports> {
+        Self::live_open_exposure_lamports_on_conn(&self.conn, None)
+    }
+
+    pub fn live_open_exposure_lamports_for_token(&self, token: &str) -> Result<Lamports> {
+        Self::live_open_exposure_lamports_on_conn(&self.conn, Some(token))
+    }
+
     pub fn live_open_exposure_sol(&self) -> Result<f64> {
-        let value: f64 = self
-            .conn
-            .query_row(
-                "SELECT COALESCE(SUM(cost_sol), 0.0)
-                 FROM positions
-                 WHERE state = 'open'
-                   AND qty > ?1",
-                params![LIVE_POSITION_OPEN_EPS],
-                |row| row.get(0),
-            )
-            .context("failed querying live open exposure")?;
-        Ok(value.max(0.0))
+        Ok(lamports_to_sol(self.live_open_exposure_lamports()?))
     }
 
     pub fn live_open_exposure_sol_for_token(&self, token: &str) -> Result<f64> {
-        let value: f64 = self
-            .conn
-            .query_row(
-                "SELECT COALESCE(SUM(cost_sol), 0.0)
-                 FROM positions
-                 WHERE state = 'open'
-                   AND qty > ?2
-                   AND token = ?1",
-                params![token, LIVE_POSITION_OPEN_EPS],
-                |row| row.get(0),
-            )
-            .context("failed querying live open exposure by token")?;
-        Ok(value.max(0.0))
+        Ok(lamports_to_sol(
+            self.live_open_exposure_lamports_for_token(token)?,
+        ))
     }
 
     pub fn live_open_positions_count(&self) -> Result<u64> {
@@ -439,23 +510,30 @@ impl SqliteStore {
     }
 
     pub fn live_open_position_qty_cost(&self, token: &str) -> Result<Option<(f64, f64)>> {
-        let row: Option<(f64, f64)> = self
+        let row: Option<(f64, f64, Option<i64>)> = self
             .conn
             .query_row(
-                "SELECT qty, cost_sol
+                "SELECT qty, cost_sol, cost_lamports
                  FROM positions
                  WHERE token = ?1
                    AND state = 'open'
                    AND qty > ?2
                  LIMIT 1",
                 params![token, LIVE_POSITION_OPEN_EPS],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .context("failed querying live open position qty/cost by token")?;
-        Ok(row.filter(|(qty, cost)| {
-            qty.is_finite() && *qty > LIVE_POSITION_OPEN_EPS && cost.is_finite() && *cost >= 0.0
-        }))
+        match row {
+            Some((qty, cost_sol, cost_lamports_raw))
+                if qty.is_finite() && qty > LIVE_POSITION_OPEN_EPS && cost_sol.is_finite() && cost_sol >= 0.0 =>
+            {
+                let cost_lamports =
+                    position_cost_lamports(cost_sol, cost_lamports_raw, "live open position")?;
+                Ok(Some((qty, lamports_to_sol(cost_lamports))))
+            }
+            _ => Ok(None),
+        }
     }
 
     pub fn apply_execution_fill_to_positions(
@@ -473,6 +551,8 @@ impl SqliteStore {
         {
             return Ok(());
         }
+        let notional_lamports =
+            sol_to_lamports_ceil_storage(notional_sol, "execution fill notional_sol")?;
         for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
             if let Err(error) = self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION") {
                 let error = anyhow!(error).context("failed to open execution position transaction");
@@ -496,7 +576,9 @@ impl SqliteStore {
                 side,
                 qty,
                 notional_sol,
+                notional_lamports,
                 0.0,
+                Lamports::ZERO,
                 ts,
             );
 
@@ -548,7 +630,9 @@ impl SqliteStore {
         side: &str,
         qty: f64,
         notional_sol: f64,
+        notional_lamports: Lamports,
         fee_sol: f64,
+        fee_lamports: Lamports,
         ts: DateTime<Utc>,
     ) -> Result<()> {
         if !fee_sol.is_finite() || fee_sol < 0.0 {
@@ -561,16 +645,16 @@ impl SqliteStore {
         }
 
         let side_norm = side.trim().to_ascii_lowercase();
-        let existing: Option<(String, f64, f64, Option<f64>)> = conn
+        let existing: Option<(String, f64, f64, Option<i64>, Option<f64>)> = conn
             .query_row(
-                "SELECT position_id, qty, cost_sol, pnl_sol
+                "SELECT position_id, qty, cost_sol, cost_lamports, pnl_sol
                  FROM positions
                  WHERE token = ?1
                    AND state = 'open'
                  ORDER BY opened_ts ASC
                  LIMIT 1",
                 params![token],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()
             .context("failed querying live open position row")?;
@@ -578,18 +662,31 @@ impl SqliteStore {
         match side_norm.as_str() {
             "buy" => {
                 let effective_cost = notional_sol + fee_sol;
-                if let Some((position_id, current_qty, current_cost, current_pnl)) = existing {
+                let effective_cost_lamports = notional_lamports
+                    .checked_add(fee_lamports)
+                    .ok_or_else(|| anyhow!("execution fill cost_lamports overflow for token={token}"))?;
+                if let Some((position_id, current_qty, current_cost, current_cost_lamports_raw, current_pnl)) = existing {
+                    let current_cost_lamports = position_cost_lamports(
+                        current_cost,
+                        current_cost_lamports_raw,
+                        "live open position buy update",
+                    )?;
+                    let next_cost_lamports = current_cost_lamports
+                        .checked_add(effective_cost_lamports)
+                        .ok_or_else(|| anyhow!("live position cost_lamports overflow for token={token}"))?;
                     conn.execute(
                         "UPDATE positions
                          SET qty = ?1,
                              cost_sol = ?2,
-                             pnl_sol = ?3,
+                             cost_lamports = ?3,
+                             pnl_sol = ?4,
                              state = 'open',
                              closed_ts = NULL
-                         WHERE position_id = ?4",
+                         WHERE position_id = ?5",
                         params![
                             current_qty + qty,
                             current_cost + effective_cost,
+                            u64_to_sql_i64("positions.cost_lamports", next_cost_lamports.as_u64())?,
                             current_pnl.unwrap_or(0.0),
                             position_id,
                         ],
@@ -603,17 +700,25 @@ impl SqliteStore {
                             token,
                             qty,
                             cost_sol,
+                            cost_lamports,
                             opened_ts,
                             state,
                             pnl_sol
-                        ) VALUES (?1, ?2, ?3, ?4, ?5, 'open', 0.0)",
-                        params![position_id, token, qty, effective_cost, ts.to_rfc3339()],
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', 0.0)",
+                        params![
+                            position_id,
+                            token,
+                            qty,
+                            effective_cost,
+                            u64_to_sql_i64("positions.cost_lamports", effective_cost_lamports.as_u64())?,
+                            ts.to_rfc3339(),
+                        ],
                     )
                     .context("failed inserting new live position for buy fill")?;
                 }
             }
             "sell" => {
-                let Some((position_id, current_qty, current_cost, current_pnl)) = existing else {
+                let Some((position_id, current_qty, current_cost, current_cost_lamports_raw, current_pnl)) = existing else {
                     return Err(anyhow!(
                         "sell fill without open position token={} qty={} notional_sol={}",
                         token,
@@ -647,12 +752,29 @@ impl SqliteStore {
                 let next_qty = (current_qty - qty_closed).max(0.0);
                 let next_cost = (current_cost - realized_cost).max(0.0);
                 let next_pnl = current_pnl.unwrap_or(0.0) + realized_pnl;
+                let next_cost_lamports = if next_qty <= LIVE_POSITION_OPEN_EPS {
+                    Lamports::ZERO
+                } else {
+                    let current_cost_lamports = position_cost_lamports(
+                        current_cost,
+                        current_cost_lamports_raw,
+                        "live open position sell update",
+                    )?;
+                    let estimated_remaining_cost_lamports =
+                        sol_to_lamports_ceil_storage(next_cost, "remaining live position cost_sol")?;
+                    if estimated_remaining_cost_lamports > current_cost_lamports {
+                        current_cost_lamports
+                    } else {
+                        estimated_remaining_cost_lamports
+                    }
+                };
 
                 if next_qty <= LIVE_POSITION_OPEN_EPS {
                     conn.execute(
                         "UPDATE positions
                          SET qty = 0.0,
                              cost_sol = 0.0,
+                             cost_lamports = 0,
                              pnl_sol = ?1,
                              state = 'closed',
                              closed_ts = ?2
@@ -665,9 +787,16 @@ impl SqliteStore {
                         "UPDATE positions
                          SET qty = ?1,
                              cost_sol = ?2,
-                             pnl_sol = ?3
-                         WHERE position_id = ?4",
-                        params![next_qty, next_cost, next_pnl, position_id],
+                             cost_lamports = ?3,
+                             pnl_sol = ?4
+                         WHERE position_id = ?5",
+                        params![
+                            next_qty,
+                            next_cost,
+                            u64_to_sql_i64("positions.cost_lamports", next_cost_lamports.as_u64())?,
+                            next_pnl,
+                            position_id
+                        ],
                     )
                     .context("failed partially updating live position after sell fill")?;
                 }
@@ -984,6 +1113,95 @@ mod tests {
     }
 
     #[test]
+    fn finalize_execution_confirmed_order_exact_persists_execution_lamport_sidecars() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-exact-lamports.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-exact:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.10,
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-exact-1",
+                &signal.signal_id,
+                "cb_exact_1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-exact-1",
+            "paper",
+            "paper:tx-exact",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let outcome = store.finalize_execution_confirmed_order_exact(
+            "ord-exact-1",
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            2.0,
+            0.10,
+            Lamports::new(100_000_000),
+            0.05,
+            0.000005,
+            Lamports::new(5_000),
+            50.0,
+            now + Duration::seconds(1),
+        )?;
+        assert!(matches!(
+            outcome,
+            FinalizeExecutionConfirmOutcome::Applied(_)
+        ));
+
+        let fill_row: (i64, i64) = store.conn.query_row(
+            "SELECT notional_lamports, fee_lamports
+             FROM fills
+             WHERE order_id = ?1",
+            params!["ord-exact-1"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(fill_row, (100_000_000, 5_000));
+
+        let position_row: (i64, f64) = store.conn.query_row(
+            "SELECT cost_lamports, cost_sol
+             FROM positions
+             WHERE token = ?1
+               AND state = 'open'",
+            params!["token-a"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(position_row.0, 100_005_000);
+        assert!((position_row.1 - 0.100005).abs() < 1e-9);
+        assert_eq!(store.live_open_exposure_lamports()?, Lamports::new(100_005_000));
+
+        Ok(())
+    }
+
+    #[test]
     fn live_position_queries_ignore_dust_open_row() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("live-dust-open-row.db");
@@ -1021,6 +1239,45 @@ mod tests {
         let (unrealized_pnl_sol, missing_price_count) = store.live_unrealized_pnl_sol(now)?;
         assert_eq!(unrealized_pnl_sol, 0.0);
         assert_eq!(missing_price_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn live_exposure_queries_prefer_cost_lamports_sidecar() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-cost-lamports-sidecar.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, cost_lamports, opened_ts, state, pnl_sol)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', 0.0)",
+            params![
+                "live-sidecar",
+                "token-sidecar",
+                1.0_f64,
+                0.1_f64,
+                100_000_123_i64,
+                now.to_rfc3339(),
+            ],
+        )?;
+
+        assert_eq!(
+            store.live_open_exposure_lamports_for_token("token-sidecar")?,
+            Lamports::new(100_000_123)
+        );
+        let (_, cost_sol) = store
+            .live_open_position_qty_cost("token-sidecar")?
+            .expect("open position exists");
+        assert!(
+            (cost_sol - 0.100000123).abs() < 1e-12,
+            "expected lamport-sidecar-derived cost, got {cost_sol}"
+        );
+
         Ok(())
     }
 
@@ -3832,6 +4089,44 @@ mod tests {
 fn u64_to_sql_i64(field: &str, value: u64) -> Result<i64> {
     i64::try_from(value)
         .with_context(|| format!("{}={} exceeds sqlite INTEGER max (i64::MAX)", field, value))
+}
+
+pub(crate) fn lamports_to_sol(lamports: Lamports) -> f64 {
+    lamports.as_u64() as f64 / LAMPORTS_PER_SOL
+}
+
+pub(crate) fn sol_to_lamports_ceil_storage(sol: f64, label: &str) -> Result<Lamports> {
+    if !sol.is_finite() || sol < 0.0 {
+        return Err(anyhow!("invalid {}={} (must be finite and >= 0)", label, sol));
+    }
+    let scaled = sol * LAMPORTS_PER_SOL;
+    if !scaled.is_finite() || scaled > u64::MAX as f64 {
+        return Err(anyhow!(
+            "invalid {}={} (exceeds representable lamports)",
+            label,
+            sol
+        ));
+    }
+    Ok(Lamports::new(scaled.ceil() as u64))
+}
+
+pub(crate) fn position_cost_lamports(
+    cost_sol: f64,
+    cost_lamports_raw: Option<i64>,
+    context: &str,
+) -> Result<Lamports> {
+    if let Some(raw) = cost_lamports_raw {
+        if raw < 0 {
+            return Err(anyhow!(
+                "invalid negative positions.cost_lamports={} in {}",
+                raw,
+                context
+            ));
+        }
+        return Ok(Lamports::new(raw as u64));
+    }
+    sol_to_lamports_ceil_storage(cost_sol, "positions.cost_sol")
+        .with_context(|| format!("failed deriving cost_lamports in {context}"))
 }
 
 fn parse_non_negative_i64(field: &str, order_id: &str, value: Option<i64>) -> Result<Option<u64>> {

@@ -112,7 +112,7 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT token, qty, cost_sol
+                "SELECT token, qty, cost_sol, cost_lamports
                  FROM positions
                  WHERE state = 'open'
                    AND qty > ?1
@@ -132,6 +132,8 @@ impl SqliteStore {
             let token: String = row.get(0).context("failed reading positions.token")?;
             let qty: f64 = row.get(1).context("failed reading positions.qty")?;
             let cost_sol: f64 = row.get(2).context("failed reading positions.cost_sol")?;
+            let cost_lamports_raw: Option<i64> =
+                row.get(3).context("failed reading positions.cost_lamports")?;
             if !qty.is_finite()
                 || !cost_sol.is_finite()
                 || qty <= LIVE_POSITION_OPEN_EPS
@@ -144,6 +146,11 @@ impl SqliteStore {
                     cost_sol
                 ));
             }
+            let cost_sol = super::lamports_to_sol(super::position_cost_lamports(
+                cost_sol,
+                cost_lamports_raw,
+                "live unrealized pnl",
+            )?);
 
             if let Some(price_sol) =
                 self.reliable_token_sol_price_for_live_unrealized(&token, as_of)?

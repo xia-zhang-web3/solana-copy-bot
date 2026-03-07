@@ -471,15 +471,17 @@ impl ExecutionRuntime {
                     }
                 }
                 let mut post_confirm_risk_breach = None;
-                match store.finalize_execution_confirmed_order(
+                match store.finalize_execution_confirmed_order_exact(
                     &fill.order_id,
                     &intent.signal_id,
                     &fill.token,
                     intent.side.as_str(),
                     fill.qty,
                     fill.notional_sol,
+                    fill.notional_lamports,
                     fill.avg_price_sol,
                     fill.fee_sol,
+                    fill.fee_lamports,
                     fill.slippage_bps,
                     confirmed_at,
                 )? {

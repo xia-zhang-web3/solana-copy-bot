@@ -1,16 +1,20 @@
 use anyhow::{anyhow, Result};
+use copybot_core_types::Lamports;
 
 use crate::confirm::ObservedExecutionFill;
 use crate::intent::ExecutionIntent;
+use crate::money::{lamports_to_sol, sol_to_lamports_ceil};
 
 #[derive(Debug, Clone)]
 pub struct ExecutionFill {
     pub order_id: String,
     pub token: String,
     pub notional_sol: f64,
+    pub notional_lamports: Lamports,
     pub qty: f64,
     pub avg_price_sol: f64,
     pub fee_sol: f64,
+    pub fee_lamports: Lamports,
     pub slippage_bps: f64,
 }
 
@@ -31,6 +35,8 @@ pub fn build_fill_from_priced_intent(
     if !notional_sol.is_finite() || notional_sol <= 0.0 {
         return Err(anyhow!("invalid notional_sol={notional_sol}"));
     }
+    let notional_lamports = intent.notional_lamports()?;
+    let fee_lamports = sol_to_lamports_ceil(fee_sol, "execution fill fee_sol")?;
     let qty = notional_sol / avg_price_sol;
     if !qty.is_finite() || qty <= 0.0 {
         return Err(anyhow!("invalid computed qty={qty}"));
@@ -40,9 +46,11 @@ pub fn build_fill_from_priced_intent(
         order_id: order_id.to_string(),
         token: intent.token.clone(),
         notional_sol,
+        notional_lamports,
         qty,
         avg_price_sol,
         fee_sol,
+        fee_lamports,
         slippage_bps,
     })
 }
@@ -103,6 +111,28 @@ pub fn build_fill_from_confirmed_observation(
             fee_sol
         ));
     }
+    let fee_lamports = sol_to_lamports_ceil(fee_sol, "execution fill fee_sol")?;
+    let notional_lamports_i128 = match intent.side.as_str() {
+        "buy" => i128::from(-observed_fill.signer_balance_delta_lamports)
+            .checked_sub(i128::from(fee_lamports.as_u64()))
+            .ok_or_else(|| anyhow!("observed buy notional_lamports overflow"))?,
+        "sell" => i128::from(observed_fill.signer_balance_delta_lamports)
+            .checked_add(i128::from(fee_lamports.as_u64()))
+            .ok_or_else(|| anyhow!("observed sell notional_lamports overflow"))?,
+        other => return Err(anyhow!("unsupported execution side: {other}")),
+    };
+    let notional_lamports = u64::try_from(notional_lamports_i128)
+        .map(Lamports::new)
+        .map_err(|_| {
+            anyhow!(
+                "invalid observed notional_lamports={} side={} balance_delta_lamports={} fee_lamports={}",
+                notional_lamports_i128,
+                intent.side.as_str(),
+                observed_fill.signer_balance_delta_lamports,
+                fee_lamports.as_u64()
+            )
+        })?;
+    let notional_sol = lamports_to_sol(notional_lamports);
 
     let qty = observed_fill.token_delta_qty.abs();
     if !qty.is_finite() || qty <= 0.0 {
@@ -118,9 +148,11 @@ pub fn build_fill_from_confirmed_observation(
         order_id: order_id.to_string(),
         token: intent.token.clone(),
         notional_sol,
+        notional_lamports,
         qty,
         avg_price_sol,
         fee_sol,
+        fee_lamports,
         slippage_bps,
     })
 }
@@ -182,5 +214,41 @@ mod tests {
                 .contains("observed token_delta_qty sign mismatch"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn build_fill_from_confirmed_observation_preserves_exact_lamports_for_buy() {
+        let fill = build_fill_from_confirmed_observation(
+            &make_intent(ExecutionSide::Buy),
+            "order-1",
+            ObservedExecutionFill {
+                signer_balance_delta_lamports: -100_005_000,
+                token_delta_qty: 2.0,
+            },
+            50.0,
+            0.000005,
+        )
+        .expect("buy fill should succeed");
+
+        assert_eq!(fill.notional_lamports, Lamports::new(100_000_000));
+        assert_eq!(fill.fee_lamports, Lamports::new(5_000));
+    }
+
+    #[test]
+    fn build_fill_from_confirmed_observation_preserves_exact_lamports_for_sell() {
+        let fill = build_fill_from_confirmed_observation(
+            &make_intent(ExecutionSide::Sell),
+            "order-1",
+            ObservedExecutionFill {
+                signer_balance_delta_lamports: 89_995_000,
+                token_delta_qty: -2.0,
+            },
+            50.0,
+            0.000005,
+        )
+        .expect("sell fill should succeed");
+
+        assert_eq!(fill.notional_lamports, Lamports::new(90_000_000));
+        assert_eq!(fill.fee_lamports, Lamports::new(5_000));
     }
 }

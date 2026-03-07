@@ -35,7 +35,7 @@ impl ExecutionRuntime {
     }
 
     fn current_total_exposure_lamports(&self, store: &SqliteStore) -> Result<Lamports> {
-        sol_to_lamports_ceil(store.live_open_exposure_sol()?, "live_open_exposure_sol")
+        store.live_open_exposure_lamports()
     }
 
     fn current_token_exposure_lamports(
@@ -43,10 +43,7 @@ impl ExecutionRuntime {
         store: &SqliteStore,
         token: &str,
     ) -> Result<Lamports> {
-        sol_to_lamports_ceil(
-            store.live_open_exposure_sol_for_token(token)?,
-            "live_open_exposure_sol_for_token",
-        )
+        store.live_open_exposure_lamports_for_token(token)
     }
 
     pub(crate) fn should_pause_buy_submission(
