@@ -1,6 +1,6 @@
 # Execution Manual Reconcile Runbook
 
-This runbook defines mandatory operator actions for execution incidents where runtime had to use fallback pricing during confirm/reconcile.
+This runbook defines mandatory operator actions for execution incidents where confirm/reconcile entered a manual path because runtime either used fallback pricing or could not produce a usable confirmed fill.
 
 ## 1) Trigger Events
 
@@ -8,9 +8,10 @@ Run this procedure immediately when any of these `risk_events.type` values appea
 
 1. `execution_price_unavailable_fallback_used`
 2. `execution_confirm_price_unavailable_manual_reconcile_required`
-3. `execution_confirm_price_unavailable`
-4. `execution_confirm_failed_manual_reconcile_required`
-5. `execution_confirm_timeout_manual_reconcile_required`
+3. `execution_confirm_observed_fill_unavailable_manual_reconcile_required`
+4. `execution_confirm_price_unavailable`
+5. `execution_confirm_failed_manual_reconcile_required`
+6. `execution_confirm_timeout_manual_reconcile_required`
 
 ## 2) Immediate Containment (<= 2 minutes)
 
@@ -32,7 +33,7 @@ printf "execution_manual_reconcile_in_progress\n" > state/operator_emergency_sto
 CONFIG_PATH=configs/paper.toml ./tools/runtime_snapshot.sh 24 180
 ```
 
-2. Capture fallback-event report:
+2. Capture manual-reconcile evidence report:
 
 ```bash
 CONFIG_PATH=configs/paper.toml ./tools/execution_price_fallback_report.sh 24
@@ -43,9 +44,10 @@ CONFIG_PATH=configs/paper.toml ./tools/execution_price_fallback_report.sh 24
 ## 4) Triage Rules
 
 1. Treat as `P0` if any event has `reason=missing_latest_price_no_fallback`.
-2. Treat as `P0` if `tx_signature` is missing or cannot be verified from your execution telemetry source.
-3. Otherwise classify as `P1` and continue manual reconcile.
-4. Create/update incident note with: `signal_id`, `order_id`, `token`, `route`, `fallback_source`, `tx_signature`, timestamp.
+2. Treat as `P0` if any event has `reason=missing_observed_fill` or `reason=unusable_observed_fill` and the executed fill cannot be reconstructed from your execution telemetry source.
+3. Treat as `P0` if `tx_signature` is missing or cannot be verified from your execution telemetry source.
+4. Otherwise classify as `P1` and continue manual reconcile.
+5. Create/update incident note with: `signal_id`, `order_id`, `token`, `route`, `reason`, `fallback_source`, `tx_signature`, timestamp.
 
 ## 5) Manual Reconcile Workflow
 

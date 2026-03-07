@@ -44,7 +44,7 @@ if [[ ! -f "$DB_PATH" ]]; then
   exit 1
 fi
 
-echo "=== execution price-unavailable events (${WINDOW_HOURS}h) ==="
+echo "=== execution manual-reconcile / fallback events (${WINDOW_HOURS}h) ==="
 sqlite3 "$DB_PATH" <<SQL
 .headers on
 .mode column
@@ -56,6 +56,7 @@ WITH fallback_events AS (
     COALESCE(json_extract(details_json, '$.order_id'), '') AS order_id,
     COALESCE(json_extract(details_json, '$.token'), '') AS token,
     COALESCE(json_extract(details_json, '$.route'), '') AS route,
+    COALESCE(json_extract(details_json, '$.reason'), '') AS reason,
     COALESCE(json_extract(details_json, '$.fallback_source'), '') AS fallback_source,
     COALESCE(json_extract(details_json, '$.fallback_avg_price_sol'), 0.0) AS fallback_avg_price_sol,
     COALESCE(
@@ -67,7 +68,10 @@ WITH fallback_events AS (
   WHERE type IN (
       'execution_price_unavailable_fallback_used',
       'execution_confirm_price_unavailable_manual_reconcile_required',
-      'execution_confirm_price_unavailable'
+      'execution_confirm_observed_fill_unavailable_manual_reconcile_required',
+      'execution_confirm_price_unavailable',
+      'execution_confirm_failed_manual_reconcile_required',
+      'execution_confirm_timeout_manual_reconcile_required'
     )
     AND datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours')
 )
@@ -78,6 +82,7 @@ SELECT
   e.order_id,
   e.token,
   e.route,
+  e.reason,
   e.fallback_source,
   e.fallback_avg_price_sol,
   e.manual_reconcile_flag,
@@ -93,21 +98,25 @@ ORDER BY e.ts DESC;
 SQL
 
 echo
-echo "=== event/fallback_source breakdown (${WINDOW_HOURS}h) ==="
+echo "=== event / reason / fallback_source breakdown (${WINDOW_HOURS}h) ==="
 sqlite3 "$DB_PATH" <<SQL
 .headers on
 .mode column
 SELECT
   type AS event_type,
+  COALESCE(json_extract(details_json, '$.reason'), 'n/a') AS reason,
   COALESCE(json_extract(details_json, '$.fallback_source'), 'unknown') AS fallback_source,
   COUNT(*) AS cnt
 FROM risk_events
 WHERE type IN (
     'execution_price_unavailable_fallback_used',
     'execution_confirm_price_unavailable_manual_reconcile_required',
-    'execution_confirm_price_unavailable'
+    'execution_confirm_observed_fill_unavailable_manual_reconcile_required',
+    'execution_confirm_price_unavailable',
+    'execution_confirm_failed_manual_reconcile_required',
+    'execution_confirm_timeout_manual_reconcile_required'
   )
   AND datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours')
-GROUP BY event_type, fallback_source
-ORDER BY cnt DESC, event_type ASC;
+GROUP BY event_type, reason, fallback_source
+ORDER BY cnt DESC, event_type ASC, reason ASC;
 SQL
