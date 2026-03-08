@@ -526,3 +526,37 @@ Acceptance:
 - This file intentionally tracks current closure state relative to `main`, not just the original 2026-03-05 snapshot.
 - Items marked `CLOSED IN MAIN` have already been implemented, audited, and merged.
 - `PARTIALLY CLOSED` means repo-facing code/config surfaces are fixed, but operational or history cleanup still remains.
+
+## 7. Fresh Interval Audit - Code-Level Closure
+
+Current GitHub `main` baseline for this interval closure:
+
+- `e597277`
+
+Code-level fixes from this interval are now closed in `main`:
+
+- `FI-1` discovery mutex scope:
+  - closed in `main`
+  - `run_cycle()` no longer holds the discovery window mutex through `build_wallet_snapshots_from_cached(...)`
+  - under mutex now remain only window / cursor mutation, warm-load, bounded fetch, sort/cap update, and path decision
+- `FI-2` execution BUY pause parity:
+  - closed in `main`
+  - execution BUY pause now covers the full shadow BUY-stop surface (`FailClosed`, `ExposureCap`, `TimedPause`, `Universe`) in addition to the existing operator / hard-stop / infra reasons
+- `FI-3` temporal follow retention:
+  - closed in `main`
+  - follow-event retention is now anchored to discovery publish cadence instead of only `shadow.max_signal_lag_seconds`
+
+Practical status after this closure:
+
+- section `7` is closed for code-level fixes
+- no additional code batch is required from this section before deployment
+- the next gate is operational evidence, not another local patch:
+  1. deploy current `main`,
+  2. collect fresh server metrics,
+  3. decide readiness from live evidence
+
+What remains outside this section:
+
+- `PRED2-3` remains an operational/readiness item until server metrics prove the redesign is sufficient
+- `C-1` remains an ops/history task
+- `D-2` remains the separate exact-money architecture track
