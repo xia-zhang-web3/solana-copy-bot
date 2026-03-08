@@ -2028,3 +2028,76 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 2. Это подтверждает, что `100k rows/cycle` bounded fetch path operationally держится на сервере.
 3. Но `PRED2-3` пока не закрыт: backlog burn-down все еще не доказан, потому что direct `cursor/head gap` продолжает расти, хоть и заметно медленнее.
 4. Корректная формулировка на этом этапе: **`PRED2-4` merged safely, discovery throughput materially improved, but `PRED2-3` remains open because cursor advance is still sub-real-time.**
+
+### 2026-03-08 — morning post-PRED2-4 follow-up (snapshot 05:48 UTC / 07:48 Europe/Kiev)
+
+Источник:
+
+1. `ops/server_reports/2026-03-08_morning_post_pred24_runtime_report.md`
+2. `ops/server_reports/raw/2026-03-08_post_pred24_followup_0548_snapshot/computed_summary.json`
+
+Контекст окна:
+
+1. Это первый overnight trend snapshot `>=8h`, полностью относящийся к rollout `4f118da` (`PRED2-4`) после старта сервиса в `2026-03-07 18:36:41 UTC`.
+2. Предыдущий ориентир для сравнения — late-evening post-`PRED2-4` snapshot от `2026-03-07 21:34 UTC`.
+
+Итог overnight окна:
+
+1. Stability gates: PASS
+   1. `NRestarts=0`,
+   2. `main_process_exited_count=0`,
+   3. `oom_kernel_lines=0`.
+2. Discovery runtime остается stable under `100k` bounded fetch
+   1. `duration_ms_p50=4144`,
+   2. `duration_ms_p95=11967.2`,
+   3. `duration_ms_max=12527`,
+   4. `duration_ms_last=4096`,
+   5. `snapshot_recomputed=true` in `23/68` cycles,
+   6. `discovery cycle still running` warnings = `0`.
+3. Ingestion lag/backpressure по latest samples остаются healthy
+   1. `ingestion_lag_ms_p95=1695`, `ingestion_lag_ms_p99=1779`,
+   2. `ws_to_fetch_queue_depth_last=1` (`max=636`),
+   3. `ws_notifications_backpressured_last=0`, cumulative delta `0`.
+4. Discovery throughput/backlog:
+   1. saturation все еще pinned:
+      1. `swaps_fetch_limit_reached_ratio=1.0` (`68/68`),
+      2. `swaps_fetch_page_budget_exhausted_ratio=1.0` (`68/68`).
+   2. widened path остается активным:
+      1. `swaps_fetch_pages_last=5/5`,
+      2. `swaps_query_rows_last=100000`,
+      3. `swaps_query_rows_last_page=20000`,
+      4. `swaps_delta_fetched_last=100000`.
+   3. direct cursor/head evidence все еще negative:
+      1. `discovery_cursor_ts=2026-03-07T10:00:27.658060832+00:00`,
+      2. `observed_swaps_max_ts=2026-03-08T05:49:34.315203276+00:00`,
+      3. `cursor/head ts-gap ~= 71347 s` (`~19h 49m 07s`).
+   4. против previous post-`PRED2-4` snapshot at `2026-03-07 21:34 UTC`:
+      1. gap все еще вырос на `+4697 s` (`+~1h 18m 17s`),
+      2. но inferred `cursor_advance_ratio` на overnight окне улучшился до `~0.84`.
+   5. интерпретация:
+      1. widened fetch path реально двигает cursor заметно быстрее, чем early post-rollout read,
+      2. но throughput все еще sub-real-time,
+      3. backlog burn-down пока не начался.
+5. Direct I/O:
+   1. хуже, чем в `23:34` snapshot, но далеко от pre-hotfix incident regime:
+      1. `pressure io some avg60=13.15`,
+      2. `pressure io full avg60=13.10`,
+      3. `vmstat wa last=18`,
+      4. `iostat nvme0n1 aqu-sz last=2.07`, `%util last=31.2`.
+6. Memory and DB:
+   1. `VmRSS ~97.2 MB`, `VmHWM ~181.1 MB`,
+   2. cgroup memory `~6.45 -> 6.47 GB`, still file-cache dominated (`file ~6.19 GB`, `anon ~87 MB`),
+   3. `live_copybot.db ~71G`, `live_copybot.db-wal ~59M`, `live_copybot.db-shm ~128K`.
+7. Followlist output без изменений:
+   1. `eligible_wallets_last=0`,
+   2. `active_follow_wallets_last=0`,
+   3. `followlist_deactivations_suppressed=true`.
+
+Операционный вывод:
+
+1. `PRED2-4` rollout остается runtime-safe и не возвращает старые OOM/skip-path симптомы.
+2. Первый overnight `>=8h` trend snapshot уже достаточно сильный для управленческого вывода: widened `100k rows/cycle` path улучшил cursor advance, но все еще не перешел порог real-time.
+3. Значит `PRED2-3` остается open:
+   1. backlog burn-down пока не доказан,
+   2. `cursor/head gap` все еще растет,
+   3. хотя темп деградации уже заметно ниже, чем до widened bounded fetch rollout.

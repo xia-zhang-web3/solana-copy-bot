@@ -1,0 +1,67 @@
+● solana-copy-bot.service - Solana Copy Bot Application
+     Loaded: loaded (/etc/systemd/system/solana-copy-bot.service; enabled; preset: enabled)
+     Active: active (running) since Sat 2026-03-07 18:36:41 UTC; 11h ago
+   Main PID: 152686 (copybot-app)
+      Tasks: 8 (limit: 9283)
+     Memory: 6.0G (peak: 6.0G)
+        CPU: 50min 57.907s
+     CGroup: /system.slice/solana-copy-bot.service
+             └─152686 /var/www/solana-copy-bot/target/release/copybot-app --config /etc/solana-copy-bot/live.server.toml
+
+Mar 08 05:48:36 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:48:36.452469Z  INFO {"fetch_concurrency_inflight":0,"fetch_failed":0,"fetch_latency_ms_p50":0,"fetch_latency_ms_p95":0,"fetch_latency_ms_p99":0,"fetch_no_swap":0,"fetch_retry_attempts":0,"fetch_retry_exhausted":0,"fetch_retry_terminal":0,"fetch_success":0,"fetch_to_output_queue_depth":0,"grpc_decode_errors":0,"grpc_message_total":15894204,"grpc_transaction_updates_total":15886140,"ingestion_lag_ms_p50":1587,"ingestion_lag_ms_p95":1749,"ingestion_lag_ms_p99":1821,"message":"ingestion pipeline metrics","parse_fallback_by_reason":"{}","parse_rejected_by_reason":"{}","parse_rejected_total":0,"prefetch_stale_dropped":0,"reconnect_count":0,"reorder_buffer_max":1025,"reorder_buffer_size":259,"reorder_hold_ms_p95":1305,"rpc_429":0,"rpc_5xx":0,"stream_gap_detected":0,"ws_notifications_backpressured":0,"ws_notifications_dropped":0,"ws_notifications_enqueued":7155952,"ws_notifications_replaced_oldest":0,"ws_notifications_seen":7155952,"ws_to_fetch_queue_depth":1}
+Mar 08 05:48:41 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:48:41.856920Z  INFO {"message":"sqlite contention counters","sqlite_busy_error_total":0,"sqlite_write_retry_total":0}
+Mar 08 05:48:41 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:48:41.857444Z  INFO {"active_follow_wallets":0,"closed_trades_24h":0,"message":"shadow snapshot","open_lots":0,"realized_pnl_sol_24h":0.0}
+Mar 08 05:48:41 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:48:41.857480Z  INFO {"drop_counts":"{\"not_followed\": 12324}","drop_stage_counts":"{\"follow\": 12324}","message":"shadow drop reasons"}
+Mar 08 05:49:06 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:49:06.452704Z  INFO {"fetch_concurrency_inflight":0,"fetch_failed":0,"fetch_latency_ms_p50":0,"fetch_latency_ms_p95":0,"fetch_latency_ms_p99":0,"fetch_no_swap":0,"fetch_retry_attempts":0,"fetch_retry_exhausted":0,"fetch_retry_terminal":0,"fetch_success":0,"fetch_to_output_queue_depth":0,"grpc_decode_errors":0,"grpc_message_total":15904591,"grpc_transaction_updates_total":15896521,"ingestion_lag_ms_p50":1537,"ingestion_lag_ms_p95":1695,"ingestion_lag_ms_p99":1779,"message":"ingestion pipeline metrics","parse_fallback_by_reason":"{}","parse_rejected_by_reason":"{}","parse_rejected_total":0,"prefetch_stale_dropped":0,"reconnect_count":0,"reorder_buffer_max":1025,"reorder_buffer_size":281,"reorder_hold_ms_p95":1303,"rpc_429":0,"rpc_5xx":0,"stream_gap_detected":0,"ws_notifications_backpressured":0,"ws_notifications_dropped":0,"ws_notifications_enqueued":7161944,"ws_notifications_replaced_oldest":0,"ws_notifications_seen":7161944,"ws_to_fetch_queue_depth":1}
+Mar 08 05:49:11 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:49:11.856627Z  INFO {"message":"sqlite contention counters","sqlite_busy_error_total":0,"sqlite_write_retry_total":0}
+Mar 08 05:49:36 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:49:36.472573Z  INFO {"fetch_concurrency_inflight":0,"fetch_failed":0,"fetch_latency_ms_p50":0,"fetch_latency_ms_p95":0,"fetch_latency_ms_p99":0,"fetch_no_swap":0,"fetch_retry_attempts":0,"fetch_retry_exhausted":0,"fetch_retry_terminal":0,"fetch_success":0,"fetch_to_output_queue_depth":0,"grpc_decode_errors":0,"grpc_message_total":15915055,"grpc_transaction_updates_total":15906979,"ingestion_lag_ms_p50":1559,"ingestion_lag_ms_p95":1722,"ingestion_lag_ms_p99":1775,"message":"ingestion pipeline metrics","parse_fallback_by_reason":"{}","parse_rejected_by_reason":"{}","parse_rejected_total":0,"prefetch_stale_dropped":0,"reconnect_count":0,"reorder_buffer_max":1025,"reorder_buffer_size":239,"reorder_hold_ms_p95":1310,"rpc_429":0,"rpc_5xx":0,"stream_gap_detected":0,"ws_notifications_backpressured":0,"ws_notifications_dropped":0,"ws_notifications_enqueued":7168082,"ws_notifications_replaced_oldest":0,"ws_notifications_seen":7168082,"ws_to_fetch_queue_depth":1}
+Mar 08 05:49:41 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:49:41.876087Z  INFO {"message":"sqlite contention counters","sqlite_busy_error_total":0,"sqlite_write_retry_total":0}
+Mar 08 05:49:41 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:49:41.881571Z  INFO {"active_follow_wallets":0,"closed_trades_24h":0,"message":"shadow snapshot","open_lots":0,"realized_pnl_sol_24h":0.0}
+Mar 08 05:49:41 ip-172-31-41-166 copybot-app[152686]: 2026-03-08T05:49:41.881584Z  INFO {"drop_counts":"{\"not_followed\": 12170}","drop_stage_counts":"{\"follow\": 12170}","message":"shadow drop reasons"}
+
+● copybot-adapter.service - CopyBot Adapter Backend
+     Loaded: loaded (/etc/systemd/system/copybot-adapter.service; enabled; preset: enabled)
+     Active: active (running) since Sat 2026-03-07 18:26:42 UTC; 11h ago
+   Main PID: 152182 (copybot-adapter)
+      Tasks: 3 (limit: 9283)
+     Memory: 636.0K (peak: 1.6M)
+        CPU: 5ms
+     CGroup: /system.slice/copybot-adapter.service
+             └─152182 /var/www/solana-copy-bot/target/release/copybot-adapter
+
+Mar 07 18:26:42 ip-172-31-41-166 systemd[1]: Started copybot-adapter.service - CopyBot Adapter Backend.
+Mar 07 18:26:42 ip-172-31-41-166 copybot-adapter[152182]: {"timestamp":"2026-03-07T18:26:42.758965Z","level":"INFO","fields":{"message":"copybot adapter started","bind_addr":"127.0.0.1:8080","signer_pubkey":"11111111111111111111111111111111","contract_version":"v1","routes":"{\"jito\", \"rpc\"}","submit_signature_verify_enabled":false,"submit_signature_verify_strict":false},"target":"copybot_adapter"}
+
+● copybot-executor.service - CopyBot Executor Backend
+     Loaded: loaded (/etc/systemd/system/copybot-executor.service; enabled; preset: enabled)
+     Active: active (running) since Sat 2026-03-07 18:26:42 UTC; 11h ago
+   Main PID: 152180 (copybot-executo)
+      Tasks: 3 (limit: 9283)
+     Memory: 1.1M (peak: 1.6M)
+        CPU: 52ms
+     CGroup: /system.slice/copybot-executor.service
+             └─152180 /var/www/solana-copy-bot/target/release/copybot-executor
+
+Mar 07 18:26:42 ip-172-31-41-166 systemd[1]: Started copybot-executor.service - CopyBot Executor Backend.
+Mar 07 18:26:42 ip-172-31-41-166 copybot-executor[152180]: {"timestamp":"2026-03-07T18:26:42.763806Z","level":"INFO","fields":{"message":"copybot executor started","bind_addr":"127.0.0.1:8090","backend_mode":"upstream","signer_pubkey":"11111111111111111111111111111111","signer_source":"file","signer_kms_key_id_configured":false,"signer_keypair_file_configured":true,"contract_version":"v1","routes":"[\"jito\", \"rpc\"]","send_rpc_routes":"[]","send_rpc_fallback_routes":"[]","submit_fastlane_enabled":false,"hmac_nonce_cache_max_entries":100000,"idempotency_db_path":"state/executor_idempotency.sqlite3","idempotency_claim_ttl_sec":60,"idempotency_response_retention_sec":604800,"idempotency_response_cleanup_batch_size":500,"idempotency_response_cleanup_max_batches_per_run":4,"idempotency_response_cleanup_worker_tick_sec":300,"submit_total_budget_ms":25000,"submit_signature_verify_enabled":false,"submit_signature_verify_strict":false},"target":"copybot_executor"}
+
+=== ps ===
+UID          PID    PPID  C STIME TTY          TIME CMD
+copybot   152686       1  7 Mar07 ?        00:50:57 /var/www/solana-copy-bot/target/release/copybot-app --config /etc/solana-copy-bot/live.server.toml
+
+=== /proc status ===
+State:	S (sleeping)
+VmSize:	  848072 kB
+VmHWM:	  181084 kB
+VmRSS:	   97208 kB
+Threads:	8
+
+=== free -h ===
+               total        used        free      shared  buff/cache   available
+Mem:           7.6Gi       689Mi       153Mi       2.9Mi       7.1Gi       6.9Gi
+Swap:             0B          0B          0B
+
+=== df -h ===
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root        96G   78G   19G  81% /
+/dev/root        96G   78G   19G  81% /
