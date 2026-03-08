@@ -67,12 +67,10 @@ impl TryFrom<CopySignalRow> for ExecutionIntent {
             side: ExecutionSide::try_from(row.side.as_str())?,
             token: row.token,
             notional_sol: row.notional_sol,
-            notional_lamports: row
-                .notional_lamports
-                .unwrap_or(sol_to_lamports_ceil(
-                    row.notional_sol,
-                    "execution intent notional_sol",
-                )?),
+            notional_lamports: match row.notional_lamports {
+                Some(value) => value,
+                None => sol_to_lamports_ceil(row.notional_sol, "execution intent notional_sol")?,
+            },
             signal_ts: row.ts,
         };
         intent.notional_lamports()?;
@@ -119,6 +117,24 @@ mod tests {
         .expect("intent should parse");
 
         assert_eq!(intent.side, ExecutionSide::Sell);
+        assert_eq!(intent.notional_lamports, super::Lamports::new(100_000_000));
+    }
+
+    #[test]
+    fn execution_intent_uses_exact_notional_even_when_float_mirror_overflows_conversion() {
+        let intent = ExecutionIntent::try_from(CopySignalRow {
+            signal_id: "signal-3".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: (u64::MAX as f64) / 1_000_000_000.0,
+            notional_lamports: Some(super::Lamports::new(100_000_000)),
+            ts: Utc::now(),
+            status: "shadow_recorded".to_string(),
+        })
+        .expect("exact sidecar should win over overflowing float-to-lamports fallback");
+
+        assert_eq!(intent.side, ExecutionSide::Buy);
         assert_eq!(intent.notional_lamports, super::Lamports::new(100_000_000));
     }
 }
