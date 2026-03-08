@@ -477,6 +477,7 @@ impl ExecutionRuntime {
                     &fill.token,
                     intent.side.as_str(),
                     fill.qty,
+                    fill.qty_exact,
                     fill.notional_sol,
                     fill.notional_lamports,
                     fill.avg_price_sol,

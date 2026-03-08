@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
+use copybot_core_types::TokenQuantity;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
@@ -16,6 +17,7 @@ pub enum ConfirmationStatus {
 pub struct ObservedExecutionFill {
     pub signer_balance_delta_lamports: i64,
     pub token_delta_qty: f64,
+    pub token_delta_exact: Option<TokenQuantity>,
 }
 
 #[derive(Debug, Clone)]
@@ -374,6 +376,25 @@ struct ConfirmedTransactionObservation {
     observed_fill: Option<ObservedExecutionFill>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OwnedTokenBalance {
+    qty: f64,
+    exact: Option<TokenQuantity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OwnedTokenDelta {
+    qty: f64,
+    exact: Option<TokenQuantity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ParsedUiTokenAmount {
+    qty: f64,
+    raw_amount: Option<u64>,
+    decimals: Option<u8>,
+}
+
 fn parse_confirmed_transaction_observation_from_rpc_body(
     body: &Value,
     execution_signer_pubkey: &str,
@@ -408,14 +429,13 @@ fn parse_confirmed_transaction_observation_from_rpc_body(
     } else {
         match (
             parse_signer_balance_delta_lamports(result, execution_signer_pubkey)?,
-            parse_owned_token_delta_qty(result, execution_signer_pubkey, token_mint)?,
+            parse_owned_token_delta(result, execution_signer_pubkey, token_mint)?,
         ) {
-            (Some(signer_balance_delta_lamports), Some(token_delta_qty))
-                if token_delta_qty.abs() > 1e-12 =>
-            {
+            (Some(signer_balance_delta_lamports), Some(token_delta)) if token_delta.qty.abs() > 1e-12 => {
                 Some(ObservedExecutionFill {
                     signer_balance_delta_lamports,
-                    token_delta_qty,
+                    token_delta_qty: token_delta.qty,
+                    token_delta_exact: token_delta.exact,
                 })
             }
             _ => None,
@@ -472,11 +492,11 @@ fn parse_signer_balance_delta_lamports(
     Ok(Some(delta as i64))
 }
 
-fn parse_owned_token_delta_qty(
+fn parse_owned_token_delta(
     result: &Value,
     execution_signer_pubkey: &str,
     token_mint: &str,
-) -> std::result::Result<Option<f64>, FeeLookupErrorClass> {
+) -> std::result::Result<Option<OwnedTokenDelta>, FeeLookupErrorClass> {
     let pre_qty = sum_owned_token_balance(
         result
             .get("meta")
@@ -494,9 +514,18 @@ fn parse_owned_token_delta_qty(
 
     match (pre_qty, post_qty) {
         (None, None) => Ok(None),
-        (Some(pre), Some(post)) => Ok(Some(post - pre)),
-        (Some(pre), None) => Ok(Some(-pre)),
-        (None, Some(post)) => Ok(Some(post)),
+        (Some(pre), Some(post)) => Ok(Some(OwnedTokenDelta {
+            qty: post.qty - pre.qty,
+            exact: exact_token_delta(pre.exact, post.exact),
+        })),
+        (Some(pre), None) => Ok(Some(OwnedTokenDelta {
+            qty: -pre.qty,
+            exact: None,
+        })),
+        (None, Some(post)) => Ok(Some(OwnedTokenDelta {
+            qty: post.qty,
+            exact: None,
+        })),
     }
 }
 
@@ -504,13 +533,16 @@ fn sum_owned_token_balance(
     entries: Option<&Value>,
     execution_signer_pubkey: &str,
     token_mint: &str,
-) -> std::result::Result<Option<f64>, FeeLookupErrorClass> {
+) -> std::result::Result<Option<OwnedTokenBalance>, FeeLookupErrorClass> {
     let Some(entries) = entries.and_then(Value::as_array) else {
         return Ok(None);
     };
 
     let mut matched = false;
     let mut total = 0.0;
+    let mut exact_unavailable = false;
+    let mut exact_total_raw: Option<u64> = None;
+    let mut exact_decimals: Option<u8> = None;
     for entry in entries {
         if entry.get("mint").and_then(Value::as_str) != Some(token_mint) {
             continue;
@@ -524,25 +556,103 @@ fn sum_owned_token_balance(
                 .ok_or(FeeLookupErrorClass::InvalidJson)?,
         )?;
         matched = true;
-        total += qty;
+        total += qty.qty;
+        if exact_unavailable {
+            continue;
+        }
+        match (qty.raw_amount, qty.decimals) {
+            (Some(raw_amount), Some(decimals)) => {
+                match exact_decimals {
+                    Some(existing) if existing != decimals => {
+                        exact_unavailable = true;
+                        exact_total_raw = None;
+                        exact_decimals = None;
+                    }
+                    Some(_) => {
+                        exact_total_raw = Some(
+                            exact_total_raw
+                                .unwrap_or(0)
+                                .checked_add(raw_amount)
+                                .ok_or(FeeLookupErrorClass::OutOfRange)?,
+                        );
+                    }
+                    None => {
+                        exact_decimals = Some(decimals);
+                        exact_total_raw = Some(raw_amount);
+                    }
+                }
+            }
+            _ => {
+                exact_unavailable = true;
+                exact_total_raw = None;
+                exact_decimals = None;
+            }
+        }
     }
 
-    Ok(matched.then_some(total))
+    Ok(matched.then_some(OwnedTokenBalance {
+        qty: total,
+        exact: if exact_unavailable {
+            None
+        } else {
+            match (exact_total_raw, exact_decimals) {
+                (Some(raw), Some(decimals)) => Some(TokenQuantity::new(raw, decimals)),
+                _ => None,
+            }
+        },
+    }))
 }
 
-fn parse_ui_token_amount(value: &Value) -> std::result::Result<f64, FeeLookupErrorClass> {
+fn exact_token_delta(
+    pre: Option<TokenQuantity>,
+    post: Option<TokenQuantity>,
+) -> Option<TokenQuantity> {
+    match (pre, post) {
+        (Some(pre), Some(post)) if pre.decimals() == post.decimals() => {
+            let raw_delta = if post.raw() >= pre.raw() {
+                post.raw() - pre.raw()
+            } else {
+                pre.raw() - post.raw()
+            };
+            Some(TokenQuantity::new(raw_delta, post.decimals()))
+        }
+        _ => None,
+    }
+}
+
+fn parse_ui_token_amount(value: &Value) -> std::result::Result<ParsedUiTokenAmount, FeeLookupErrorClass> {
     if let Some(text) = value.get("uiAmountString").and_then(Value::as_str) {
         let parsed = text
             .parse::<f64>()
             .map_err(|_| FeeLookupErrorClass::InvalidJson)?;
         if parsed.is_finite() {
-            return Ok(parsed);
+            return Ok(ParsedUiTokenAmount {
+                qty: parsed,
+                raw_amount: value
+                    .get("amount")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| raw.parse::<u64>().ok()),
+                decimals: value
+                    .get("decimals")
+                    .and_then(Value::as_u64)
+                    .and_then(|raw| u8::try_from(raw).ok()),
+            });
         }
         return Err(FeeLookupErrorClass::InvalidJson);
     }
     if let Some(parsed) = value.get("uiAmount").and_then(Value::as_f64) {
         if parsed.is_finite() {
-            return Ok(parsed);
+            return Ok(ParsedUiTokenAmount {
+                qty: parsed,
+                raw_amount: value
+                    .get("amount")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| raw.parse::<u64>().ok()),
+                decimals: value
+                    .get("decimals")
+                    .and_then(Value::as_u64)
+                    .and_then(|raw| u8::try_from(raw).ok()),
+            });
         }
         return Err(FeeLookupErrorClass::InvalidJson);
     }
@@ -563,7 +673,14 @@ fn parse_ui_token_amount(value: &Value) -> std::result::Result<f64, FeeLookupErr
     if !normalized.is_finite() {
         return Err(FeeLookupErrorClass::InvalidJson);
     }
-    Ok(normalized)
+    let raw_amount = amount_raw
+        .parse::<u64>()
+        .map_err(|_| FeeLookupErrorClass::InvalidJson)?;
+    Ok(ParsedUiTokenAmount {
+        qty: normalized,
+        raw_amount: Some(raw_amount),
+        decimals: Some(u8::try_from(decimals_raw).map_err(|_| FeeLookupErrorClass::OutOfRange)?),
+    })
 }
 
 fn account_key_matches(value: &Value, pubkey: &str) -> bool {
@@ -843,6 +960,7 @@ mod tests {
             Some(ObservedExecutionFill {
                 signer_balance_delta_lamports: -100_005_000,
                 token_delta_qty: 2.5,
+                token_delta_exact: None,
             })
         );
         Ok(())
@@ -890,6 +1008,7 @@ mod tests {
             Some(ObservedExecutionFill {
                 signer_balance_delta_lamports: 119_995_000,
                 token_delta_qty: -2.5,
+                token_delta_exact: None,
             })
         );
         Ok(())
@@ -953,6 +1072,7 @@ mod tests {
             Some(ObservedExecutionFill {
                 signer_balance_delta_lamports: -100_005_000,
                 token_delta_qty: 2.0,
+                token_delta_exact: None,
             })
         );
 
@@ -960,6 +1080,58 @@ mod tests {
         fallback_handle
             .join()
             .expect("join fallback jsonrpc server");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_confirmed_transaction_observation_from_rpc_body_extracts_exact_qty_when_both_sides_are_exact()
+    -> Result<()> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "transaction": {
+                    "message": {
+                        "accountKeys": ["signer-pubkey", "other-account"]
+                    }
+                },
+                "meta": {
+                    "fee": 5000,
+                    "preBalances": [1_000_000_000_u64, 0],
+                    "postBalances": [899_995_000_u64, 0],
+                    "preTokenBalances": [{
+                        "mint": "token-a",
+                        "owner": "signer-pubkey",
+                        "uiTokenAmount": {
+                            "amount": "500000",
+                            "decimals": 6
+                        }
+                    }],
+                    "postTokenBalances": [{
+                        "mint": "token-a",
+                        "owner": "signer-pubkey",
+                        "uiTokenAmount": {
+                            "amount": "2500000",
+                            "decimals": 6
+                        }
+                    }]
+                }
+            },
+            "id": 1
+        });
+        let observed = parse_confirmed_transaction_observation_from_rpc_body(
+            &body,
+            "signer-pubkey",
+            "token-a",
+        )
+        .map_err(|value| anyhow!("unexpected parser error: {:?}", value))?;
+        assert_eq!(
+            observed.observed_fill,
+            Some(ObservedExecutionFill {
+                signer_balance_delta_lamports: -100_005_000,
+                token_delta_qty: 2.0,
+                token_delta_exact: Some(TokenQuantity::new(2_000_000, 6)),
+            })
+        );
         Ok(())
     }
 

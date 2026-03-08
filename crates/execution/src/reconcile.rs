@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use copybot_core_types::Lamports;
+use copybot_core_types::{Lamports, TokenQuantity};
 
 use crate::confirm::ObservedExecutionFill;
 use crate::intent::ExecutionIntent;
@@ -12,6 +12,7 @@ pub struct ExecutionFill {
     pub notional_sol: f64,
     pub notional_lamports: Lamports,
     pub qty: f64,
+    pub qty_exact: Option<TokenQuantity>,
     pub avg_price_sol: f64,
     pub fee_sol: f64,
     pub fee_lamports: Lamports,
@@ -48,6 +49,7 @@ pub fn build_fill_from_priced_intent(
         notional_sol,
         notional_lamports,
         qty,
+        qty_exact: None,
         avg_price_sol,
         fee_sol,
         fee_lamports,
@@ -150,6 +152,7 @@ pub fn build_fill_from_confirmed_observation(
         notional_sol,
         notional_lamports,
         qty,
+        qty_exact: observed_fill.token_delta_exact,
         avg_price_sol,
         fee_sol,
         fee_lamports,
@@ -182,6 +185,7 @@ mod tests {
             ObservedExecutionFill {
                 signer_balance_delta_lamports: -100_005_000,
                 token_delta_qty: -2.0,
+                token_delta_exact: None,
             },
             50.0,
             0.000005,
@@ -203,6 +207,7 @@ mod tests {
             ObservedExecutionFill {
                 signer_balance_delta_lamports: 89_995_000,
                 token_delta_qty: 2.0,
+                token_delta_exact: None,
             },
             50.0,
             0.000005,
@@ -224,6 +229,7 @@ mod tests {
             ObservedExecutionFill {
                 signer_balance_delta_lamports: -100_005_000,
                 token_delta_qty: 2.0,
+                token_delta_exact: None,
             },
             50.0,
             0.000005,
@@ -242,6 +248,7 @@ mod tests {
             ObservedExecutionFill {
                 signer_balance_delta_lamports: 89_995_000,
                 token_delta_qty: -2.0,
+                token_delta_exact: None,
             },
             50.0,
             0.000005,

@@ -978,6 +978,7 @@ mod tests {
                 observed_fill: Some(confirm::ObservedExecutionFill {
                     signer_balance_delta_lamports: self.signer_balance_delta_lamports,
                     token_delta_qty: self.token_delta_qty,
+                    token_delta_exact: None,
                 }),
                 detail: self.detail.to_string(),
             })
@@ -3787,6 +3788,7 @@ mod tests {
                 observed_fill: Some(confirm::ObservedExecutionFill {
                     signer_balance_delta_lamports: -100_005_000,
                     token_delta_qty: 2.0,
+                    token_delta_exact: None,
                 }),
                 detail: "observed_buy_fill".to_string(),
             }])),
@@ -3890,6 +3892,7 @@ mod tests {
                 observed_fill: Some(confirm::ObservedExecutionFill {
                     signer_balance_delta_lamports: 89_995_000,
                     token_delta_qty: -1.5,
+                    token_delta_exact: None,
                 }),
                 detail: "observed_sell_fill".to_string(),
             }])),
@@ -4067,6 +4070,7 @@ mod tests {
                 observed_fill: Some(confirm::ObservedExecutionFill {
                     signer_balance_delta_lamports: 89_995_000,
                     token_delta_qty: 1.5,
+                    token_delta_exact: None,
                 }),
                 detail: "observed_sign_mismatch".to_string(),
             }])),
@@ -4335,6 +4339,7 @@ mod tests {
                     observed_fill: Some(confirm::ObservedExecutionFill {
                         signer_balance_delta_lamports: -100_000_000,
                         token_delta_qty: 1.0,
+                        token_delta_exact: None,
                     }),
                     detail: "late_confirmed".to_string(),
                 },
@@ -4960,6 +4965,7 @@ mod tests {
                     observed_fill: Some(confirm::ObservedExecutionFill {
                         signer_balance_delta_lamports: -100_000_000,
                         token_delta_qty: 1.0,
+                        token_delta_exact: None,
                     }),
                     detail: "late_confirmed_after_error".to_string(),
                 }),

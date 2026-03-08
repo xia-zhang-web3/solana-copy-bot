@@ -9,7 +9,7 @@ use std::time::Duration as StdDuration;
 pub use copybot_core_types::{
     CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
     FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, Lamports, SignedLamports,
-    TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
+    TokenQuantity, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
     EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
@@ -249,6 +249,7 @@ impl SqliteStore {
             token,
             side,
             qty,
+            None,
             notional_sol,
             notional_lamports,
             avg_price,
@@ -267,6 +268,7 @@ impl SqliteStore {
         token: &str,
         side: &str,
         qty: f64,
+        qty_exact: Option<TokenQuantity>,
         notional_sol: f64,
         notional_lamports: Lamports,
         avg_price: f64,
@@ -328,12 +330,24 @@ impl SqliteStore {
 
                 self.conn
                     .execute(
-                        "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps, notional_lamports, fee_lamports)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        "INSERT INTO fills(
+                            order_id,
+                            token,
+                            qty,
+                            qty_raw,
+                            qty_decimals,
+                            avg_price,
+                            fee,
+                            slippage_bps,
+                            notional_lamports,
+                            fee_lamports
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         params![
                             order_id,
                             token,
                             qty,
+                            qty_exact.as_ref().map(|value| value.raw().to_string()),
+                            qty_exact.as_ref().map(|value| i64::from(value.decimals())),
                             avg_price,
                             fee,
                             slippage_bps,
@@ -348,6 +362,7 @@ impl SqliteStore {
                     token,
                     side,
                     qty,
+                    qty_exact,
                     notional_sol,
                     notional_lamports,
                     fee,
@@ -454,8 +469,18 @@ impl SqliteStore {
     ) -> Result<()> {
         self.execute_with_retry(|conn| {
             conn.execute(
-                "INSERT INTO fills(order_id, token, qty, avg_price, fee, slippage_bps, notional_lamports, fee_lamports)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL)",
+                "INSERT INTO fills(
+                    order_id,
+                    token,
+                    qty,
+                    qty_raw,
+                    qty_decimals,
+                    avg_price,
+                    fee,
+                    slippage_bps,
+                    notional_lamports,
+                    fee_lamports
+                 ) VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5, ?6, NULL, NULL)",
                 params![order_id, token, qty, avg_price, fee, slippage_bps],
             )
         })
@@ -552,6 +577,18 @@ impl SqliteStore {
         notional_sol: f64,
         ts: DateTime<Utc>,
     ) -> Result<()> {
+        self.apply_execution_fill_to_positions_exact(token, side, qty, None, notional_sol, ts)
+    }
+
+    pub fn apply_execution_fill_to_positions_exact(
+        &self,
+        token: &str,
+        side: &str,
+        qty: f64,
+        qty_exact: Option<TokenQuantity>,
+        notional_sol: f64,
+        ts: DateTime<Utc>,
+    ) -> Result<()> {
         if qty <= LIVE_POSITION_OPEN_EPS
             || notional_sol <= 0.0
             || !qty.is_finite()
@@ -583,6 +620,7 @@ impl SqliteStore {
                 token,
                 side,
                 qty,
+                qty_exact,
                 notional_sol,
                 notional_lamports,
                 0.0,
@@ -637,6 +675,7 @@ impl SqliteStore {
         token: &str,
         side: &str,
         qty: f64,
+        qty_exact: Option<TokenQuantity>,
         notional_sol: f64,
         notional_lamports: Lamports,
         fee_sol: f64,
@@ -653,9 +692,9 @@ impl SqliteStore {
         }
 
         let side_norm = side.trim().to_ascii_lowercase();
-        let existing: Option<(String, f64, f64, Option<i64>, Option<f64>)> = conn
+        let existing: Option<(String, f64, Option<String>, Option<i64>, f64, Option<i64>, Option<f64>)> = conn
             .query_row(
-                "SELECT position_id, qty, cost_sol, cost_lamports, pnl_sol
+                "SELECT position_id, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, pnl_sol
                  FROM positions
                  WHERE token = ?1
                    AND state = 'open'
@@ -669,6 +708,8 @@ impl SqliteStore {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
@@ -685,11 +726,19 @@ impl SqliteStore {
                 if let Some((
                     position_id,
                     current_qty,
+                    current_qty_raw,
+                    current_qty_decimals,
                     current_cost,
                     current_cost_lamports_raw,
                     current_pnl,
                 )) = existing
                 {
+                    let current_qty_exact = token_quantity_from_sql(
+                        current_qty_raw,
+                        current_qty_decimals,
+                        "live open position buy update",
+                    )?;
+                    let next_qty_exact = merge_position_qty_exact_on_buy(current_qty_exact, qty_exact)?;
                     let current_cost_lamports = position_cost_lamports(
                         current_cost,
                         current_cost_lamports_raw,
@@ -703,14 +752,18 @@ impl SqliteStore {
                     conn.execute(
                         "UPDATE positions
                          SET qty = ?1,
-                             cost_sol = ?2,
-                             cost_lamports = ?3,
-                             pnl_sol = ?4,
+                             qty_raw = ?2,
+                             qty_decimals = ?3,
+                             cost_sol = ?4,
+                             cost_lamports = ?5,
+                             pnl_sol = ?6,
                              state = 'open',
                              closed_ts = NULL
-                         WHERE position_id = ?5",
+                         WHERE position_id = ?7",
                         params![
                             current_qty + qty,
+                            next_qty_exact.as_ref().map(|value| value.raw().to_string()),
+                            next_qty_exact.as_ref().map(|value| i64::from(value.decimals())),
                             current_cost + effective_cost,
                             u64_to_sql_i64("positions.cost_lamports", next_cost_lamports.as_u64())?,
                             current_pnl.unwrap_or(0.0),
@@ -725,16 +778,20 @@ impl SqliteStore {
                             position_id,
                             token,
                             qty,
+                            qty_raw,
+                            qty_decimals,
                             cost_sol,
                             cost_lamports,
                             opened_ts,
                             state,
                             pnl_sol
-                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', 0.0)",
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', 0.0)",
                         params![
                             position_id,
                             token,
                             qty,
+                            qty_exact.as_ref().map(|value| value.raw().to_string()),
+                            qty_exact.as_ref().map(|value| i64::from(value.decimals())),
                             effective_cost,
                             u64_to_sql_i64(
                                 "positions.cost_lamports",
@@ -750,6 +807,8 @@ impl SqliteStore {
                 let Some((
                     position_id,
                     current_qty,
+                    current_qty_raw,
+                    current_qty_decimals,
                     current_cost,
                     current_cost_lamports_raw,
                     current_pnl,
@@ -788,6 +847,16 @@ impl SqliteStore {
                 let next_qty = (current_qty - qty_closed).max(0.0);
                 let next_cost = (current_cost - realized_cost).max(0.0);
                 let next_pnl = current_pnl.unwrap_or(0.0) + realized_pnl;
+                let current_qty_exact = token_quantity_from_sql(
+                    current_qty_raw,
+                    current_qty_decimals,
+                    "live open position sell update",
+                )?;
+                let next_qty_exact = merge_position_qty_exact_on_sell(
+                    current_qty_exact,
+                    qty_exact,
+                    next_qty <= LIVE_POSITION_OPEN_EPS,
+                )?;
                 let next_cost_lamports = if next_qty <= LIVE_POSITION_OPEN_EPS {
                     Lamports::ZERO
                 } else {
@@ -811,25 +880,37 @@ impl SqliteStore {
                     conn.execute(
                         "UPDATE positions
                          SET qty = 0.0,
+                             qty_raw = ?1,
+                             qty_decimals = ?2,
                              cost_sol = 0.0,
                              cost_lamports = 0,
-                             pnl_sol = ?1,
+                             pnl_sol = ?3,
                              state = 'closed',
-                             closed_ts = ?2
-                         WHERE position_id = ?3",
-                        params![next_pnl, ts.to_rfc3339(), position_id],
+                             closed_ts = ?4
+                         WHERE position_id = ?5",
+                        params![
+                            next_qty_exact.as_ref().map(|value| value.raw().to_string()),
+                            next_qty_exact.as_ref().map(|value| i64::from(value.decimals())),
+                            next_pnl,
+                            ts.to_rfc3339(),
+                            position_id
+                        ],
                     )
                     .context("failed closing live position after sell fill")?;
                 } else {
                     conn.execute(
                         "UPDATE positions
                          SET qty = ?1,
-                             cost_sol = ?2,
-                             cost_lamports = ?3,
-                             pnl_sol = ?4
-                         WHERE position_id = ?5",
+                             qty_raw = ?2,
+                             qty_decimals = ?3,
+                             cost_sol = ?4,
+                             cost_lamports = ?5,
+                             pnl_sol = ?6
+                         WHERE position_id = ?7",
                         params![
                             next_qty,
+                            next_qty_exact.as_ref().map(|value| value.raw().to_string()),
+                            next_qty_exact.as_ref().map(|value| i64::from(value.decimals())),
                             next_cost,
                             u64_to_sql_i64("positions.cost_lamports", next_cost_lamports.as_u64())?,
                             next_pnl,
@@ -1381,6 +1462,7 @@ mod tests {
             "token-a",
             "buy",
             2.0,
+            Some(TokenQuantity::new(2_000_000, 6)),
             0.10,
             Lamports::new(100_000_000),
             0.05,
@@ -1394,29 +1476,86 @@ mod tests {
             FinalizeExecutionConfirmOutcome::Applied(_)
         ));
 
-        let fill_row: (i64, i64) = store.conn.query_row(
-            "SELECT notional_lamports, fee_lamports
+        let fill_row: (i64, i64, String, i64) = store.conn.query_row(
+            "SELECT notional_lamports, fee_lamports, qty_raw, qty_decimals
              FROM fills
              WHERE order_id = ?1",
             params!["ord-exact-1"],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
-        assert_eq!(fill_row, (100_000_000, 5_000));
+        assert_eq!(fill_row, (100_000_000, 5_000, "2000000".to_string(), 6));
 
-        let position_row: (i64, f64) = store.conn.query_row(
-            "SELECT cost_lamports, cost_sol
+        let position_row: (i64, f64, String, i64) = store.conn.query_row(
+            "SELECT cost_lamports, cost_sol, qty_raw, qty_decimals
              FROM positions
              WHERE token = ?1
                AND state = 'open'",
             params!["token-a"],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         assert_eq!(position_row.0, 100_005_000);
         assert!((position_row.1 - 0.100005).abs() < 1e-9);
+        assert_eq!(position_row.2, "2000000");
+        assert_eq!(position_row.3, 6);
         assert_eq!(
             store.live_open_exposure_lamports()?,
             Lamports::new(100_005_000)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn apply_execution_fill_to_positions_exact_preserves_and_drops_qty_sidecars_conservatively()
+    -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-exact-qty-sidecars.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.apply_execution_fill_to_positions_exact(
+            "token-exact-qty",
+            "buy",
+            2.0,
+            Some(TokenQuantity::new(2_000_000, 6)),
+            0.20,
+            now,
+        )?;
+        store.apply_execution_fill_to_positions_exact(
+            "token-exact-qty",
+            "sell",
+            0.5,
+            Some(TokenQuantity::new(500_000, 6)),
+            0.06,
+            now + Duration::seconds(1),
+        )?;
+
+        let row: (f64, String, i64) = store.conn.query_row(
+            "SELECT qty, qty_raw, qty_decimals
+             FROM positions
+             WHERE token = ?1
+               AND state = 'open'",
+            params!["token-exact-qty"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert!((row.0 - 1.5).abs() < 1e-9);
+        assert_eq!(row.1, "1500000");
+        assert_eq!(row.2, 6);
+
+        store.apply_execution_fill_to_positions("token-exact-qty", "buy", 1.0, 0.10, now)?;
+        let mixed_row: (Option<String>, Option<i64>) = store.conn.query_row(
+            "SELECT qty_raw, qty_decimals
+             FROM positions
+             WHERE token = ?1
+               AND state = 'open'",
+            params!["token-exact-qty"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(mixed_row, (None, None));
 
         Ok(())
     }
@@ -4517,6 +4656,81 @@ pub(crate) fn position_cost_lamports(
     }
     sol_to_lamports_ceil_storage(cost_sol, "positions.cost_sol")
         .with_context(|| format!("failed deriving cost_lamports in {context}"))
+}
+
+fn token_quantity_from_sql(
+    raw: Option<String>,
+    decimals: Option<i64>,
+    context: &str,
+) -> Result<Option<TokenQuantity>> {
+    match (raw, decimals) {
+        (None, None) => Ok(None),
+        (Some(raw), Some(decimals)) => {
+            let decimals = u8::try_from(decimals).with_context(|| {
+                format!(
+                    "invalid qty_decimals={} in {} (must fit into u8)",
+                    decimals, context
+                )
+            })?;
+            let raw_value = raw.parse::<u64>().with_context(|| {
+                format!("invalid qty_raw={:?} in {} (must parse as u64)", raw, context)
+            })?;
+            Ok(Some(TokenQuantity::new(raw_value, decimals)))
+        }
+        _ => Err(anyhow!(
+            "partial exact quantity sidecar in {} (qty_raw and qty_decimals must both be NULL or both be populated)",
+            context
+        )),
+    }
+}
+
+fn merge_position_qty_exact_on_buy(
+    current: Option<TokenQuantity>,
+    added: Option<TokenQuantity>,
+) -> Result<Option<TokenQuantity>> {
+    match (current, added) {
+        (Some(current), Some(added)) if current.decimals() == added.decimals() => {
+            let raw = current.raw().checked_add(added.raw()).ok_or_else(|| {
+                anyhow!(
+                    "position qty_raw overflow while adding {} + {}",
+                    current.raw(),
+                    added.raw()
+                )
+            })?;
+            Ok(Some(TokenQuantity::new(raw, current.decimals())))
+        }
+        (Some(_), Some(_)) => Ok(None),
+        (None, Some(_)) | (Some(_), None) | (None, None) => Ok(None),
+    }
+}
+
+fn merge_position_qty_exact_on_sell(
+    current: Option<TokenQuantity>,
+    closed: Option<TokenQuantity>,
+    closing: bool,
+) -> Result<Option<TokenQuantity>> {
+    match (current, closed) {
+        (Some(current), Some(closed)) if current.decimals() == closed.decimals() => {
+            let raw = current.raw().checked_sub(closed.raw()).ok_or_else(|| {
+                anyhow!(
+                    "position qty_raw underflow while subtracting {} from {}",
+                    closed.raw(),
+                    current.raw()
+                )
+            })?;
+            if closing {
+                if raw == 0 {
+                    Ok(Some(TokenQuantity::new(0, current.decimals())))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(Some(TokenQuantity::new(raw, current.decimals())))
+            }
+        }
+        (Some(_), Some(_)) => Ok(None),
+        (Some(_), None) | (None, Some(_)) | (None, None) => Ok(None),
+    }
 }
 
 pub(crate) fn shadow_lot_cost_lamports(
