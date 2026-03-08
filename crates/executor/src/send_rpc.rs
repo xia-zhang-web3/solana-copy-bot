@@ -73,11 +73,13 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         return Err(reject_send_rpc_fallback_without_primary(route));
     }
 
-    let endpoints = backend.send_rpc_endpoint_chain_checked().map_err(|error| match error {
-        SendRpcEndpointChainError::FallbackWithoutPrimary => {
-            reject_send_rpc_fallback_without_primary(route)
-        }
-    })?;
+    let endpoints = backend
+        .send_rpc_endpoint_chain_checked()
+        .map_err(|error| match error {
+            SendRpcEndpointChainError::FallbackWithoutPrimary => {
+                reject_send_rpc_fallback_without_primary(route)
+            }
+        })?;
     if endpoints.is_empty() {
         return Err(Reject::terminal(
             "adapter_send_rpc_not_configured",
@@ -140,8 +142,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
         };
         let status = response.status();
         if !status.is_success() {
-            let body =
-                read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
+            let body = read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
             let body_detail =
                 truncate_detail_chars(body.text.as_str(), MAX_HTTP_ERROR_BODY_DETAIL_CHARS);
             let reject = if status.as_u16() == 429 || status.is_server_error() {
@@ -489,8 +490,7 @@ fn parse_shortvec_len(bytes: &[u8]) -> Result<(usize, usize)> {
 mod tests {
     use super::{
         classify_send_rpc_error_payload, extract_send_rpc_error_text,
-        validate_send_rpc_deadline_context,
-        SendRpcErrorPayloadDisposition,
+        validate_send_rpc_deadline_context, SendRpcErrorPayloadDisposition,
     };
     use crate::submit_deadline::SubmitDeadline;
     use serde_json::json;
@@ -601,9 +601,6 @@ mod tests {
             "message": "primary",
             "data": " secondary "
         });
-        assert_eq!(
-            extract_send_rpc_error_text(&payload),
-            "primary secondary"
-        );
+        assert_eq!(extract_send_rpc_error_text(&payload), "primary secondary");
     }
 }

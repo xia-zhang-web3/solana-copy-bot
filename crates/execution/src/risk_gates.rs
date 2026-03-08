@@ -1,13 +1,15 @@
 use crate::intent::{ExecutionIntent, ExecutionSide};
-use crate::money::{
-    checked_add_lamports, lamports_to_sol, sol_to_lamports_floor,
-};
+use crate::money::{checked_add_lamports, lamports_to_sol, sol_to_lamports_floor};
 use crate::ExecutionRuntime;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
-use copybot_core_types::Lamports;
+use copybot_core_types::{Lamports, SignedLamports};
 use copybot_storage::{ExecutionConfirmStateSnapshot, SqliteStore};
 use tracing::debug;
+
+fn signed_lamports_to_sol(value: SignedLamports) -> f64 {
+    value.as_i128() as f64 / 1_000_000_000.0
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ConfirmedBuyRiskBreach {
@@ -77,6 +79,21 @@ impl ExecutionRuntime {
             status,
             "shadow_recorded" | "execution_pending" | "execution_simulated"
         )
+    }
+
+    fn loss_limit_lamports_from_pct(&self, pct: f64, label: &str) -> Result<Option<Lamports>> {
+        if !pct.is_finite() || pct <= 0.0 {
+            return Ok(None);
+        }
+        let scaled = (self.max_total_exposure_lamports()?.as_u64() as f64) * (pct / 100.0);
+        if !scaled.is_finite() || scaled <= 0.0 || scaled > u64::MAX as f64 {
+            return Err(anyhow!(
+                "{} produced invalid lamport threshold from pct={}",
+                label,
+                pct
+            ));
+        }
+        Ok(Some(Lamports::new(scaled.floor() as u64)))
     }
 
     pub(crate) fn execution_risk_block_reason(
@@ -149,55 +166,118 @@ impl ExecutionRuntime {
                     )));
                 }
 
-                let daily_loss_limit_sol = self.daily_loss_limit_sol();
-                let max_drawdown_limit_sol = self.max_drawdown_limit_sol();
-                let (unrealized_pnl_sol, unrealized_missing_price_count) =
-                    if daily_loss_limit_sol.is_some() || max_drawdown_limit_sol.is_some() {
-                        store.live_unrealized_pnl_sol(now)?
-                    } else {
-                        (0.0, 0)
-                    };
-                if unrealized_missing_price_count > 0 {
-                    return Ok(Some(format!(
-                        "unrealized_price_unavailable unrealized_missing_price_count={} as_of={}",
-                        unrealized_missing_price_count,
-                        now.to_rfc3339()
-                    )));
-                }
-
-                if let Some(daily_loss_limit_sol) = daily_loss_limit_sol {
-                    let loss_window_start = now - Duration::hours(24);
-                    let (_, realized_pnl_24h) = store.live_realized_pnl_since(loss_window_start)?;
-                    let pnl_24h = realized_pnl_24h + unrealized_pnl_sol;
-                    if pnl_24h <= -daily_loss_limit_sol {
+                let daily_loss_limit_lamports = self.loss_limit_lamports_from_pct(
+                    self.risk.daily_loss_limit_pct,
+                    "risk.daily_loss_limit_pct",
+                )?;
+                let max_drawdown_limit_lamports = self.loss_limit_lamports_from_pct(
+                    self.risk.max_drawdown_pct,
+                    "risk.max_drawdown_pct",
+                )?;
+                let need_unrealized =
+                    daily_loss_limit_lamports.is_some() || max_drawdown_limit_lamports.is_some();
+                let use_exact_unrealized =
+                    need_unrealized && store.live_open_positions_are_exact_ready()?;
+                if use_exact_unrealized {
+                    let (unrealized_pnl_lamports, unrealized_missing_price_count) =
+                        store.live_unrealized_pnl_lamports(now)?;
+                    if unrealized_missing_price_count > 0 {
                         return Ok(Some(format!(
-                            "daily_loss_limit_exceeded pnl_24h={:.6} realized_pnl_24h={:.6} unrealized_pnl={:.6} unrealized_missing_price_count={} loss_limit_sol={:.6} loss_limit_pct={:.4} window_start={}",
-                            pnl_24h,
-                            realized_pnl_24h,
-                            unrealized_pnl_sol,
+                            "unrealized_price_unavailable unrealized_missing_price_count={} as_of={}",
                             unrealized_missing_price_count,
-                            daily_loss_limit_sol,
-                            self.risk.daily_loss_limit_pct,
-                            loss_window_start.to_rfc3339()
+                            now.to_rfc3339()
                         )));
                     }
-                }
 
-                if let Some(max_drawdown_limit_sol) = max_drawdown_limit_sol {
-                    let drawdown_window_start = now - Duration::hours(24);
-                    let max_drawdown_sol = store.live_max_drawdown_with_unrealized_since(
-                        drawdown_window_start,
-                        unrealized_pnl_sol,
-                    )?;
-                    if max_drawdown_sol >= max_drawdown_limit_sol {
+                    if let Some(daily_loss_limit_lamports) = daily_loss_limit_lamports {
+                        let loss_window_start = now - Duration::hours(24);
+                        let (_, realized_pnl_24h_lamports) =
+                            store.live_realized_pnl_lamports_since(loss_window_start)?;
+                        let pnl_24h_lamports = realized_pnl_24h_lamports
+                            .checked_add(unrealized_pnl_lamports)
+                            .ok_or_else(|| anyhow!("daily loss pnl lamports overflow"))?;
+                        let daily_loss_floor =
+                            SignedLamports::new(-i128::from(daily_loss_limit_lamports.as_u64()));
+                        if pnl_24h_lamports <= daily_loss_floor {
+                            return Ok(Some(format!(
+                                "daily_loss_limit_exceeded pnl_24h={:.6} realized_pnl_24h={:.6} unrealized_pnl={:.6} unrealized_missing_price_count={} loss_limit_sol={:.6} loss_limit_pct={:.4} window_start={}",
+                                signed_lamports_to_sol(pnl_24h_lamports),
+                                signed_lamports_to_sol(realized_pnl_24h_lamports),
+                                signed_lamports_to_sol(unrealized_pnl_lamports),
+                                unrealized_missing_price_count,
+                                lamports_to_sol(daily_loss_limit_lamports),
+                                self.risk.daily_loss_limit_pct,
+                                loss_window_start.to_rfc3339()
+                            )));
+                        }
+                    }
+
+                    if let Some(max_drawdown_limit_lamports) = max_drawdown_limit_lamports {
+                        let drawdown_window_start = now - Duration::hours(24);
+                        let max_drawdown_lamports = store
+                            .live_max_drawdown_with_unrealized_lamports_since(
+                                drawdown_window_start,
+                                unrealized_pnl_lamports,
+                            )?;
+                        if max_drawdown_lamports >= max_drawdown_limit_lamports {
+                            return Ok(Some(format!(
+                                "max_drawdown_exceeded max_drawdown_sol={:.6} unrealized_missing_price_count={} drawdown_limit_sol={:.6} drawdown_limit_pct={:.4} window_start={}",
+                                lamports_to_sol(max_drawdown_lamports),
+                                unrealized_missing_price_count,
+                                lamports_to_sol(max_drawdown_limit_lamports),
+                                self.risk.max_drawdown_pct,
+                                drawdown_window_start.to_rfc3339()
+                            )));
+                        }
+                    }
+                } else if need_unrealized {
+                    let (unrealized_pnl_sol, unrealized_missing_price_count) =
+                        store.live_unrealized_pnl_sol(now)?;
+                    if unrealized_missing_price_count > 0 {
                         return Ok(Some(format!(
-                            "max_drawdown_exceeded max_drawdown_sol={:.6} unrealized_missing_price_count={} drawdown_limit_sol={:.6} drawdown_limit_pct={:.4} window_start={}",
-                            max_drawdown_sol,
+                            "unrealized_price_unavailable unrealized_missing_price_count={} as_of={}",
                             unrealized_missing_price_count,
-                            max_drawdown_limit_sol,
-                            self.risk.max_drawdown_pct,
-                            drawdown_window_start.to_rfc3339()
+                            now.to_rfc3339()
                         )));
+                    }
+
+                    if let Some(daily_loss_limit_lamports) = daily_loss_limit_lamports {
+                        let loss_window_start = now - Duration::hours(24);
+                        let (_, realized_pnl_24h) =
+                            store.live_realized_pnl_since(loss_window_start)?;
+                        let pnl_24h = realized_pnl_24h + unrealized_pnl_sol;
+                        let daily_loss_limit_sol = lamports_to_sol(daily_loss_limit_lamports);
+                        if pnl_24h <= -daily_loss_limit_sol {
+                            return Ok(Some(format!(
+                                "daily_loss_limit_exceeded pnl_24h={:.6} realized_pnl_24h={:.6} unrealized_pnl={:.6} unrealized_missing_price_count={} loss_limit_sol={:.6} loss_limit_pct={:.4} window_start={}",
+                                pnl_24h,
+                                realized_pnl_24h,
+                                unrealized_pnl_sol,
+                                unrealized_missing_price_count,
+                                daily_loss_limit_sol,
+                                self.risk.daily_loss_limit_pct,
+                                loss_window_start.to_rfc3339()
+                            )));
+                        }
+                    }
+
+                    if let Some(max_drawdown_limit_lamports) = max_drawdown_limit_lamports {
+                        let drawdown_window_start = now - Duration::hours(24);
+                        let max_drawdown_sol = store.live_max_drawdown_with_unrealized_since(
+                            drawdown_window_start,
+                            unrealized_pnl_sol,
+                        )?;
+                        let max_drawdown_limit_sol = lamports_to_sol(max_drawdown_limit_lamports);
+                        if max_drawdown_sol >= max_drawdown_limit_sol {
+                            return Ok(Some(format!(
+                                "max_drawdown_exceeded max_drawdown_sol={:.6} unrealized_missing_price_count={} drawdown_limit_sol={:.6} drawdown_limit_pct={:.4} window_start={}",
+                                max_drawdown_sol,
+                                unrealized_missing_price_count,
+                                max_drawdown_limit_sol,
+                                self.risk.max_drawdown_pct,
+                                drawdown_window_start.to_rfc3339()
+                            )));
+                        }
                     }
                 }
 
@@ -255,19 +335,5 @@ impl ExecutionRuntime {
             open_positions: snapshot.open_positions,
             reasons,
         }))
-    }
-
-    pub(crate) fn daily_loss_limit_sol(&self) -> Option<f64> {
-        if !self.risk.daily_loss_limit_pct.is_finite() || self.risk.daily_loss_limit_pct <= 0.0 {
-            return None;
-        }
-        Some(self.risk.max_total_exposure_sol * (self.risk.daily_loss_limit_pct / 100.0))
-    }
-
-    pub(crate) fn max_drawdown_limit_sol(&self) -> Option<f64> {
-        if !self.risk.max_drawdown_pct.is_finite() || self.risk.max_drawdown_pct <= 0.0 {
-            return None;
-        }
-        Some(self.risk.max_total_exposure_sol * (self.risk.max_drawdown_pct / 100.0))
     }
 }

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::net::IpAddr;
 
 pub(crate) const MAX_HTTP_ERROR_BODY_READ_BYTES: usize = 4096;
@@ -182,7 +182,7 @@ pub(crate) async fn read_response_body_limited(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_HTTP_JSON_BODY_READ_BYTES, read_response_body_limited, validate_endpoint_url};
+    use super::{read_response_body_limited, validate_endpoint_url, MAX_HTTP_JSON_BODY_READ_BYTES};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;

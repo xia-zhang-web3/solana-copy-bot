@@ -646,7 +646,7 @@ pub(crate) fn fallback_price_and_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use copybot_core_types::SwapEvent;
+    use copybot_core_types::{ExactSwapAmounts, SwapEvent, TokenQuantity};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
@@ -1073,7 +1073,12 @@ mod tests {
             signature: signature.to_string(),
             slot: 1_000_000,
             ts_utc: ts,
-            exact_amounts: None,
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "1000000000".to_string(),
+                amount_in_decimals: 9,
+                amount_out_raw: "10000000".to_string(),
+                amount_out_decimals: 6,
+            }),
         })?;
         Ok(())
     }
@@ -2833,10 +2838,11 @@ mod tests {
     fn process_batch_drops_buy_when_daily_loss_is_exceeded_by_unrealized_pnl() -> Result<()> {
         let (store, db_path) = make_test_store("batch-daily-loss-unrealized")?;
         let now = Utc::now();
-        store.apply_execution_fill_to_positions(
+        store.apply_execution_fill_to_positions_exact(
             "token-open-loss",
             "buy",
             1.0,
+            Some(TokenQuantity::new(1_000_000, 6)),
             0.20,
             now - Duration::minutes(10),
         )?;
@@ -2906,24 +2912,27 @@ mod tests {
     fn process_batch_drops_buy_when_drawdown_is_exceeded_by_unrealized_pnl() -> Result<()> {
         let (store, db_path) = make_test_store("batch-drawdown-unrealized")?;
         let now = Utc::now();
-        store.apply_execution_fill_to_positions(
+        store.apply_execution_fill_to_positions_exact(
             "token-closed-profit",
             "buy",
             1.0,
+            Some(TokenQuantity::new(1_000_000, 6)),
             0.10,
             now - Duration::minutes(20),
         )?;
-        store.apply_execution_fill_to_positions(
+        store.apply_execution_fill_to_positions_exact(
             "token-closed-profit",
             "sell",
             1.0,
+            Some(TokenQuantity::new(1_000_000, 6)),
             0.30,
             now - Duration::minutes(19),
         )?;
-        store.apply_execution_fill_to_positions(
+        store.apply_execution_fill_to_positions_exact(
             "token-open-drawdown",
             "buy",
             1.0,
+            Some(TokenQuantity::new(1_000_000, 6)),
             0.40,
             now - Duration::minutes(10),
         )?;
@@ -3049,6 +3058,81 @@ mod tests {
         let detail = order.simulation_error.unwrap_or_default();
         assert!(
             detail.contains("unrealized_price_unavailable"),
+            "unexpected risk block detail: {detail}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_legacy_open_position_uses_legacy_unrealized_risk_path() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-legacy-unrealized-bridge")?;
+        let now = Utc::now();
+        store.apply_execution_fill_to_positions(
+            "token-open-legacy",
+            "buy",
+            1.0,
+            0.20,
+            now - Duration::minutes(10),
+        )?;
+        seed_token_price(
+            &store,
+            "token-open-legacy",
+            now - Duration::minutes(9),
+            "sig-price-open-legacy",
+        )?;
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:s13:w:buy:legacy-open-risk".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-buy-legacy-open-risk".to_string(),
+            notional_sol: 0.1,
+            notional_lamports: None,
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-legacy-open-risk-1",
+                &signal.signal_id,
+                &client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 1.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        risk.daily_loss_limit_pct = 5.0;
+        risk.max_drawdown_pct = 0.0;
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.batch_size = 10;
+        execution.mode = "paper".to_string();
+        let runtime = ExecutionRuntime::from_config(execution, risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.dropped, 1);
+
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("legacy-unrealized bridge signal should create and drop order")?;
+        assert_eq!(order.status, "execution_dropped");
+        assert_eq!(order.err_code.as_deref(), Some("risk_blocked"));
+        let detail = order.simulation_error.unwrap_or_default();
+        assert!(
+            detail.contains("daily_loss_limit_exceeded")
+                && detail.contains("unrealized_pnl")
+                && !detail.contains("unrealized_price_unavailable"),
             "unexpected risk block detail: {detail}"
         );
 

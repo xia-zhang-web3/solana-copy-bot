@@ -2,14 +2,15 @@ use crate::sqlite_retry::is_retryable_sqlite_error;
 use crate::{
     merge_position_qty_exact_on_sell, note_sqlite_busy_error, note_sqlite_write_retry,
     shadow_lot_cost_lamports, signed_lamports_to_sol, signed_lamports_to_sql_i64,
-    sol_to_lamports_ceil_storage, sol_to_lamports_floor_storage, token_quantity_from_sql,
-    u64_to_sql_i64, ShadowCloseOutcome, ShadowLotRow, SqliteStore, SQLITE_WRITE_MAX_RETRIES,
-    SQLITE_WRITE_RETRY_BACKOFF_MS,
+    sol_to_lamports_ceil_storage, sol_to_lamports_floor_storage, split_token_quantity_pro_rata,
+    token_quantity_from_sql, u64_to_sql_i64, ShadowCloseOutcome, ShadowLotRow, SqliteStore,
+    POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
+    SQLITE_WRITE_MAX_RETRIES, SQLITE_WRITE_RETRY_BACKOFF_MS,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_core_types::TokenQuantity;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 use std::io;
 use std::time::Duration as StdDuration;
@@ -18,6 +19,14 @@ pub(crate) const SHADOW_LOT_OPEN_EPS: f64 = 1e-12;
 
 fn to_sql_conversion_error(error: anyhow::Error) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(io::Error::other(error.to_string())))
+}
+
+fn shadow_accounting_bucket_for_qty_exact(qty_exact: Option<TokenQuantity>) -> &'static str {
+    if qty_exact.is_some() {
+        POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER
+    } else {
+        POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER
+    }
 }
 
 impl SqliteStore {
@@ -44,12 +53,23 @@ impl SqliteStore {
         self.execute_with_retry_result(|conn| {
             let cost_lamports = sol_to_lamports_ceil_storage(cost_sol, "shadow lot cost_sol")
                 .map_err(to_sql_conversion_error)?;
+            let accounting_bucket = shadow_accounting_bucket_for_qty_exact(qty_exact);
             conn.execute(
-                "INSERT INTO shadow_lots(wallet_id, token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO shadow_lots(
+                    wallet_id,
+                    token,
+                    accounting_bucket,
+                    qty,
+                    qty_raw,
+                    qty_decimals,
+                    cost_sol,
+                    cost_lamports,
+                    opened_ts
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     wallet_id,
                     token,
+                    accounting_bucket,
                     qty,
                     qty_exact.as_ref().map(|value| value.raw().to_string()),
                     qty_exact.as_ref().map(|value| i64::from(value.decimals())),
@@ -68,7 +88,7 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, wallet_id, token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
+                "SELECT id, wallet_id, token, accounting_bucket, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
                  FROM shadow_lots
                  WHERE wallet_id = ?1 AND token = ?2
                  ORDER BY id ASC",
@@ -80,20 +100,20 @@ impl SqliteStore {
 
         let mut lots = Vec::new();
         while let Some(row) = rows.next().context("failed iterating shadow lots")? {
-            let opened_raw: String = row.get(8).context("failed reading shadow_lots.opened_ts")?;
+            let opened_raw: String = row.get(9).context("failed reading shadow_lots.opened_ts")?;
             let opened_ts = DateTime::parse_from_rfc3339(&opened_raw)
                 .map(|dt| dt.with_timezone(&Utc))
                 .with_context(|| {
                     format!("invalid shadow_lots.opened_ts rfc3339 value: {opened_raw}")
                 })?;
             let qty_exact = token_quantity_from_sql(
-                row.get(4).context("failed reading shadow_lots.qty_raw")?,
-                row.get(5)
+                row.get(5).context("failed reading shadow_lots.qty_raw")?,
+                row.get(6)
                     .context("failed reading shadow_lots.qty_decimals")?,
                 "listing shadow lots",
             )?;
             let cost_lamports_raw: Option<i64> = row
-                .get(7)
+                .get(8)
                 .context("failed reading shadow_lots.cost_lamports")?;
             let cost_lamports = match cost_lamports_raw {
                 Some(raw) if raw < 0 => {
@@ -109,9 +129,12 @@ impl SqliteStore {
                 id: row.get(0).context("failed reading shadow_lots.id")?,
                 wallet_id: row.get(1).context("failed reading shadow_lots.wallet_id")?,
                 token: row.get(2).context("failed reading shadow_lots.token")?,
-                qty: row.get(3).context("failed reading shadow_lots.qty")?,
+                accounting_bucket: row
+                    .get(3)
+                    .context("failed reading shadow_lots.accounting_bucket")?,
+                qty: row.get(4).context("failed reading shadow_lots.qty")?,
                 qty_exact,
-                cost_sol: row.get(6).context("failed reading shadow_lots.cost_sol")?,
+                cost_sol: row.get(7).context("failed reading shadow_lots.cost_sol")?,
                 cost_lamports,
                 opened_ts,
             });
@@ -127,7 +150,7 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, wallet_id, token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
+                "SELECT id, wallet_id, token, accounting_bucket, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
                  FROM shadow_lots
                  WHERE qty > ?1
                    AND opened_ts <= ?2
@@ -145,20 +168,20 @@ impl SqliteStore {
 
         let mut lots = Vec::new();
         while let Some(row) = rows.next().context("failed iterating stale shadow lots")? {
-            let opened_raw: String = row.get(8).context("failed reading shadow_lots.opened_ts")?;
+            let opened_raw: String = row.get(9).context("failed reading shadow_lots.opened_ts")?;
             let opened_ts = DateTime::parse_from_rfc3339(&opened_raw)
                 .map(|dt| dt.with_timezone(&Utc))
                 .with_context(|| {
                     format!("invalid shadow_lots.opened_ts rfc3339 value: {opened_raw}")
                 })?;
             let qty_exact = token_quantity_from_sql(
-                row.get(4).context("failed reading shadow_lots.qty_raw")?,
-                row.get(5)
+                row.get(5).context("failed reading shadow_lots.qty_raw")?,
+                row.get(6)
                     .context("failed reading shadow_lots.qty_decimals")?,
                 "listing stale shadow lots",
             )?;
             let cost_lamports_raw: Option<i64> = row
-                .get(7)
+                .get(8)
                 .context("failed reading shadow_lots.cost_lamports")?;
             let cost_lamports = match cost_lamports_raw {
                 Some(raw) if raw < 0 => {
@@ -174,9 +197,12 @@ impl SqliteStore {
                 id: row.get(0).context("failed reading shadow_lots.id")?,
                 wallet_id: row.get(1).context("failed reading shadow_lots.wallet_id")?,
                 token: row.get(2).context("failed reading shadow_lots.token")?,
-                qty: row.get(3).context("failed reading shadow_lots.qty")?,
+                accounting_bucket: row
+                    .get(3)
+                    .context("failed reading shadow_lots.accounting_bucket")?,
+                qty: row.get(4).context("failed reading shadow_lots.qty")?,
                 qty_exact,
-                cost_sol: row.get(6).context("failed reading shadow_lots.cost_sol")?,
+                cost_sol: row.get(7).context("failed reading shadow_lots.cost_sol")?,
                 cost_lamports,
                 opened_ts,
             });
@@ -319,7 +345,7 @@ impl SqliteStore {
             let mut realized_pnl_sol = 0.0;
 
             let mut stmt = self.conn.prepare(
-                "SELECT id, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
+                "SELECT id, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts, accounting_bucket
                  FROM shadow_lots
                  WHERE wallet_id = ?1 AND token = ?2
                  ORDER BY id ASC",
@@ -333,6 +359,7 @@ impl SqliteStore {
                 f64,
                 Option<i64>,
                 String,
+                String,
             )> = Vec::new();
             while let Some(row) = rows.next()? {
                 lots.push((
@@ -343,6 +370,7 @@ impl SqliteStore {
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ));
             }
             drop(rows);
@@ -356,6 +384,7 @@ impl SqliteStore {
                 lot_cost_sol,
                 lot_cost_lamports_raw,
                 lot_opened_ts,
+                lot_accounting_bucket,
             ) in lots
             {
                 if qty_remaining <= EPS {
@@ -369,18 +398,32 @@ impl SqliteStore {
                 }
 
                 let take_qty = qty_remaining.min(lot_qty);
+                let final_segment = (qty_remaining - take_qty) <= EPS;
                 let current_qty_exact = token_quantity_from_sql(
                     lot_qty_raw,
                     lot_qty_decimals,
                     "shadow fifo close lot qty",
                 )
                 .map_err(to_sql_conversion_error)?;
-                let closed_qty_exact = match (current_qty_exact, qty_remaining_exact) {
-                    (Some(current), Some(closed)) if current.decimals() == closed.decimals() => {
-                        Some(TokenQuantity::new(
-                            current.raw().min(closed.raw()),
-                            current.decimals(),
-                        ))
+                let (segment_qty_exact, next_remaining_qty_exact) = match qty_remaining_exact {
+                    Some(total_exact) => split_token_quantity_pro_rata(
+                        total_exact,
+                        take_qty,
+                        qty_remaining,
+                        final_segment,
+                        "shadow fifo close qty_exact",
+                    )
+                    .map_err(to_sql_conversion_error)?,
+                    None => (None, None),
+                };
+                let closed_qty_exact = match (current_qty_exact, segment_qty_exact) {
+                    (Some(current), Some(segment)) if current.decimals() == segment.decimals() => {
+                        let raw = current.raw().min(segment.raw());
+                        if raw == 0 {
+                            None
+                        } else {
+                            Some(TokenQuantity::new(raw, current.decimals()))
+                        }
                     }
                     _ => None,
                 };
@@ -462,6 +505,7 @@ impl SqliteStore {
                         signal_id,
                         wallet_id,
                         token,
+                        accounting_bucket,
                         qty,
                         qty_raw,
                         qty_decimals,
@@ -473,11 +517,12 @@ impl SqliteStore {
                         pnl_lamports,
                         opened_ts,
                         closed_ts
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     params![
                         signal_id,
                         wallet_id,
                         token,
+                        lot_accounting_bucket,
                         take_qty,
                         closed_qty_exact
                             .as_ref()
@@ -509,17 +554,7 @@ impl SqliteStore {
                 )?;
 
                 qty_remaining -= take_qty;
-                qty_remaining_exact = match (qty_remaining_exact, closed_qty_exact) {
-                    (Some(remaining), Some(closed))
-                        if remaining.decimals() == closed.decimals() =>
-                    {
-                        remaining
-                            .raw()
-                            .checked_sub(closed.raw())
-                            .map(|raw| TokenQuantity::new(raw, remaining.decimals()))
-                    }
-                    _ => None,
-                };
+                qty_remaining_exact = next_remaining_qty_exact;
                 closed_qty += take_qty;
                 realized_pnl_sol += signed_lamports_to_sol(pnl_lamports);
             }
@@ -644,11 +679,13 @@ impl SqliteStore {
             let pnl_lamports = crate::SignedLamports::new(
                 i128::from(exit_value_lamports.as_u64()) - i128::from(entry_cost_lamports.as_u64()),
             );
+            let accounting_bucket = shadow_accounting_bucket_for_qty_exact(qty_exact);
             conn.execute(
                 "INSERT INTO shadow_closed_trades(
                     signal_id,
                     wallet_id,
                     token,
+                    accounting_bucket,
                     qty,
                     qty_raw,
                     qty_decimals,
@@ -660,11 +697,12 @@ impl SqliteStore {
                     pnl_lamports,
                     opened_ts,
                     closed_ts
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     signal_id,
                     wallet_id,
                     token,
+                    accounting_bucket,
                     qty,
                     qty_exact.as_ref().map(|value| value.raw().to_string()),
                     qty_exact.as_ref().map(|value| i64::from(value.decimals())),
@@ -718,5 +756,19 @@ impl SqliteStore {
                 .context("failed reading shadow_closed_trades.qty_decimals")?,
             "shadow_closed_trades",
         )
+    }
+
+    pub fn shadow_closed_trade_accounting_bucket(&self, signal_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT accounting_bucket
+                 FROM shadow_closed_trades
+                 WHERE signal_id = ?1
+                 LIMIT 1",
+                params![signal_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed reading shadow closed trade accounting bucket")
     }
 }

@@ -175,13 +175,9 @@ mod tests {
 
     #[test]
     fn request_validation_validate_submit_request_identity_rejects_empty_client_order_id() {
-        let error = validate_submit_request_identity(
-            "2026-02-24T00:00:00Z",
-            " ",
-            "request-1",
-            "signal-1",
-        )
-        .expect_err("empty client_order_id must reject");
+        let error =
+            validate_submit_request_identity("2026-02-24T00:00:00Z", " ", "request-1", "signal-1")
+                .expect_err("empty client_order_id must reject");
         assert_eq!(error, RequestValidationError::InvalidClientOrderId);
     }
 }

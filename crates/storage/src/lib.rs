@@ -26,6 +26,8 @@ const LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SAMPLES: usize = 1;
 const LIVE_UNREALIZED_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
 // Until D-2 exact quantities land, sub-nano residual qty should not count as an open live position.
 pub const LIVE_POSITION_OPEN_EPS: f64 = 1e-9;
+pub(crate) const POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER: &str = "legacy_pre_cutover";
+pub(crate) const POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER: &str = "exact_post_cutover";
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -89,6 +91,7 @@ pub struct ShadowLotRow {
     pub id: i64,
     pub wallet_id: String,
     pub token: String,
+    pub accounting_bucket: String,
     pub qty: f64,
     pub qty_exact: Option<TokenQuantity>,
     pub cost_sol: f64,
@@ -119,7 +122,85 @@ pub struct DiscoveryRuntimeCursor {
     pub signature: String,
 }
 
+#[derive(Debug, Clone)]
+struct LiveOpenPositionRow {
+    position_id: String,
+    accounting_bucket: String,
+    qty: f64,
+    qty_raw: Option<String>,
+    qty_decimals: Option<i64>,
+    cost_sol: f64,
+    cost_lamports_raw: Option<i64>,
+    pnl_sol: Option<f64>,
+    pnl_lamports_raw: Option<i64>,
+}
+
 impl SqliteStore {
+    fn load_live_open_positions(
+        conn: &Connection,
+        token: &str,
+        accounting_bucket: Option<&str>,
+    ) -> Result<Vec<LiveOpenPositionRow>> {
+        let (query, params): (&str, Vec<rusqlite::types::Value>) =
+            if let Some(accounting_bucket) = accounting_bucket {
+                (
+                    "SELECT position_id, accounting_bucket, qty, qty_raw, qty_decimals,
+                            cost_sol, cost_lamports, pnl_sol, pnl_lamports
+                     FROM positions
+                     WHERE token = ?1
+                       AND accounting_bucket = ?2
+                       AND state = 'open'
+                     ORDER BY opened_ts ASC, rowid ASC",
+                    vec![
+                        rusqlite::types::Value::from(token.to_string()),
+                        rusqlite::types::Value::from(accounting_bucket.to_string()),
+                    ],
+                )
+            } else {
+                (
+                    "SELECT position_id, accounting_bucket, qty, qty_raw, qty_decimals,
+                            cost_sol, cost_lamports, pnl_sol, pnl_lamports
+                     FROM positions
+                     WHERE token = ?1
+                       AND state = 'open'
+                     ORDER BY opened_ts ASC, rowid ASC",
+                    vec![rusqlite::types::Value::from(token.to_string())],
+                )
+            };
+        let mut stmt = conn
+            .prepare(query)
+            .context("failed to prepare live open positions query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed querying live open positions")?;
+        let mut open_positions = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating live open positions rows")?
+        {
+            open_positions.push(LiveOpenPositionRow {
+                position_id: row.get(0).context("failed reading positions.position_id")?,
+                accounting_bucket: row
+                    .get(1)
+                    .context("failed reading positions.accounting_bucket")?,
+                qty: row.get(2).context("failed reading positions.qty")?,
+                qty_raw: row.get(3).context("failed reading positions.qty_raw")?,
+                qty_decimals: row
+                    .get(4)
+                    .context("failed reading positions.qty_decimals")?,
+                cost_sol: row.get(5).context("failed reading positions.cost_sol")?,
+                cost_lamports_raw: row
+                    .get(6)
+                    .context("failed reading positions.cost_lamports")?,
+                pnl_sol: row.get(7).context("failed reading positions.pnl_sol")?,
+                pnl_lamports_raw: row
+                    .get(8)
+                    .context("failed reading positions.pnl_lamports")?,
+            });
+        }
+        Ok(open_positions)
+    }
+
     fn live_open_exposure_lamports_on_conn(
         conn: &Connection,
         token: Option<&str>,
@@ -176,13 +257,12 @@ impl SqliteStore {
         token: &str,
     ) -> Result<ExecutionConfirmStateSnapshot> {
         let total_exposure_lamports = Self::live_open_exposure_lamports_on_conn(conn, None)?;
-        let token_exposure_lamports =
-            Self::live_open_exposure_lamports_on_conn(conn, Some(token))?;
+        let token_exposure_lamports = Self::live_open_exposure_lamports_on_conn(conn, Some(token))?;
         let total_exposure_sol = lamports_to_sol(total_exposure_lamports);
         let token_exposure_sol = lamports_to_sol(token_exposure_lamports);
         let open_positions: i64 = conn
             .query_row(
-                "SELECT COUNT(*)
+                "SELECT COUNT(DISTINCT token)
                  FROM positions
                  WHERE state = 'open'
                    AND qty > ?1",
@@ -512,7 +592,7 @@ impl SqliteStore {
         let count: i64 = self
             .conn
             .query_row(
-                "SELECT COUNT(*)
+                "SELECT COUNT(DISTINCT token)
                  FROM positions
                  WHERE state = 'open'
                    AND qty > ?1",
@@ -542,32 +622,55 @@ impl SqliteStore {
     }
 
     pub fn live_open_position_qty_cost(&self, token: &str) -> Result<Option<(f64, f64)>> {
-        let row: Option<(f64, f64, Option<i64>)> = self
+        let mut stmt = self
             .conn
-            .query_row(
+            .prepare(
                 "SELECT qty, cost_sol, cost_lamports
                  FROM positions
                  WHERE token = ?1
                    AND state = 'open'
                    AND qty > ?2
-                 LIMIT 1",
-                params![token, LIVE_POSITION_OPEN_EPS],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                 ORDER BY opened_ts ASC, rowid ASC",
             )
-            .optional()
             .context("failed querying live open position qty/cost by token")?;
-        match row {
-            Some((qty, cost_sol, cost_lamports_raw))
-                if qty.is_finite()
-                    && qty > LIVE_POSITION_OPEN_EPS
-                    && cost_sol.is_finite()
-                    && cost_sol >= 0.0 =>
-            {
-                let cost_lamports =
-                    position_cost_lamports(cost_sol, cost_lamports_raw, "live open position")?;
-                Ok(Some((qty, lamports_to_sol(cost_lamports))))
+        let mut rows = stmt
+            .query(params![token, LIVE_POSITION_OPEN_EPS])
+            .context("failed querying live open position qty/cost rows")?;
+        let mut total_qty = 0.0_f64;
+        let mut total_cost_lamports = Lamports::ZERO;
+        let mut saw_row = false;
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating live open position qty/cost rows")?
+        {
+            let qty: f64 = row.get(0).context("failed reading positions.qty")?;
+            let cost_sol: f64 = row.get(1).context("failed reading positions.cost_sol")?;
+            let cost_lamports_raw: Option<i64> = row
+                .get(2)
+                .context("failed reading positions.cost_lamports")?;
+            if !qty.is_finite() || qty <= LIVE_POSITION_OPEN_EPS {
+                continue;
             }
-            _ => Ok(None),
+            if !cost_sol.is_finite() || cost_sol < 0.0 {
+                return Err(anyhow!(
+                    "invalid open position row for qty/cost token={} qty={} cost_sol={}",
+                    token,
+                    qty,
+                    cost_sol
+                ));
+            }
+            let cost_lamports =
+                position_cost_lamports(cost_sol, cost_lamports_raw, "live open position")?;
+            total_qty += qty;
+            total_cost_lamports = total_cost_lamports
+                .checked_add(cost_lamports)
+                .ok_or_else(|| anyhow!("live open position cost overflow for token={token}"))?;
+            saw_row = true;
+        }
+        if saw_row {
+            Ok(Some((total_qty, lamports_to_sol(total_cost_lamports))))
+        } else {
+            Ok(None)
         }
     }
 
@@ -694,73 +797,34 @@ impl SqliteStore {
         }
 
         let side_norm = side.trim().to_ascii_lowercase();
-        let existing: Option<(
-            String,
-            f64,
-            Option<String>,
-            Option<i64>,
-            f64,
-            Option<i64>,
-            Option<f64>,
-            Option<i64>,
-        )> = conn
-            .query_row(
-                "SELECT position_id, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, pnl_sol, pnl_lamports
-                 FROM positions
-                 WHERE token = ?1
-                   AND state = 'open'
-                 ORDER BY opened_ts ASC
-                 LIMIT 1",
-                params![token],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                        row.get(7)?,
-                    ))
-                },
-            )
-            .optional()
-            .context("failed querying live open position row")?;
-
         match side_norm.as_str() {
             "buy" => {
+                let accounting_bucket = position_accounting_bucket_for_fill(qty_exact);
                 let effective_cost = notional_sol + fee_sol;
                 let effective_cost_lamports =
                     notional_lamports.checked_add(fee_lamports).ok_or_else(|| {
                         anyhow!("execution fill cost_lamports overflow for token={token}")
                     })?;
-                if let Some((
-                    position_id,
-                    current_qty,
-                    current_qty_raw,
-                    current_qty_decimals,
-                    current_cost,
-                    current_cost_lamports_raw,
-                    current_pnl,
-                    current_pnl_lamports_raw,
-                )) = existing
+                if let Some(existing) =
+                    Self::load_live_open_positions(conn, token, Some(accounting_bucket))?
+                        .into_iter()
+                        .next()
                 {
                     let current_qty_exact = token_quantity_from_sql(
-                        current_qty_raw,
-                        current_qty_decimals,
+                        existing.qty_raw,
+                        existing.qty_decimals,
                         "live open position buy update",
                     )?;
                     let next_qty_exact =
                         merge_position_qty_exact_on_buy(current_qty_exact, qty_exact)?;
                     let current_cost_lamports = position_cost_lamports(
-                        current_cost,
-                        current_cost_lamports_raw,
+                        existing.cost_sol,
+                        existing.cost_lamports_raw,
                         "live open position buy update",
                     )?;
                     let current_pnl_lamports = position_pnl_lamports(
-                        current_pnl.unwrap_or(0.0),
-                        current_pnl_lamports_raw,
+                        existing.pnl_sol.unwrap_or(0.0),
+                        existing.pnl_lamports_raw,
                         "live open position buy update",
                     )?;
                     let next_cost_lamports = current_cost_lamports
@@ -781,19 +845,19 @@ impl SqliteStore {
                              closed_ts = NULL
                          WHERE position_id = ?8",
                         params![
-                            current_qty + qty,
+                            existing.qty + qty,
                             next_qty_exact.as_ref().map(|value| value.raw().to_string()),
                             next_qty_exact
                                 .as_ref()
                                 .map(|value| i64::from(value.decimals())),
-                            current_cost + effective_cost,
+                            existing.cost_sol + effective_cost,
                             u64_to_sql_i64("positions.cost_lamports", next_cost_lamports.as_u64())?,
-                            current_pnl.unwrap_or(0.0),
+                            existing.pnl_sol.unwrap_or(0.0),
                             signed_lamports_to_sql_i64(
                                 "positions.pnl_lamports",
                                 current_pnl_lamports
                             )?,
-                            position_id,
+                            existing.position_id,
                         ],
                     )
                     .context("failed updating open live position for buy fill")?;
@@ -808,11 +872,12 @@ impl SqliteStore {
                             qty_decimals,
                             cost_sol,
                             cost_lamports,
+                            accounting_bucket,
                             opened_ts,
                             state,
                             pnl_sol,
                             pnl_lamports
-                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', 0.0, 0)",
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'open', 0.0, 0)",
                         params![
                             position_id,
                             token,
@@ -824,6 +889,7 @@ impl SqliteStore {
                                 "positions.cost_lamports",
                                 effective_cost_lamports.as_u64()
                             )?,
+                            accounting_bucket,
                             ts.to_rfc3339(),
                         ],
                     )
@@ -831,171 +897,219 @@ impl SqliteStore {
                 }
             }
             "sell" => {
-                let Some((
-                    position_id,
-                    current_qty,
-                    current_qty_raw,
-                    current_qty_decimals,
-                    current_cost,
-                    current_cost_lamports_raw,
-                    current_pnl,
-                    current_pnl_lamports_raw,
-                )) = existing
-                else {
+                let open_positions = Self::load_live_open_positions(conn, token, None)?;
+                if open_positions.is_empty() {
                     return Err(anyhow!(
                         "sell fill without open position token={} qty={} notional_sol={}",
                         token,
                         qty,
                         notional_sol
                     ));
-                };
-                if current_qty <= LIVE_POSITION_OPEN_EPS || current_cost <= 0.0 {
-                    return Err(anyhow!(
-                        "sell fill on non-positive open position token={} qty={} cost_sol={}",
-                        token,
-                        current_qty,
-                        current_cost
-                    ));
                 }
+                let mut remaining_qty = qty;
+                let mut remaining_qty_exact = qty_exact;
+                let mut remaining_notional_sol = notional_sol;
+                let mut remaining_notional_lamports = notional_lamports;
+                let mut remaining_fee_sol = fee_sol;
+                let mut remaining_fee_lamports = fee_lamports;
 
-                let qty_closed = qty.min(current_qty);
-                let avg_cost = current_cost / current_qty;
-                let realized_cost = avg_cost * qty_closed;
-                let effective_notional = if qty_closed < qty {
-                    notional_sol * (qty_closed / qty)
-                } else {
-                    notional_sol
-                };
-                let effective_fee = if qty_closed < qty {
-                    fee_sol * (qty_closed / qty)
-                } else {
-                    fee_sol
-                };
-                let realized_pnl = effective_notional - realized_cost - effective_fee;
-                let next_qty = (current_qty - qty_closed).max(0.0);
-                let next_cost = (current_cost - realized_cost).max(0.0);
-                let next_pnl = current_pnl.unwrap_or(0.0) + realized_pnl;
-                let current_cost_lamports = position_cost_lamports(
-                    current_cost,
-                    current_cost_lamports_raw,
-                    "live open position sell update",
-                )?;
-                let current_pnl_lamports = position_pnl_lamports(
-                    current_pnl.unwrap_or(0.0),
-                    current_pnl_lamports_raw,
-                    "live open position sell update",
-                )?;
-                let current_qty_exact = token_quantity_from_sql(
-                    current_qty_raw,
-                    current_qty_decimals,
-                    "live open position sell update",
-                )?;
-                let next_qty_exact = merge_position_qty_exact_on_sell(
-                    current_qty_exact,
-                    qty_exact,
-                    next_qty <= LIVE_POSITION_OPEN_EPS,
-                )?;
-                let next_cost_lamports = if next_qty <= LIVE_POSITION_OPEN_EPS {
-                    Lamports::ZERO
-                } else {
-                    let estimated_remaining_cost_lamports = sol_to_lamports_ceil_storage(
-                        next_cost,
-                        "remaining live position cost_sol",
-                    )?;
-                    if estimated_remaining_cost_lamports > current_cost_lamports {
-                        current_cost_lamports
-                    } else {
-                        estimated_remaining_cost_lamports
+                for open_position in open_positions {
+                    if remaining_qty <= LIVE_POSITION_OPEN_EPS {
+                        break;
                     }
-                };
-                let effective_notional_lamports = if qty_closed < qty {
-                    sol_to_lamports_floor_storage(
-                        effective_notional,
-                        "clamped live sell notional_sol",
-                    )?
-                } else {
-                    notional_lamports
-                };
-                let effective_fee_lamports = if qty_closed < qty {
-                    sol_to_lamports_ceil_storage(effective_fee, "clamped live sell fee_sol")?
-                } else {
-                    fee_lamports
-                };
-                let realized_cost_lamports = current_cost_lamports
-                    .checked_sub(next_cost_lamports)
-                    .ok_or_else(|| {
-                        anyhow!("live position realized cost underflow for token={token}")
-                    })?;
-                let realized_pnl_lamports = SignedLamports::from(effective_notional_lamports)
-                    .checked_sub(SignedLamports::from(realized_cost_lamports))
-                    .and_then(|value| {
-                        value.checked_sub(SignedLamports::from(effective_fee_lamports))
-                    })
-                    .ok_or_else(|| {
-                        anyhow!("live position pnl_lamports overflow for token={token}")
-                    })?;
-                let next_pnl_lamports = current_pnl_lamports
-                    .checked_add(realized_pnl_lamports)
-                    .ok_or_else(|| {
-                        anyhow!("live cumulative pnl_lamports overflow for token={token}")
-                    })?;
+                    if open_position.qty <= LIVE_POSITION_OPEN_EPS {
+                        continue;
+                    }
+                    if open_position.cost_sol <= 0.0 {
+                        return Err(anyhow!(
+                            "sell fill on non-positive open position token={} qty={} cost_sol={}",
+                            token,
+                            open_position.qty,
+                            open_position.cost_sol
+                        ));
+                    }
 
-                if next_qty <= LIVE_POSITION_OPEN_EPS {
-                    conn.execute(
-                        "UPDATE positions
-                         SET qty = 0.0,
-                             qty_raw = ?1,
-                             qty_decimals = ?2,
-                             cost_sol = 0.0,
-                             cost_lamports = 0,
-                             pnl_sol = ?3,
-                             pnl_lamports = ?4,
-                             state = 'closed',
-                             closed_ts = ?5
-                         WHERE position_id = ?6",
-                        params![
-                            next_qty_exact.as_ref().map(|value| value.raw().to_string()),
-                            next_qty_exact
-                                .as_ref()
-                                .map(|value| i64::from(value.decimals())),
-                            next_pnl,
-                            signed_lamports_to_sql_i64(
-                                "positions.pnl_lamports",
-                                next_pnl_lamports
-                            )?,
-                            ts.to_rfc3339(),
-                            position_id
-                        ],
-                    )
-                    .context("failed closing live position after sell fill")?;
-                } else {
-                    conn.execute(
-                        "UPDATE positions
-                         SET qty = ?1,
-                             qty_raw = ?2,
-                             qty_decimals = ?3,
-                             cost_sol = ?4,
-                             cost_lamports = ?5,
-                             pnl_sol = ?6,
-                             pnl_lamports = ?7
-                         WHERE position_id = ?8",
-                        params![
-                            next_qty,
-                            next_qty_exact.as_ref().map(|value| value.raw().to_string()),
-                            next_qty_exact
-                                .as_ref()
-                                .map(|value| i64::from(value.decimals())),
+                    let qty_closed = remaining_qty.min(open_position.qty);
+                    let final_segment = (remaining_qty - qty_closed) <= LIVE_POSITION_OPEN_EPS;
+                    let effective_notional = split_f64_pro_rata(
+                        remaining_notional_sol,
+                        qty_closed,
+                        remaining_qty,
+                        final_segment,
+                        "live sell notional_sol",
+                    )?;
+                    let effective_fee = split_f64_pro_rata(
+                        remaining_fee_sol,
+                        qty_closed,
+                        remaining_qty,
+                        final_segment,
+                        "live sell fee_sol",
+                    )?;
+                    let effective_notional_lamports = split_lamports_pro_rata(
+                        remaining_notional_lamports,
+                        qty_closed,
+                        remaining_qty,
+                        final_segment,
+                        false,
+                        "live sell notional_lamports",
+                    )?;
+                    let effective_fee_lamports = split_lamports_pro_rata(
+                        remaining_fee_lamports,
+                        qty_closed,
+                        remaining_qty,
+                        final_segment,
+                        true,
+                        "live sell fee_lamports",
+                    )?;
+                    let (segment_qty_exact, next_remaining_qty_exact) = match remaining_qty_exact {
+                        Some(total_exact) => split_token_quantity_pro_rata(
+                            total_exact,
+                            qty_closed,
+                            remaining_qty,
+                            final_segment,
+                            "live sell qty_exact",
+                        )?,
+                        None => (None, None),
+                    };
+                    let avg_cost = open_position.cost_sol / open_position.qty;
+                    let realized_cost = avg_cost * qty_closed;
+                    let realized_pnl = effective_notional - realized_cost - effective_fee;
+                    let next_qty = (open_position.qty - qty_closed).max(0.0);
+                    let next_cost = (open_position.cost_sol - realized_cost).max(0.0);
+                    let next_pnl = open_position.pnl_sol.unwrap_or(0.0) + realized_pnl;
+                    let current_cost_lamports = position_cost_lamports(
+                        open_position.cost_sol,
+                        open_position.cost_lamports_raw,
+                        "live open position sell update",
+                    )?;
+                    let current_pnl_lamports = position_pnl_lamports(
+                        open_position.pnl_sol.unwrap_or(0.0),
+                        open_position.pnl_lamports_raw,
+                        "live open position sell update",
+                    )?;
+                    let current_qty_exact = token_quantity_from_sql(
+                        open_position.qty_raw,
+                        open_position.qty_decimals,
+                        "live open position sell update",
+                    )?;
+                    let next_qty_exact = merge_position_qty_exact_on_sell(
+                        current_qty_exact,
+                        segment_qty_exact,
+                        next_qty <= LIVE_POSITION_OPEN_EPS,
+                    )?;
+                    let next_cost_lamports = if next_qty <= LIVE_POSITION_OPEN_EPS {
+                        Lamports::ZERO
+                    } else {
+                        let estimated_remaining_cost_lamports = sol_to_lamports_ceil_storage(
                             next_cost,
-                            u64_to_sql_i64("positions.cost_lamports", next_cost_lamports.as_u64())?,
-                            next_pnl,
-                            signed_lamports_to_sql_i64(
-                                "positions.pnl_lamports",
-                                next_pnl_lamports
-                            )?,
-                            position_id
-                        ],
-                    )
-                    .context("failed partially updating live position after sell fill")?;
+                            "remaining live position cost_sol",
+                        )?;
+                        if estimated_remaining_cost_lamports > current_cost_lamports {
+                            current_cost_lamports
+                        } else {
+                            estimated_remaining_cost_lamports
+                        }
+                    };
+                    let realized_cost_lamports = current_cost_lamports
+                        .checked_sub(next_cost_lamports)
+                        .ok_or_else(|| {
+                            anyhow!("live position realized cost underflow for token={token}")
+                        })?;
+                    let realized_pnl_lamports = SignedLamports::from(effective_notional_lamports)
+                        .checked_sub(SignedLamports::from(realized_cost_lamports))
+                        .and_then(|value| {
+                            value.checked_sub(SignedLamports::from(effective_fee_lamports))
+                        })
+                        .ok_or_else(|| {
+                            anyhow!("live position pnl_lamports overflow for token={token}")
+                        })?;
+                    let next_pnl_lamports = current_pnl_lamports
+                        .checked_add(realized_pnl_lamports)
+                        .ok_or_else(|| {
+                            anyhow!("live cumulative pnl_lamports overflow for token={token}")
+                        })?;
+
+                    if next_qty <= LIVE_POSITION_OPEN_EPS {
+                        conn.execute(
+                            "UPDATE positions
+                             SET qty = 0.0,
+                                 qty_raw = ?1,
+                                 qty_decimals = ?2,
+                                 cost_sol = 0.0,
+                                 cost_lamports = 0,
+                                 pnl_sol = ?3,
+                                 pnl_lamports = ?4,
+                                 state = 'closed',
+                                 closed_ts = ?5
+                             WHERE position_id = ?6",
+                            params![
+                                next_qty_exact.as_ref().map(|value| value.raw().to_string()),
+                                next_qty_exact
+                                    .as_ref()
+                                    .map(|value| i64::from(value.decimals())),
+                                next_pnl,
+                                signed_lamports_to_sql_i64(
+                                    "positions.pnl_lamports",
+                                    next_pnl_lamports
+                                )?,
+                                ts.to_rfc3339(),
+                                open_position.position_id
+                            ],
+                        )
+                        .with_context(|| {
+                            format!(
+                                "failed closing live position after sell fill bucket={}",
+                                open_position.accounting_bucket
+                            )
+                        })?;
+                    } else {
+                        conn.execute(
+                            "UPDATE positions
+                             SET qty = ?1,
+                                 qty_raw = ?2,
+                                 qty_decimals = ?3,
+                                 cost_sol = ?4,
+                                 cost_lamports = ?5,
+                                 pnl_sol = ?6,
+                                 pnl_lamports = ?7
+                             WHERE position_id = ?8",
+                            params![
+                                next_qty,
+                                next_qty_exact.as_ref().map(|value| value.raw().to_string()),
+                                next_qty_exact
+                                    .as_ref()
+                                    .map(|value| i64::from(value.decimals())),
+                                next_cost,
+                                u64_to_sql_i64(
+                                    "positions.cost_lamports",
+                                    next_cost_lamports.as_u64()
+                                )?,
+                                next_pnl,
+                                signed_lamports_to_sql_i64(
+                                    "positions.pnl_lamports",
+                                    next_pnl_lamports
+                                )?,
+                                open_position.position_id
+                            ],
+                        )
+                        .with_context(|| {
+                            format!(
+                                "failed partially updating live position after sell fill bucket={}",
+                                open_position.accounting_bucket
+                            )
+                        })?;
+                    }
+
+                    remaining_qty = (remaining_qty - qty_closed).max(0.0);
+                    remaining_notional_sol = (remaining_notional_sol - effective_notional).max(0.0);
+                    remaining_fee_sol = (remaining_fee_sol - effective_fee).max(0.0);
+                    remaining_notional_lamports = remaining_notional_lamports
+                        .checked_sub(effective_notional_lamports)
+                        .ok_or_else(|| anyhow!("live sell notional_lamports underflow"))?;
+                    remaining_fee_lamports = remaining_fee_lamports
+                        .checked_sub(effective_fee_lamports)
+                        .ok_or_else(|| anyhow!("live sell fee_lamports underflow"))?;
+                    remaining_qty_exact = next_remaining_qty_exact;
                 }
             }
             _ => {
@@ -1277,6 +1391,10 @@ mod tests {
 
         let lots = store.list_shadow_lots("wallet", "token")?;
         assert_eq!(lots.len(), 1);
+        assert_eq!(
+            lots[0].accounting_bucket,
+            POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER
+        );
         assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(2_000_000, 6)));
 
         let close = store.close_shadow_lots_fifo_atomic_exact(
@@ -1292,20 +1410,117 @@ mod tests {
 
         let lots = store.list_shadow_lots("wallet", "token")?;
         assert_eq!(lots.len(), 1);
+        assert_eq!(
+            lots[0].accounting_bucket,
+            POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER
+        );
         assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(1_500_000, 6)));
 
-        let closed_qty_raw: Option<String> = store.conn.query_row(
-            "SELECT qty_raw FROM shadow_closed_trades WHERE signal_id = ?1",
+        let closed_row: (String, Option<String>, Option<i64>) = store.conn.query_row(
+            "SELECT accounting_bucket, qty_raw, qty_decimals
+             FROM shadow_closed_trades
+             WHERE signal_id = ?1",
             params!["signal"],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        let closed_qty_decimals: Option<i64> = store.conn.query_row(
-            "SELECT qty_decimals FROM shadow_closed_trades WHERE signal_id = ?1",
-            params!["signal"],
-            |row| row.get(0),
+        assert_eq!(
+            closed_row.0,
+            POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER.to_string()
+        );
+        assert_eq!(closed_row.1.as_deref(), Some("500000"));
+        assert_eq!(closed_row.2, Some(6));
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_fifo_close_preserves_bucket_provenance_across_legacy_and_exact_lots() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-bucket-fifo.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = DateTime::parse_from_rfc3339("2026-03-01T11:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.insert_shadow_lot("wallet", "token", 1.0, 0.10, opened_ts)?;
+        store.insert_shadow_lot_exact(
+            "wallet",
+            "token",
+            1.0,
+            Some(TokenQuantity::new(1_000_000, 6)),
+            0.20,
+            opened_ts + Duration::seconds(1),
         )?;
-        assert_eq!(closed_qty_raw.as_deref(), Some("500000"));
-        assert_eq!(closed_qty_decimals, Some(6));
+
+        let lots = store.list_shadow_lots("wallet", "token")?;
+        assert_eq!(lots.len(), 2);
+        assert_eq!(
+            lots[0].accounting_bucket,
+            POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER
+        );
+        assert_eq!(
+            lots[1].accounting_bucket,
+            POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER
+        );
+
+        let close = store.close_shadow_lots_fifo_atomic_exact(
+            "signal-mixed",
+            "wallet",
+            "token",
+            1.5,
+            Some(TokenQuantity::new(1_500_000, 6)),
+            0.30,
+            closed_ts,
+        )?;
+        assert!((close.closed_qty - 1.5).abs() < 1e-12);
+        assert!(close.has_open_lots_after);
+
+        let lots = store.list_shadow_lots("wallet", "token")?;
+        assert_eq!(lots.len(), 1);
+        assert_eq!(
+            lots[0].accounting_bucket,
+            POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER
+        );
+        assert!((lots[0].qty - 0.5).abs() < 1e-12);
+        assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(500_000, 6)));
+
+        let closed_rows: Vec<(String, f64, Option<String>, Option<i64>)> = {
+            let mut stmt = store.conn.prepare(
+                "SELECT accounting_bucket, qty, qty_raw, qty_decimals
+                 FROM shadow_closed_trades
+                 WHERE signal_id = ?1
+                 ORDER BY opened_ts ASC, id ASC",
+            )?;
+            let mapped = stmt.query_map(params!["signal-mixed"], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        assert_eq!(closed_rows.len(), 2);
+        assert_eq!(
+            closed_rows[0],
+            (
+                POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER.to_string(),
+                1.0_f64,
+                None,
+                None
+            )
+        );
+        assert_eq!(
+            closed_rows[1],
+            (
+                POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER.to_string(),
+                0.5_f64,
+                Some("500000".to_string()),
+                Some(6_i64)
+            )
+        );
         Ok(())
     }
 
@@ -1582,7 +1797,51 @@ mod tests {
 
         let signals = store.list_copy_signals_by_status("shadow_recorded", 10)?;
         assert_eq!(signals.len(), 1);
-        assert_eq!(signals[0].notional_lamports, Some(Lamports::new(250_000_000)));
+        assert_eq!(
+            signals[0].notional_lamports,
+            Some(Lamports::new(250_000_000))
+        );
+        let origin: String = store.conn.query_row(
+            "SELECT notional_origin FROM copy_signals WHERE signal_id = ?1",
+            params![signal.signal_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(origin, "leader_exact_lamports");
+        Ok(())
+    }
+
+    #[test]
+    fn copy_signal_approximate_origin_masks_non_exact_notional_sidecar_on_read() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("copy-signal-approx-origin.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:30:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO copy_signals(
+                signal_id, wallet_id, side, token, notional_sol, notional_lamports, notional_origin, ts, status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                "shadow:sig-approx:wallet:buy:token-a",
+                "wallet-1",
+                "buy",
+                "token-a",
+                0.25_f64,
+                250_000_000_i64,
+                "leader_approximate",
+                now.to_rfc3339(),
+                "shadow_recorded",
+            ],
+        )?;
+
+        let signals = store.list_copy_signals_by_status("shadow_recorded", 10)?;
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].notional_lamports, None);
         Ok(())
     }
 
@@ -1724,15 +1983,125 @@ mod tests {
         assert_eq!(row.2, 6);
 
         store.apply_execution_fill_to_positions("token-exact-qty", "buy", 1.0, 0.10, now)?;
-        let mixed_row: (Option<String>, Option<i64>) = store.conn.query_row(
-            "SELECT qty_raw, qty_decimals
-             FROM positions
-             WHERE token = ?1
-               AND state = 'open'",
-            params!["token-exact-qty"],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+        let rows: Vec<(String, f64, Option<String>, Option<i64>)> = {
+            let mut stmt = store.conn.prepare(
+                "SELECT accounting_bucket, qty, qty_raw, qty_decimals
+                 FROM positions
+                 WHERE token = ?1
+                   AND state = 'open'
+                 ORDER BY accounting_bucket ASC",
+            )?;
+            let mapped = stmt.query_map(params!["token-exact-qty"], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        assert_eq!(rows.len(), 2, "legacy and exact buckets must stay separate");
+        assert_eq!(
+            rows[0],
+            (
+                POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER.to_string(),
+                1.5_f64,
+                Some("1500000".to_string()),
+                Some(6_i64)
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER.to_string(),
+                1.0_f64,
+                None,
+                None
+            )
+        );
+        assert_eq!(store.live_open_positions_count()?, 1);
+        let aggregate = store
+            .live_open_position_qty_cost("token-exact-qty")?
+            .expect("aggregated open position exists");
+        assert!((aggregate.0 - 2.5).abs() < 1e-9);
+        assert!(
+            (aggregate.1 - 0.250000001).abs() < 1e-9,
+            "aggregated cost should sum buckets, got {}",
+            aggregate.1
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn apply_execution_fill_to_positions_sell_spans_buckets_fifo() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-position-bucket-fifo.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.apply_execution_fill_to_positions("token-bucket-fifo", "buy", 1.0, 0.10, now)?;
+        store.apply_execution_fill_to_positions_exact(
+            "token-bucket-fifo",
+            "buy",
+            2.0,
+            Some(TokenQuantity::new(2_000_000, 6)),
+            0.20,
+            now + Duration::seconds(1),
         )?;
-        assert_eq!(mixed_row, (None, None));
+        store.apply_execution_fill_to_positions_exact(
+            "token-bucket-fifo",
+            "sell",
+            1.5,
+            Some(TokenQuantity::new(1_500_000, 6)),
+            0.18,
+            now + Duration::seconds(2),
+        )?;
+
+        let rows: Vec<(String, String, f64, Option<String>, Option<i64>)> = {
+            let mut stmt = store.conn.prepare(
+                "SELECT accounting_bucket, state, qty, qty_raw, qty_decimals
+                 FROM positions
+                 WHERE token = ?1
+                 ORDER BY opened_ts ASC, rowid ASC",
+            )?;
+            let mapped = stmt.query_map(params!["token-bucket-fifo"], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0],
+            (
+                POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER.to_string(),
+                "closed".to_string(),
+                0.0_f64,
+                None,
+                None
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER.to_string(),
+                "open".to_string(),
+                1.5_f64,
+                Some("1500000".to_string()),
+                Some(6_i64)
+            )
+        );
+        assert_eq!(store.live_open_positions_count()?, 1);
+        let aggregate = store
+            .live_open_position_qty_cost("token-bucket-fifo")?
+            .expect("aggregated open position exists");
+        assert!((aggregate.0 - 1.5).abs() < 1e-9);
 
         Ok(())
     }
@@ -2482,7 +2851,10 @@ mod tests {
         let FinalizeExecutionConfirmOutcome::Applied(buy_snapshot) = buy_outcome else {
             panic!("expected applied buy outcome, got {:?}", buy_outcome);
         };
-        assert_eq!(buy_snapshot.total_exposure_lamports, Lamports::new(210_000_000));
+        assert_eq!(
+            buy_snapshot.total_exposure_lamports,
+            Lamports::new(210_000_000)
+        );
         assert!((buy_snapshot.total_exposure_sol - 0.21).abs() < 1e-9);
         assert!((buy_snapshot.token_exposure_sol - 0.21).abs() < 1e-9);
         assert_eq!(buy_snapshot.open_positions, 1);
@@ -3972,6 +4344,150 @@ mod tests {
     }
 
     #[test]
+    fn positions_accounting_bucket_migration_allows_exact_bucket_beside_legacy_row() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("positions-accounting-bucket.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0032_copy_signals_notional_origin.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        legacy_store.conn.execute(
+            "INSERT INTO positions(position_id, token, qty, cost_sol, opened_ts, state, pnl_sol)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', 0.0)",
+            params![
+                "pos-legacy",
+                "token-bucket",
+                1.0_f64,
+                0.10_f64,
+                "2026-03-08T12:00:00+00:00",
+            ],
+        )?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut migrated_store = SqliteStore::open(Path::new(&db_path))?;
+        migrated_store.run_migrations(&migration_dir)?;
+
+        migrated_store.conn.execute(
+            "INSERT INTO positions(
+                position_id, token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports,
+                accounting_bucket, opened_ts, state, pnl_sol, pnl_lamports
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'open', 0.0, 0)",
+            params![
+                "pos-exact",
+                "token-bucket",
+                2.0_f64,
+                "2000000",
+                6_i64,
+                0.20_f64,
+                200_000_000_i64,
+                POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER,
+                "2026-03-08T12:01:00+00:00",
+            ],
+        )?;
+
+        let duplicate_legacy_insert = migrated_store.conn.execute(
+            "INSERT INTO positions(
+                position_id, token, qty, cost_sol, accounting_bucket, opened_ts, state, pnl_sol
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', 0.0)",
+            params![
+                "pos-legacy-dup",
+                "token-bucket",
+                0.5_f64,
+                0.05_f64,
+                POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
+                "2026-03-08T12:02:00+00:00",
+            ],
+        );
+        assert!(
+            duplicate_legacy_insert.is_err(),
+            "unique partial index must still reject a second legacy open row"
+        );
+        assert_eq!(
+            migrated_store.live_open_positions_count()?,
+            1,
+            "distinct-token open count should ignore bucket multiplicity"
+        );
+        let aggregate = migrated_store
+            .live_open_position_qty_cost("token-bucket")?
+            .expect("aggregated open position exists");
+        assert!((aggregate.0 - 3.0).abs() < 1e-9);
+        assert!((aggregate.1 - 0.30).abs() < 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_accounting_bucket_migration_backfills_legacy_rows() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-accounting-bucket.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0033_positions_accounting_bucket.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        legacy_store.conn.execute(
+            "INSERT INTO shadow_lots(
+                wallet_id, token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                "wallet",
+                "token",
+                1.0_f64,
+                "1000000",
+                6_i64,
+                0.10_f64,
+                100_000_000_i64,
+                "2026-03-08T00:00:00+00:00",
+            ],
+        )?;
+        legacy_store.conn.execute(
+            "INSERT INTO shadow_closed_trades(
+                signal_id, wallet_id, token, qty, qty_raw, qty_decimals,
+                entry_cost_sol, entry_cost_lamports,
+                exit_value_sol, exit_value_lamports,
+                pnl_sol, pnl_lamports,
+                opened_ts, closed_ts
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                "signal",
+                "wallet",
+                "token",
+                0.5_f64,
+                "500000",
+                6_i64,
+                0.05_f64,
+                50_000_000_i64,
+                0.08_f64,
+                80_000_000_i64,
+                0.03_f64,
+                30_000_000_i64,
+                "2026-03-08T00:00:00+00:00",
+                "2026-03-08T00:05:00+00:00",
+            ],
+        )?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut migrated_store = SqliteStore::open(Path::new(&db_path))?;
+        migrated_store.run_migrations(&migration_dir)?;
+
+        let lot_bucket: String = migrated_store.conn.query_row(
+            "SELECT accounting_bucket FROM shadow_lots LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let trade_bucket: String = migrated_store.conn.query_row(
+            "SELECT accounting_bucket FROM shadow_closed_trades LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(lot_bucket, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER);
+        assert_eq!(trade_bucket, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER);
+        Ok(())
+    }
+
+    #[test]
     fn execution_foreign_keys_migration_cleans_orphans_and_enforces_chain() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("execution-foreign-keys.db");
@@ -4313,6 +4829,134 @@ mod tests {
             "expected unrealized drawdown to use exact qty sidecar, got {drawdown}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn live_unrealized_pnl_lamports_requires_exact_quote_boundary() -> Result<()> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("live-unrealized-pnl-lamports-exact-quote.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO positions(
+                position_id, token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts, state, pnl_sol, pnl_lamports
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', 0.0, 0)",
+            params![
+                "token-exact-only",
+                "token-exact-only",
+                2.0_f64,
+                "2000000",
+                6_i64,
+                0.20_f64,
+                200_000_000_i64,
+                now.to_rfc3339(),
+            ],
+        )?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-exact-only".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-live-unrealized-float-only".to_string(),
+            slot: 12350,
+            ts_utc: now + Duration::seconds(1),
+            exact_amounts: None,
+        })?;
+
+        let (unrealized_pnl_lamports, missing_price_count) =
+            store.live_unrealized_pnl_lamports(now + Duration::seconds(2))?;
+        assert_eq!(unrealized_pnl_lamports, SignedLamports::ZERO);
+        assert_eq!(missing_price_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn live_unrealized_pnl_lamports_uses_lower_median_exact_quote() -> Result<()> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("live-unrealized-pnl-lamports-lower-median.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO positions(
+                position_id, token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts, state, pnl_sol, pnl_lamports
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', 0.0, 0)",
+            params![
+                "token-lower-median",
+                "token-lower-median",
+                1.0_f64,
+                "1000000",
+                6_i64,
+                0.15_f64,
+                150_000_000_i64,
+                now.to_rfc3339(),
+            ],
+        )?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-lower-median".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-live-unrealized-exact-low".to_string(),
+            slot: 12351,
+            ts_utc: now + Duration::seconds(1),
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "1000000000".to_string(),
+                amount_in_decimals: 9,
+                amount_out_raw: "10000000".to_string(),
+                amount_out_decimals: 6,
+            }),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-lower-median".to_string(),
+            amount_in: 3.0,
+            amount_out: 10.0,
+            signature: "sig-live-unrealized-exact-high".to_string(),
+            slot: 12352,
+            ts_utc: now + Duration::seconds(2),
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "3000000000".to_string(),
+                amount_in_decimals: 9,
+                amount_out_raw: "10000000".to_string(),
+                amount_out_decimals: 6,
+            }),
+        })?;
+
+        let (unrealized_pnl_lamports, missing_price_count) =
+            store.live_unrealized_pnl_lamports(now + Duration::seconds(3))?;
+        assert_eq!(unrealized_pnl_lamports, SignedLamports::new(-50_000_000));
+        assert_eq!(missing_price_count, 0);
+
+        let drawdown = store.live_max_drawdown_with_unrealized_lamports_since(
+            now - Duration::hours(1),
+            unrealized_pnl_lamports,
+        )?;
+        assert_eq!(drawdown, Lamports::new(50_000_000));
         Ok(())
     }
 
@@ -5242,6 +5886,143 @@ pub(crate) fn position_qty_sol(
         ));
     }
     Ok(qty)
+}
+
+fn position_accounting_bucket_for_fill(qty_exact: Option<TokenQuantity>) -> &'static str {
+    if qty_exact.is_some() {
+        POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER
+    } else {
+        POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER
+    }
+}
+
+fn split_f64_pro_rata(
+    total: f64,
+    consumed_qty: f64,
+    remaining_qty: f64,
+    final_segment: bool,
+    context: &str,
+) -> Result<f64> {
+    if final_segment {
+        return Ok(total);
+    }
+    if !total.is_finite()
+        || !consumed_qty.is_finite()
+        || !remaining_qty.is_finite()
+        || consumed_qty < 0.0
+        || remaining_qty <= 0.0
+    {
+        return Err(anyhow!(
+            "invalid pro-rata {} inputs total={} consumed_qty={} remaining_qty={}",
+            context,
+            total,
+            consumed_qty,
+            remaining_qty
+        ));
+    }
+    let share = consumed_qty / remaining_qty;
+    if !share.is_finite() || !(0.0..=1.0).contains(&share) {
+        return Err(anyhow!(
+            "invalid pro-rata {} share consumed_qty={} remaining_qty={}",
+            context,
+            consumed_qty,
+            remaining_qty
+        ));
+    }
+    Ok(total * share)
+}
+
+fn split_lamports_pro_rata(
+    total: Lamports,
+    consumed_qty: f64,
+    remaining_qty: f64,
+    final_segment: bool,
+    round_up: bool,
+    context: &str,
+) -> Result<Lamports> {
+    if final_segment {
+        return Ok(total);
+    }
+    if !consumed_qty.is_finite()
+        || !remaining_qty.is_finite()
+        || consumed_qty < 0.0
+        || remaining_qty <= 0.0
+    {
+        return Err(anyhow!(
+            "invalid pro-rata {} inputs consumed_qty={} remaining_qty={}",
+            context,
+            consumed_qty,
+            remaining_qty
+        ));
+    }
+    let share = consumed_qty / remaining_qty;
+    if !share.is_finite() || !(0.0..=1.0).contains(&share) {
+        return Err(anyhow!(
+            "invalid pro-rata {} share consumed_qty={} remaining_qty={}",
+            context,
+            consumed_qty,
+            remaining_qty
+        ));
+    }
+    let scaled = total.as_u64() as f64 * share;
+    if !scaled.is_finite() || scaled < 0.0 || scaled > u64::MAX as f64 {
+        return Err(anyhow!(
+            "invalid pro-rata {} lamports scaling total={} share={}",
+            context,
+            total.as_u64(),
+            share
+        ));
+    }
+    let raw = if round_up {
+        scaled.ceil() as u64
+    } else {
+        scaled.floor() as u64
+    }
+    .min(total.as_u64());
+    Ok(Lamports::new(raw))
+}
+
+fn split_token_quantity_pro_rata(
+    total: TokenQuantity,
+    consumed_qty: f64,
+    remaining_qty: f64,
+    final_segment: bool,
+    context: &str,
+) -> Result<(Option<TokenQuantity>, Option<TokenQuantity>)> {
+    if final_segment {
+        return Ok((Some(total), None));
+    }
+    if !consumed_qty.is_finite()
+        || !remaining_qty.is_finite()
+        || consumed_qty < 0.0
+        || remaining_qty <= 0.0
+    {
+        return Err(anyhow!(
+            "invalid pro-rata {} token split inputs consumed_qty={} remaining_qty={}",
+            context,
+            consumed_qty,
+            remaining_qty
+        ));
+    }
+    let share = consumed_qty / remaining_qty;
+    if !share.is_finite() || !(0.0..=1.0).contains(&share) {
+        return Err(anyhow!(
+            "invalid pro-rata {} token split share consumed_qty={} remaining_qty={}",
+            context,
+            consumed_qty,
+            remaining_qty
+        ));
+    }
+    let raw = ((total.raw() as f64) * share).floor() as u64;
+    let raw = raw.min(total.raw());
+    let segment = Some(TokenQuantity::new(raw, total.decimals()));
+    let remainder_raw = total.raw().saturating_sub(raw);
+    let remainder = if remainder_raw == 0 {
+        None
+    } else {
+        Some(TokenQuantity::new(remainder_raw, total.decimals()))
+    };
+    Ok((segment, remainder))
 }
 
 fn merge_position_qty_exact_on_buy(

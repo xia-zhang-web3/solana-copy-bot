@@ -17,6 +17,12 @@ CREATE TABLE observed_swaps(
   qty_out_raw TEXT,
   qty_out_decimals INTEGER
 );
+CREATE TABLE copy_signals(
+  signal_id TEXT PRIMARY KEY,
+  ts TEXT,
+  notional_lamports INTEGER,
+  notional_origin TEXT NOT NULL
+);
 CREATE TABLE fills(
   id INTEGER PRIMARY KEY,
   order_id TEXT,
@@ -63,6 +69,11 @@ INSERT INTO observed_swaps VALUES
   ('sig-2', '2026-03-08T00:01:00+00:00', NULL, NULL, NULL, NULL),
   ('sig-3', '2026-03-08T00:02:00+00:00', '300', 6, NULL, NULL);
 
+INSERT INTO copy_signals VALUES
+  ('copy-1', '2026-03-08T01:00:00+00:00', 1000, 'leader_exact_lamports'),
+  ('copy-2', '2026-03-08T00:10:00+00:00', 2000, 'leader_approximate'),
+  ('copy-3', '2026-03-08T01:10:00+00:00', NULL, 'leader_approximate');
+
 INSERT INTO orders VALUES
   ('ord-1', '2026-03-08T01:00:00+00:00', '2026-03-08T01:01:00+00:00'),
   ('ord-2', '2026-03-07T23:30:00+00:00', NULL),
@@ -107,6 +118,12 @@ assert_contains "observed_swaps_partial_exact_rows: 1"
 assert_contains "observed_swaps_mixed_state: yes"
 assert_contains "observed_swaps_post_cutover_rows: 0"
 assert_contains "observed_swaps_post_cutover_exact_rows: 0"
+assert_contains "copy_signals_total_rows: 3"
+assert_contains "copy_signals_exact_rows: 1"
+assert_contains "copy_signals_partial_exact_rows: 0"
+assert_contains "copy_signals_post_cutover_rows: 2"
+assert_contains "copy_signals_post_cutover_exact_rows: 1"
+assert_contains "copy_signals_legacy_approximate_rows: 1"
 assert_contains "fills_exact_rows: 1"
 assert_contains "fills_partial_exact_rows: 1"
 assert_contains "fills_post_cutover_rows: 2"

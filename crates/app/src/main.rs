@@ -89,7 +89,11 @@ fn signed_lamports_to_sol(lamports: SignedLamports) -> f64 {
 
 fn sol_to_lamports_floor(sol: f64, label: &str) -> Result<Lamports> {
     if !sol.is_finite() || sol < 0.0 {
-        return Err(anyhow!("invalid {}={} (must be finite and >= 0)", label, sol));
+        return Err(anyhow!(
+            "invalid {}={} (must be finite and >= 0)",
+            label,
+            sol
+        ));
     }
     let scaled = sol * LAMPORTS_PER_SOL;
     if !scaled.is_finite() || scaled > u64::MAX as f64 {

@@ -1,7 +1,7 @@
+use crate::rfc3339_time::parse_rfc3339_utc;
+use crate::route_normalization::normalize_route;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use crate::route_normalization::normalize_route;
-use crate::rfc3339_time::parse_rfc3339_utc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SubmitResponseValidationError {
@@ -158,15 +158,19 @@ fn parse_optional_non_empty_string_field(
         return Ok(None);
     };
     let Some(raw_value) = field_value.as_str() else {
-        return Err(SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     };
     let normalized = raw_value.trim();
     if normalized.is_empty() {
-        return Err(SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     }
     Ok(Some(normalized.to_string()))
 }
@@ -183,9 +187,11 @@ pub(crate) fn resolve_submit_response_submitted_at(
         .map(str::trim)
         .filter(|candidate| !candidate.is_empty())
         .ok_or(SubmitResponseValidationError::SubmittedAtMustBeNonEmptyRfc3339)?;
-    parse_rfc3339_utc(raw).ok_or_else(|| SubmitResponseValidationError::SubmittedAtInvalidRfc3339 {
-        raw: raw.to_string(),
-    })
+    parse_rfc3339_utc(raw).ok_or_else(
+        || SubmitResponseValidationError::SubmittedAtInvalidRfc3339 {
+            raw: raw.to_string(),
+        },
+    )
 }
 
 #[cfg(test)]

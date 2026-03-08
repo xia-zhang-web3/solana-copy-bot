@@ -61,6 +61,11 @@ impl SqliteStore {
     }
 
     pub fn insert_copy_signal(&self, signal: &CopySignalRow) -> Result<bool> {
+        let notional_origin = if signal.notional_lamports.is_some() {
+            "leader_exact_lamports"
+        } else {
+            "leader_approximate"
+        };
         let notional_lamports_sql = signal
             .notional_lamports
             .map(|value| u64_to_sql_i64("copy_signals.notional_lamports", value.as_u64()))
@@ -75,9 +80,10 @@ impl SqliteStore {
                     token,
                     notional_sol,
                     notional_lamports,
+                    notional_origin,
                     ts,
                     status
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         &signal.signal_id,
                         &signal.wallet_id,
@@ -85,6 +91,7 @@ impl SqliteStore {
                         &signal.token,
                         signal.notional_sol,
                         notional_lamports_sql,
+                        notional_origin,
                         signal.ts.to_rfc3339(),
                         &signal.status,
                     ],
@@ -109,13 +116,13 @@ impl SqliteStore {
         prioritize_sell: bool,
     ) -> Result<Vec<CopySignalRow>> {
         let query = if prioritize_sell {
-            "SELECT signal_id, wallet_id, side, token, notional_sol, notional_lamports, ts, status
+            "SELECT signal_id, wallet_id, side, token, notional_sol, notional_lamports, notional_origin, ts, status
              FROM copy_signals
              WHERE status = ?1
              ORDER BY CASE WHEN lower(side) = 'sell' THEN 0 ELSE 1 END, ts ASC
              LIMIT ?2"
         } else {
-            "SELECT signal_id, wallet_id, side, token, notional_sol, notional_lamports, ts, status
+            "SELECT signal_id, wallet_id, side, token, notional_sol, notional_lamports, notional_origin, ts, status
              FROM copy_signals
              WHERE status = ?1
              ORDER BY ts ASC
@@ -134,17 +141,24 @@ impl SqliteStore {
             .next()
             .context("failed iterating copy_signals by status rows")?
         {
-            let ts_raw: String = row.get(6).context("failed reading copy_signals.ts")?;
+            let notional_origin: String = row
+                .get(6)
+                .context("failed reading copy_signals.notional_origin")?;
+            let ts_raw: String = row.get(7).context("failed reading copy_signals.ts")?;
             let ts = DateTime::parse_from_rfc3339(&ts_raw)
                 .map(|dt| dt.with_timezone(&Utc))
                 .with_context(|| format!("invalid copy_signals.ts rfc3339 value: {ts_raw}"))?;
-            let notional_lamports = parse_non_negative_i64(
+            let parsed_notional_lamports = parse_non_negative_i64(
                 "copy_signals.notional_lamports",
                 "copy-signal",
                 row.get(5)
                     .context("failed reading copy_signals.notional_lamports")?,
-            )?
-            .map(crate::Lamports::new);
+            )?;
+            let notional_lamports = if notional_origin == "leader_exact_lamports" {
+                parsed_notional_lamports.map(crate::Lamports::new)
+            } else {
+                None
+            };
             out.push(CopySignalRow {
                 signal_id: row
                     .get(0)
@@ -159,7 +173,7 @@ impl SqliteStore {
                     .context("failed reading copy_signals.notional_sol")?,
                 notional_lamports,
                 ts,
-                status: row.get(7).context("failed reading copy_signals.status")?,
+                status: row.get(8).context("failed reading copy_signals.status")?,
             });
         }
         Ok(out)

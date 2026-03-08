@@ -2153,3 +2153,120 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 3. Historical `wallet_activity_days` больше не восстанавливаются runtime автоматически:
    1. это сознательно вынесено из live path,
    2. для восстановления historical eligibility/followlist semantics нужен отдельный offline шаг через `tools/backfill_wallet_activity_days.py`.
+
+### 2026-03-08 — formal runtime recovery verdict for wallet_activity_days hotfix (`8b2bc43`)
+
+Источник:
+
+1. `ops/server_reports/2026-03-08_wallet_activity_hotfix_runtime_recovery_verdict.md`
+
+Контекст verdict window:
+
+1. Rollout start: `2026-03-08 09:18:57 UTC`.
+2. Intermediate live checkpoint: `2026-03-08 10:14:42 UTC` (`~55m 45s` after start).
+3. Follow-up live checkpoint: `2026-03-08 12:27:08 UTC` (`~3h 08m 11s` after start).
+4. Этот verdict deliberately narrow:
+   1. он фиксирует runtime recovery и successful hotfix rollout,
+   2. он не объявляет historical `wallet_activity_days` backfill выполненным.
+
+Formal verdict:
+
+1. Hotfix rollout `8b2bc43` stability: **CONFIRMED** on the current `~3h 08m` live evidence window.
+2. Regression, которая заставила откатить `8bbdfe0`, не воспроизводится:
+   1. `database is locked = 0`,
+   2. `failed to insert observed swap batch = 0`,
+   3. `failed to record heartbeat = 0`,
+   4. `discovery cycle still running = 0`,
+   5. `shadow risk infra stop activated = 0`.
+3. SQLite contention counters bounded and non-escalating:
+   1. at `10:14 UTC`: `sqlite_busy_error_total=2`, `sqlite_write_retry_total=2`,
+   2. at `12:27 UTC`: `sqlite_busy_error_total=2`, `sqlite_write_retry_total=2`.
+4. Ingestion/backpressure remains operationally healthy:
+   1. `ingestion_lag_ms_p95=1828 -> 1762`,
+   2. `ingestion_lag_ms_p99=1921 -> 1823`,
+   3. `ws_notifications_backpressured=111 -> 111`,
+   4. `ws_notifications_replaced_oldest=111 -> 111`.
+5. Discovery recovered strongly across the same window:
+   1. intermediate `cursor/head gap ~= 43851s` (`~12h 10m 51s`),
+   2. follow-up `cursor/head gap ~= 11s`,
+   3. inferred `cursor_advance_ratio ~= 6.53`,
+   4. final non-recompute cycles `~15-18 ms`,
+   5. `swaps_fetch_limit_reached=false` at the final checkpoint.
+
+Операционный вывод:
+
+1. `8b2bc43` теперь можно считать successful live hotfix rollout по wallet-activity write-contention regression.
+2. На текущем окне система не просто stable; discovery к final checkpoint снова near-head.
+3. Historical `wallet_activity_days` backfill остается отдельным operational step:
+   1. `wallet_activity_day_min=2026-03-07`,
+   2. `wallet_activity_day_max=2026-03-08`,
+   3. `active_follow_wallets=0`,
+   4. backfill tool: `tools/backfill_wallet_activity_days.py`.
+4. Следующий шаг уже не emergency rollback decision, а routine follow-up:
+   1. later / overnight checkpoint for audit trail hardening,
+   2. separate historical backfill when ready.
+
+### 2026-03-08 — late-evening disk-full incident and self-recovery on `8b2bc43`
+
+Источник:
+
+1. `ops/server_reports/2026-03-08_late_evening_disk_full_incident_recovery_report.md`
+
+Контекст:
+
+1. После formal runtime recovery verdict по `8b2bc43` был снят поздний follow-up snapshot около `2026-03-08 21:00 UTC`.
+2. Он показал уже не clean trend window, а новый incident class:
+   1. не `database is locked`,
+   2. не rollback старого SQLite contention path,
+   3. а `disk full / xShmMap I/O` failure mode.
+
+Подтвержденные факты:
+
+1. Root filesystem hit `100%`:
+   1. `/dev/root 96G used / 0 avail / 100%`.
+2. Kernel/system evidence:
+   1. `systemd-journald: Failed to open system journal: No space left on device`.
+3. Runtime symptoms:
+   1. `failed to record heartbeat` started at `2026-03-08 20:54:27 UTC`,
+   2. `failed to insert observed swap batch with activity days` started around `2026-03-08 21:01:22 UTC`,
+   3. observed-swap commit failures were `disk I/O error: Error code 4874: I/O error within the xShmMap method`.
+4. This was not lock regression:
+   1. `sqlite_busy_error_total=2`,
+   2. `sqlite_write_retry_total=2`,
+   3. `database is locked = 0`,
+   4. `discovery cycle still running = 0`.
+5. SQLite sizes at incident read:
+   1. `live_copybot.db ~86.6G`,
+   2. `live_copybot.db-wal ~9.18G`,
+   3. `live_copybot.db-shm ~192K`.
+
+Что было сделано:
+
+1. Снят короткий forensic snapshot.
+2. Освобождено место только **outside SQLite data path**:
+   1. `journalctl --vacuum-size=50M`,
+   2. `apt-get clean`,
+   3. удалены build artifacts under `/var/www/solana-copy-bot/target/release/*`,
+   4. удалены Ubuntu cargo registry caches.
+3. Explicitly not done:
+   1. no manual deletion of `db-wal` / `db-shm`,
+   2. no restart,
+   3. no config changes.
+
+Итог recovery:
+
+1. Cleanup freed about `~1.4G`, leaving `/` at `99%`.
+2. Runtime recovered on its own without restart:
+   1. `observed_swaps_max_ts` resumed and advanced to `2026-03-08T21:07:08.988683135+00:00`,
+   2. `discovery_cursor_ts` resumed to `2026-03-08T21:06:55.813419790+00:00`,
+   3. discovery completed a recompute cycle again at `2026-03-08T21:07:02Z`,
+   4. `solana-copy-bot.service` stayed `active`,
+   5. `NRestarts=0`.
+
+Операционный вывод:
+
+1. `8b2bc43` hotfix itself remains valid; this late incident does **not** invalidate the earlier runtime recovery verdict as a contention fix.
+2. Но появился новый production blocker:
+   1. root filesystem headroom is now too small,
+   2. disk exhaustion can again stall heartbeats and observed-swap commits even when the contention hotfix is working.
+3. Следующий durable remediation path уже про storage/capacity hygiene, а не про rollback of this hotfix.

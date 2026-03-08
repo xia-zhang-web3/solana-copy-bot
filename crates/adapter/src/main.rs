@@ -1,25 +1,25 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use axum::{
-    Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::Sha256;
 use std::{
     collections::{HashMap, HashSet},
     env, fs, future,
     net::SocketAddr,
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
     time::Duration,
 };
@@ -32,18 +32,18 @@ mod send_rpc;
 mod submit_verify;
 
 use crate::http_utils::{
-    MAX_HTTP_ERROR_BODY_READ_BYTES, MAX_HTTP_JSON_BODY_READ_BYTES, classify_request_error,
-    endpoint_identity, read_response_body_limited, redacted_endpoint_label, validate_endpoint_url,
+    classify_request_error, endpoint_identity, read_response_body_limited, redacted_endpoint_label,
+    validate_endpoint_url, MAX_HTTP_ERROR_BODY_READ_BYTES, MAX_HTTP_JSON_BODY_READ_BYTES,
 };
 use crate::send_rpc::send_signed_transaction_via_rpc;
 #[cfg(test)]
-use crate::submit_verify::{SubmitSignatureVerification, build_submit_signature_verify_config};
+use crate::submit_verify::{build_submit_signature_verify_config, SubmitSignatureVerification};
 use crate::submit_verify::{
-    SubmitSignatureVerifyConfig, parse_submit_signature_verify_config,
-    submit_signature_verification_to_json, verify_submitted_signature_visibility,
+    parse_submit_signature_verify_config, submit_signature_verification_to_json,
+    verify_submitted_signature_visibility, SubmitSignatureVerifyConfig,
 };
 #[cfg(test)]
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 
 const TIP_MAX_LAMPORTS: u64 = 100_000_000;
 const CU_LIMIT_MIN: u32 = 1;
@@ -2021,11 +2021,9 @@ mod tests {
             false,
         )
         .expect_err("fallback without primary must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("requires COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL")
-        );
+        assert!(error
+            .to_string()
+            .contains("requires COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL"));
     }
 
     #[test]
@@ -2038,11 +2036,9 @@ mod tests {
             false,
         )
         .expect_err("same primary/fallback identity must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("must resolve to distinct endpoint")
-        );
+        assert!(error
+            .to_string()
+            .contains("must resolve to distinct endpoint"));
     }
 
     #[test]
@@ -2068,11 +2064,9 @@ mod tests {
             false,
         )
         .expect_err("interval=0 must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("INTERVAL_MS must be in 1..=60000")
-        );
+        assert!(error
+            .to_string()
+            .contains("INTERVAL_MS must be in 1..=60000"));
     }
 
     #[test]

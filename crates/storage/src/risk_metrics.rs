@@ -2,10 +2,11 @@ use super::{
     lamports_to_sol, position_pnl_lamports, shadow::SHADOW_LOT_OPEN_EPS,
     shadow_closed_trade_entry_cost_lamports, shadow_closed_trade_pnl_lamports,
     shadow_lot_cost_lamports, signed_lamports_to_sol, sol_to_signed_lamports_conservative_storage,
-    SqliteStore, LIVE_POSITION_OPEN_EPS,
+    token_quantity_from_sql, SqliteStore, LIVE_POSITION_OPEN_EPS,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
+use copybot_core_types::{Lamports, SignedLamports};
 use rusqlite::params;
 
 impl SqliteStore {
@@ -97,6 +98,14 @@ impl SqliteStore {
     }
 
     pub fn live_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
+        let (trades, pnl) = self.live_realized_pnl_lamports_since(since)?;
+        Ok((trades, signed_lamports_to_sol(pnl)))
+    }
+
+    pub fn live_realized_pnl_lamports_since(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<(u64, SignedLamports)> {
         let mut stmt = self
             .conn
             .prepare(
@@ -115,7 +124,7 @@ impl SqliteStore {
             .query(params![since.to_rfc3339()])
             .context("failed querying live pnl rows")?;
         let mut trades = 0_u64;
-        let mut pnl = copybot_core_types::SignedLamports::new(0);
+        let mut pnl = SignedLamports::new(0);
         while let Some(row) = rows.next().context("failed iterating live pnl rows")? {
             let pnl_sol: Option<f64> = row.get(0).context("failed reading positions.pnl_sol")?;
             let pnl_lamports_raw: Option<i64> = row
@@ -131,7 +140,7 @@ impl SqliteStore {
                 anyhow!("live realized pnl lamports overflow while summing positions")
             })?;
         }
-        Ok((trades, signed_lamports_to_sol(pnl)))
+        Ok((trades, pnl))
     }
 
     pub fn live_max_drawdown_since(&self, since: DateTime<Utc>) -> Result<f64> {
@@ -252,6 +261,133 @@ impl SqliteStore {
         Ok((unrealized_pnl_sol, missing_price_count))
     }
 
+    pub fn live_open_positions_are_exact_ready(&self) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT qty, qty_raw, qty_decimals, cost_lamports
+                 FROM positions
+                 WHERE state = 'open'
+                   AND cost_sol >= 0",
+            )
+            .context("failed to prepare live exact readiness query")?;
+        let mut rows = stmt
+            .query([])
+            .context("failed querying live exact readiness rows")?;
+
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating live exact readiness rows")?
+        {
+            let qty: f64 = row.get(0).context("failed reading positions.qty")?;
+            let qty_raw: Option<String> = row.get(1).context("failed reading positions.qty_raw")?;
+            let qty_decimals: Option<i64> = row
+                .get(2)
+                .context("failed reading positions.qty_decimals")?;
+            let cost_lamports_raw: Option<i64> = row
+                .get(3)
+                .context("failed reading positions.cost_lamports")?;
+            let qty = super::position_qty_sol(
+                qty,
+                qty_raw.clone(),
+                qty_decimals,
+                "live exact readiness",
+            )?;
+            if qty <= LIVE_POSITION_OPEN_EPS {
+                continue;
+            }
+            if qty_raw.is_none() || qty_decimals.is_none() || cost_lamports_raw.is_none() {
+                return Ok(false);
+            }
+            if let Some(cost_lamports_raw) = cost_lamports_raw {
+                if cost_lamports_raw < 0 {
+                    return Err(anyhow!(
+                        "invalid negative positions.cost_lamports={} in live exact readiness",
+                        cost_lamports_raw
+                    ));
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
+    pub fn live_unrealized_pnl_lamports(
+        &self,
+        as_of: DateTime<Utc>,
+    ) -> Result<(SignedLamports, u64)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT token, qty_raw, qty_decimals, cost_lamports
+                 FROM positions
+                 WHERE state = 'open'
+                   AND cost_sol >= 0",
+            )
+            .context("failed to prepare live exact open positions query")?;
+        let mut rows = stmt
+            .query([])
+            .context("failed querying live exact open positions")?;
+
+        let mut unrealized_pnl_lamports = SignedLamports::ZERO;
+        let mut missing_price_count = 0_u64;
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating live exact open positions")?
+        {
+            let token: String = row.get(0).context("failed reading positions.token")?;
+            let qty_raw: Option<String> = row.get(1).context("failed reading positions.qty_raw")?;
+            let qty_decimals: Option<i64> = row
+                .get(2)
+                .context("failed reading positions.qty_decimals")?;
+            let cost_lamports_raw: Option<i64> = row
+                .get(3)
+                .context("failed reading positions.cost_lamports")?;
+            let Some(qty_exact) =
+                token_quantity_from_sql(qty_raw, qty_decimals, "live unrealized pnl exact qty")?
+            else {
+                missing_price_count = missing_price_count.saturating_add(1);
+                continue;
+            };
+            if qty_exact.raw() == 0 {
+                continue;
+            }
+            let Some(cost_lamports_raw) = cost_lamports_raw else {
+                missing_price_count = missing_price_count.saturating_add(1);
+                continue;
+            };
+            if cost_lamports_raw < 0 {
+                return Err(anyhow!(
+                    "invalid negative positions.cost_lamports={} in live unrealized pnl exact path",
+                    cost_lamports_raw
+                ));
+            }
+            let cost_lamports = Lamports::new(cost_lamports_raw as u64);
+
+            if let Some(exact_quote) =
+                self.reliable_exact_token_sol_price_for_live_unrealized(&token, as_of)?
+            {
+                let mark_value_lamports =
+                    exact_quote
+                        .mark_value_lamports(qty_exact)
+                        .with_context(|| {
+                            format!("failed exact mark valuation for live unrealized token={token}")
+                        })?;
+                let pnl = SignedLamports::from(mark_value_lamports)
+                    .checked_sub(SignedLamports::from(cost_lamports))
+                    .ok_or_else(|| anyhow!("live unrealized pnl lamports overflow"))?;
+                unrealized_pnl_lamports =
+                    unrealized_pnl_lamports.checked_add(pnl).ok_or_else(|| {
+                        anyhow!("live unrealized pnl lamports overflow while summing positions")
+                    })?;
+            } else {
+                missing_price_count = missing_price_count.saturating_add(1);
+            }
+        }
+
+        Ok((unrealized_pnl_lamports, missing_price_count))
+    }
+
     pub fn live_max_drawdown_with_unrealized_since(
         &self,
         since: DateTime<Utc>,
@@ -330,6 +466,78 @@ impl SqliteStore {
         }
 
         Ok(lamports_to_sol(max_drawdown))
+    }
+
+    pub fn live_max_drawdown_with_unrealized_lamports_since(
+        &self,
+        since: DateTime<Utc>,
+        unrealized_pnl: SignedLamports,
+    ) -> Result<Lamports> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT pnl_sol, pnl_lamports
+                 FROM positions
+                 WHERE state = 'closed'
+                   AND closed_ts IS NOT NULL
+                   AND closed_ts >= ?1
+                 ORDER BY
+                    julianday(closed_ts) ASC,
+                    closed_ts ASC,
+                    rowid ASC",
+            )
+            .context("failed to prepare live drawdown query")?;
+        let mut rows = stmt
+            .query(params![since.to_rfc3339()])
+            .context("failed querying live drawdown rows")?;
+
+        let mut cumulative_pnl = SignedLamports::new(0);
+        let mut peak_pnl = SignedLamports::new(0);
+        let mut max_drawdown = Lamports::ZERO;
+        while let Some(row) = rows.next().context("failed iterating live drawdown rows")? {
+            let pnl_sol: Option<f64> = row.get(0).context("failed reading positions.pnl_sol")?;
+            let pnl_lamports_raw: Option<i64> = row
+                .get(1)
+                .context("failed reading positions.pnl_lamports")?;
+            let pnl = position_pnl_lamports(
+                pnl_sol.unwrap_or(0.0),
+                pnl_lamports_raw,
+                "live drawdown with unrealized",
+            )?;
+            cumulative_pnl = cumulative_pnl
+                .checked_add(pnl)
+                .ok_or_else(|| anyhow!("live drawdown cumulative pnl overflow"))?;
+            if cumulative_pnl > peak_pnl {
+                peak_pnl = cumulative_pnl;
+            }
+            if cumulative_pnl < peak_pnl {
+                let drawdown = peak_pnl
+                    .checked_sub(cumulative_pnl)
+                    .and_then(|value| value.checked_abs_lamports())
+                    .ok_or_else(|| anyhow!("live drawdown lamports overflow"))?;
+                if drawdown > max_drawdown {
+                    max_drawdown = drawdown;
+                }
+            }
+        }
+
+        let terminal_pnl = cumulative_pnl
+            .checked_add(unrealized_pnl)
+            .ok_or_else(|| anyhow!("terminal live drawdown pnl overflow"))?;
+        if terminal_pnl > peak_pnl {
+            peak_pnl = terminal_pnl;
+        }
+        if terminal_pnl < peak_pnl {
+            let terminal_drawdown = peak_pnl
+                .checked_sub(terminal_pnl)
+                .and_then(|value| value.checked_abs_lamports())
+                .ok_or_else(|| anyhow!("terminal live drawdown lamports overflow"))?;
+            if terminal_drawdown > max_drawdown {
+                max_drawdown = terminal_drawdown;
+            }
+        }
+
+        Ok(max_drawdown)
     }
 
     pub fn shadow_rug_loss_count_since(

@@ -9,13 +9,13 @@ use uuid::Uuid;
 use crate::auth::compute_hmac_signature_hex;
 use crate::intent::ExecutionIntent;
 use crate::submitter_response::{normalize_route, parse_adapter_submit_response};
-#[cfg(test)]
-use copybot_core_types::Lamports;
 use copybot_config::{
     EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX, EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN,
     EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
     EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MIN, EXECUTION_ROUTE_TIP_LAMPORTS_MAX,
 };
+#[cfg(test)]
+use copybot_core_types::Lamports;
 
 #[derive(Debug, Clone)]
 pub struct SubmitResult {

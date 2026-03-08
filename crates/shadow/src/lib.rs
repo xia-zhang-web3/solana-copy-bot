@@ -260,14 +260,15 @@ impl ShadowService {
         if !is_followed && !is_unfollowed_sell_exit {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
         }
-        let below_notional = if let (Some(exact_leader_notional_lamports), Some(min_notional_lamports)) = (
-            candidate.exact_leader_notional_lamports,
-            self.min_leader_notional_lamports,
-        ) {
-            exact_leader_notional_lamports < min_notional_lamports
-        } else {
-            candidate.leader_notional_sol < self.config.min_leader_notional_sol
-        };
+        let below_notional =
+            if let (Some(exact_leader_notional_lamports), Some(min_notional_lamports)) = (
+                candidate.exact_leader_notional_lamports,
+                self.min_leader_notional_lamports,
+            ) {
+                exact_leader_notional_lamports < min_notional_lamports
+            } else {
+                candidate.leader_notional_sol < self.config.min_leader_notional_sol
+            };
         if !is_unfollowed_sell_exit && below_notional {
             log_gate_drop(
                 "notional",
@@ -321,14 +322,21 @@ impl ShadowService {
             self.copy_notional_lamports,
             candidate.exact_leader_notional_lamports,
         ) {
-            (Some(config_copy_notional_lamports), Some(exact_leader_notional_lamports)) => Some(
-                std::cmp::min(config_copy_notional_lamports, exact_leader_notional_lamports),
-            ),
+            (Some(config_copy_notional_lamports), Some(exact_leader_notional_lamports)) => {
+                Some(std::cmp::min(
+                    config_copy_notional_lamports,
+                    exact_leader_notional_lamports,
+                ))
+            }
             _ => None,
         };
         let copy_notional_sol = copy_notional_lamports
             .map(lamports_to_sol)
-            .unwrap_or_else(|| self.config.copy_notional_sol.min(candidate.leader_notional_sol));
+            .unwrap_or_else(|| {
+                self.config
+                    .copy_notional_sol
+                    .min(candidate.leader_notional_sol)
+            });
         if copy_notional_sol <= EPS || candidate.price_sol_per_token <= EPS {
             log_gate_drop(
                 "sizing",
@@ -354,7 +362,7 @@ impl ShadowService {
             side: candidate.side.clone(),
             token: candidate.token.clone(),
             notional_sol: copy_notional_sol,
-            notional_lamports: copy_notional_lamports.or_else(|| sol_to_lamports_floor(copy_notional_sol)),
+            notional_lamports: copy_notional_lamports,
             ts: swap.ts_utc,
             status: "shadow_recorded".to_string(),
         };
@@ -509,6 +517,9 @@ mod tests {
             .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
             .expect_recorded("buy signal expected");
         assert_eq!(buy_signal.side, "buy");
+        let signals = store.list_copy_signals_by_status("shadow_recorded", 10)?;
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].notional_lamports, None);
         assert!(store.shadow_open_lots_count()? > 0);
 
         let sell = SwapEvent {
@@ -657,6 +668,9 @@ mod tests {
         service
             .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
             .expect_recorded("buy signal expected");
+        let signals = store.list_copy_signals_by_status("shadow_recorded", 10)?;
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].notional_lamports, None);
 
         let lots = store.list_shadow_lots("leader-wallet", "TokenMint")?;
         assert_eq!(lots.len(), 1, "expected single open lot before dusting");
@@ -794,6 +808,7 @@ mod tests {
 
         let lots = store.list_shadow_lots("leader-wallet", "TokenMint")?;
         assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].accounting_bucket, "exact_post_cutover");
         assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(500_000_000, 6)));
 
         let sell = SwapEvent {
@@ -819,8 +834,13 @@ mod tests {
 
         let lots = store.list_shadow_lots("leader-wallet", "TokenMint")?;
         assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].accounting_bucket, "exact_post_cutover");
         assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(83_333_334, 6)));
 
+        let closed_bucket = store.shadow_closed_trade_accounting_bucket(
+            "shadow:sig-sell-exact:leader-wallet:sell:TokenMint",
+        )?;
+        assert_eq!(closed_bucket.as_deref(), Some("exact_post_cutover"));
         let closed_qty_exact = store
             .shadow_closed_trade_qty_exact("shadow:sig-sell-exact:leader-wallet:sell:TokenMint")?;
         assert_eq!(closed_qty_exact, Some(TokenQuantity::new(416_666_666, 6)));

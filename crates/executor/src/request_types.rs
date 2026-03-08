@@ -55,8 +55,8 @@ mod tests {
             "route": "rpc",
             "dry_run": true
         });
-        let error = serde_json::from_value::<SimulateRequest>(payload)
-            .expect_err("request_id is required");
+        let error =
+            serde_json::from_value::<SimulateRequest>(payload).expect_err("request_id is required");
         assert!(error.to_string().contains("request_id"));
     }
 

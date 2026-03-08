@@ -49,6 +49,9 @@ mod tests {
         });
         assert_eq!(value.get("enabled").and_then(Value::as_bool), Some(true));
         assert_eq!(value.get("seen").and_then(Value::as_bool), Some(false));
-        assert_eq!(value.get("reason").and_then(Value::as_str), Some("rpc timeout"));
+        assert_eq!(
+            value.get("reason").and_then(Value::as_str),
+            Some("rpc timeout")
+        );
     }
 }

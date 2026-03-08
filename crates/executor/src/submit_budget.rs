@@ -67,9 +67,7 @@ pub(crate) fn default_submit_total_budget_ms(request_timeout_ms: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::min_claim_ttl_sec_for_submit_path;
-    use crate::{
-        route_backend::RouteBackend, submit_verify_config::SubmitSignatureVerifyConfig,
-    };
+    use crate::{route_backend::RouteBackend, submit_verify_config::SubmitSignatureVerifyConfig};
     use std::collections::HashMap;
 
     #[test]

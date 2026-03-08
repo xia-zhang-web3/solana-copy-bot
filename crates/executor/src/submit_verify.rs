@@ -119,7 +119,8 @@ pub(crate) async fn verify_submitted_signature_visibility(
                     continue;
                 }
             }
-            let body_read = read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
+            let body_read =
+                read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
             if let Some(read_error_class) = body_read.read_error_class {
                 set_reason_and_continue(format!(
                     "rpc response_read_failed endpoint={} class={}",

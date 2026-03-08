@@ -371,10 +371,16 @@ pub(super) fn infer_swap_from_proto_balances(
             token_out_candidates.push((mint.clone(), delta.candidate()));
         }
     }
-    token_in_candidates
-        .sort_by(|a, b| b.1.amount.partial_cmp(&a.1.amount).unwrap_or(std::cmp::Ordering::Equal));
-    token_out_candidates
-        .sort_by(|a, b| b.1.amount.partial_cmp(&a.1.amount).unwrap_or(std::cmp::Ordering::Equal));
+    token_in_candidates.sort_by(|a, b| {
+        b.1.amount
+            .partial_cmp(&a.1.amount)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    token_out_candidates.sort_by(|a, b| {
+        b.1.amount
+            .partial_cmp(&a.1.amount)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let sol_token_delta = mint_deltas
         .get(SOL_MINT)

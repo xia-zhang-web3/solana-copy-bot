@@ -5,7 +5,9 @@ const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
 fn validate_sol_amount(sol: f64, label: &str) -> Result<f64> {
     if !sol.is_finite() || sol < 0.0 {
-        return Err(anyhow!("{label} must be a finite non-negative SOL amount, got {sol}"));
+        return Err(anyhow!(
+            "{label} must be a finite non-negative SOL amount, got {sol}"
+        ));
     }
     let scaled = sol * LAMPORTS_PER_SOL;
     if !scaled.is_finite() || scaled > u64::MAX as f64 {

@@ -171,6 +171,36 @@ def coverage_all_or_nothing(
     )
 
 
+def coverage_custom_predicates(
+    conn: sqlite3.Connection,
+    name: str,
+    table: str,
+    required_columns: list[str],
+    exact_predicate: str,
+    partial_predicate: str | None,
+    query: CoverageQuery,
+    cutover: CutoverState | None,
+) -> TableCoverage:
+    if not has_required_tables(conn, query) or not table_exists(conn, table):
+        return TableCoverage(name, 0, None, None)
+    total = count_where(conn, query.row_source, "1 = 1")
+    if any(not column_exists(conn, table, column) for column in required_columns):
+        return TableCoverage(name, total, None, None)
+    exact = count_where(conn, query.row_source, exact_predicate)
+    partial = (
+        count_where(conn, query.row_source, partial_predicate)
+        if partial_predicate is not None
+        else None
+    )
+    return apply_cutover_counts(
+        conn,
+        TableCoverage(name, total, exact, partial),
+        query,
+        exact_predicate,
+        cutover,
+    )
+
+
 def format_ratio(exact_rows: int | None, total_rows: int) -> str:
     if exact_rows is None:
         return "n/a"
@@ -257,6 +287,17 @@ def main(argv: list[str]) -> int:
             CoverageQuery("observed_swaps", "ts"),
             cutover,
         )
+        copy_signals = coverage_custom_predicates(
+            conn,
+            "copy_signals",
+            "copy_signals",
+            ["notional_lamports", "notional_origin"],
+            "notional_lamports IS NOT NULL AND notional_origin = 'leader_exact_lamports'",
+            "((notional_origin = 'leader_exact_lamports' AND notional_lamports IS NULL) "
+            "OR (notional_origin NOT IN ('leader_exact_lamports', 'leader_approximate')))",
+            CoverageQuery("copy_signals", "ts"),
+            cutover,
+        )
         fills = coverage_all_or_nothing(
             conn,
             "fills",
@@ -337,6 +378,7 @@ def main(argv: list[str]) -> int:
         print(f"exact_money_cutover_recorded_ts: {cutover.recorded_ts}")
         print(f"exact_money_cutover_note: {cutover.note or 'n/a'}")
     print_coverage(observed_swaps)
+    print_coverage(copy_signals)
     print_coverage(fills)
     print_coverage(fills_qty)
     print_coverage(positions)

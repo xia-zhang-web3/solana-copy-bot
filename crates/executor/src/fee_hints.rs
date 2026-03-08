@@ -45,9 +45,7 @@ pub(crate) enum FeeHintError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FeeHintFieldParseError {
-    FieldMustBeNonNegativeIntegerWhenPresent {
-        field: &'static str,
-    },
+    FieldMustBeNonNegativeIntegerWhenPresent { field: &'static str },
 }
 
 pub(crate) fn parse_response_fee_hint_fields(
@@ -147,8 +145,9 @@ fn derive_priority_fee_lamports(
 ) -> Result<u64, FeeHintError> {
     let lamports_u128 =
         (cu_limit as u128).saturating_mul(cu_price_micro_lamports as u128) / 1_000_000u128;
-    u64::try_from(lamports_u128)
-        .map_err(|_| FeeHintError::DerivedPriorityFeeExceedsU64 { value: lamports_u128 })
+    u64::try_from(lamports_u128).map_err(|_| FeeHintError::DerivedPriorityFeeExceedsU64 {
+        value: lamports_u128,
+    })
 }
 
 #[cfg(test)]
@@ -194,8 +193,7 @@ mod tests {
         let body = json!({
             "network_fee_lamports": null
         });
-        let error =
-            parse_response_fee_hint_fields(&body).expect_err("null value must be rejected");
+        let error = parse_response_fee_hint_fields(&body).expect_err("null value must be rejected");
         assert_eq!(
             error,
             FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent {
@@ -209,8 +207,7 @@ mod tests {
         let body = json!({
             "ata_create_rent_lamports": null
         });
-        let error =
-            parse_response_fee_hint_fields(&body).expect_err("null value must be rejected");
+        let error = parse_response_fee_hint_fields(&body).expect_err("null value must be rejected");
         assert_eq!(
             error,
             FeeHintFieldParseError::FieldMustBeNonNegativeIntegerWhenPresent {

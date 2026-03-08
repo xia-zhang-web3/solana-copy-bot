@@ -431,7 +431,9 @@ fn parse_confirmed_transaction_observation_from_rpc_body(
             parse_signer_balance_delta_lamports(result, execution_signer_pubkey)?,
             parse_owned_token_delta(result, execution_signer_pubkey, token_mint)?,
         ) {
-            (Some(signer_balance_delta_lamports), Some(token_delta)) if token_delta.qty.abs() > 1e-12 => {
+            (Some(signer_balance_delta_lamports), Some(token_delta))
+                if token_delta.qty.abs() > 1e-12 =>
+            {
                 Some(ObservedExecutionFill {
                     signer_balance_delta_lamports,
                     token_delta_qty: token_delta.qty,
@@ -561,27 +563,25 @@ fn sum_owned_token_balance(
             continue;
         }
         match (qty.raw_amount, qty.decimals) {
-            (Some(raw_amount), Some(decimals)) => {
-                match exact_decimals {
-                    Some(existing) if existing != decimals => {
-                        exact_unavailable = true;
-                        exact_total_raw = None;
-                        exact_decimals = None;
-                    }
-                    Some(_) => {
-                        exact_total_raw = Some(
-                            exact_total_raw
-                                .unwrap_or(0)
-                                .checked_add(raw_amount)
-                                .ok_or(FeeLookupErrorClass::OutOfRange)?,
-                        );
-                    }
-                    None => {
-                        exact_decimals = Some(decimals);
-                        exact_total_raw = Some(raw_amount);
-                    }
+            (Some(raw_amount), Some(decimals)) => match exact_decimals {
+                Some(existing) if existing != decimals => {
+                    exact_unavailable = true;
+                    exact_total_raw = None;
+                    exact_decimals = None;
                 }
-            }
+                Some(_) => {
+                    exact_total_raw = Some(
+                        exact_total_raw
+                            .unwrap_or(0)
+                            .checked_add(raw_amount)
+                            .ok_or(FeeLookupErrorClass::OutOfRange)?,
+                    );
+                }
+                None => {
+                    exact_decimals = Some(decimals);
+                    exact_total_raw = Some(raw_amount);
+                }
+            },
             _ => {
                 exact_unavailable = true;
                 exact_total_raw = None;
@@ -620,7 +620,9 @@ fn exact_token_delta(
     }
 }
 
-fn parse_ui_token_amount(value: &Value) -> std::result::Result<ParsedUiTokenAmount, FeeLookupErrorClass> {
+fn parse_ui_token_amount(
+    value: &Value,
+) -> std::result::Result<ParsedUiTokenAmount, FeeLookupErrorClass> {
     if let Some(text) = value.get("uiAmountString").and_then(Value::as_str) {
         let parsed = text
             .parse::<f64>()
@@ -1084,8 +1086,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_confirmed_transaction_observation_from_rpc_body_extracts_exact_qty_when_both_sides_are_exact()
-    -> Result<()> {
+    fn parse_confirmed_transaction_observation_from_rpc_body_extracts_exact_qty_when_both_sides_are_exact(
+    ) -> Result<()> {
         let body = json!({
             "jsonrpc": "2.0",
             "result": {

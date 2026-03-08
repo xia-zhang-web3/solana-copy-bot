@@ -37,7 +37,7 @@ pub(crate) fn validate_hmac_auth_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_hmac_auth_config, require_authenticated_mode};
+    use super::{require_authenticated_mode, validate_hmac_auth_config};
 
     #[test]
     fn require_authenticated_mode_fails_without_bearer_when_auth_required() {
@@ -57,9 +57,7 @@ mod tests {
         let error =
             validate_hmac_auth_config(Some("key-id"), None, 30).expect_err("partial pair fails");
         assert!(
-            error
-                .to_string()
-                .contains("must be set together"),
+            error.to_string().contains("must be set together"),
             "error={}",
             error
         );

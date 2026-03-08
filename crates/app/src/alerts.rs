@@ -168,7 +168,11 @@ fn endpoint_host_is_local(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    let host = host.trim().trim_matches('[').trim_matches(']').to_ascii_lowercase();
+    let host = host
+        .trim()
+        .trim_matches('[')
+        .trim_matches(']')
+        .to_ascii_lowercase();
     if host == "localhost" || host.ends_with(".localhost") {
         return true;
     }
@@ -196,7 +200,11 @@ mod tests {
 
     async fn spawn_capture_server(
         max_requests: usize,
-    ) -> Result<(String, Arc<AsyncMutex<Vec<String>>>, tokio::task::JoinHandle<()>)> {
+    ) -> Result<(
+        String,
+        Arc<AsyncMutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    )> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let captured = Arc::new(AsyncMutex::new(Vec::new()));
@@ -218,9 +226,7 @@ mod tests {
         Ok((format!("http://{}", addr), captured, handle))
     }
 
-    async fn read_http_request_body(
-        socket: &mut tokio::net::TcpStream,
-    ) -> Result<String> {
+    async fn read_http_request_body(socket: &mut tokio::net::TcpStream) -> Result<String> {
         let mut buffer = Vec::new();
         let mut header_end = None;
         let mut chunk = [0u8; 4096];
@@ -336,7 +342,11 @@ mod tests {
 
         let delivered = dispatcher.deliver_pending(&store).await?;
         assert_eq!(delivered, 1);
-        let body = captured.lock().await.pop().context("captured body missing")?;
+        let body = captured
+            .lock()
+            .await
+            .pop()
+            .context("captured body missing")?;
         assert!(body.contains("\"kind\":\"risk_event\""));
         assert!(body.contains("\"event_type\":\"warn_event\""));
         let cursor = store
@@ -361,7 +371,11 @@ mod tests {
             test_on_startup: true,
         };
         dispatcher.send_startup_test("prod").await?;
-        let body = captured.lock().await.pop().context("captured body missing")?;
+        let body = captured
+            .lock()
+            .await
+            .pop()
+            .context("captured body missing")?;
         assert!(body.contains("\"kind\":\"alert_delivery_test\""));
         assert!(body.contains("\"env\":\"prod\""));
         handle.abort();
@@ -395,8 +409,12 @@ mod tests {
         assert_eq!(dispatcher.deliver_pending(&store).await?, 1);
         let payloads = captured.lock().await.clone();
         assert_eq!(payloads.len(), 2);
-        assert!(payloads.iter().any(|body| body.contains("\"event_type\":\"warn_event_a\"")));
-        assert!(payloads.iter().any(|body| body.contains("\"event_type\":\"warn_event_b\"")));
+        assert!(payloads
+            .iter()
+            .any(|body| body.contains("\"event_type\":\"warn_event_a\"")));
+        assert!(payloads
+            .iter()
+            .any(|body| body.contains("\"event_type\":\"warn_event_b\"")));
         handle.abort();
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -409,8 +427,7 @@ mod tests {
             Some(OsString::from("fast")),
             None,
             || {
-                let error =
-                    AlertDispatcher::from_env().expect_err("invalid timeout must reject");
+                let error = AlertDispatcher::from_env().expect_err("invalid timeout must reject");
                 assert!(error.to_string().contains(APP_ALERT_TIMEOUT_MS_ENV));
             },
         );

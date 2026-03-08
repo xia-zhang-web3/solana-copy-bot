@@ -581,11 +581,7 @@ impl SubmitIdempotencyStore {
         let request_id = request_id.to_string();
         let response = response.clone();
         task::spawn_blocking(move || {
-            store.store_submit_response(
-                client_order_id.as_str(),
-                request_id.as_str(),
-                &response,
-            )
+            store.store_submit_response(client_order_id.as_str(), request_id.as_str(), &response)
         })
         .await
         .context("idempotency blocking task join failed")?
@@ -820,8 +816,8 @@ mod tests {
     use serde_json::json;
     use std::{
         path::PathBuf,
-        sync::Arc,
         sync::atomic::{AtomicU64, Ordering},
+        sync::Arc,
         time::Duration as StdDuration,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -1493,7 +1489,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn load_cached_or_claim_submit_async_does_not_block_runtime_on_mutex_contention() {
-        let store = Arc::new(SubmitIdempotencyStore::open(":memory:").expect("open in-memory store"));
+        let store =
+            Arc::new(SubmitIdempotencyStore::open(":memory:").expect("open in-memory store"));
         let held_lock = store.conn.lock().expect("hold idempotency lock");
 
         let worker_store = store.clone();
@@ -1521,13 +1518,18 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn load_cached_or_claim_submit_guard_async_releases_claim_if_awaiter_is_cancelled() {
-        let store = Arc::new(SubmitIdempotencyStore::open(":memory:").expect("open in-memory store"));
+        let store =
+            Arc::new(SubmitIdempotencyStore::open(":memory:").expect("open in-memory store"));
         let held_lock = store.conn.lock().expect("hold idempotency lock");
 
         let worker_store = store.clone();
         let claim_task = tokio::spawn(async move {
             worker_store
-                .load_cached_or_claim_submit_guard_async("order-guard-cancel-1", "req-guard-cancel-1", 30)
+                .load_cached_or_claim_submit_guard_async(
+                    "order-guard-cancel-1",
+                    "req-guard-cancel-1",
+                    30,
+                )
                 .await
         });
 

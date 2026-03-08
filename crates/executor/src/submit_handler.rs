@@ -248,8 +248,7 @@ pub(crate) async fn handle_submit(
         &backend_response,
         route.as_str(),
         state.config.contract_version.as_str(),
-    )
-    {
+    ) {
         return reject_after_claimed_submit_error(
             &mut submit_claim_guard,
             route.as_str(),
@@ -264,8 +263,7 @@ pub(crate) async fn handle_submit(
         &backend_response,
         request.client_order_id.as_str(),
         request.request_id.as_str(),
-    )
-    {
+    ) {
         return reject_after_claimed_submit_error(
             &mut submit_claim_guard,
             route.as_str(),
@@ -281,8 +279,7 @@ pub(crate) async fn handle_submit(
         request.signal_id.as_str(),
         request.side.as_str(),
         request.token.as_str(),
-    )
-    {
+    ) {
         return reject_after_claimed_submit_error(
             &mut submit_claim_guard,
             route.as_str(),
@@ -391,8 +388,7 @@ pub(crate) async fn handle_submit(
         request_cu_limit: request.compute_budget.cu_limit,
         request_cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
         default_base_fee_lamports: crate::DEFAULT_BASE_FEE_LAMPORTS,
-    })
-    {
+    }) {
         Ok(fee_hints) => fee_hints,
         Err(error) => {
             return reject_after_claimed_submit_error(

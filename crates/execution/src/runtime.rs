@@ -183,7 +183,11 @@ mod tests {
         assert!(runtime.submit_fallback_route_allowed("rpc", "fastlane", "submit_retryable_once"));
         assert!(runtime.submit_fallback_route_allowed("rpc", "paper", "submit_retryable_once"));
         assert!(runtime.submit_fallback_route_allowed("jito", "jito", "submit_retryable_once"));
-        assert!(runtime.submit_fallback_route_allowed("fastlane", "fastlane", "submit_retryable_once"));
+        assert!(runtime.submit_fallback_route_allowed(
+            "fastlane",
+            "fastlane",
+            "submit_retryable_once"
+        ));
         assert!(runtime.submit_fallback_route_allowed("jito", "fastlane", "submit_retryable_once"));
     }
 }

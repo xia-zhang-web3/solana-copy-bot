@@ -207,12 +207,12 @@ impl AuthVerifier {
             if let Some(store) = self.persistent_nonce_store.as_ref() {
                 match store
                     .claim_hmac_nonce_async(
-                    nonce_key.as_str(),
-                    now_epoch,
-                    expires_at,
-                    self.nonce_cache_max_entries,
-                )
-                .await
+                        nonce_key.as_str(),
+                        now_epoch,
+                        expires_at,
+                        self.nonce_cache_max_entries,
+                    )
+                    .await
                 {
                     Ok(HmacNonceClaimOutcome::Claimed) => {}
                     Ok(HmacNonceClaimOutcome::Replay) => {

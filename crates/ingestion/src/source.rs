@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_core_types::ExactSwapAmounts;
 use copybot_config::IngestionConfig;
+use copybot_core_types::ExactSwapAmounts;
 use reqwest::{Client, Url};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};

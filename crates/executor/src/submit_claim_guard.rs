@@ -72,7 +72,11 @@ impl Drop for SubmitClaimGuard {
     }
 }
 
-fn log_release_result(client_order_id: &str, request_id: &str, release_result: anyhow::Result<bool>) {
+fn log_release_result(
+    client_order_id: &str,
+    request_id: &str,
+    release_result: anyhow::Result<bool>,
+) {
     match release_result {
         Ok(true) => {}
         Ok(false) => {

@@ -228,14 +228,12 @@ fn validate_route_executor_payload_route_expectation(
     normalized_route: &str,
     payload_expectations: RouteActionPayloadExpectations<'_>,
 ) -> std::result::Result<(), Reject> {
-    let payload_route = payload_expectations
-        .route_hint
-        .ok_or_else(|| {
-            Reject::terminal(
-                "invalid_request_body",
-                "route payload hint missing at route-executor boundary",
-            )
-        })?;
+    let payload_route = payload_expectations.route_hint.ok_or_else(|| {
+        Reject::terminal(
+            "invalid_request_body",
+            "route payload hint missing at route-executor boundary",
+        )
+    })?;
     let normalized_payload_route = normalize_route(payload_route);
     if normalized_payload_route != normalized_route {
         return Err(Reject::terminal(
@@ -265,19 +263,25 @@ pub(crate) async fn execute_route_action(
     submit_context: RouteSubmitExecutionContext,
 ) -> std::result::Result<Value, Reject> {
     let normalized_route = normalize_route(route);
-    let route_executor_kind =
-        resolve_route_executor_kind_normalized(normalized_route.as_str()).ok_or_else(|| {
+    let route_executor_kind = resolve_route_executor_kind_normalized(normalized_route.as_str())
+        .ok_or_else(|| {
             Reject::terminal(
                 "route_not_allowed",
                 format!("route={} is not supported by route executor", route),
             )
         })?;
-    validate_route_executor_payload_route_expectation(normalized_route.as_str(), payload_expectations)?;
+    validate_route_executor_payload_route_expectation(
+        normalized_route.as_str(),
+        payload_expectations,
+    )?;
     validate_route_executor_payload_expectations_shape(action, payload_expectations)?;
     validate_route_executor_deadline_context(action, submit_context, submit_deadline)?;
     validate_route_executor_action_context(action, submit_context)?;
     validate_route_executor_allowlist(normalized_route.as_str(), &state.config.route_allowlist)?;
-    validate_route_executor_backend_configured(normalized_route.as_str(), &state.config.route_backends)?;
+    validate_route_executor_backend_configured(
+        normalized_route.as_str(),
+        &state.config.route_backends,
+    )?;
     validate_route_executor_feature_gate(
         normalized_route.as_str(),
         state.config.submit_fastlane_enabled,
@@ -307,14 +311,12 @@ pub(crate) async fn execute_route_action(
 #[cfg(test)]
 mod tests {
     use super::{
+        resolve_route_executor_kind, resolve_route_executor_kind_normalized,
         validate_route_executor_action_context, validate_route_executor_allowlist,
         validate_route_executor_backend_configured, validate_route_executor_deadline_context,
-        validate_route_executor_feature_gate,
-        validate_route_executor_payload_expectations_shape,
-        validate_route_executor_payload_route_expectation,
-        resolve_route_executor_kind,
-        resolve_route_executor_kind_normalized,
-        RouteActionPayloadExpectations, RouteSubmitExecutionContext, RouteExecutorKind,
+        validate_route_executor_feature_gate, validate_route_executor_payload_expectations_shape,
+        validate_route_executor_payload_route_expectation, RouteActionPayloadExpectations,
+        RouteExecutorKind, RouteSubmitExecutionContext,
     };
     use crate::route_backend::{RouteBackend, UpstreamAction};
     use crate::submit_deadline::SubmitDeadline;
@@ -327,7 +329,10 @@ mod tests {
             resolve_route_executor_kind("paper"),
             Some(RouteExecutorKind::Paper)
         );
-        assert_eq!(resolve_route_executor_kind("RPC"), Some(RouteExecutorKind::Rpc));
+        assert_eq!(
+            resolve_route_executor_kind("RPC"),
+            Some(RouteExecutorKind::Rpc)
+        );
         assert_eq!(
             resolve_route_executor_kind(" jito "),
             Some(RouteExecutorKind::Jito)
@@ -445,9 +450,11 @@ mod tests {
 
     #[test]
     fn route_executor_action_context_rejects_submit_without_plan() {
-        let reject =
-            validate_route_executor_action_context(UpstreamAction::Submit, RouteSubmitExecutionContext::default())
-                .expect_err("submit without plan must be rejected");
+        let reject = validate_route_executor_action_context(
+            UpstreamAction::Submit,
+            RouteSubmitExecutionContext::default(),
+        )
+        .expect_err("submit without plan must be rejected");
         assert_eq!(reject.code, "invalid_request_body");
         assert!(!reject.retryable);
     }
@@ -586,7 +593,8 @@ mod tests {
     }
 
     #[test]
-    fn route_executor_action_context_rejects_submit_with_non_finite_route_slippage_cap_expectation() {
+    fn route_executor_action_context_rejects_submit_with_non_finite_route_slippage_cap_expectation()
+    {
         let reject = validate_route_executor_action_context(
             UpstreamAction::Submit,
             RouteSubmitExecutionContext {
@@ -719,7 +727,9 @@ mod tests {
         )
         .expect_err("submit must require client_order_id expectation");
         assert_eq!(reject.code, "invalid_request_body");
-        assert!(reject.detail.contains("missing client_order_id expectation"));
+        assert!(reject
+            .detail
+            .contains("missing client_order_id expectation"));
     }
 
     #[test]
@@ -824,9 +834,11 @@ mod tests {
         ];
 
         for (missing_field, expectations) in cases {
-            let reject =
-                validate_route_executor_payload_expectations_shape(UpstreamAction::Submit, expectations)
-                    .expect_err("missing shared expectation must reject");
+            let reject = validate_route_executor_payload_expectations_shape(
+                UpstreamAction::Submit,
+                expectations,
+            )
+            .expect_err("missing shared expectation must reject");
             assert_eq!(reject.code, "invalid_request_body");
             assert!(reject
                 .detail
@@ -895,9 +907,11 @@ mod tests {
         ];
 
         for (empty_field, expectations) in cases {
-            let reject =
-                validate_route_executor_payload_expectations_shape(UpstreamAction::Submit, expectations)
-                    .expect_err("empty shared expectation must reject");
+            let reject = validate_route_executor_payload_expectations_shape(
+                UpstreamAction::Submit,
+                expectations,
+            )
+            .expect_err("empty shared expectation must reject");
             assert_eq!(reject.code, "invalid_request_body");
             assert!(reject
                 .detail

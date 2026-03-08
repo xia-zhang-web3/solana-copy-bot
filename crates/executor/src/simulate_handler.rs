@@ -52,24 +52,23 @@ pub(crate) async fn handle_simulate(
         signal_id = %request.signal_id,
         "handling simulate request"
     );
-    let backend_response =
-        execute_route_action(
-            state,
-            route.as_str(),
-            UpstreamAction::Simulate,
-            raw_body,
-            None,
-            RouteActionPayloadExpectations {
-                route_hint: Some(route.as_str()),
-                request_id: Some(request.request_id.as_str()),
-                signal_id: Some(request.signal_id.as_str()),
-                client_order_id: None,
-                side: Some(request.side.as_str()),
-                token: Some(request.token.as_str()),
-            },
-            RouteSubmitExecutionContext::default(),
-        )
-        .await?;
+    let backend_response = execute_route_action(
+        state,
+        route.as_str(),
+        UpstreamAction::Simulate,
+        raw_body,
+        None,
+        RouteActionPayloadExpectations {
+            route_hint: Some(route.as_str()),
+            request_id: Some(request.request_id.as_str()),
+            signal_id: Some(request.signal_id.as_str()),
+            client_order_id: None,
+            side: Some(request.side.as_str()),
+            token: Some(request.token.as_str()),
+        },
+        RouteSubmitExecutionContext::default(),
+    )
+    .await?;
     match parse_upstream_outcome(&backend_response, "simulation_rejected") {
         UpstreamOutcome::Reject(reject) => return Err(map_parsed_upstream_reject(reject)),
         UpstreamOutcome::Success => {}

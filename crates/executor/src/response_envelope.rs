@@ -30,19 +30,18 @@ mod tests {
         let payload = json!({"status":"ok","accepted":true});
         let response = success_or_reject_to_http(Ok(payload.clone()), None, "v1");
         assert_eq!(response.0, StatusCode::OK);
-        assert_eq!(response.1.0, payload);
+        assert_eq!(response.1 .0, payload);
     }
 
     #[test]
     fn response_envelope_reject_includes_client_order_id_when_provided() {
         let reject = Reject::terminal("code-1", "detail-1");
-        let response =
-            success_or_reject_to_http(Err(reject), Some("client-1"), "v1");
+        let response = success_or_reject_to_http(Err(reject), Some("client-1"), "v1");
         assert_eq!(response.0, StatusCode::OK);
         assert_eq!(
             response
                 .1
-                .0
+                 .0
                 .get("client_order_id")
                 .and_then(|value| value.as_str()),
             Some("client-1")
@@ -54,12 +53,6 @@ mod tests {
         let reject = Reject::terminal("code-1", "detail-1");
         let response = success_or_reject_to_http(Err(reject), None, "v1");
         assert_eq!(response.0, StatusCode::OK);
-        assert!(
-            response
-                .1
-                .0
-                .get("client_order_id")
-                .is_none()
-        );
+        assert!(response.1 .0.get("client_order_id").is_none());
     }
 }
