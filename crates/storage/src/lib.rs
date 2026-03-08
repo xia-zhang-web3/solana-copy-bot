@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::path::Path;
@@ -75,6 +75,13 @@ pub fn note_sqlite_busy_error() {
 pub struct FollowlistUpdateResult {
     pub activated: usize,
     pub deactivated: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletActivityDayRow {
+    pub wallet_id: String,
+    pub activity_day: NaiveDate,
+    pub last_seen: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -2769,6 +2776,55 @@ mod tests {
             !store.list_active_follow_wallets()?.contains(&wallet_id),
             "active wallet should deactivate again once suppression is lifted"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn wallet_activity_day_counts_since_returns_day_level_counts() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-activity-days.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let rows = vec![
+            WalletActivityDayRow {
+                wallet_id: "wallet-a".to_string(),
+                activity_day: NaiveDate::from_ymd_opt(2026, 3, 5).expect("date"),
+                last_seen: DateTime::parse_from_rfc3339("2026-03-05T12:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+            WalletActivityDayRow {
+                wallet_id: "wallet-a".to_string(),
+                activity_day: NaiveDate::from_ymd_opt(2026, 3, 6).expect("date"),
+                last_seen: DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+            WalletActivityDayRow {
+                wallet_id: "wallet-b".to_string(),
+                activity_day: NaiveDate::from_ymd_opt(2026, 3, 6).expect("date"),
+                last_seen: DateTime::parse_from_rfc3339("2026-03-06T08:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+            WalletActivityDayRow {
+                wallet_id: "wallet-a".to_string(),
+                activity_day: NaiveDate::from_ymd_opt(2026, 3, 6).expect("date"),
+                last_seen: DateTime::parse_from_rfc3339("2026-03-06T18:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+        ];
+        store.upsert_wallet_activity_days(&rows)?;
+
+        let counts = store.wallet_active_day_counts_since(
+            &["wallet-a".to_string(), "wallet-b".to_string()],
+            NaiveDate::from_ymd_opt(2026, 3, 6).expect("date"),
+        )?;
+        assert_eq!(counts.get("wallet-a"), Some(&1));
+        assert_eq!(counts.get("wallet-b"), Some(&1));
         Ok(())
     }
 

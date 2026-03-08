@@ -2,7 +2,9 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore, WalletMetricRow, WalletUpsertRow};
+use copybot_storage::{
+    DiscoveryRuntimeCursor, SqliteStore, WalletActivityDayRow, WalletMetricRow, WalletUpsertRow,
+};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -160,6 +162,7 @@ impl DiscoveryService {
         let mut delta_fetched = 0usize;
         let mut swaps_evicted_due_cap = 0usize;
         let mut swaps_warm_loaded = 0usize;
+        let mut activity_days_observed = 0usize;
         let max_window_swaps_in_memory = self.config.max_window_swaps_in_memory.max(1);
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
         let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
@@ -211,6 +214,8 @@ impl DiscoveryService {
             if cursor.ts_utc < window_start {
                 cursor = DiscoveryCursor::bootstrap(window_start);
             }
+            let mut fetched_activity_days: HashMap<(String, NaiveDate), DateTime<Utc>> =
+                HashMap::new();
 
             if state.swaps.is_empty() && cursor_restored_from_store {
                 match store
@@ -224,6 +229,7 @@ impl DiscoveryService {
                                 }
                             }
                             if state.signatures.insert(swap.signature.clone()) {
+                                record_wallet_activity_day(&mut fetched_activity_days, &swap);
                                 swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
                                     state.push_swap_capped(swap, max_window_swaps_in_memory),
                                 );
@@ -274,6 +280,7 @@ impl DiscoveryService {
                             }
                         }
                         state.signatures.insert(swap.signature.clone());
+                        record_wallet_activity_day(&mut fetched_activity_days, &swap);
                         swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
                             state.push_swap_capped(swap, max_window_swaps_in_memory),
                         );
@@ -309,6 +316,25 @@ impl DiscoveryService {
                     warn!(
                         error = %error,
                         "failed persisting discovery runtime cursor"
+                    );
+                }
+            }
+
+            if !fetched_activity_days.is_empty() {
+                let rows: Vec<WalletActivityDayRow> = fetched_activity_days
+                    .into_iter()
+                    .map(|((wallet_id, activity_day), last_seen)| WalletActivityDayRow {
+                        wallet_id,
+                        activity_day,
+                        last_seen,
+                    })
+                    .collect();
+                activity_days_observed = rows.len();
+                if let Err(error) = store.upsert_wallet_activity_days(&rows) {
+                    warn!(
+                        error = %error,
+                        activity_day_rows = rows.len(),
+                        "failed persisting wallet activity day aggregates"
                     );
                 }
             }
@@ -372,6 +398,7 @@ impl DiscoveryService {
                 swaps_delta_fetched = delta_fetched,
                 swaps_warm_loaded,
                 swaps_evicted_due_cap,
+                wallet_activity_days_observed = activity_days_observed,
                 swaps_fetch_limit = fetch_limit,
                 swaps_fetch_pages = fetch_progress.pages,
                 swaps_fetch_page_limit = fetch_page_limit,
@@ -421,6 +448,7 @@ impl DiscoveryService {
                 swaps_delta_fetched = delta_fetched,
                 swaps_warm_loaded,
                 swaps_evicted_due_cap,
+                wallet_activity_days_observed = activity_days_observed,
                 swaps_fetch_limit = fetch_limit,
                 swaps_fetch_pages = fetch_progress.pages,
                 swaps_fetch_page_limit = fetch_page_limit,
@@ -542,6 +570,7 @@ impl DiscoveryService {
             swaps_delta_fetched = delta_fetched,
             swaps_warm_loaded,
             swaps_evicted_due_cap,
+            wallet_activity_days_observed = activity_days_observed,
             swaps_fetch_limit = fetch_limit,
             swaps_fetch_pages = fetch_progress.pages,
             swaps_fetch_page_limit = fetch_page_limit,
@@ -638,14 +667,39 @@ impl DiscoveryService {
             entry.observe_swap(swap, self.config.max_tx_per_minute, buy_quality);
         }
 
+        let wallet_ids: Vec<String> = by_wallet.keys().cloned().collect();
+        let active_day_cutoff =
+            (now - Duration::days(self.config.scoring_window_days.max(1) as i64)).date_naive();
+        let persisted_active_day_counts =
+            match store.wallet_active_day_counts_since(&wallet_ids, active_day_cutoff) {
+                Ok(counts) => counts,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        wallet_count = wallet_ids.len(),
+                        "failed loading persisted wallet activity-day counts; falling back to cached discovery window"
+                    );
+                    HashMap::new()
+                }
+            };
+
         by_wallet
             .into_iter()
             .map(|(wallet_id, acc)| {
-                self.snapshot_from_accumulator(wallet_id, acc, now, &token_sol_history)
+                let persisted_active_days =
+                    persisted_active_day_counts.get(&wallet_id).copied().unwrap_or(0);
+                self.snapshot_from_accumulator_with_persisted_active_days(
+                    wallet_id,
+                    acc,
+                    now,
+                    &token_sol_history,
+                    persisted_active_days,
+                )
             })
             .collect()
     }
 
+    #[cfg(test)]
     fn snapshot_from_accumulator(
         &self,
         wallet_id: String,
@@ -653,9 +707,27 @@ impl DiscoveryService {
         now: DateTime<Utc>,
         token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
     ) -> WalletSnapshot {
+        self.snapshot_from_accumulator_with_persisted_active_days(
+            wallet_id,
+            acc,
+            now,
+            token_sol_history,
+            0,
+        )
+    }
+
+    fn snapshot_from_accumulator_with_persisted_active_days(
+        &self,
+        wallet_id: String,
+        acc: WalletAccumulator,
+        now: DateTime<Utc>,
+        token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
+        persisted_active_days: u32,
+    ) -> WalletSnapshot {
         let first_seen = acc.first_seen.unwrap_or(now);
         let last_seen = acc.last_seen.unwrap_or(now);
         let active_days = acc.active_days.len() as u32;
+        let eligibility_active_days = active_days.max(persisted_active_days);
         let buy_total = acc.buy_observations.len() as u32;
         let quality_resolved_buys = acc
             .buy_observations
@@ -723,7 +795,7 @@ impl DiscoveryService {
         let raw_score = (base_score * tradable_penalty * rug_penalty).clamp(0.0, 1.0);
         let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
         let eligible = acc.trades >= self.config.min_trades
-            && active_days >= self.config.min_active_days
+            && eligibility_active_days >= self.config.min_active_days
             && !acc.suspicious
             && acc.max_buy_notional_sol >= self.config.min_leader_notional_sol
             && last_seen >= decay_cutoff
@@ -792,6 +864,21 @@ impl DiscoveryService {
 
         metrics
     }
+}
+
+fn record_wallet_activity_day(
+    activity_days: &mut HashMap<(String, NaiveDate), DateTime<Utc>>,
+    swap: &SwapEvent,
+) {
+    let key = (swap.wallet.clone(), swap.ts_utc.date_naive());
+    activity_days
+        .entry(key)
+        .and_modify(|current| {
+            if swap.ts_utc > *current {
+                *current = swap.ts_utc;
+            }
+        })
+        .or_insert(swap.ts_utc);
 }
 
 impl WalletAccumulator {
@@ -2142,6 +2229,70 @@ mod tests {
         assert!(
             (target_snapshot.rug_ratio - 1.0).abs() < 1e-9,
             "pre-buy trades that appear later in an unsorted swap window must not leak into rug lookahead volume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_wallet_snapshots_uses_persisted_activity_days_for_eligibility() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("persisted-activity-days.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let wallet_id = "wallet_active_days";
+        store.upsert_wallet_activity_days(&[
+            WalletActivityDayRow {
+                wallet_id: wallet_id.to_string(),
+                activity_day: (now - Duration::days(3)).date_naive(),
+                last_seen: now - Duration::days(3),
+            },
+            WalletActivityDayRow {
+                wallet_id: wallet_id.to_string(),
+                activity_day: (now - Duration::days(2)).date_naive(),
+                last_seen: now - Duration::days(2),
+            },
+            WalletActivityDayRow {
+                wallet_id: wallet_id.to_string(),
+                activity_day: (now - Duration::days(1)).date_naive(),
+                last_seen: now - Duration::days(1),
+            },
+            WalletActivityDayRow {
+                wallet_id: wallet_id.to_string(),
+                activity_day: now.date_naive(),
+                last_seen: now,
+            },
+        ])?;
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.min_trades = 1;
+        config.min_active_days = 4;
+        config.min_leader_notional_sol = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 1.0;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+
+        let swaps = VecDeque::from([swap(
+            wallet_id,
+            "sig-active-days-1",
+            now,
+            SOL_MINT,
+            "TokenActiveDays1111111111111111111111111111",
+            1.0,
+            100.0,
+        )]);
+        let snapshots = discovery.build_wallet_snapshots_from_cached(&store, &swaps, now);
+        let snapshot = snapshots.into_iter().next().context("expected snapshot")?;
+
+        assert!(
+            snapshot.eligible,
+            "persisted day-level activity should satisfy min_active_days even when the capped tail only contains one day"
         );
         Ok(())
     }

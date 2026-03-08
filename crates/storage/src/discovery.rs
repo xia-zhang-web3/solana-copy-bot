@@ -1,13 +1,91 @@
 use super::{
-    FollowlistUpdateResult, SqliteStore, WalletMetricRow, WalletUpsertRow,
+    FollowlistUpdateResult, SqliteStore, WalletActivityDayRow, WalletMetricRow, WalletUpsertRow,
     DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
 };
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{params, OptionalExtension};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 impl SqliteStore {
+    pub fn upsert_wallet_activity_days(&self, rows: &[WalletActivityDayRow]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        self.with_immediate_transaction_retry("wallet_activity_days upsert", |conn| {
+            let mut stmt = conn
+                .prepare_cached(
+                    "INSERT INTO wallet_activity_days(wallet_id, activity_day, last_seen)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(wallet_id, activity_day) DO UPDATE SET
+                        last_seen = CASE
+                            WHEN excluded.last_seen > wallet_activity_days.last_seen
+                                THEN excluded.last_seen
+                            ELSE wallet_activity_days.last_seen
+                        END",
+                )
+                .context("failed to prepare wallet_activity_days upsert statement")?;
+            for row in rows {
+                stmt.execute(params![
+                    &row.wallet_id,
+                    row.activity_day.format("%Y-%m-%d").to_string(),
+                    row.last_seen.to_rfc3339(),
+                ])
+                .context("failed to upsert wallet_activity_days row")?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn wallet_active_day_counts_since(
+        &self,
+        wallet_ids: &[String],
+        day_start: NaiveDate,
+    ) -> Result<HashMap<String, u32>> {
+        if wallet_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut counts = HashMap::new();
+        for chunk in wallet_ids.chunks(900) {
+            let placeholders =
+                std::iter::repeat_n("?", chunk.len()).collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "SELECT wallet_id, COUNT(*)
+                 FROM wallet_activity_days
+                 WHERE activity_day >= ?1
+                   AND wallet_id IN ({placeholders})
+                 GROUP BY wallet_id"
+            );
+            let mut params = vec![rusqlite::types::Value::from(
+                day_start.format("%Y-%m-%d").to_string(),
+            )];
+            params.extend(
+                chunk
+                    .iter()
+                    .cloned()
+                    .map(rusqlite::types::Value::from),
+            );
+            let mut stmt = self
+                .conn
+                .prepare(&sql)
+                .context("failed to prepare wallet_activity_days count query")?;
+            let mut rows = stmt
+                .query(rusqlite::params_from_iter(params))
+                .context("failed querying wallet_activity_days counts")?;
+            while let Some(row) = rows
+                .next()
+                .context("failed iterating wallet_activity_days counts")?
+            {
+                let wallet_id: String = row.get(0).context("failed reading wallet_activity_days.wallet_id")?;
+                let count: i64 = row.get(1).context("failed reading wallet_activity_days count")?;
+                counts.insert(wallet_id, count.max(0) as u32);
+            }
+        }
+
+        Ok(counts)
+    }
+
     pub fn wallet_metrics_window_exists(&self, window_start: DateTime<Utc>) -> Result<bool> {
         let exists = self
             .conn
