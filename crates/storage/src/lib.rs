@@ -175,12 +175,11 @@ impl SqliteStore {
         conn: &Connection,
         token: &str,
     ) -> Result<ExecutionConfirmStateSnapshot> {
-        let total_exposure_sol =
-            lamports_to_sol(Self::live_open_exposure_lamports_on_conn(conn, None)?);
-        let token_exposure_sol = lamports_to_sol(Self::live_open_exposure_lamports_on_conn(
-            conn,
-            Some(token),
-        )?);
+        let total_exposure_lamports = Self::live_open_exposure_lamports_on_conn(conn, None)?;
+        let token_exposure_lamports =
+            Self::live_open_exposure_lamports_on_conn(conn, Some(token))?;
+        let total_exposure_sol = lamports_to_sol(total_exposure_lamports);
+        let token_exposure_sol = lamports_to_sol(token_exposure_lamports);
         let open_positions: i64 = conn
             .query_row(
                 "SELECT COUNT(*)
@@ -193,7 +192,9 @@ impl SqliteStore {
             .context("failed querying live open positions count in finalize confirm transaction")?;
 
         Ok(ExecutionConfirmStateSnapshot {
+            total_exposure_lamports,
             total_exposure_sol: total_exposure_sol.max(0.0),
+            token_exposure_lamports,
             token_exposure_sol: token_exposure_sol.max(0.0),
             open_positions: open_positions.max(0) as u64,
         })
@@ -1238,6 +1239,9 @@ mod tests {
         assert_eq!(lots.len(), 1);
         assert_eq!(lots[0].cost_lamports, Some(Lamports::new(100_000_123)));
 
+        let open_notional_lamports = store.shadow_open_notional_lamports()?;
+        assert_eq!(open_notional_lamports, Lamports::new(100_000_123));
+
         let open_notional = store.shadow_open_notional_sol()?;
         assert!(
             (open_notional - 0.100000123).abs() < 1e-12,
@@ -1344,6 +1348,11 @@ mod tests {
                 closed_ts.to_rfc3339()
             ],
         )?;
+
+        let (trades, pnl_lamports) =
+            store.shadow_realized_pnl_lamports_since(opened_ts - Duration::minutes(1))?;
+        assert_eq!(trades, 1);
+        assert_eq!(pnl_lamports, SignedLamports::new(-150_000_000));
 
         let (trades, pnl) = store.shadow_realized_pnl_since(opened_ts - Duration::minutes(1))?;
         assert_eq!(trades, 1);
@@ -1465,6 +1474,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -1547,6 +1557,36 @@ mod tests {
     }
 
     #[test]
+    fn copy_signal_roundtrip_preserves_exact_notional_lamports() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("copy-signal-exact-notional.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-exact:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            notional_lamports: Some(Lamports::new(250_000_000)),
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+
+        let signals = store.list_copy_signals_by_status("shadow_recorded", 10)?;
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].notional_lamports, Some(Lamports::new(250_000_000)));
+        Ok(())
+    }
+
+    #[test]
     fn finalize_execution_confirmed_order_exact_persists_execution_lamport_sidecars() -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -1565,6 +1605,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.10,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -1772,7 +1813,10 @@ mod tests {
         let snapshot =
             SqliteStore::live_execution_state_snapshot_on_conn(&store.conn, "token-dust")?;
         assert_eq!(snapshot.open_positions, 0);
+        assert_eq!(snapshot.total_exposure_lamports, Lamports::ZERO);
         assert_eq!(snapshot.total_exposure_sol, 0.0);
+        assert_eq!(snapshot.token_exposure_lamports, Lamports::ZERO);
+        assert_eq!(snapshot.token_exposure_sol, 0.0);
         assert_eq!(snapshot.token_exposure_sol, 0.0);
 
         let (unrealized_pnl_sol, missing_price_count) = store.live_unrealized_pnl_sol(now)?;
@@ -2046,6 +2090,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2091,6 +2136,7 @@ mod tests {
         let FinalizeExecutionConfirmOutcome::Applied(snapshot) = first else {
             panic!("expected applied outcome, got {:?}", first);
         };
+        assert_eq!(snapshot.total_exposure_lamports, Lamports::new(250_000_000));
         assert!((snapshot.total_exposure_sol - 0.25).abs() < 1e-9);
         assert!((snapshot.token_exposure_sol - 0.25).abs() < 1e-9);
         assert_eq!(snapshot.open_positions, 1);
@@ -2149,6 +2195,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2242,6 +2289,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS.to_string(),
         };
@@ -2327,6 +2375,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS.to_string(),
         };
@@ -2391,6 +2440,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-fee".to_string(),
             notional_sol: 0.20,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2432,6 +2482,7 @@ mod tests {
         let FinalizeExecutionConfirmOutcome::Applied(buy_snapshot) = buy_outcome else {
             panic!("expected applied buy outcome, got {:?}", buy_outcome);
         };
+        assert_eq!(buy_snapshot.total_exposure_lamports, Lamports::new(210_000_000));
         assert!((buy_snapshot.total_exposure_sol - 0.21).abs() < 1e-9);
         assert!((buy_snapshot.token_exposure_sol - 0.21).abs() < 1e-9);
         assert_eq!(buy_snapshot.open_positions, 1);
@@ -2448,6 +2499,7 @@ mod tests {
             side: "sell".to_string(),
             token: "token-fee".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now + Duration::seconds(2),
             status: "execution_submitted".to_string(),
         };
@@ -2530,6 +2582,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2585,6 +2638,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2640,6 +2694,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2698,6 +2753,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2784,6 +2840,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2849,6 +2906,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2914,6 +2972,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2989,6 +3048,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.25,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };

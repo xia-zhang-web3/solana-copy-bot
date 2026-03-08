@@ -39,12 +39,13 @@ pub struct ExecutionIntent {
     pub side: ExecutionSide,
     pub token: String,
     pub notional_sol: f64,
+    pub notional_lamports: Lamports,
     pub signal_ts: DateTime<Utc>,
 }
 
 impl ExecutionIntent {
     pub fn notional_lamports(&self) -> Result<Lamports> {
-        sol_to_lamports_ceil(self.notional_sol, "execution intent notional_sol")
+        Ok(self.notional_lamports)
     }
 }
 
@@ -66,9 +67,58 @@ impl TryFrom<CopySignalRow> for ExecutionIntent {
             side: ExecutionSide::try_from(row.side.as_str())?,
             token: row.token,
             notional_sol: row.notional_sol,
+            notional_lamports: row
+                .notional_lamports
+                .unwrap_or(sol_to_lamports_ceil(
+                    row.notional_sol,
+                    "execution intent notional_sol",
+                )?),
             signal_ts: row.ts,
         };
         intent.notional_lamports()?;
         Ok(intent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExecutionIntent, ExecutionSide};
+    use chrono::Utc;
+    use copybot_storage::CopySignalRow;
+
+    #[test]
+    fn execution_intent_prefers_exact_copy_signal_notional_when_present() {
+        let intent = ExecutionIntent::try_from(CopySignalRow {
+            signal_id: "signal-1".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1000000009,
+            notional_lamports: Some(super::Lamports::new(100_000_000)),
+            ts: Utc::now(),
+            status: "shadow_recorded".to_string(),
+        })
+        .expect("intent should parse");
+
+        assert_eq!(intent.side, ExecutionSide::Buy);
+        assert_eq!(intent.notional_lamports, super::Lamports::new(100_000_000));
+    }
+
+    #[test]
+    fn execution_intent_derives_exact_notional_when_legacy_signal_has_none() {
+        let intent = ExecutionIntent::try_from(CopySignalRow {
+            signal_id: "signal-2".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "sell".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            notional_lamports: None,
+            ts: Utc::now(),
+            status: "shadow_recorded".to_string(),
+        })
+        .expect("intent should parse");
+
+        assert_eq!(intent.side, ExecutionSide::Sell);
+        assert_eq!(intent.notional_lamports, super::Lamports::new(100_000_000));
     }
 }

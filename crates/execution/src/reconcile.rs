@@ -173,6 +173,7 @@ mod tests {
             side,
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: Lamports::new(100_000_000),
             signal_ts: Utc::now(),
         }
     }

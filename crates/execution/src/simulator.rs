@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 use crate::auth::compute_hmac_signature_hex;
 use crate::intent::ExecutionIntent;
+#[cfg(test)]
+use copybot_core_types::Lamports;
 
 #[derive(Debug, Clone)]
 pub struct SimulationResult {
@@ -472,6 +474,7 @@ mod tests {
             side: ExecutionSide::Buy,
             token: "token".to_string(),
             notional_sol: 0.1,
+            notional_lamports: Lamports::new(100_000_000),
             signal_ts: Utc::now(),
         }
     }

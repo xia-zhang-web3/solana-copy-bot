@@ -21,7 +21,7 @@ impl SqliteStore {
         Ok(value.max(0) as u64)
     }
 
-    pub fn shadow_open_notional_sol(&self) -> Result<f64> {
+    pub fn shadow_open_notional_lamports(&self) -> Result<copybot_core_types::Lamports> {
         let mut stmt = self
             .conn
             .prepare(
@@ -50,10 +50,17 @@ impl SqliteStore {
             })?;
         }
 
-        Ok(lamports_to_sol(total))
+        Ok(total)
     }
 
-    pub fn shadow_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
+    pub fn shadow_open_notional_sol(&self) -> Result<f64> {
+        Ok(lamports_to_sol(self.shadow_open_notional_lamports()?))
+    }
+
+    pub fn shadow_realized_pnl_lamports_since(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<(u64, copybot_core_types::SignedLamports)> {
         let mut stmt = self
             .conn
             .prepare(
@@ -66,7 +73,7 @@ impl SqliteStore {
             .query(params![since.to_rfc3339()])
             .context("failed querying shadow pnl rows")?;
         let mut trades = 0_u64;
-        let mut pnl = 0.0_f64;
+        let mut pnl = copybot_core_types::SignedLamports::new(0);
         while let Some(row) = rows.next().context("failed iterating shadow pnl rows")? {
             let pnl_sol: f64 = row
                 .get(0)
@@ -77,9 +84,16 @@ impl SqliteStore {
             let pnl_lamports =
                 shadow_closed_trade_pnl_lamports(pnl_sol, pnl_lamports_raw, "shadow realized pnl")?;
             trades = trades.saturating_add(1);
-            pnl += signed_lamports_to_sol(pnl_lamports);
+            pnl = pnl.checked_add(pnl_lamports).ok_or_else(|| {
+                anyhow!("shadow realized pnl lamports overflow while summing closed trades")
+            })?;
         }
         Ok((trades, pnl))
+    }
+
+    pub fn shadow_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
+        let (trades, pnl_lamports) = self.shadow_realized_pnl_lamports_since(since)?;
+        Ok((trades, signed_lamports_to_sol(pnl_lamports)))
     }
 
     pub fn live_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {

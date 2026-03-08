@@ -1101,6 +1101,7 @@ mod tests {
             side: "buy".to_string(),
             token: token.to_string(),
             notional_sol,
+            notional_lamports: None,
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -1154,6 +1155,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-next".to_string(),
             notional_sol: 0.00000000005,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         })?;
@@ -1223,6 +1225,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now - Duration::seconds(10),
             status: "shadow_recorded".to_string(),
         })?;
@@ -1232,6 +1235,7 @@ mod tests {
             side: "sell".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -1280,6 +1284,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now - Duration::seconds(20),
             status: "execution_pending".to_string(),
         })?;
@@ -1289,6 +1294,7 @@ mod tests {
             side: "sell".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now - Duration::seconds(5),
             status: "shadow_recorded".to_string(),
         })?;
@@ -1334,6 +1340,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -1387,6 +1394,7 @@ mod tests {
             side: "sell".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -1465,6 +1473,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -1536,6 +1545,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -1577,6 +1587,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -1647,6 +1658,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         })?;
@@ -1688,6 +1700,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         };
@@ -1766,6 +1779,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-route-submit".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -1867,6 +1881,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-route-submit-fastlane".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -1963,6 +1978,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-route-submit-blocked".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2055,6 +2071,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-route-submit-fastlane-blocked".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2146,6 +2163,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-dynamic-submit-policy".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2242,6 +2260,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-dynamic-submit-policy-hint-floor".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2332,6 +2351,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-dynamic-submit-policy-retryable".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2421,6 +2441,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         };
@@ -2498,6 +2519,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         };
@@ -2581,6 +2603,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         };
@@ -2663,6 +2686,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-buy-daily".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2753,6 +2777,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-buy-drawdown".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2828,6 +2853,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-daily-unrealized".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2914,6 +2940,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-drawdown-unrealized".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2980,6 +3007,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-buy-missing-price".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -3063,6 +3091,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-window-new".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -3108,6 +3137,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-route-pretrade".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -3184,6 +3214,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         })?;
@@ -3244,6 +3275,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-missing".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3317,6 +3349,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-missing-manual".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3414,6 +3447,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-fee".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -3499,6 +3533,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-fee-hint".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -3592,6 +3627,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-fee-rpc-priority".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -3680,6 +3716,7 @@ mod tests {
             side: "sell".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.125,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3831,6 +3868,7 @@ mod tests {
             side: "sell".to_string(),
             token: "token-obs-sell".to_string(),
             notional_sol: 0.10,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -4009,6 +4047,7 @@ mod tests {
             side: "sell".to_string(),
             token: "token-obs-sign".to_string(),
             notional_sol: 0.10,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -4270,6 +4309,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-timeout-reconcile".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -4422,6 +4462,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-reconcile-surface-refresh".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -4557,6 +4598,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-timeout-surface-refresh".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -4685,6 +4727,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-reconcile-fee-telemetry".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -4820,6 +4863,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -4903,6 +4947,7 @@ mod tests {
             side: "buy".to_string(),
             token: "token-a".to_string(),
             notional_sol: 0.1,
+            notional_lamports: None,
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };

@@ -11,7 +11,7 @@ use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
-use copybot_storage::{sqlite_contention_snapshot, SqliteStore};
+use copybot_storage::{sqlite_contention_snapshot, Lamports, SignedLamports, SqliteStore};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
 #[cfg(test)]
@@ -75,8 +75,52 @@ const DEFAULT_OPERATOR_EMERGENCY_STOP_PATH: &str = "state/operator_emergency_sto
 const DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS: u64 = 500;
 const APP_LOG_FILTER_ENV: &str = "COPYBOT_APP_LOG_FILTER";
 const LEGACY_RUST_LOG_ENV: &str = "RUST_LOG";
+const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 #[cfg(test)]
 static APP_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lamports_to_sol(lamports: Lamports) -> f64 {
+    lamports.as_u64() as f64 / LAMPORTS_PER_SOL
+}
+
+fn signed_lamports_to_sol(lamports: SignedLamports) -> f64 {
+    lamports.as_i128() as f64 / LAMPORTS_PER_SOL
+}
+
+fn sol_to_lamports_floor(sol: f64, label: &str) -> Result<Lamports> {
+    if !sol.is_finite() || sol < 0.0 {
+        return Err(anyhow!("invalid {}={} (must be finite and >= 0)", label, sol));
+    }
+    let scaled = sol * LAMPORTS_PER_SOL;
+    if !scaled.is_finite() || scaled > u64::MAX as f64 {
+        return Err(anyhow!(
+            "invalid {}={} (exceeds representable lamports)",
+            label,
+            sol
+        ));
+    }
+    Ok(Lamports::new(scaled.floor() as u64))
+}
+
+fn sol_to_signed_lamports_conservative(sol: f64, label: &str) -> Result<SignedLamports> {
+    if !sol.is_finite() {
+        return Err(anyhow!("invalid {}={} (must be finite)", label, sol));
+    }
+    let magnitude = sol.abs() * LAMPORTS_PER_SOL;
+    if !magnitude.is_finite() || magnitude > i64::MAX as f64 {
+        return Err(anyhow!(
+            "invalid {}={} (exceeds representable signed lamports)",
+            label,
+            sol
+        ));
+    }
+    let signed = if sol >= 0.0 {
+        magnitude.floor() as i128
+    } else {
+        -(magnitude.ceil() as i128)
+    };
+    Ok(SignedLamports::new(signed))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -748,6 +792,24 @@ impl ShadowRiskGuard {
         }
     }
 
+    fn shadow_soft_exposure_cap_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.config.shadow_soft_exposure_cap_sol,
+            "risk.shadow_soft_exposure_cap_sol",
+        )
+    }
+
+    fn shadow_hard_exposure_cap_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.config.shadow_hard_exposure_cap_sol,
+            "risk.shadow_hard_exposure_cap_sol",
+        )
+    }
+
+    fn shadow_drawdown_stop_lamports(&self, stop_sol: f64, label: &str) -> Result<SignedLamports> {
+        sol_to_signed_lamports_conservative(stop_sol, label)
+    }
+
     fn observe_discovery_cycle(
         &mut self,
         store: &SqliteStore,
@@ -1007,10 +1069,26 @@ impl ShadowRiskGuard {
         self.last_db_refresh_at = Some(now);
 
         let refresh_result = (|| -> Result<()> {
-            let (_, pnl_1h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(1))?;
-            let (_, pnl_6h) = store.shadow_realized_pnl_since(now - chrono::Duration::hours(6))?;
-            let (_, pnl_24h) =
-                store.shadow_realized_pnl_since(now - chrono::Duration::hours(24))?;
+            let (_, pnl_1h_lamports) =
+                store.shadow_realized_pnl_lamports_since(now - chrono::Duration::hours(1))?;
+            let (_, pnl_6h_lamports) =
+                store.shadow_realized_pnl_lamports_since(now - chrono::Duration::hours(6))?;
+            let (_, pnl_24h_lamports) =
+                store.shadow_realized_pnl_lamports_since(now - chrono::Duration::hours(24))?;
+            let drawdown_1h_stop_lamports = self.shadow_drawdown_stop_lamports(
+                self.config.shadow_drawdown_1h_stop_sol,
+                "risk.shadow_drawdown_1h_stop_sol",
+            )?;
+            let drawdown_6h_stop_lamports = self.shadow_drawdown_stop_lamports(
+                self.config.shadow_drawdown_6h_stop_sol,
+                "risk.shadow_drawdown_6h_stop_sol",
+            )?;
+            let drawdown_24h_stop_lamports = self.shadow_drawdown_stop_lamports(
+                self.config.shadow_drawdown_24h_stop_sol,
+                "risk.shadow_drawdown_24h_stop_sol",
+            )?;
+            let shadow_soft_exposure_cap_lamports = self.shadow_soft_exposure_cap_lamports()?;
+            let shadow_hard_exposure_cap_lamports = self.shadow_hard_exposure_cap_lamports()?;
 
             let rug_window_start = now
                 - chrono::Duration::minutes(
@@ -1026,12 +1104,13 @@ impl ShadowRiskGuard {
                 self.config.shadow_rug_loss_return_threshold,
             )?;
 
-            let hard_stop_breach = if pnl_24h <= self.config.shadow_drawdown_24h_stop_sol {
+            let hard_stop_breach = if pnl_24h_lamports <= drawdown_24h_stop_lamports {
                 Some((
                     "drawdown_24h",
                     format!(
                         "pnl_24h={:.6} <= stop={:.6}",
-                        pnl_24h, self.config.shadow_drawdown_24h_stop_sol
+                        signed_lamports_to_sol(pnl_24h_lamports),
+                        signed_lamports_to_sol(drawdown_24h_stop_lamports)
                     ),
                 ))
             } else if rug_count_since >= self.config.shadow_rug_loss_count_threshold
@@ -1067,11 +1146,12 @@ impl ShadowRiskGuard {
                 self.hard_stop_clear_healthy_streak = 0;
             }
 
-            let exposure_sol = store.shadow_open_notional_sol()?;
-            let exposure_blocked_now = exposure_sol >= self.config.shadow_hard_exposure_cap_sol;
+            let exposure_lamports = store.shadow_open_notional_lamports()?;
+            let exposure_blocked_now = exposure_lamports >= shadow_hard_exposure_cap_lamports;
             let exposure_detail = format!(
                 "open_notional_sol={:.6} hard_cap={:.6}",
-                exposure_sol, self.config.shadow_hard_exposure_cap_sol
+                lamports_to_sol(exposure_lamports),
+                lamports_to_sol(shadow_hard_exposure_cap_lamports)
             );
             if exposure_blocked_now != self.exposure_hard_blocked {
                 self.exposure_hard_blocked = exposure_blocked_now;
@@ -1107,10 +1187,10 @@ impl ShadowRiskGuard {
                 self.exposure_hard_detail = Some(exposure_detail);
             }
 
-            if exposure_sol >= self.config.shadow_hard_exposure_cap_sol {
+            if exposure_lamports >= shadow_hard_exposure_cap_lamports {
                 return Ok(());
             }
-            if exposure_sol >= self.config.shadow_soft_exposure_cap_sol {
+            if exposure_lamports >= shadow_soft_exposure_cap_lamports {
                 self.activate_pause(
                     store,
                     now,
@@ -1118,11 +1198,12 @@ impl ShadowRiskGuard {
                     "exposure_soft_cap",
                     format!(
                         "open_notional_sol={:.6} >= soft_cap={:.6}",
-                        exposure_sol, self.config.shadow_soft_exposure_cap_sol
+                        lamports_to_sol(exposure_lamports),
+                        lamports_to_sol(shadow_soft_exposure_cap_lamports)
                     ),
                 );
             }
-            if pnl_6h <= self.config.shadow_drawdown_6h_stop_sol {
+            if pnl_6h_lamports <= drawdown_6h_stop_lamports {
                 self.activate_pause(
                     store,
                     now,
@@ -1132,11 +1213,12 @@ impl ShadowRiskGuard {
                     "drawdown_6h",
                     format!(
                         "pnl_6h={:.6} <= stop={:.6}",
-                        pnl_6h, self.config.shadow_drawdown_6h_stop_sol
+                        signed_lamports_to_sol(pnl_6h_lamports),
+                        signed_lamports_to_sol(drawdown_6h_stop_lamports)
                     ),
                 );
             }
-            if pnl_1h <= self.config.shadow_drawdown_1h_stop_sol {
+            if pnl_1h_lamports <= drawdown_1h_stop_lamports {
                 self.activate_pause(
                     store,
                     now,
@@ -1146,7 +1228,8 @@ impl ShadowRiskGuard {
                     "drawdown_1h",
                     format!(
                         "pnl_1h={:.6} <= stop={:.6}",
-                        pnl_1h, self.config.shadow_drawdown_1h_stop_sol
+                        signed_lamports_to_sol(pnl_1h_lamports),
+                        signed_lamports_to_sol(drawdown_1h_stop_lamports)
                     ),
                 );
             }
@@ -3550,6 +3633,38 @@ mod app_tests {
         match decision {
             BuyRiskDecision::Allow => {}
             other => panic!("expected dust lot to be ignored by hard exposure cap, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_hard_exposure_uses_lamport_normalized_cap() -> Result<()> {
+        let (store, db_path) = make_test_store("hard-exposure-lamport-cap")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_hard_exposure_cap_sol = 0.1000000004;
+        cfg.shadow_soft_exposure_cap_sol = 99.0;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let opened_ts = DateTime::parse_from_rfc3339("2026-02-17T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.1, opened_ts)?;
+        let now = Utc::now();
+
+        let decision = guard.can_open_buy(&store, now, true);
+        match decision {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::ExposureCap,
+                detail,
+            } => assert!(
+                detail.contains("hard_cap"),
+                "expected hard cap detail, got {detail}"
+            ),
+            other => panic!("expected lamport-normalized exposure block, got {other:?}"),
         }
 
         let _ = std::fs::remove_file(db_path);

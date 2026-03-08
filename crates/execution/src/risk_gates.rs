@@ -1,9 +1,11 @@
 use crate::intent::{ExecutionIntent, ExecutionSide};
-use crate::money::{checked_add_lamports, lamports_to_sol, sol_to_lamports_ceil, sol_to_lamports_floor};
+use crate::money::{
+    checked_add_lamports, lamports_to_sol, sol_to_lamports_floor,
+};
 use crate::ExecutionRuntime;
 use anyhow::Result;
-use copybot_core_types::Lamports;
 use chrono::{DateTime, Duration, Utc};
+use copybot_core_types::Lamports;
 use copybot_storage::{ExecutionConfirmStateSnapshot, SqliteStore};
 use tracing::debug;
 
@@ -214,14 +216,8 @@ impl ExecutionRuntime {
         }
 
         let mut reasons = Vec::new();
-        let total_exposure_lamports = sol_to_lamports_ceil(
-            snapshot.total_exposure_sol,
-            "execution confirm snapshot total_exposure_sol",
-        )?;
-        let token_exposure_lamports = sol_to_lamports_ceil(
-            snapshot.token_exposure_sol,
-            "execution confirm snapshot token_exposure_sol",
-        )?;
+        let total_exposure_lamports = snapshot.total_exposure_lamports;
+        let token_exposure_lamports = snapshot.token_exposure_lamports;
         let max_total_exposure_lamports = self.max_total_exposure_lamports()?;
         let max_exposure_per_token_lamports = self.max_exposure_per_token_lamports()?;
 

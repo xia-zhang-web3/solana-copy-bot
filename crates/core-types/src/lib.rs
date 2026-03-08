@@ -119,11 +119,19 @@ pub struct ExactSwapAmounts {
 
 impl ExactSwapAmounts {
     pub fn amount_in_quantity(&self) -> Result<TokenQuantity, ExactAmountParseError> {
-        parse_token_quantity("amount_in_raw", &self.amount_in_raw, self.amount_in_decimals)
+        parse_token_quantity(
+            "amount_in_raw",
+            &self.amount_in_raw,
+            self.amount_in_decimals,
+        )
     }
 
     pub fn amount_out_quantity(&self) -> Result<TokenQuantity, ExactAmountParseError> {
-        parse_token_quantity("amount_out_raw", &self.amount_out_raw, self.amount_out_decimals)
+        parse_token_quantity(
+            "amount_out_raw",
+            &self.amount_out_raw,
+            self.amount_out_decimals,
+        )
     }
 }
 
@@ -182,6 +190,7 @@ pub struct CopySignalRow {
     pub side: String,
     pub token: String,
     pub notional_sol: f64,
+    pub notional_lamports: Option<Lamports>,
     pub ts: DateTime<Utc>,
     pub status: String,
 }
@@ -218,7 +227,9 @@ pub const EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS: &str =
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExecutionConfirmStateSnapshot {
+    pub total_exposure_lamports: Lamports,
     pub total_exposure_sol: f64,
+    pub token_exposure_lamports: Lamports,
     pub token_exposure_sol: f64,
     pub open_positions: u64,
 }
@@ -247,9 +258,7 @@ pub struct TokenQualityRpcRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ExactAmountParseError, ExactSwapAmounts, Lamports, SignedLamports, TokenQuantity,
-    };
+    use super::{ExactAmountParseError, ExactSwapAmounts, Lamports, SignedLamports, TokenQuantity};
 
     #[test]
     fn lamports_checked_math_is_exact() {

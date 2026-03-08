@@ -490,6 +490,11 @@ mod tests {
             side,
             token: "token-a".to_string(),
             notional_sol,
+            notional_lamports: super::sol_to_lamports_ceil(
+                notional_sol,
+                "test execution intent notional_sol",
+            )
+            .expect("test notional should convert to lamports"),
             signal_ts: Utc::now(),
         }
     }
@@ -641,10 +646,8 @@ mod tests {
         )
         .expect("checker should initialize");
 
-        let required = checker.required_lamports_for_side(&make_intent(
-            ExecutionSide::Buy,
-            0.1000000001,
-        ))?;
+        let required =
+            checker.required_lamports_for_side(&make_intent(ExecutionSide::Buy, 0.1000000001))?;
 
         assert_eq!(required.as_u64(), 100_000_002);
         Ok(())

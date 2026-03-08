@@ -30,9 +30,25 @@ fn sol_to_lamports_floor(sol: f64) -> Option<Lamports> {
     Some(Lamports::new(scaled.floor() as u64))
 }
 
+fn sol_to_lamports_ceil(sol: f64) -> Option<Lamports> {
+    if !sol.is_finite() || sol < 0.0 {
+        return None;
+    }
+    let scaled = sol * 1_000_000_000.0;
+    if !scaled.is_finite() || scaled > u64::MAX as f64 {
+        return None;
+    }
+    Some(Lamports::new(scaled.ceil() as u64))
+}
+
+fn lamports_to_sol(lamports: Lamports) -> f64 {
+    lamports.as_u64() as f64 / 1_000_000_000.0
+}
+
 fn scaled_exact_shadow_qty(
     exact_token_qty: Option<TokenQuantity>,
     exact_leader_notional_lamports: Option<Lamports>,
+    copy_notional_lamports: Option<Lamports>,
     copy_notional_sol: f64,
 ) -> Option<TokenQuantity> {
     let exact_token_qty = exact_token_qty?;
@@ -40,7 +56,8 @@ fn scaled_exact_shadow_qty(
     if leader_notional == Lamports::ZERO {
         return None;
     }
-    let copy_notional = sol_to_lamports_floor(copy_notional_sol)?;
+    let copy_notional =
+        copy_notional_lamports.or_else(|| sol_to_lamports_floor(copy_notional_sol))?;
     if copy_notional > leader_notional {
         return None;
     }
@@ -54,6 +71,8 @@ fn scaled_exact_shadow_qty(
 #[derive(Debug, Clone)]
 pub struct ShadowService {
     config: ShadowConfig,
+    copy_notional_lamports: Option<Lamports>,
+    min_leader_notional_lamports: Option<Lamports>,
     helius_http_url: Option<String>,
 }
 
@@ -158,6 +177,8 @@ impl FollowSnapshot {
 impl ShadowService {
     pub fn new(config: ShadowConfig) -> Self {
         Self {
+            copy_notional_lamports: sol_to_lamports_floor(config.copy_notional_sol),
+            min_leader_notional_lamports: sol_to_lamports_ceil(config.min_leader_notional_sol),
             config,
             helius_http_url: None,
         }
@@ -168,6 +189,8 @@ impl ShadowService {
             .map(|url| url.trim().to_string())
             .filter(|url| !url.is_empty() && !url.contains("REPLACE_ME"));
         Self {
+            copy_notional_lamports: sol_to_lamports_floor(config.copy_notional_sol),
+            min_leader_notional_lamports: sol_to_lamports_ceil(config.min_leader_notional_sol),
             config,
             helius_http_url,
         }
@@ -237,9 +260,15 @@ impl ShadowService {
         if !is_followed && !is_unfollowed_sell_exit {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
         }
-        if !is_unfollowed_sell_exit
-            && candidate.leader_notional_sol < self.config.min_leader_notional_sol
-        {
+        let below_notional = if let (Some(exact_leader_notional_lamports), Some(min_notional_lamports)) = (
+            candidate.exact_leader_notional_lamports,
+            self.min_leader_notional_lamports,
+        ) {
+            exact_leader_notional_lamports < min_notional_lamports
+        } else {
+            candidate.leader_notional_sol < self.config.min_leader_notional_sol
+        };
+        if !is_unfollowed_sell_exit && below_notional {
             log_gate_drop(
                 "notional",
                 ShadowDropReason::BelowNotional,
@@ -288,10 +317,18 @@ impl ShadowService {
             }
         }
 
-        let copy_notional_sol = self
-            .config
-            .copy_notional_sol
-            .min(candidate.leader_notional_sol);
+        let copy_notional_lamports = match (
+            self.copy_notional_lamports,
+            candidate.exact_leader_notional_lamports,
+        ) {
+            (Some(config_copy_notional_lamports), Some(exact_leader_notional_lamports)) => Some(
+                std::cmp::min(config_copy_notional_lamports, exact_leader_notional_lamports),
+            ),
+            _ => None,
+        };
+        let copy_notional_sol = copy_notional_lamports
+            .map(lamports_to_sol)
+            .unwrap_or_else(|| self.config.copy_notional_sol.min(candidate.leader_notional_sol));
         if copy_notional_sol <= EPS || candidate.price_sol_per_token <= EPS {
             log_gate_drop(
                 "sizing",
@@ -317,6 +354,7 @@ impl ShadowService {
             side: candidate.side.clone(),
             token: candidate.token.clone(),
             notional_sol: copy_notional_sol,
+            notional_lamports: copy_notional_lamports.or_else(|| sol_to_lamports_floor(copy_notional_sol)),
             ts: swap.ts_utc,
             status: "shadow_recorded".to_string(),
         };
@@ -342,6 +380,7 @@ impl ShadowService {
                 let exact_qty = scaled_exact_shadow_qty(
                     candidate.exact_token_qty,
                     candidate.exact_leader_notional_lamports,
+                    copy_notional_lamports,
                     copy_notional_sol,
                 );
                 if qty > EPS {
@@ -361,6 +400,7 @@ impl ShadowService {
                 let exact_qty = scaled_exact_shadow_qty(
                     candidate.exact_token_qty,
                     candidate.exact_leader_notional_lamports,
+                    copy_notional_lamports,
                     copy_notional_sol,
                 );
                 let close = store.close_shadow_lots_fifo_atomic_exact(

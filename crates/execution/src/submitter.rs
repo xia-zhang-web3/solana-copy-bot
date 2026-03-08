@@ -9,6 +9,8 @@ use uuid::Uuid;
 use crate::auth::compute_hmac_signature_hex;
 use crate::intent::ExecutionIntent;
 use crate::submitter_response::{normalize_route, parse_adapter_submit_response};
+#[cfg(test)]
+use copybot_core_types::Lamports;
 use copybot_config::{
     EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MAX, EXECUTION_ROUTE_COMPUTE_UNIT_LIMIT_MIN,
     EXECUTION_ROUTE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS_MAX,
@@ -1188,6 +1190,7 @@ mod tests {
             side: ExecutionSide::Buy,
             token: "token".to_string(),
             notional_sol: 0.1,
+            notional_lamports: Lamports::new(100_000_000),
             signal_ts: Utc::now(),
         }
     }
