@@ -90,6 +90,7 @@ pub struct ShadowLotRow {
     pub wallet_id: String,
     pub token: String,
     pub qty: f64,
+    pub qty_exact: Option<TokenQuantity>,
     pub cost_sol: f64,
     pub cost_lamports: Option<Lamports>,
     pub opened_ts: DateTime<Utc>,
@@ -1242,6 +1243,65 @@ mod tests {
             (open_notional - 0.100000123).abs() < 1e-12,
             "expected shadow open notional to prefer lamport sidecar, got {open_notional}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_lot_and_closed_trade_persist_exact_qty_sidecars() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-exact-qty-sidecars.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = DateTime::parse_from_rfc3339("2026-03-01T11:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.insert_shadow_lot_exact(
+            "wallet",
+            "token",
+            2.0,
+            Some(TokenQuantity::new(2_000_000, 6)),
+            0.20,
+            opened_ts,
+        )?;
+
+        let lots = store.list_shadow_lots("wallet", "token")?;
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(2_000_000, 6)));
+
+        let close = store.close_shadow_lots_fifo_atomic_exact(
+            "signal",
+            "wallet",
+            "token",
+            0.5,
+            Some(TokenQuantity::new(500_000, 6)),
+            0.12,
+            closed_ts,
+        )?;
+        assert!((close.closed_qty - 0.5).abs() < 1e-12);
+
+        let lots = store.list_shadow_lots("wallet", "token")?;
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(1_500_000, 6)));
+
+        let closed_qty_raw: Option<String> = store.conn.query_row(
+            "SELECT qty_raw FROM shadow_closed_trades WHERE signal_id = ?1",
+            params!["signal"],
+            |row| row.get(0),
+        )?;
+        let closed_qty_decimals: Option<i64> = store.conn.query_row(
+            "SELECT qty_decimals FROM shadow_closed_trades WHERE signal_id = ?1",
+            params!["signal"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(closed_qty_raw.as_deref(), Some("500000"));
+        assert_eq!(closed_qty_decimals, Some(6));
         Ok(())
     }
 
@@ -5079,7 +5139,7 @@ pub(crate) fn position_pnl_lamports(
         .with_context(|| format!("failed deriving pnl_lamports in {context}"))
 }
 
-fn token_quantity_from_sql(
+pub(crate) fn token_quantity_from_sql(
     raw: Option<String>,
     decimals: Option<i64>,
     context: &str,
@@ -5144,7 +5204,7 @@ fn merge_position_qty_exact_on_buy(
     }
 }
 
-fn merge_position_qty_exact_on_sell(
+pub(crate) fn merge_position_qty_exact_on_sell(
     current: Option<TokenQuantity>,
     closed: Option<TokenQuantity>,
     closing: bool,

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_config::ShadowConfig;
-use copybot_core_types::SwapEvent;
+use copybot_core_types::{Lamports, SwapEvent, TokenQuantity};
 use copybot_storage::{CopySignalRow, SqliteStore};
 use std::collections::{HashMap, HashSet};
 use tracing::info;
@@ -18,6 +18,38 @@ const EPS: f64 = 1e-12;
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
 const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
 const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
+
+fn sol_to_lamports_floor(sol: f64) -> Option<Lamports> {
+    if !sol.is_finite() || sol < 0.0 {
+        return None;
+    }
+    let scaled = sol * 1_000_000_000.0;
+    if !scaled.is_finite() || scaled > u64::MAX as f64 {
+        return None;
+    }
+    Some(Lamports::new(scaled.floor() as u64))
+}
+
+fn scaled_exact_shadow_qty(
+    exact_token_qty: Option<TokenQuantity>,
+    exact_leader_notional_lamports: Option<Lamports>,
+    copy_notional_sol: f64,
+) -> Option<TokenQuantity> {
+    let exact_token_qty = exact_token_qty?;
+    let leader_notional = exact_leader_notional_lamports?;
+    if leader_notional == Lamports::ZERO {
+        return None;
+    }
+    let copy_notional = sol_to_lamports_floor(copy_notional_sol)?;
+    if copy_notional > leader_notional {
+        return None;
+    }
+    let scaled_raw = u128::from(exact_token_qty.raw())
+        .checked_mul(u128::from(copy_notional.as_u64()))?
+        / u128::from(leader_notional.as_u64());
+    let scaled_raw = u64::try_from(scaled_raw).ok()?;
+    Some(TokenQuantity::new(scaled_raw, exact_token_qty.decimals()))
+}
 
 #[derive(Debug, Clone)]
 pub struct ShadowService {
@@ -307,11 +339,17 @@ impl ShadowService {
         let (close, has_open_lots_after_signal) = match candidate.side.as_str() {
             "buy" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
+                let exact_qty = scaled_exact_shadow_qty(
+                    candidate.exact_token_qty,
+                    candidate.exact_leader_notional_lamports,
+                    copy_notional_sol,
+                );
                 if qty > EPS {
-                    let _ = store.insert_shadow_lot(
+                    let _ = store.insert_shadow_lot_exact(
                         &swap.wallet,
                         &candidate.token,
                         qty,
+                        exact_qty,
                         copy_notional_sol,
                         swap.ts_utc,
                     )?;
@@ -320,11 +358,17 @@ impl ShadowService {
             }
             "sell" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
-                let close = store.close_shadow_lots_fifo_atomic(
+                let exact_qty = scaled_exact_shadow_qty(
+                    candidate.exact_token_qty,
+                    candidate.exact_leader_notional_lamports,
+                    copy_notional_sol,
+                );
+                let close = store.close_shadow_lots_fifo_atomic_exact(
                     &signal_id,
                     &swap.wallet,
                     &candidate.token,
                     qty,
+                    exact_qty,
                     candidate.price_sol_per_token,
                     swap.ts_utc,
                 )?;
@@ -367,6 +411,7 @@ mod tests {
     use anyhow::Context;
     use chrono::Duration;
     use copybot_core_types::SwapEvent;
+    use copybot_core_types::{ExactSwapAmounts, TokenQuantity};
     use copybot_storage::SqliteStore;
     use std::path::Path;
     use tempfile::tempdir;
@@ -655,6 +700,90 @@ mod tests {
 
         let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
         outcome.expect_recorded("buy should pass with temporal follow membership");
+        Ok(())
+    }
+
+    #[test]
+    fn process_swap_preserves_exact_shadow_quantities() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-exact-qty.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let follow = follow_snapshot(&["leader-wallet"]);
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-02-12T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let sell_ts = DateTime::parse_from_rfc3339("2026-02-12T12:05:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            buy_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
+
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMint".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-exact".to_string(),
+            slot: 90,
+            ts_utc: buy_ts,
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "1000000000".to_string(),
+                amount_in_decimals: 9,
+                amount_out_raw: "1000000000".to_string(),
+                amount_out_decimals: 6,
+            }),
+        };
+        service
+            .process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?
+            .expect_recorded("buy signal expected");
+
+        let lots = store.list_shadow_lots("leader-wallet", "TokenMint")?;
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(500_000_000, 6)));
+
+        let sell = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "TokenMint".to_string(),
+            token_out: SOL_MINT.to_string(),
+            amount_in: 1000.0,
+            amount_out: 1.2,
+            signature: "sig-sell-exact".to_string(),
+            slot: 91,
+            ts_utc: sell_ts,
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "500000000".to_string(),
+                amount_in_decimals: 6,
+                amount_out_raw: "600000000".to_string(),
+                amount_out_decimals: 9,
+            }),
+        };
+        service
+            .process_swap(&store, &sell, &follow, sell_ts + Duration::seconds(1))?
+            .expect_recorded("sell signal expected");
+
+        let lots = store.list_shadow_lots("leader-wallet", "TokenMint")?;
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(83_333_334, 6)));
+
+        let closed_qty_exact = store
+            .shadow_closed_trade_qty_exact("shadow:sig-sell-exact:leader-wallet:sell:TokenMint")?;
+        assert_eq!(closed_qty_exact, Some(TokenQuantity::new(416_666_666, 6)));
         Ok(())
     }
 
