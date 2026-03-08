@@ -103,12 +103,15 @@ impl SqliteStore {
         let mut trades = 0_u64;
         let mut pnl = copybot_core_types::SignedLamports::new(0);
         while let Some(row) = rows.next().context("failed iterating live pnl rows")? {
-            let pnl_sol: f64 = row.get(0).context("failed reading positions.pnl_sol")?;
+            let pnl_sol: Option<f64> = row.get(0).context("failed reading positions.pnl_sol")?;
             let pnl_lamports_raw: Option<i64> = row
                 .get(1)
                 .context("failed reading positions.pnl_lamports")?;
-            let position_pnl =
-                position_pnl_lamports(pnl_sol, pnl_lamports_raw, "live realized pnl")?;
+            let position_pnl = position_pnl_lamports(
+                pnl_sol.unwrap_or(0.0),
+                pnl_lamports_raw,
+                "live realized pnl",
+            )?;
             trades = trades.saturating_add(1);
             pnl = pnl.checked_add(position_pnl).ok_or_else(|| {
                 anyhow!("live realized pnl lamports overflow while summing positions")
@@ -140,11 +143,12 @@ impl SqliteStore {
         let mut peak_pnl = copybot_core_types::SignedLamports::new(0);
         let mut max_drawdown = copybot_core_types::Lamports::ZERO;
         while let Some(row) = rows.next().context("failed iterating live drawdown rows")? {
-            let pnl_sol: f64 = row.get(0).context("failed reading positions.pnl_sol")?;
+            let pnl_sol: Option<f64> = row.get(0).context("failed reading positions.pnl_sol")?;
             let pnl_lamports_raw: Option<i64> = row
                 .get(1)
                 .context("failed reading positions.pnl_lamports")?;
-            let pnl = position_pnl_lamports(pnl_sol, pnl_lamports_raw, "live drawdown")?;
+            let pnl =
+                position_pnl_lamports(pnl_sol.unwrap_or(0.0), pnl_lamports_raw, "live drawdown")?;
             cumulative_pnl = cumulative_pnl
                 .checked_add(pnl)
                 .ok_or_else(|| anyhow!("live drawdown cumulative pnl overflow"))?;
@@ -264,12 +268,15 @@ impl SqliteStore {
         let mut peak_pnl = copybot_core_types::SignedLamports::new(0);
         let mut max_drawdown = copybot_core_types::Lamports::ZERO;
         while let Some(row) = rows.next().context("failed iterating live drawdown rows")? {
-            let pnl_sol: f64 = row.get(0).context("failed reading positions.pnl_sol")?;
+            let pnl_sol: Option<f64> = row.get(0).context("failed reading positions.pnl_sol")?;
             let pnl_lamports_raw: Option<i64> = row
                 .get(1)
                 .context("failed reading positions.pnl_lamports")?;
-            let pnl =
-                position_pnl_lamports(pnl_sol, pnl_lamports_raw, "live drawdown with unrealized")?;
+            let pnl = position_pnl_lamports(
+                pnl_sol.unwrap_or(0.0),
+                pnl_lamports_raw,
+                "live drawdown with unrealized",
+            )?;
             cumulative_pnl = cumulative_pnl
                 .checked_add(pnl)
                 .ok_or_else(|| anyhow!("live drawdown cumulative pnl overflow"))?;

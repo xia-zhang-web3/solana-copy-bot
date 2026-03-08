@@ -1865,6 +1865,68 @@ mod tests {
     }
 
     #[test]
+    fn live_pnl_queries_tolerate_legacy_null_pnl_sol() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-null-pnl-sol-legacy.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::hours(1);
+
+        store.conn.execute(
+            "INSERT INTO positions(
+                position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, pnl_lamports, state
+             ) VALUES (?1, ?2, 0.0, 0.0, ?3, ?4, ?5, ?6, 'closed')",
+            params![
+                "live-null-sidecar",
+                "token-null-sidecar",
+                (now - Duration::minutes(10)).to_rfc3339(),
+                (now - Duration::minutes(9)).to_rfc3339(),
+                Option::<f64>::None,
+                Some(50_000_000_i64),
+            ],
+        )?;
+        store.conn.execute(
+            "INSERT INTO positions(
+                position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol, pnl_lamports, state
+             ) VALUES (?1, ?2, 0.0, 0.0, ?3, ?4, ?5, ?6, 'closed')",
+            params![
+                "live-null-legacy",
+                "token-null-legacy",
+                (now - Duration::minutes(8)).to_rfc3339(),
+                (now - Duration::minutes(7)).to_rfc3339(),
+                Option::<f64>::None,
+                Option::<i64>::None,
+            ],
+        )?;
+
+        let (trades, realized_pnl) = store.live_realized_pnl_since(window_start)?;
+        assert_eq!(trades, 2);
+        assert!(
+            (realized_pnl - 0.05).abs() < 1e-12,
+            "expected NULL pnl_sol rows to fall back cleanly, got {realized_pnl}"
+        );
+
+        let drawdown = store.live_max_drawdown_since(window_start)?;
+        assert!(
+            drawdown.abs() < 1e-12,
+            "expected no drawdown from +0.05 then 0.0 legacy row, got {drawdown}"
+        );
+
+        let drawdown_with_unrealized =
+            store.live_max_drawdown_with_unrealized_since(window_start, 0.0)?;
+        assert!(
+            drawdown_with_unrealized.abs() < 1e-12,
+            "expected NULL pnl_sol rows to remain compatible in drawdown-with-unrealized, got {drawdown_with_unrealized}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn apply_execution_fill_closes_live_position_when_residual_qty_is_dust() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("live-dust-residual-close.db");
