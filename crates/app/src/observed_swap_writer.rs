@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
-use copybot_storage::SqliteStore;
+use copybot_storage::{SqliteStore, WalletActivityDayRow};
+use std::collections::HashMap;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
@@ -119,6 +120,14 @@ fn observed_swap_writer_loop(
 
         match store.insert_observed_swaps_batch(&swaps) {
             Ok(results) => {
+                let activity_day_rows = collect_wallet_activity_days_for_inserted_swaps(&swaps, &results);
+                if let Err(error) = store.upsert_wallet_activity_days(&activity_day_rows) {
+                    let message = format!("{error:#}");
+                    for reply_tx in replies {
+                        let _ = reply_tx.send(Err(anyhow!(message.clone())));
+                    }
+                    continue;
+                }
                 for (reply_tx, inserted) in replies.into_iter().zip(results.into_iter()) {
                     let _ = reply_tx.send(Ok(inserted));
                 }
@@ -145,6 +154,33 @@ fn observed_swap_writer_loop(
     }
 
     Ok(())
+}
+
+fn collect_wallet_activity_days_for_inserted_swaps(
+    swaps: &[SwapEvent],
+    inserted: &[bool],
+) -> Vec<WalletActivityDayRow> {
+    let mut dedup: HashMap<(String, chrono::NaiveDate), chrono::DateTime<Utc>> = HashMap::new();
+    for (swap, inserted) in swaps.iter().zip(inserted.iter().copied()) {
+        if !inserted {
+            continue;
+        }
+        let key = (swap.wallet.clone(), swap.ts_utc.date_naive());
+        dedup.entry(key)
+            .and_modify(|current| {
+                if swap.ts_utc > *current {
+                    *current = swap.ts_utc;
+                }
+            })
+            .or_insert(swap.ts_utc);
+    }
+    dedup.into_iter()
+        .map(|((wallet_id, activity_day), last_seen)| WalletActivityDayRow {
+            wallet_id,
+            activity_day,
+            last_seen,
+        })
+        .collect()
 }
 
 fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
@@ -318,6 +354,84 @@ mod tests {
         let swaps = verify_store.load_observed_swaps_since(Utc::now() - ChronoDuration::days(7))?;
         assert_eq!(swaps.len(), 1);
         assert_eq!(swaps[0].signature, "sig-observed-swap-new");
+        let _ = std::fs::remove_file(db_path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_upserts_wallet_activity_days_for_inserted_swaps() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-activity-days-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    retention_days: 45,
+                    retention_sweep_interval: StdDuration::from_secs(3600),
+                },
+            )?;
+
+            let swap_day_one = SwapEvent {
+                wallet: "wallet-activity".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-activity".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: "sig-observed-swap-day-1".to_string(),
+                slot: 100,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+                exact_amounts: None,
+            };
+            let swap_day_two = SwapEvent {
+                wallet: "wallet-activity".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-activity".to_string(),
+                amount_in: 2.0,
+                amount_out: 20.0,
+                signature: "sig-observed-swap-day-2".to_string(),
+                slot: 101,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-07T11:00:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+                exact_amounts: None,
+            };
+
+            writer.write(&swap_day_one).await?;
+            writer.write(&swap_day_two).await?;
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let counts = verify_store.wallet_active_day_counts_since(
+            &["wallet-activity".to_string()],
+            DateTime::parse_from_rfc3339("2026-03-06T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(counts.get("wallet-activity"), Some(&2));
         let _ = std::fs::remove_file(db_path);
 
         Ok(())

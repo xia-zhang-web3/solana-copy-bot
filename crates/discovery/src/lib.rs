@@ -2,9 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{
-    DiscoveryRuntimeCursor, SqliteStore, WalletActivityDayRow, WalletMetricRow, WalletUpsertRow,
-};
+use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore, WalletMetricRow, WalletUpsertRow};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -162,8 +160,8 @@ impl DiscoveryService {
         let mut delta_fetched = 0usize;
         let mut swaps_evicted_due_cap = 0usize;
         let mut swaps_warm_loaded = 0usize;
-        let mut activity_days_observed = 0usize;
-        let mut activity_days_backfilled = 0usize;
+        let activity_days_observed = 0usize;
+        let activity_days_backfilled = 0usize;
         let max_window_swaps_in_memory = self.config.max_window_swaps_in_memory.max(1);
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
         let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
@@ -215,9 +213,6 @@ impl DiscoveryService {
             if cursor.ts_utc < window_start {
                 cursor = DiscoveryCursor::bootstrap(window_start);
             }
-            let mut fetched_activity_days: HashMap<(String, NaiveDate), DateTime<Utc>> =
-                HashMap::new();
-
             if state.swaps.is_empty() && cursor_restored_from_store {
                 match store
                     .load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
@@ -230,7 +225,6 @@ impl DiscoveryService {
                                 }
                             }
                             if state.signatures.insert(swap.signature.clone()) {
-                                record_wallet_activity_day(&mut fetched_activity_days, &swap);
                                 swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
                                     state.push_swap_capped(swap, max_window_swaps_in_memory),
                                 );
@@ -281,7 +275,6 @@ impl DiscoveryService {
                             }
                         }
                         state.signatures.insert(swap.signature.clone());
-                        record_wallet_activity_day(&mut fetched_activity_days, &swap);
                         swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
                             state.push_swap_capped(swap, max_window_swaps_in_memory),
                         );
@@ -318,44 +311,6 @@ impl DiscoveryService {
                         error = %error,
                         "failed persisting discovery runtime cursor"
                     );
-                }
-            }
-
-            if !fetched_activity_days.is_empty() {
-                let rows: Vec<WalletActivityDayRow> = fetched_activity_days
-                    .into_iter()
-                    .map(
-                        |((wallet_id, activity_day), last_seen)| WalletActivityDayRow {
-                            wallet_id,
-                            activity_day,
-                            last_seen,
-                        },
-                    )
-                    .collect();
-                activity_days_observed = rows.len();
-                if let Err(error) = store.upsert_wallet_activity_days(&rows) {
-                    warn!(
-                        error = %error,
-                        activity_day_rows = rows.len(),
-                        "failed persisting wallet activity day aggregates"
-                    );
-                }
-            }
-
-            let activity_day_backfill_key = (window_days, window_start.date_naive());
-            if state.last_activity_day_backfill_key != Some(activity_day_backfill_key) {
-                match store.backfill_wallet_activity_days_since(window_start) {
-                    Ok(backfilled) => {
-                        activity_days_backfilled = backfilled;
-                        state.last_activity_day_backfill_key = Some(activity_day_backfill_key);
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %error,
-                            window_start = %window_start,
-                            "failed backfilling wallet activity-day aggregates from observed_swaps"
-                        );
-                    }
                 }
             }
 
@@ -891,21 +846,6 @@ impl DiscoveryService {
     }
 }
 
-fn record_wallet_activity_day(
-    activity_days: &mut HashMap<(String, NaiveDate), DateTime<Utc>>,
-    swap: &SwapEvent,
-) {
-    let key = (swap.wallet.clone(), swap.ts_utc.date_naive());
-    activity_days
-        .entry(key)
-        .and_modify(|current| {
-            if swap.ts_utc > *current {
-                *current = swap.ts_utc;
-            }
-        })
-        .or_insert(swap.ts_utc);
-}
-
 impl WalletAccumulator {
     fn observe_swap(
         &mut self,
@@ -1071,7 +1011,7 @@ mod tests {
     use super::*;
     use anyhow::Context;
     use copybot_config::ShadowConfig;
-    use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore};
+    use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore, WalletActivityDayRow};
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -2323,7 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn run_cycle_backfills_activity_days_from_existing_observed_swaps_for_eligibility() -> Result<()>
+    fn run_cycle_uses_existing_persisted_activity_days_for_eligibility() -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("backfill-eligibility.db");
@@ -2335,18 +2275,38 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let wallet_id = "wallet_backfill";
-        for (idx, days_ago) in [6, 4, 2, 0].into_iter().enumerate() {
-            let ts = now - Duration::days(days_ago);
-            store.insert_observed_swap(&swap(
-                wallet_id,
-                &format!("backfill-eligibility-{idx}"),
-                ts,
-                SOL_MINT,
-                "TokenBackfillElig11111111111111111111111111",
-                1.0,
-                100.0,
-            ))?;
-        }
+        store.upsert_wallet_activity_days(&[
+            WalletActivityDayRow {
+                wallet_id: wallet_id.to_string(),
+                activity_day: (now - Duration::days(6)).date_naive(),
+                last_seen: now - Duration::days(6),
+            },
+            WalletActivityDayRow {
+                wallet_id: wallet_id.to_string(),
+                activity_day: (now - Duration::days(4)).date_naive(),
+                last_seen: now - Duration::days(4),
+            },
+            WalletActivityDayRow {
+                wallet_id: wallet_id.to_string(),
+                activity_day: (now - Duration::days(2)).date_naive(),
+                last_seen: now - Duration::days(2),
+            },
+            WalletActivityDayRow {
+                wallet_id: wallet_id.to_string(),
+                activity_day: now.date_naive(),
+                last_seen: now,
+            },
+        ])?;
+
+        store.insert_observed_swap(&swap(
+            wallet_id,
+            "backfill-eligibility-0",
+            now,
+            SOL_MINT,
+            "TokenBackfillElig11111111111111111111111111",
+            1.0,
+            100.0,
+        ))?;
 
         let mut config = DiscoveryConfig::default();
         config.scoring_window_days = 7;
@@ -2369,7 +2329,7 @@ mod tests {
         assert_eq!(
             counts.get(wallet_id),
             Some(&4),
-            "historical observed_swaps should backfill persisted activity days immediately on upgrade"
+            "persisted wallet_activity_days should satisfy eligibility even when the in-memory tail remains short"
         );
         Ok(())
     }
