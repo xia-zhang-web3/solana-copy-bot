@@ -173,6 +173,7 @@ async fn main() -> Result<()> {
         config.system.heartbeat_seconds,
         config.history_retention.clone(),
         config.discovery.fetch_refresh_seconds,
+        config.discovery.refresh_seconds,
         config.discovery.observed_swaps_retention_days,
         config.shadow.refresh_seconds,
         config.shadow.max_signal_lag_seconds,
@@ -1401,6 +1402,7 @@ async fn run_app_loop(
     heartbeat_seconds: u64,
     history_retention_config: copybot_config::HistoryRetentionConfig,
     discovery_fetch_refresh_seconds: u64,
+    discovery_refresh_seconds: u64,
     observed_swaps_retention_days: u32,
     shadow_refresh_seconds: u64,
     shadow_max_signal_lag_seconds: u64,
@@ -1429,7 +1431,8 @@ async fn run_app_loop(
         .list_active_follow_wallets()
         .context("failed to load active follow wallets")?;
     let mut follow_snapshot = Arc::new(FollowSnapshot::from_active_wallets(initial_active_wallets));
-    let follow_event_retention = Duration::from_secs(shadow_max_signal_lag_seconds.max(1));
+    let follow_event_retention =
+        follow_event_retention_duration(shadow_max_signal_lag_seconds, discovery_refresh_seconds);
     let mut open_shadow_lots = store
         .list_shadow_open_pairs()
         .context("failed to load open shadow lot index")?;
@@ -2063,6 +2066,17 @@ async fn run_app_loop(
         .record_heartbeat("copybot-app", "shutdown")
         .context("failed to write shutdown heartbeat")?;
     Ok(())
+}
+
+fn follow_event_retention_duration(
+    shadow_max_signal_lag_seconds: u64,
+    discovery_refresh_seconds: u64,
+) -> Duration {
+    Duration::from_secs(
+        shadow_max_signal_lag_seconds
+            .max(discovery_refresh_seconds.max(1).saturating_mul(2))
+            .max(1),
+    )
 }
 
 struct DiscoveryTaskOutput {
@@ -4515,6 +4529,15 @@ mod app_tests {
             selected_lowercase.as_deref(),
             Some("https://fallback.endpoint/?api-key=def")
         );
+    }
+
+    #[test]
+    fn follow_event_retention_spans_discovery_publish_cadence() {
+        let retention = follow_event_retention_duration(30, 600);
+        assert_eq!(retention, Duration::from_secs(1200));
+
+        let retention = follow_event_retention_duration(2500, 600);
+        assert_eq!(retention, Duration::from_secs(2500));
     }
 
     #[test]
