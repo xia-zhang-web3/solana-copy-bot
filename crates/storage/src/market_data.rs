@@ -249,6 +249,14 @@ impl SqliteStore {
         .context("failed to delete observed swap retention slice")
     }
 
+    pub fn checkpoint_wal_truncate(&self) -> Result<(i64, i64, i64)> {
+        self.execute_with_retry_result(|conn| {
+            let mut stmt = conn.prepare("PRAGMA wal_checkpoint(TRUNCATE)")?;
+            stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        })
+        .context("failed to checkpoint sqlite wal")
+    }
+
     pub fn load_observed_swaps_since(&self, since: DateTime<Utc>) -> Result<Vec<SwapEvent>> {
         let mut stmt = self
             .conn

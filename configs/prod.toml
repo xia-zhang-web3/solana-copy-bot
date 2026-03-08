@@ -80,7 +80,7 @@ max_window_swaps_in_memory = 60000
 max_fetch_swaps_per_cycle = 20000
 max_fetch_pages_per_cycle = 5
 fetch_time_budget_ms = 15000
-observed_swaps_retention_days = 45
+observed_swaps_retention_days = 7
 
 [shadow]
 enabled = true

@@ -766,13 +766,6 @@ fn validate_shadow_quality_thresholds(config: &AppConfig) -> Result<()> {
 }
 
 fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()> {
-    let retention_days = config.discovery.observed_swaps_retention_days;
-    let scoring_window_days = config.discovery.scoring_window_days.max(1);
-    if retention_days < scoring_window_days {
-        return Err(anyhow!(
-            "discovery.observed_swaps_retention_days ({retention_days}) must be >= discovery.scoring_window_days ({scoring_window_days})"
-        ));
-    }
     if config.discovery.max_fetch_swaps_per_cycle > config.discovery.max_window_swaps_in_memory {
         return Err(anyhow!(
             "discovery.max_fetch_swaps_per_cycle ({}) must be <= discovery.max_window_swaps_in_memory ({})",

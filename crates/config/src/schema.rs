@@ -541,7 +541,7 @@ impl Default for DiscoveryConfig {
             max_fetch_swaps_per_cycle: 20_000,
             max_fetch_pages_per_cycle: 5,
             fetch_time_budget_ms: 15_000,
-            observed_swaps_retention_days: 45,
+            observed_swaps_retention_days: 7,
         }
     }
 }

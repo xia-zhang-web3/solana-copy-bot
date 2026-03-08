@@ -35,6 +35,7 @@ pub(super) struct DiscoveryWindowState {
     pub(super) signatures: HashSet<String>,
     pub(super) cursor: Option<DiscoveryCursor>,
     pub(super) cap_truncation_floor: Option<DiscoveryCursor>,
+    pub(super) bootstrap_from_persisted_metrics: bool,
     pub(super) last_snapshot_bucket: Option<DateTime<Utc>>,
     pub(super) last_summary: Option<DiscoverySummary>,
     pub(super) last_publish_at: Option<DateTime<Utc>>,

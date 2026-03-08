@@ -87,6 +87,23 @@ pub struct WalletActivityDayRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct PersistedWalletMetricSnapshotRow {
+    pub wallet_id: String,
+    pub window_start: DateTime<Utc>,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub pnl: f64,
+    pub win_rate: f64,
+    pub trades: u32,
+    pub closed_trades: u32,
+    pub hold_median_seconds: i64,
+    pub score: f64,
+    pub buy_total: u32,
+    pub tradable_ratio: f64,
+    pub rug_ratio: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct ShadowLotRow {
     pub id: i64,
     pub wallet_id: String,
@@ -3521,6 +3538,7 @@ mod tests {
                 &metrics,
                 &desired,
                 true,
+                true,
                 window_start,
                 "retention-test",
             )?;
@@ -3586,6 +3604,7 @@ mod tests {
                 &metrics,
                 &desired,
                 true,
+                true,
                 window_start,
                 "cold-start-retention-test",
             )?;
@@ -3646,6 +3665,7 @@ mod tests {
             &metrics,
             &desired,
             true,
+            true,
             window_start,
             "seed-metrics",
         )?;
@@ -3657,6 +3677,7 @@ mod tests {
             &wallets,
             &[],
             &desired,
+            true,
             true,
             window_start + Duration::minutes(10),
             "skip-metrics",
@@ -3699,6 +3720,7 @@ mod tests {
             &wallets,
             &[],
             &[],
+            true,
             false,
             now + Duration::minutes(1),
             "suppressed-demotions",
@@ -3715,6 +3737,7 @@ mod tests {
             &[],
             &[],
             true,
+            true,
             now + Duration::minutes(2),
             "allow-demotions",
         )?;
@@ -3723,6 +3746,61 @@ mod tests {
         assert!(
             !store.list_active_follow_wallets()?.contains(&wallet_id),
             "active wallet should deactivate again once suppression is lifted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persist_discovery_cycle_can_suppress_followlist_activations() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("discovery-followlist-activation-suppression.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let wallet_id = "wallet-dont-activate".to_string();
+        let wallets = vec![WalletUpsertRow {
+            wallet_id: wallet_id.clone(),
+            first_seen: now,
+            last_seen: now,
+            status: "candidate".to_string(),
+        }];
+
+        let suppressed = store.persist_discovery_cycle(
+            &wallets,
+            &[],
+            std::slice::from_ref(&wallet_id),
+            false,
+            true,
+            now + Duration::minutes(1),
+            "suppressed-promotions",
+        )?;
+        assert_eq!(suppressed.activated, 0);
+        assert_eq!(suppressed.deactivated, 0);
+        assert!(
+            !store.list_active_follow_wallets()?.contains(&wallet_id),
+            "candidate wallet must stay inactive when followlist activations are suppressed"
+        );
+
+        let unsuppressed = store.persist_discovery_cycle(
+            &wallets,
+            &[],
+            std::slice::from_ref(&wallet_id),
+            true,
+            true,
+            now + Duration::minutes(2),
+            "allow-promotions",
+        )?;
+        assert_eq!(unsuppressed.activated, 1);
+        assert_eq!(unsuppressed.deactivated, 0);
+        assert!(
+            store.list_active_follow_wallets()?.contains(&wallet_id),
+            "candidate wallet should activate once suppression is lifted"
         );
         Ok(())
     }
@@ -4118,6 +4196,7 @@ mod tests {
                 &wallets,
                 &metrics,
                 &desired_wallets,
+                true,
                 true,
                 window_start,
                 "retry-test",

@@ -36,7 +36,7 @@ fn discovery_defaults_use_storage_mitigation_limits() {
     assert_eq!(discovery.max_fetch_swaps_per_cycle, 20_000);
     assert_eq!(discovery.max_fetch_pages_per_cycle, 5);
     assert_eq!(discovery.fetch_time_budget_ms, 15_000);
-    assert_eq!(discovery.observed_swaps_retention_days, 45);
+    assert_eq!(discovery.observed_swaps_retention_days, 7);
 }
 
 #[test]
@@ -401,22 +401,17 @@ fn load_from_env_rejects_discovery_publish_cadence_faster_than_fetch() {
 }
 
 #[test]
-fn load_from_env_rejects_discovery_retention_shorter_than_scoring_window() {
+fn load_from_env_allows_discovery_retention_shorter_than_scoring_window() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
             with_env_var(
                 "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
                 "7",
                 || {
-                    let err = load_from_env_or_default(config_path)
-                        .expect_err("retention shorter than scoring window must fail config load")
-                        .to_string();
-                    assert!(
-                    err.contains(
-                        "discovery.observed_swaps_retention_days (7) must be >= discovery.scoring_window_days (30)"
-                    ),
-                    "unexpected error: {err}"
-                );
+                    let (cfg, _) = load_from_env_or_default(config_path)
+                        .expect("short retention should now be allowed");
+                    assert_eq!(cfg.discovery.scoring_window_days, 30);
+                    assert_eq!(cfg.discovery.observed_swaps_retention_days, 7);
                 },
             );
         });

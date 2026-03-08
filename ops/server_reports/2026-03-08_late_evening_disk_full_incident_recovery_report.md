@@ -70,7 +70,12 @@ Only space outside the SQLite data path was touched.
    - `/home/ubuntu/.cargo/registry/cache`
    - `/home/ubuntu/.cargo/registry/index`
    - `/home/ubuntu/.cargo/registry/src`
-5. Explicitly **not** done:
+5. Removed additional non-DB cache/storage layers after initial recovery:
+   - `/home/ubuntu/.rustup/toolchains`
+   - `/home/copybot/.rustup/toolchains`
+   - `/var/lib/apt/lists/*`
+   - disabled snap revisions and snap cache leftovers
+6. Explicitly **not** done:
    - no manual deletion of `live_copybot.db-wal`
    - no manual deletion of `live_copybot.db-shm`
    - no restart
@@ -79,7 +84,7 @@ Only space outside the SQLite data path was touched.
 ## Post-cleanup state
 
 1. Filesystem:
-   - after cleanup: `/dev/root 96G / 1.4G avail / 99%`
+   - after conservative non-DB cleanup: `/dev/root 96G / 1.4G avail / 99%`
 2. Immediate post-cleanup error window (`since 2026-03-08 21:05:00 UTC`):
    - `heartbeat_failures=2`
    - `swap_batch_failures=15239`
@@ -98,6 +103,19 @@ Only space outside the SQLite data path was touched.
 4. Service state remained:
    - `active`
    - `NRestarts=0`
+5. Additional space recovery after runtime had stabilized:
+   - `PRAGMA wal_checkpoint(PASSIVE)` succeeded but did not shrink the WAL file
+   - `PRAGMA wal_checkpoint(TRUNCATE)` then succeeded with:
+     - before: `live_copybot.db-wal ~8.6G`, `/ ~3.1G avail / 97%`
+     - after: `live_copybot.db-wal ~178K` immediately, then `~57M` under resumed writes
+     - filesystem after truncate: `/dev/root 96G / 12G avail / 88%`
+6. Post-checkpoint sanity:
+   - no new `failed to insert observed swap batch with activity days` after `21:30 UTC`
+   - no new `failed to record heartbeat` after `21:30 UTC`
+   - heads still advancing:
+     - `observed_swaps_max_ts = 2026-03-08T21:30:58.021916155+00:00`
+     - `discovery_cursor_ts = 2026-03-08T21:30:55.801050268+00:00`
+   - service remained `active`, `NRestarts=0`
 
 ## Operational conclusion
 
@@ -107,7 +125,8 @@ Only space outside the SQLite data path was touched.
    - observed-swap writer commit failures
    - journald write failures
 3. Conservative cleanup outside the SQLite data path was enough to restore runtime without restart.
-4. Immediate follow-up risk remains because headroom is still small (`~1.3-1.4G` free).
-5. The next durable remediation is not another hotfix rollback. It is storage hygiene / capacity work:
+4. A follow-up `wal_checkpoint(TRUNCATE)` was safe and materially reduced the immediate recurrence risk for tonight.
+5. The server is materially safer now, but the durable remediation is still storage hygiene / capacity work:
    - maintain more free root space
-   - avoid running the live DB/WAL this close to full disk
+   - stop treating hot SQLite as an archive
+   - move the live `state/` directory off root filesystem in a controlled maintenance window

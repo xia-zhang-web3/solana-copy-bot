@@ -96,6 +96,10 @@ Important:
 
 Only do these if you are **not** planning to compile on the server tonight:
 
+1. Removing `.rustup/toolchains` will disable local Rust builds on this host until the toolchain is reinstalled.
+2. If this server is still your only realistic emergency build host tonight, do **not** remove `.rustup/toolchains`.
+3. Prefer freeing space elsewhere first and keep toolchains as the last removable cache layer.
+
 ```bash
 sudo rm -rf /home/ubuntu/.rustup/toolchains
 sudo rm -rf /home/copybot/.rustup/toolchains

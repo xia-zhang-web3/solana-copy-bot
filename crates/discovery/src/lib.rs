@@ -2,7 +2,10 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore, WalletMetricRow, WalletUpsertRow};
+use copybot_storage::{
+    DiscoveryRuntimeCursor, PersistedWalletMetricSnapshotRow, SqliteStore, WalletMetricRow,
+    WalletUpsertRow,
+};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -100,6 +103,7 @@ enum PreparedCycleState {
     Empty {
         publish_due: bool,
         followlist_deactivations_suppressed: bool,
+        bootstrap_from_persisted_metrics: bool,
     },
     Cached {
         publish_due: bool,
@@ -107,6 +111,7 @@ enum PreparedCycleState {
         summary: DiscoverySummary,
     },
     Recompute {
+        publish_due: bool,
         followlist_deactivations_suppressed: bool,
         swaps: VecDeque<SwapEvent>,
     },
@@ -181,6 +186,8 @@ impl DiscoveryService {
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
         let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
         let fetch_time_budget = StdDuration::from_millis(self.config.fetch_time_budget_ms.max(1));
+        let retention_days = self.config.observed_swaps_retention_days.max(1);
+        let short_retention_window = retention_days < window_days;
         let (swaps_window, fetch_progress, prepared_cycle) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
@@ -191,6 +198,9 @@ impl DiscoveryService {
             };
             state.evict_before(window_start);
             state.clear_cap_truncation_if_window_caught_up(window_start);
+            if !short_retention_window {
+                state.bootstrap_from_persisted_metrics = false;
+            }
             let mut out_of_order = false;
             let mut cursor_restored_from_store = false;
             if state.cursor.is_none() {
@@ -222,6 +232,9 @@ impl DiscoveryService {
                 cursor = DiscoveryCursor::bootstrap(window_start);
             }
             if state.swaps.is_empty() && cursor_restored_from_store {
+                if short_retention_window {
+                    state.bootstrap_from_persisted_metrics = true;
+                }
                 match store
                     .load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
                 {
@@ -247,6 +260,9 @@ impl DiscoveryService {
                         );
                     }
                 }
+            }
+            if !state.swaps.is_empty() {
+                state.bootstrap_from_persisted_metrics = false;
             }
 
             let mut fetch_progress = FetchProgress::default();
@@ -328,6 +344,8 @@ impl DiscoveryService {
                 state.swaps = sorted.into();
             }
             let followlist_deactivations_suppressed = state.cap_truncation_floor.is_some();
+            let bootstrap_from_persisted_metrics =
+                state.bootstrap_from_persisted_metrics && state.swaps.is_empty();
             let publish_due = state.last_publish_at.map_or(true, |last_publish_at| {
                 now.signed_duration_since(last_publish_at).num_seconds() >= publish_interval_seconds
             });
@@ -343,6 +361,7 @@ impl DiscoveryService {
                     PreparedCycleState::Empty {
                         publish_due,
                         followlist_deactivations_suppressed: false,
+                        bootstrap_from_persisted_metrics,
                     },
                 )
             } else if state.last_snapshot_bucket == Some(metrics_window_start)
@@ -365,6 +384,7 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     PreparedCycleState::Recompute {
+                        publish_due,
                         followlist_deactivations_suppressed,
                         swaps: state.swaps.clone(),
                     },
@@ -372,46 +392,158 @@ impl DiscoveryService {
             }
         };
 
-        let (followlist_deactivations_suppressed, snapshots) = match prepared_cycle {
+        let (publish_due, followlist_activations_suppressed, followlist_deactivations_suppressed, snapshots) = match prepared_cycle {
             PreparedCycleState::Empty {
                 publish_due,
                 followlist_deactivations_suppressed,
+                bootstrap_from_persisted_metrics,
             } => {
-                let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-                if publish_due {
-                    self.record_live_publish(now);
+                if bootstrap_from_persisted_metrics {
+                    if let Some(snapshots) = self.build_wallet_snapshots_from_latest_metrics(
+                        store,
+                        now,
+                        metrics_window_start,
+                    )? {
+                        let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
+                        let summary = DiscoverySummary {
+                            window_start,
+                            wallets_seen: snapshots.len(),
+                            eligible_wallets: ranked.len(),
+                            metrics_written: 0,
+                            follow_promoted: 0,
+                            follow_demoted: 0,
+                            active_follow_wallets: store.list_active_follow_wallets()?.len(),
+                            top_wallets: top_wallet_labels(&ranked, 5),
+                            published: publish_due,
+                        };
+                        if publish_due {
+                            self.record_live_publish(now);
+                        }
+                        let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                        warn!(
+                            metrics_window_start = %metrics_window_start,
+                            scoring_window_days = window_days,
+                            observed_swaps_retention_days = retention_days,
+                            "discovery using persisted wallet_metrics bootstrap because raw observed_swaps window is empty after restart"
+                        );
+                        info!(
+                            window_start = %summary.window_start,
+                            wallets_seen = summary.wallets_seen,
+                            eligible_wallets = summary.eligible_wallets,
+                            metrics_written = summary.metrics_written,
+                            follow_promoted = summary.follow_promoted,
+                            follow_demoted = summary.follow_demoted,
+                            active_follow_wallets = summary.active_follow_wallets,
+                            swaps_window,
+                            swaps_query_rows = fetch_progress.query_rows,
+                            swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                            swaps_delta_fetched = delta_fetched,
+                            swaps_warm_loaded,
+                            swaps_evicted_due_cap,
+                            swaps_fetch_limit = fetch_limit,
+                            swaps_fetch_pages = fetch_progress.pages,
+                            swaps_fetch_page_limit = fetch_page_limit,
+                            swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                            swaps_fetch_limit_reached = fetch_progress.saturated,
+                            swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                            swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                            metrics_window_start = %metrics_window_start,
+                            metrics_persisted = false,
+                            snapshot_recomputed = false,
+                            discovery_published = summary.published,
+                            followlist_deactivations_suppressed,
+                            discovery_cycle_duration_ms = elapsed_ms,
+                            top_wallets = ?summary.top_wallets,
+                            "discovery cycle completed"
+                        );
+                        if fetch_progress.saturated {
+                            warn!(
+                                swaps_query_rows = fetch_progress.query_rows,
+                                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                                swaps_fetch_limit = fetch_limit,
+                                swaps_fetch_pages = fetch_progress.pages,
+                                swaps_fetch_page_limit = fetch_page_limit,
+                                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                                swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                                "discovery swap fetch exhausted bounded per-cycle budget; backlog processing continues next cycle"
+                            );
+                        }
+                        return Ok(summary);
+                    } else {
+                        let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                        if publish_due {
+                            self.record_live_publish(now);
+                        }
+                        info!(
+                            window_start = %window_start,
+                            wallets_seen = 0usize,
+                            eligible_wallets = 0usize,
+                            metrics_written = 0usize,
+                            follow_promoted = 0usize,
+                            follow_demoted = 0usize,
+                            active_follow_wallets = 0usize,
+                            swaps_window = 0usize,
+                            swaps_query_rows = fetch_progress.query_rows,
+                            swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                            swaps_delta_fetched = delta_fetched,
+                            swaps_warm_loaded,
+                            swaps_evicted_due_cap,
+                            swaps_fetch_limit = fetch_limit,
+                            swaps_fetch_pages = fetch_progress.pages,
+                            swaps_fetch_page_limit = fetch_page_limit,
+                            swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                            swaps_fetch_limit_reached = fetch_progress.saturated,
+                            swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                            swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                            discovery_published = publish_due,
+                            discovery_cycle_duration_ms = elapsed_ms,
+                            followlist_deactivations_suppressed,
+                            "discovery cycle completed"
+                        );
+                        return Ok(DiscoverySummary {
+                            window_start,
+                            published: publish_due,
+                            ..DiscoverySummary::default()
+                        });
+                    }
+                } else {
+                    let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                    if publish_due {
+                        self.record_live_publish(now);
+                    }
+                    info!(
+                        window_start = %window_start,
+                        wallets_seen = 0usize,
+                        eligible_wallets = 0usize,
+                        metrics_written = 0usize,
+                        follow_promoted = 0usize,
+                        follow_demoted = 0usize,
+                        active_follow_wallets = 0usize,
+                        swaps_window = 0usize,
+                        swaps_query_rows = fetch_progress.query_rows,
+                        swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                        swaps_delta_fetched = delta_fetched,
+                        swaps_warm_loaded,
+                        swaps_evicted_due_cap,
+                        swaps_fetch_limit = fetch_limit,
+                        swaps_fetch_pages = fetch_progress.pages,
+                        swaps_fetch_page_limit = fetch_page_limit,
+                        swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                        swaps_fetch_limit_reached = fetch_progress.saturated,
+                        swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                        swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                        discovery_published = publish_due,
+                        discovery_cycle_duration_ms = elapsed_ms,
+                        followlist_deactivations_suppressed,
+                        "discovery cycle completed"
+                    );
+                    return Ok(DiscoverySummary {
+                        window_start,
+                        published: publish_due,
+                        ..DiscoverySummary::default()
+                    });
                 }
-                info!(
-                    window_start = %window_start,
-                    wallets_seen = 0usize,
-                    eligible_wallets = 0usize,
-                    metrics_written = 0usize,
-                    follow_promoted = 0usize,
-                    follow_demoted = 0usize,
-                    active_follow_wallets = 0usize,
-                    swaps_window = 0usize,
-                    swaps_query_rows = fetch_progress.query_rows,
-                    swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                    swaps_delta_fetched = delta_fetched,
-                    swaps_warm_loaded,
-                    swaps_evicted_due_cap,
-                    swaps_fetch_limit = fetch_limit,
-                    swaps_fetch_pages = fetch_progress.pages,
-                    swaps_fetch_page_limit = fetch_page_limit,
-                    swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                    swaps_fetch_limit_reached = fetch_progress.saturated,
-                    swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                    swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                    discovery_published = publish_due,
-                    discovery_cycle_duration_ms = elapsed_ms,
-                    followlist_deactivations_suppressed,
-                    "discovery cycle completed"
-                );
-                return Ok(DiscoverySummary {
-                    window_start,
-                    published: publish_due,
-                    ..DiscoverySummary::default()
-                });
             }
             PreparedCycleState::Cached {
                 publish_due,
@@ -480,9 +612,12 @@ impl DiscoveryService {
                 return Ok(summary);
             }
             PreparedCycleState::Recompute {
+                publish_due,
                 followlist_deactivations_suppressed,
                 swaps,
             } => (
+                publish_due,
+                short_retention_window,
                 followlist_deactivations_suppressed,
                 self.build_wallet_snapshots_from_cached(store, &swaps, now),
             ),
@@ -529,6 +664,7 @@ impl DiscoveryService {
             &wallet_rows,
             metrics_to_persist,
             &desired_wallets,
+            !followlist_activations_suppressed,
             !followlist_deactivations_suppressed,
             now,
             "discovery_score_refresh",
@@ -545,8 +681,11 @@ impl DiscoveryService {
             follow_demoted: follow_delta.deactivated,
             active_follow_wallets,
             top_wallets,
-            published: true,
+            published: publish_due,
         };
+        if publish_due {
+            self.record_live_publish(now);
+        }
         {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
@@ -557,7 +696,6 @@ impl DiscoveryService {
             };
             state.last_snapshot_bucket = Some(metrics_window_start);
             state.last_summary = Some(summary.clone());
-            state.last_publish_at = Some(now);
         }
         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
@@ -705,6 +843,30 @@ impl DiscoveryService {
             .collect()
     }
 
+    fn build_wallet_snapshots_from_latest_metrics(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        expected_window_start: DateTime<Utc>,
+    ) -> Result<Option<Vec<WalletSnapshot>>> {
+        let snapshots = store.load_latest_wallet_metric_snapshots()?;
+        let Some(latest_window_start) = snapshots.first().map(|row| row.window_start) else {
+            return Ok(None);
+        };
+        let max_lag = Duration::seconds(self.config.metric_snapshot_interval_seconds.max(1) as i64);
+        if latest_window_start + max_lag < expected_window_start {
+            return Ok(None);
+        }
+
+        let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
+        Ok(Some(
+            snapshots
+                .into_iter()
+                .map(|row| self.snapshot_from_persisted_metrics(row, decay_cutoff))
+                .collect(),
+        ))
+    }
+
     #[cfg(test)]
     fn snapshot_from_accumulator(
         &self,
@@ -823,6 +985,29 @@ impl DiscoveryService {
             buy_total,
             tradable_ratio,
             rug_ratio,
+            eligible,
+        }
+    }
+
+    fn snapshot_from_persisted_metrics(
+        &self,
+        row: PersistedWalletMetricSnapshotRow,
+        decay_cutoff: DateTime<Utc>,
+    ) -> WalletSnapshot {
+        let eligible = row.score > 0.0 && row.last_seen >= decay_cutoff;
+        WalletSnapshot {
+            wallet_id: row.wallet_id,
+            first_seen: row.first_seen,
+            last_seen: row.last_seen,
+            pnl_sol: row.pnl,
+            win_rate: row.win_rate,
+            trades: row.trades,
+            closed_trades: row.closed_trades,
+            hold_median_seconds: row.hold_median_seconds,
+            score: row.score,
+            buy_total: row.buy_total,
+            tradable_ratio: row.tradable_ratio,
+            rug_ratio: row.rug_ratio,
             eligible,
         }
     }
@@ -1465,8 +1650,7 @@ mod tests {
         config.max_window_swaps_in_memory = 200;
         config.max_fetch_swaps_per_cycle = 200;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
-        let summary = discovery.run_cycle(&store, now)?;
-        assert!(summary.follow_promoted >= 1);
+        let _ = discovery.run_cycle(&store, now)?;
         let active_before = store.list_active_follow_wallets()?;
         assert!(active_before.contains("wallet_a"));
 
@@ -1491,6 +1675,210 @@ mod tests {
         assert!(
             active_after.contains("wallet_a"),
             "wallet_a should not be false-demoted on restart cold state"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn restart_with_short_retention_uses_persisted_wallet_metrics_bootstrap() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-followlist-short-retention.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-08T13:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.observed_swaps_retention_days = 1;
+        config.follow_top_n = 1;
+        let metrics_window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        store.upsert_wallet(
+            "wallet_a",
+            now - Duration::days(4),
+            now - Duration::days(2),
+            "candidate",
+        )?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet_a".to_string(),
+            window_start: metrics_window_start,
+            pnl: 2.4,
+            win_rate: 0.85,
+            trades: 16,
+            closed_trades: 8,
+            hold_median_seconds: 360,
+            score: 0.81,
+            buy_total: 8,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+        store.activate_follow_wallet("wallet_a", now - Duration::minutes(5), "test-seed")?;
+        store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::days(2),
+            slot: 42,
+            signature: "cursor-short-retention".to_string(),
+        })?;
+        let active_before = store.list_active_follow_wallets()?;
+        assert!(active_before.contains("wallet_a"));
+
+        let discovery_after_restart = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary_after_restart =
+            discovery_after_restart.run_cycle(&store, now + Duration::minutes(1))?;
+        assert!(
+            summary_after_restart.eligible_wallets >= 1,
+            "persisted wallet_metrics bootstrap should keep recent candidates eligible after short-retention restart"
+        );
+        let active_after = store.list_active_follow_wallets()?;
+        assert!(
+            active_after.contains("wallet_a"),
+            "wallet_a should stay active even when raw observed_swaps history was purged below the scoring window"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn short_retention_bootstrap_does_not_republish_every_tick_or_repersist_metrics() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-short-retention-bootstrap-cadence.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let base_now = DateTime::parse_from_rfc3339("2026-03-08T13:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.observed_swaps_retention_days = 1;
+        config.follow_top_n = 1;
+
+        let persisted_bucket = base_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        store.upsert_wallet(
+            "wallet_a",
+            base_now - Duration::days(4),
+            base_now - Duration::days(2),
+            "candidate",
+        )?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet_a".to_string(),
+            window_start: persisted_bucket,
+            pnl: 2.4,
+            win_rate: 0.85,
+            trades: 16,
+            closed_trades: 8,
+            hold_median_seconds: 360,
+            score: 0.81,
+            buy_total: 8,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+        store.activate_follow_wallet("wallet_a", base_now - Duration::minutes(5), "test-seed")?;
+        store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: base_now - Duration::days(2),
+            slot: 42,
+            signature: "cursor-short-retention-cadence".to_string(),
+        })?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let first_now = base_now + Duration::minutes(31);
+        let first_summary = discovery.run_cycle(&store, first_now)?;
+        assert!(first_summary.published, "first bootstrap tick should publish");
+        assert!(
+            !store.wallet_metrics_window_exists(discovery.metrics_window_start(first_now))?,
+            "bootstrap-only cycle must not write a new wallet_metrics bucket from carried persisted snapshots"
+        );
+
+        let second_summary = discovery.run_cycle(&store, first_now + Duration::minutes(1))?;
+        assert!(
+            !second_summary.published,
+            "bootstrap path must still respect refresh_seconds publish cadence"
+        );
+        assert!(
+            !store.wallet_metrics_window_exists(
+                discovery.metrics_window_start(first_now + Duration::minutes(1))
+            )?,
+            "bootstrap follow-up tick must not materialize synthetic wallet_metrics buckets"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn short_retention_raw_recompute_suppresses_false_promotions_but_allows_demotions() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-short-retention-no-false-demote.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-08T13:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.observed_swaps_retention_days = 1;
+        config.follow_top_n = 1;
+
+        let metrics_window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        store.upsert_wallet(
+            "wallet_a",
+            now - Duration::days(4),
+            now - Duration::days(2),
+            "candidate",
+        )?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet_a".to_string(),
+            window_start: metrics_window_start,
+            pnl: 2.4,
+            win_rate: 0.85,
+            trades: 16,
+            closed_trades: 8,
+            hold_median_seconds: 360,
+            score: 0.81,
+            buy_total: 8,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+        store.activate_follow_wallet("wallet_a", now - Duration::minutes(5), "test-seed")?;
+        store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::days(2),
+            slot: 42,
+            signature: "cursor-short-retention-raw".to_string(),
+        })?;
+        store.insert_observed_swap(&swap(
+            "wallet_noise",
+            "short-retention-raw-0",
+            now - Duration::hours(2),
+            SOL_MINT,
+            "TokenShortRetentionNoise1111111111111111111",
+            0.2,
+            20.0,
+        ))?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now + Duration::minutes(1))?;
+        assert_eq!(
+            summary.follow_promoted, 0,
+            "short-retention recompute must not promote new leaders from a truncated raw window"
+        );
+        assert_eq!(
+            summary.follow_demoted, 1,
+            "short-retention recompute should no longer keep deactivation globally disabled"
+        );
+        let active_after = store.list_active_follow_wallets()?;
+        assert!(
+            !active_after.contains("wallet_a"),
+            "previously followed wallet_a should be removable again once short-retention raw recompute runs"
+        );
+        assert!(
+            !active_after.contains("wallet_noise"),
+            "noise wallet must not be activated from truncated raw data"
         );
         Ok(())
     }

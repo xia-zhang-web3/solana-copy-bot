@@ -6,7 +6,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::{mpsc, oneshot};
-use tracing::warn;
+use tracing::{info, warn};
 
 const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
@@ -133,12 +133,38 @@ fn observed_swap_writer_loop(
 
         if last_retention_sweep.elapsed() >= config.retention_sweep_interval {
             let cutoff = Utc::now() - ChronoDuration::days(config.retention_days.max(1) as i64);
-            if let Err(error) = store.delete_observed_swaps_before(cutoff) {
-                warn!(
-                    error = %error,
-                    retention_days = config.retention_days,
-                    "observed swap retention sweep failed"
-                );
+            match store.delete_observed_swaps_before(cutoff) {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        match store.checkpoint_wal_truncate() {
+                            Ok((busy, log_frames, checkpointed_frames)) => {
+                                info!(
+                                    retention_days = config.retention_days,
+                                    deleted_rows = deleted,
+                                    wal_checkpoint_busy = busy,
+                                    wal_log_frames = log_frames,
+                                    wal_checkpointed_frames = checkpointed_frames,
+                                    "observed swap retention sweep reclaimed sqlite wal"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    retention_days = config.retention_days,
+                                    deleted_rows = deleted,
+                                    "observed swap retention sweep deleted rows but wal checkpoint failed"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        retention_days = config.retention_days,
+                        "observed swap retention sweep failed"
+                    );
+                }
             }
             last_retention_sweep = Instant::now();
         }

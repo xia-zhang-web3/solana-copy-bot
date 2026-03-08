@@ -2248,25 +2248,44 @@ Formal verdict:
    2. `apt-get clean`,
    3. удалены build artifacts under `/var/www/solana-copy-bot/target/release/*`,
    4. удалены Ubuntu cargo registry caches.
-3. Explicitly not done:
+3. Additional non-DB cleanup after initial recovery:
+   1. removed `.rustup/toolchains` for `ubuntu` and `copybot`,
+   2. cleaned `/var/lib/apt/lists/*`,
+   3. removed disabled snap revisions / stale snap cache.
+4. Explicitly not done:
    1. no manual deletion of `db-wal` / `db-shm`,
    2. no restart,
    3. no config changes.
 
 Итог recovery:
 
-1. Cleanup freed about `~1.4G`, leaving `/` at `99%`.
+1. Initial conservative cleanup freed about `~1.4G`, leaving `/` at `99%`.
 2. Runtime recovered on its own without restart:
    1. `observed_swaps_max_ts` resumed and advanced to `2026-03-08T21:07:08.988683135+00:00`,
    2. `discovery_cursor_ts` resumed to `2026-03-08T21:06:55.813419790+00:00`,
    3. discovery completed a recompute cycle again at `2026-03-08T21:07:02Z`,
    4. `solana-copy-bot.service` stayed `active`,
    5. `NRestarts=0`.
+3. After runtime stabilized, a controlled SQLite checkpoint sequence was run:
+   1. `PRAGMA wal_checkpoint(PASSIVE)` succeeded but did not materially shrink the physical WAL file,
+   2. `PRAGMA wal_checkpoint(TRUNCATE)` then succeeded,
+   3. `live_copybot.db-wal` collapsed from `~8.6G` to `~178K` immediately and then regrew only to `~57M` under resumed writes,
+   4. root headroom improved from `~3.1G` to `~12G` (`88% used`).
+4. Post-checkpoint sanity stayed clean:
+   1. no new `failed to insert observed swap batch with activity days` after `21:30 UTC`,
+   2. no new `failed to record heartbeat` after `21:30 UTC`,
+   3. heads still advancing near real time:
+      1. `observed_swaps_max_ts = 2026-03-08T21:30:58.021916155+00:00`,
+      2. `discovery_cursor_ts = 2026-03-08T21:30:55.801050268+00:00`.
 
 Операционный вывод:
 
 1. `8b2bc43` hotfix itself remains valid; this late incident does **not** invalidate the earlier runtime recovery verdict as a contention fix.
 2. Но появился новый production blocker:
-   1. root filesystem headroom is now too small,
+   1. root filesystem and live SQLite still share the same failure domain,
    2. disk exhaustion can again stall heartbeats and observed-swap commits even when the contention hotfix is working.
-3. Следующий durable remediation path уже про storage/capacity hygiene, а не про rollback of this hotfix.
+3. Tonight's immediate recurrence risk is materially lower after the successful WAL truncate checkpoint.
+4. Следующий durable remediation path уже про storage/capacity hygiene, а не про rollback of this hotfix:
+   1. stop treating hot SQLite as an archive,
+   2. implement retention/archive for raw history,
+   3. move live `state/` off root filesystem in a controlled maintenance window.
