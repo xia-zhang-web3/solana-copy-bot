@@ -96,6 +96,23 @@ struct FetchProgress {
 }
 
 #[derive(Debug, Clone)]
+enum PreparedCycleState {
+    Empty {
+        publish_due: bool,
+        followlist_deactivations_suppressed: bool,
+    },
+    Cached {
+        publish_due: bool,
+        followlist_deactivations_suppressed: bool,
+        summary: DiscoverySummary,
+    },
+    Recompute {
+        followlist_deactivations_suppressed: bool,
+        swaps: VecDeque<SwapEvent>,
+    },
+}
+
+#[derive(Debug, Clone)]
 struct SolLegTrade {
     ts: DateTime<Utc>,
     wallet_id: String,
@@ -164,14 +181,7 @@ impl DiscoveryService {
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
         let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
         let fetch_time_budget = StdDuration::from_millis(self.config.fetch_time_budget_ms.max(1));
-        let (
-            snapshots,
-            cached_summary,
-            swaps_window,
-            fetch_progress,
-            followlist_deactivations_suppressed,
-            publish_due,
-        ) = {
+        let (swaps_window, fetch_progress, prepared_cycle) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -327,132 +337,156 @@ impl DiscoveryService {
                 state.cap_truncation_floor = None;
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
-                (None, None, swaps_window, fetch_progress, false, publish_due)
+                (
+                    swaps_window,
+                    fetch_progress,
+                    PreparedCycleState::Empty {
+                        publish_due,
+                        followlist_deactivations_suppressed: false,
+                    },
+                )
             } else if state.last_snapshot_bucket == Some(metrics_window_start)
                 && state.last_summary.is_some()
             {
                 (
-                    None,
-                    state.last_summary.clone(),
                     swaps_window,
                     fetch_progress,
-                    followlist_deactivations_suppressed,
-                    publish_due,
+                    PreparedCycleState::Cached {
+                        publish_due,
+                        followlist_deactivations_suppressed,
+                        summary: state
+                            .last_summary
+                            .clone()
+                            .expect("checked last_summary exists above"),
+                    },
                 )
             } else {
-                let snapshots = self.build_wallet_snapshots_from_cached(store, &state.swaps, now);
                 (
-                    Some(snapshots),
-                    None,
                     swaps_window,
                     fetch_progress,
-                    followlist_deactivations_suppressed,
-                    true,
+                    PreparedCycleState::Recompute {
+                        followlist_deactivations_suppressed,
+                        swaps: state.swaps.clone(),
+                    },
                 )
             }
         };
 
-        if swaps_window == 0 {
-            let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-            if publish_due {
-                self.record_live_publish(now);
-            }
-            info!(
-                window_start = %window_start,
-                wallets_seen = 0usize,
-                eligible_wallets = 0usize,
-                metrics_written = 0usize,
-                follow_promoted = 0usize,
-                follow_demoted = 0usize,
-                active_follow_wallets = 0usize,
-                swaps_window = 0usize,
-                swaps_query_rows = fetch_progress.query_rows,
-                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                swaps_delta_fetched = delta_fetched,
-                swaps_warm_loaded,
-                swaps_evicted_due_cap,
-                swaps_fetch_limit = fetch_limit,
-                swaps_fetch_pages = fetch_progress.pages,
-                swaps_fetch_page_limit = fetch_page_limit,
-                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                swaps_fetch_limit_reached = fetch_progress.saturated,
-                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                discovery_published = publish_due,
-                discovery_cycle_duration_ms = elapsed_ms,
+        let (followlist_deactivations_suppressed, snapshots) = match prepared_cycle {
+            PreparedCycleState::Empty {
+                publish_due,
                 followlist_deactivations_suppressed,
-                "discovery cycle completed"
-            );
-            return Ok(DiscoverySummary {
-                window_start,
-                published: publish_due,
-                ..DiscoverySummary::default()
-            });
-        }
-        if let Some(previous_summary) = cached_summary {
-            let active_follow_wallets = store.list_active_follow_wallets()?.len();
-            let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-            let summary = DiscoverySummary {
-                window_start,
-                wallets_seen: previous_summary.wallets_seen,
-                eligible_wallets: previous_summary.eligible_wallets,
-                metrics_written: 0,
-                follow_promoted: 0,
-                follow_demoted: 0,
-                active_follow_wallets,
-                top_wallets: previous_summary.top_wallets,
-                published: publish_due,
-            };
-            if publish_due {
-                self.record_live_publish(now);
-            }
-            info!(
-                window_start = %summary.window_start,
-                wallets_seen = summary.wallets_seen,
-                eligible_wallets = summary.eligible_wallets,
-                metrics_written = summary.metrics_written,
-                follow_promoted = summary.follow_promoted,
-                follow_demoted = summary.follow_demoted,
-                active_follow_wallets = summary.active_follow_wallets,
-                swaps_window,
-                swaps_query_rows = fetch_progress.query_rows,
-                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                swaps_delta_fetched = delta_fetched,
-                swaps_warm_loaded,
-                swaps_evicted_due_cap,
-                swaps_fetch_limit = fetch_limit,
-                swaps_fetch_pages = fetch_progress.pages,
-                swaps_fetch_page_limit = fetch_page_limit,
-                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                swaps_fetch_limit_reached = fetch_progress.saturated,
-                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                metrics_window_start = %metrics_window_start,
-                metrics_persisted = false,
-                snapshot_recomputed = false,
-                discovery_published = summary.published,
-                followlist_deactivations_suppressed,
-                discovery_cycle_duration_ms = elapsed_ms,
-                top_wallets = ?summary.top_wallets,
-                "discovery cycle completed"
-            );
-            if fetch_progress.saturated {
-                warn!(
+            } => {
+                let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                if publish_due {
+                    self.record_live_publish(now);
+                }
+                info!(
+                    window_start = %window_start,
+                    wallets_seen = 0usize,
+                    eligible_wallets = 0usize,
+                    metrics_written = 0usize,
+                    follow_promoted = 0usize,
+                    follow_demoted = 0usize,
+                    active_follow_wallets = 0usize,
+                    swaps_window = 0usize,
                     swaps_query_rows = fetch_progress.query_rows,
                     swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                    swaps_delta_fetched = delta_fetched,
+                    swaps_warm_loaded,
+                    swaps_evicted_due_cap,
                     swaps_fetch_limit = fetch_limit,
                     swaps_fetch_pages = fetch_progress.pages,
                     swaps_fetch_page_limit = fetch_page_limit,
                     swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                    swaps_fetch_limit_reached = fetch_progress.saturated,
                     swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
                     swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                    "discovery swap fetch exhausted bounded per-cycle budget; backlog processing continues next cycle"
+                    discovery_published = publish_due,
+                    discovery_cycle_duration_ms = elapsed_ms,
+                    followlist_deactivations_suppressed,
+                    "discovery cycle completed"
                 );
+                return Ok(DiscoverySummary {
+                    window_start,
+                    published: publish_due,
+                    ..DiscoverySummary::default()
+                });
             }
-            return Ok(summary);
-        }
-
-        let snapshots = snapshots.expect("non-empty window without cached summary must recompute");
+            PreparedCycleState::Cached {
+                publish_due,
+                followlist_deactivations_suppressed,
+                summary: previous_summary,
+            } => {
+                let active_follow_wallets = store.list_active_follow_wallets()?.len();
+                let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                let summary = DiscoverySummary {
+                    window_start,
+                    wallets_seen: previous_summary.wallets_seen,
+                    eligible_wallets: previous_summary.eligible_wallets,
+                    metrics_written: 0,
+                    follow_promoted: 0,
+                    follow_demoted: 0,
+                    active_follow_wallets,
+                    top_wallets: previous_summary.top_wallets,
+                    published: publish_due,
+                };
+                if publish_due {
+                    self.record_live_publish(now);
+                }
+                info!(
+                    window_start = %summary.window_start,
+                    wallets_seen = summary.wallets_seen,
+                    eligible_wallets = summary.eligible_wallets,
+                    metrics_written = summary.metrics_written,
+                    follow_promoted = summary.follow_promoted,
+                    follow_demoted = summary.follow_demoted,
+                    active_follow_wallets = summary.active_follow_wallets,
+                    swaps_window,
+                    swaps_query_rows = fetch_progress.query_rows,
+                    swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                    swaps_delta_fetched = delta_fetched,
+                    swaps_warm_loaded,
+                    swaps_evicted_due_cap,
+                    swaps_fetch_limit = fetch_limit,
+                    swaps_fetch_pages = fetch_progress.pages,
+                    swaps_fetch_page_limit = fetch_page_limit,
+                    swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                    swaps_fetch_limit_reached = fetch_progress.saturated,
+                    swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                    swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                    metrics_window_start = %metrics_window_start,
+                    metrics_persisted = false,
+                    snapshot_recomputed = false,
+                    discovery_published = summary.published,
+                    followlist_deactivations_suppressed,
+                    discovery_cycle_duration_ms = elapsed_ms,
+                    top_wallets = ?summary.top_wallets,
+                    "discovery cycle completed"
+                );
+                if fetch_progress.saturated {
+                    warn!(
+                        swaps_query_rows = fetch_progress.query_rows,
+                        swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                        swaps_fetch_limit = fetch_limit,
+                        swaps_fetch_pages = fetch_progress.pages,
+                        swaps_fetch_page_limit = fetch_page_limit,
+                        swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                        swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                        swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                        "discovery swap fetch exhausted bounded per-cycle budget; backlog processing continues next cycle"
+                    );
+                }
+                return Ok(summary);
+            }
+            PreparedCycleState::Recompute {
+                followlist_deactivations_suppressed,
+                swaps,
+            } => (
+                followlist_deactivations_suppressed,
+                self.build_wallet_snapshots_from_cached(store, &swaps, now),
+            ),
+        };
         let mut wallet_rows: Vec<WalletUpsertRow> = Vec::with_capacity(snapshots.len());
         let mut metric_rows: Vec<WalletMetricRow> = Vec::with_capacity(snapshots.len());
         for snapshot in snapshots.iter() {
@@ -2255,8 +2289,7 @@ mod tests {
     }
 
     #[test]
-    fn run_cycle_uses_existing_persisted_activity_days_for_eligibility() -> Result<()>
-    {
+    fn run_cycle_uses_existing_persisted_activity_days_for_eligibility() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("backfill-eligibility.db");
         let mut store = SqliteStore::open(Path::new(&db_path))?;
