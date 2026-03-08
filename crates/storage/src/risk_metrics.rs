@@ -173,15 +173,14 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT token, qty, cost_sol, cost_lamports
+                "SELECT token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports
                  FROM positions
                  WHERE state = 'open'
-                   AND qty > ?1
                    AND cost_sol >= 0",
             )
             .context("failed to prepare live open positions query")?;
         let mut rows = stmt
-            .query(params![LIVE_POSITION_OPEN_EPS])
+            .query([])
             .context("failed querying live open positions")?;
 
         let mut unrealized_pnl_sol = 0.0_f64;
@@ -192,21 +191,25 @@ impl SqliteStore {
         {
             let token: String = row.get(0).context("failed reading positions.token")?;
             let qty: f64 = row.get(1).context("failed reading positions.qty")?;
-            let cost_sol: f64 = row.get(2).context("failed reading positions.cost_sol")?;
-            let cost_lamports_raw: Option<i64> = row
+            let qty_raw: Option<String> = row.get(2).context("failed reading positions.qty_raw")?;
+            let qty_decimals: Option<i64> = row
                 .get(3)
+                .context("failed reading positions.qty_decimals")?;
+            let cost_sol: f64 = row.get(4).context("failed reading positions.cost_sol")?;
+            let cost_lamports_raw: Option<i64> = row
+                .get(5)
                 .context("failed reading positions.cost_lamports")?;
-            if !qty.is_finite()
-                || !cost_sol.is_finite()
-                || qty <= LIVE_POSITION_OPEN_EPS
-                || cost_sol < 0.0
-            {
+            let qty = super::position_qty_sol(qty, qty_raw, qty_decimals, "live unrealized pnl")?;
+            if !qty.is_finite() || !cost_sol.is_finite() || cost_sol < 0.0 {
                 return Err(anyhow!(
                     "invalid open position row for unrealized pnl token={} qty={} cost_sol={}",
                     token,
                     qty,
                     cost_sol
                 ));
+            }
+            if qty <= LIVE_POSITION_OPEN_EPS {
+                continue;
             }
             let cost_sol = super::lamports_to_sol(super::position_cost_lamports(
                 cost_sol,

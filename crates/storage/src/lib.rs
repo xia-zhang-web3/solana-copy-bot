@@ -4136,6 +4136,67 @@ mod tests {
     }
 
     #[test]
+    fn live_unrealized_pnl_prefers_exact_qty_sidecar() -> Result<()> {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-unrealized-pnl-exact-qty.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.conn.execute(
+            "INSERT INTO positions(
+                position_id, token, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts, state, pnl_sol, pnl_lamports
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', 0.0, 0)",
+            params![
+                "token-exact-qty",
+                "token-exact-qty",
+                1.0_f64,
+                "2000000",
+                6_i64,
+                0.20_f64,
+                200_000_000_i64,
+                now.to_rfc3339(),
+            ],
+        )?;
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "price-feed".to_string(),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "token-exact-qty".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-live-unrealized-exact-qty".to_string(),
+            slot: 12349,
+            ts_utc: now + Duration::seconds(1),
+            exact_amounts: None,
+        })?;
+
+        let (unrealized_pnl_sol, missing_price_count) =
+            store.live_unrealized_pnl_sol(now + Duration::seconds(2))?;
+        assert!(
+            (unrealized_pnl_sol - 0.0).abs() < 1e-9,
+            "expected exact qty sidecar to win over float qty drift, got {unrealized_pnl_sol}"
+        );
+        assert_eq!(missing_price_count, 0);
+
+        let drawdown = store.live_max_drawdown_with_unrealized_since(
+            now - Duration::hours(1),
+            unrealized_pnl_sol,
+        )?;
+        assert!(
+            drawdown.abs() < 1e-9,
+            "expected unrealized drawdown to use exact qty sidecar, got {drawdown}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn live_unrealized_pnl_sol_ignores_micro_swap_outlier_price() -> Result<()> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
         let temp = tempdir().context("failed to create tempdir")?;
@@ -5042,6 +5103,25 @@ fn token_quantity_from_sql(
             context
         )),
     }
+}
+
+pub(crate) fn position_qty_sol(
+    qty: f64,
+    qty_raw: Option<String>,
+    qty_decimals: Option<i64>,
+    context: &str,
+) -> Result<f64> {
+    if let Some(exact) = token_quantity_from_sql(qty_raw, qty_decimals, context)? {
+        return Ok(exact.as_f64());
+    }
+    if !qty.is_finite() || qty < 0.0 {
+        return Err(anyhow!(
+            "invalid positions.qty={} in {} (must be finite and >= 0)",
+            qty,
+            context
+        ));
+    }
+    Ok(qty)
 }
 
 fn merge_position_qty_exact_on_buy(
