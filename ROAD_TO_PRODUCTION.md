@@ -2101,3 +2101,55 @@ NO-GO для server rollout (остаемся на текущем этапе, з
    1. backlog burn-down пока не доказан,
    2. `cursor/head gap` все еще растет,
    3. хотя темп деградации уже заметно ниже, чем до widened bounded fetch rollout.
+
+### 2026-03-08 — live rollout of wallet_activity_days contention hotfix (`8b2bc43`)
+
+Контекст rollout:
+
+1. Предыдущая попытка оставить live на `origin/main = 8bbdfe0` была откатана как unsafe из-за SQLite write contention:
+   1. `failed to insert observed swap batch`,
+   2. `failed to record heartbeat`,
+   3. `database is locked`,
+   4. `discovery cycle still running`,
+   5. быстрый рост `ws_to_fetch_queue_depth` и `ws_notifications_backpressured`.
+2. Hotfix stack `18d263a -> fa9157e -> 8b2bc43` убрал historical/incremental `wallet_activity_days` writes из discovery hot path, перенес incremental writes в observed-swap writer transaction boundary и вынес historical backfill в offline tool.
+
+Что было сделано на сервере:
+
+1. `/var/www/solana-copy-bot` переведен на `main` и fast-forward’нут до `8b2bc43`.
+2. `copybot-app` пересобран.
+3. Перезапущен только `solana-copy-bot.service`.
+4. Runtime config не менялся.
+5. Offline backfill `wallet_activity_days` после rollout не запускался.
+
+Ранний health после rollout (`2026-03-08 09:18:57 UTC` start):
+
+1. Service state:
+   1. `solana-copy-bot.service active`,
+   2. `ExecMainPID=161724`,
+   3. `NRestarts=0`.
+2. Immediate startup/runtime safety:
+   1. `sqlite migrations applied: 0`,
+   2. нет `failed to insert observed swap batch`,
+   3. нет `failed to record heartbeat`,
+   4. нет `database is locked`,
+   5. нет `discovery cycle still running`.
+3. SQLite contention counters:
+   1. `sqlite_busy_error_total=0`,
+   2. `sqlite_write_retry_total=0`.
+4. Ingestion/backpressure early health:
+   1. `ws_notifications_backpressured=0`,
+   2. `ws_to_fetch_queue_depth=1..2`,
+   3. after warm-up `ingestion_lag_ms_p95=1712`,
+   4. `ingestion_lag_ms_p99=1791`.
+5. Early discovery timings:
+   1. first discovery cycle completed in `11287 ms`,
+   2. next non-recompute cycle completed in `4369 ms`.
+
+Операционный вывод:
+
+1. Hotfix rollout `8b2bc43` выглядит clean at startup и адресует именно тот live blocker, который сломал rollout `8bbdfe0`.
+2. Discovery/ingestion contention regression после старта не воспроизводится в раннем health window.
+3. Historical `wallet_activity_days` больше не восстанавливаются runtime автоматически:
+   1. это сознательно вынесено из live path,
+   2. для восстановления historical eligibility/followlist semantics нужен отдельный offline шаг через `tools/backfill_wallet_activity_days.py`.
