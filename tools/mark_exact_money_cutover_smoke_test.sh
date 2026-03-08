@@ -27,4 +27,19 @@ if [[ "$rows" != "2026-03-08T12:34:56+00:00|test-cutover" ]]; then
   exit 1
 fi
 
+if python3 "$ROOT_DIR/tools/mark_exact_money_cutover.py" \
+  "$DB_PATH" \
+  --cutover-ts "2026-03-08T12:34:56" >/dev/null 2>/tmp/exact-money-cutover.err; then
+  echo "expected naive timestamp to be rejected" >&2
+  exit 1
+fi
+
+if ! grep -q "timestamp must include explicit timezone" /tmp/exact-money-cutover.err; then
+  echo "unexpected error for naive timestamp" >&2
+  cat /tmp/exact-money-cutover.err >&2
+  exit 1
+fi
+
+rm -f /tmp/exact-money-cutover.err
+
 echo "[ok] exact money cutover marker smoke"

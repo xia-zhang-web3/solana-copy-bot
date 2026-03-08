@@ -41,9 +41,12 @@ def parse_args() -> argparse.Namespace:
 def parse_timestamp(raw: str) -> str:
     normalized = raw.strip().replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(normalized).astimezone(timezone.utc)
+        parsed = datetime.fromisoformat(normalized)
     except ValueError as exc:
         raise SystemExit(f"invalid RFC3339 timestamp: {raw!r}") from exc
+    if parsed.tzinfo is None:
+        raise SystemExit(f"timestamp must include explicit timezone: {raw!r}")
+    parsed = parsed.astimezone(timezone.utc)
     return parsed.isoformat()
 
 
