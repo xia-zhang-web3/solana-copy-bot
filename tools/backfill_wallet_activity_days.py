@@ -115,7 +115,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 def day_bounds(day_start: datetime) -> tuple[str, str]:
     day_end = day_start + timedelta(days=1)
-    return day_start.isoformat().replace("+00:00", "Z"), day_end.isoformat().replace("+00:00", "Z")
+    return day_start.isoformat(), day_end.isoformat()
 
 
 def run_chunk(conn: sqlite3.Connection, day_start: datetime) -> int:

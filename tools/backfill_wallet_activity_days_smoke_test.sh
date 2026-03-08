@@ -42,8 +42,9 @@ CREATE TABLE wallet_activity_days (
 INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts) VALUES
 ('sig-1', 'wallet-a', 'raydium', 'So111', 'TokenA', 1, 10, 1, '2026-03-06T08:00:00Z'),
 ('sig-2', 'wallet-a', 'raydium', 'So111', 'TokenA', 1, 10, 2, '2026-03-06T12:00:00Z'),
-('sig-3', 'wallet-a', 'raydium', 'So111', 'TokenA', 1, 10, 3, '2026-03-07T09:00:00Z'),
-('sig-4', 'wallet-b', 'raydium', 'So111', 'TokenB', 1, 10, 4, '2026-03-07T13:00:00Z');
+('sig-3', 'wallet-a', 'raydium', 'So111', 'TokenA', 1, 10, 3, '2026-03-07T00:00:00+00:00'),
+('sig-4', 'wallet-a', 'raydium', 'So111', 'TokenA', 1, 10, 4, '2026-03-07T09:00:00Z'),
+('sig-5', 'wallet-b', 'raydium', 'So111', 'TokenB', 1, 10, 5, '2026-03-07T13:00:00Z');
 SQL
 
 output="$(python3 "$SCRIPT_PATH" "$db_path" --start-day 2026-03-06 --end-day 2026-03-07)"
