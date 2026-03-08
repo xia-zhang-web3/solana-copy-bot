@@ -1455,6 +1455,7 @@ async fn run_app_loop(
     let mut operator_emergency_stop = OperatorEmergencyStop::from_env();
     let mut execution_emergency_stop_active_logged = false;
     let mut execution_hard_stop_pause_logged = false;
+    let mut execution_shadow_risk_pause_logged_reason: Option<String> = None;
     let mut execution_outage_pause_logged = false;
     let mut ingestion_error_streak: u32 = 0;
     let mut ingestion_backoff_until: Option<time::Instant> = None;
@@ -1737,12 +1738,15 @@ async fn run_app_loop(
                 }
             }
             _ = execution_interval.tick(), if execution_runtime.is_enabled() => {
+                let now = Utc::now();
                 let buy_submit_pause_reason = resolve_buy_submit_pause_reason(
                     &operator_emergency_stop,
                     &shadow_risk_guard,
+                    now,
                     pause_new_trades_on_outage,
                     &mut execution_emergency_stop_active_logged,
                     &mut execution_hard_stop_pause_logged,
+                    &mut execution_shadow_risk_pause_logged_reason,
                     &mut execution_outage_pause_logged,
                 );
 
@@ -1751,7 +1755,6 @@ async fn run_app_loop(
                     continue;
                 }
 
-                let now = Utc::now();
                 execution_handle = Some(tokio::task::spawn_blocking(spawn_execution_task(
                     sqlite_path.clone(),
                     Arc::clone(&execution_runtime),

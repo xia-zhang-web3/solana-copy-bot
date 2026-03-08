@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use tracing::{info, warn};
 
 use super::{OperatorEmergencyStop, ShadowRiskGuard};
@@ -5,9 +6,11 @@ use super::{OperatorEmergencyStop, ShadowRiskGuard};
 pub(crate) fn resolve_buy_submit_pause_reason(
     operator_emergency_stop: &OperatorEmergencyStop,
     shadow_risk_guard: &ShadowRiskGuard,
+    now: DateTime<Utc>,
     pause_new_trades_on_outage: bool,
     execution_emergency_stop_active_logged: &mut bool,
     execution_hard_stop_pause_logged: &mut bool,
+    execution_shadow_risk_pause_logged_reason: &mut Option<String>,
     execution_outage_pause_logged: &mut bool,
 ) -> Option<String> {
     let mut buy_submit_pause_reason: Option<String> = None;
@@ -44,6 +47,12 @@ pub(crate) fn resolve_buy_submit_pause_reason(
         *execution_hard_stop_pause_logged = false;
     }
 
+    if let Some(error) = shadow_risk_guard.last_db_refresh_error.as_deref() {
+        if buy_submit_pause_reason.is_none() {
+            buy_submit_pause_reason = Some(format!("risk_fail_closed: {}", error));
+        }
+    }
+
     if shadow_risk_guard.exposure_hard_blocked && buy_submit_pause_reason.is_none() {
         buy_submit_pause_reason = Some(format!(
             "risk_exposure_hard_cap: {}",
@@ -55,7 +64,7 @@ pub(crate) fn resolve_buy_submit_pause_reason(
     }
 
     if let Some(until) = shadow_risk_guard.pause_until {
-        if chrono::Utc::now() < until && buy_submit_pause_reason.is_none() {
+        if now < until && buy_submit_pause_reason.is_none() {
             buy_submit_pause_reason = Some(format!(
                 "risk_timed_pause: {}",
                 shadow_risk_guard
@@ -71,12 +80,6 @@ pub(crate) fn resolve_buy_submit_pause_reason(
             "risk_universe_stop: universe_breach_streak={}",
             shadow_risk_guard.universe_breach_streak
         ));
-    }
-
-    if let Some(error) = shadow_risk_guard.last_db_refresh_error.as_deref() {
-        if buy_submit_pause_reason.is_none() {
-            buy_submit_pause_reason = Some(format!("risk_fail_closed: {}", error));
-        }
     }
 
     if pause_new_trades_on_outage {
@@ -98,6 +101,34 @@ pub(crate) fn resolve_buy_submit_pause_reason(
     } else if *execution_outage_pause_logged {
         info!("execution BUY submission resumed after infra outage gate disabled");
         *execution_outage_pause_logged = false;
+    }
+
+    let selected_shadow_risk_reason = buy_submit_pause_reason.as_ref().filter(|reason| {
+        reason.starts_with("risk_fail_closed:")
+            || reason.starts_with("risk_exposure_hard_cap:")
+            || reason.starts_with("risk_timed_pause:")
+            || reason.starts_with("risk_universe_stop:")
+    });
+    match (
+        execution_shadow_risk_pause_logged_reason.as_deref(),
+        selected_shadow_risk_reason,
+    ) {
+        (Some(previous), Some(current)) if previous == current.as_str() => {}
+        (_, Some(current)) => {
+            warn!(
+                reason = %current,
+                "execution BUY submission paused by shadow risk state"
+            );
+            *execution_shadow_risk_pause_logged_reason = Some(current.clone());
+        }
+        (Some(previous), None) => {
+            info!(
+                reason = %previous,
+                "execution BUY submission resumed after shadow risk state cleared"
+            );
+            *execution_shadow_risk_pause_logged_reason = None;
+        }
+        (None, None) => {}
     }
 
     buy_submit_pause_reason
@@ -129,6 +160,7 @@ mod tests {
         let mut guard = ShadowRiskGuard::new(RiskConfig::default());
         let mut emergency_logged = false;
         let mut hard_stop_logged = false;
+        let mut shadow_risk_logged_reason = None;
         let mut outage_logged = false;
 
         guard.exposure_hard_blocked = true;
@@ -137,9 +169,11 @@ mod tests {
             resolve_buy_submit_pause_reason(
                 &operator_emergency_stop,
                 &guard,
+                Utc::now(),
                 true,
                 &mut emergency_logged,
                 &mut hard_stop_logged,
+                &mut shadow_risk_logged_reason,
                 &mut outage_logged,
             )
             .as_deref(),
@@ -154,9 +188,11 @@ mod tests {
             resolve_buy_submit_pause_reason(
                 &operator_emergency_stop,
                 &guard,
+                Utc::now(),
                 true,
                 &mut emergency_logged,
                 &mut hard_stop_logged,
+                &mut shadow_risk_logged_reason,
                 &mut outage_logged,
             )
             .as_deref(),
@@ -171,9 +207,11 @@ mod tests {
             resolve_buy_submit_pause_reason(
                 &operator_emergency_stop,
                 &guard,
+                Utc::now(),
                 true,
                 &mut emergency_logged,
                 &mut hard_stop_logged,
+                &mut shadow_risk_logged_reason,
                 &mut outage_logged,
             )
             .as_deref(),
@@ -186,9 +224,11 @@ mod tests {
             resolve_buy_submit_pause_reason(
                 &operator_emergency_stop,
                 &guard,
+                Utc::now(),
                 true,
                 &mut emergency_logged,
                 &mut hard_stop_logged,
+                &mut shadow_risk_logged_reason,
                 &mut outage_logged,
             )
             .as_deref(),
@@ -215,19 +255,85 @@ mod tests {
 
         let mut emergency_logged = false;
         let mut hard_stop_logged = false;
+        let mut shadow_risk_logged_reason = None;
         let mut outage_logged = false;
 
         assert_eq!(
             resolve_buy_submit_pause_reason(
                 &operator_emergency_stop,
                 &guard,
+                Utc::now(),
                 true,
                 &mut emergency_logged,
                 &mut hard_stop_logged,
+                &mut shadow_risk_logged_reason,
                 &mut outage_logged,
             )
             .as_deref(),
             Some("operator_emergency_stop: operator")
+        );
+    }
+
+    #[test]
+    fn resolve_buy_submit_pause_reason_prefers_fail_closed_over_stale_shadow_state() {
+        let operator_emergency_stop = inactive_operator_emergency_stop();
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        let mut emergency_logged = false;
+        let mut hard_stop_logged = false;
+        let mut shadow_risk_logged_reason = None;
+        let mut outage_logged = false;
+
+        guard.exposure_hard_blocked = true;
+        guard.exposure_hard_detail = Some("stale_exposure".to_string());
+        guard.pause_until = Some(Utc::now() + Duration::minutes(5));
+        guard.pause_reason = Some("stale_pause".to_string());
+        guard.universe_blocked = true;
+        guard.universe_breach_streak = 2;
+        guard.last_db_refresh_error = Some("refresh failed".to_string());
+
+        assert_eq!(
+            resolve_buy_submit_pause_reason(
+                &operator_emergency_stop,
+                &guard,
+                Utc::now(),
+                true,
+                &mut emergency_logged,
+                &mut hard_stop_logged,
+                &mut shadow_risk_logged_reason,
+                &mut outage_logged,
+            )
+            .as_deref(),
+            Some("risk_fail_closed: refresh failed")
+        );
+    }
+
+    #[test]
+    fn resolve_buy_submit_pause_reason_preserves_internal_shadow_priority_order() {
+        let operator_emergency_stop = inactive_operator_emergency_stop();
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        let mut emergency_logged = false;
+        let mut hard_stop_logged = false;
+        let mut shadow_risk_logged_reason = None;
+        let mut outage_logged = false;
+        let now = Utc::now();
+
+        guard.exposure_hard_blocked = true;
+        guard.exposure_hard_detail = Some("hard_cap".to_string());
+        guard.pause_until = Some(now + Duration::minutes(5));
+        guard.pause_reason = Some("drawdown_1h".to_string());
+        assert_eq!(
+            resolve_buy_submit_pause_reason(
+                &operator_emergency_stop,
+                &guard,
+                now,
+                true,
+                &mut emergency_logged,
+                &mut hard_stop_logged,
+                &mut shadow_risk_logged_reason,
+                &mut outage_logged,
+            )
+            .as_deref(),
+            Some("risk_exposure_hard_cap: hard_cap")
         );
     }
 }
