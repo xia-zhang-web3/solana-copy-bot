@@ -369,6 +369,7 @@ def emit_discovery_sample(rows):
     if not rows:
         print("discovery_cycle_sample_available: false")
         print("discovery_cycle_duration_ms_last: n/a")
+        print("discovery_published_last: n/a")
         print("eligible_wallets_last: n/a")
         print("active_follow_wallets_last: n/a")
         print("swaps_query_rows_last: n/a")
@@ -389,11 +390,15 @@ def emit_discovery_sample(rows):
         return
 
     last = rows[-1]
+    published_rows = [
+        row
+        for row in rows
+        if row.get("discovery_published") is True or "discovery_published" not in row
+    ]
+    last_published = published_rows[-1] if published_rows else None
     print("discovery_cycle_sample_available: true")
-    keys = [
+    fetch_keys = [
         "discovery_cycle_duration_ms",
-        "eligible_wallets",
-        "active_follow_wallets",
         "swaps_query_rows",
         "swaps_query_rows_last_page",
         "swaps_delta_fetched",
@@ -406,8 +411,19 @@ def emit_discovery_sample(rows):
         "swaps_fetch_page_budget_exhausted",
         "swaps_fetch_time_budget_exhausted",
     ]
-    for key in keys:
+    for key in fetch_keys:
         value = last.get(key)
+        if isinstance(value, bool):
+            value = str(value).lower()
+        print(f"{key}_last: {value}")
+    published_value = last.get("discovery_published")
+    if isinstance(published_value, bool):
+        published_value = str(published_value).lower()
+    elif published_value is None:
+        published_value = "n/a"
+    print(f"discovery_published_last: {published_value}")
+    for key in ["eligible_wallets", "active_follow_wallets"]:
+        value = last_published.get(key) if last_published is not None else "n/a"
         if isinstance(value, bool):
             value = str(value).lower()
         print(f"{key}_last: {value}")
