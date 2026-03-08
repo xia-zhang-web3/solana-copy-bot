@@ -4,8 +4,39 @@ use super::{
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
+
+pub(crate) fn upsert_wallet_activity_days_on_conn(
+    conn: &Connection,
+    rows: &[WalletActivityDayRow],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut stmt = conn
+        .prepare_cached(
+            "INSERT INTO wallet_activity_days(wallet_id, activity_day, last_seen)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(wallet_id, activity_day) DO UPDATE SET
+                last_seen = CASE
+                    WHEN excluded.last_seen > wallet_activity_days.last_seen
+                        THEN excluded.last_seen
+                    ELSE wallet_activity_days.last_seen
+                END",
+        )
+        .context("failed to prepare wallet_activity_days upsert statement")?;
+    for row in rows {
+        stmt.execute(params![
+            &row.wallet_id,
+            row.activity_day.format("%Y-%m-%d").to_string(),
+            row.last_seen.to_rfc3339(),
+        ])
+        .context("failed to upsert wallet_activity_days row")?;
+    }
+    Ok(())
+}
 
 impl SqliteStore {
     pub fn upsert_wallet_activity_days(&self, rows: &[WalletActivityDayRow]) -> Result<()> {
@@ -13,27 +44,7 @@ impl SqliteStore {
             return Ok(());
         }
         self.with_immediate_transaction_retry("wallet_activity_days upsert", |conn| {
-            let mut stmt = conn
-                .prepare_cached(
-                    "INSERT INTO wallet_activity_days(wallet_id, activity_day, last_seen)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(wallet_id, activity_day) DO UPDATE SET
-                        last_seen = CASE
-                            WHEN excluded.last_seen > wallet_activity_days.last_seen
-                                THEN excluded.last_seen
-                            ELSE wallet_activity_days.last_seen
-                        END",
-                )
-                .context("failed to prepare wallet_activity_days upsert statement")?;
-            for row in rows {
-                stmt.execute(params![
-                    &row.wallet_id,
-                    row.activity_day.format("%Y-%m-%d").to_string(),
-                    row.last_seen.to_rfc3339(),
-                ])
-                .context("failed to upsert wallet_activity_days row")?;
-            }
-            Ok(())
+            upsert_wallet_activity_days_on_conn(conn, rows)
         })
     }
 

@@ -3115,6 +3115,65 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_batch_with_activity_days_is_atomic_on_activity_upsert_failure() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-activity-atomic.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        store.conn.execute_batch(
+            "CREATE TRIGGER fail_wallet_activity_days_insert
+             BEFORE INSERT ON wallet_activity_days
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced wallet activity day failure');
+             END;",
+        )?;
+
+        let swap = SwapEvent {
+            signature: "atomic-activity-fail".to_string(),
+            wallet: "wallet-atomic".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenAtomic11111111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 1,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+
+        let error = store
+            .insert_observed_swaps_batch_with_activity_days(&[swap.clone()])
+            .expect_err("wallet_activity_days failure should abort the whole batch");
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains("forced wallet activity day failure"),
+            "unexpected atomic batch error: {error_chain}"
+        );
+
+        let swaps = store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-08T11:59:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        )?;
+        assert!(
+            swaps.is_empty(),
+            "observed_swaps insert must roll back when wallet_activity_days upsert fails"
+        );
+        let counts = store.wallet_active_day_counts_since(
+            &["wallet-atomic".to_string()],
+            DateTime::parse_from_rfc3339("2026-03-08T00:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        )?;
+        assert!(counts.is_empty(), "wallet_activity_days must also remain empty");
+        Ok(())
+    }
+
+    #[test]
     fn wallet_metrics_window_start_index_migration_is_present() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("wallet-metrics-window-start-index.db");

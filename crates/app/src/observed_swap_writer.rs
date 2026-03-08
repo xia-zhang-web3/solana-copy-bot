@@ -1,8 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{SqliteStore, WalletActivityDayRow};
-use std::collections::HashMap;
+use copybot_storage::SqliteStore;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
@@ -118,16 +117,8 @@ fn observed_swap_writer_loop(
             replies.push(request.reply_tx);
         }
 
-        match store.insert_observed_swaps_batch(&swaps) {
+        match store.insert_observed_swaps_batch_with_activity_days(&swaps) {
             Ok(results) => {
-                let activity_day_rows = collect_wallet_activity_days_for_inserted_swaps(&swaps, &results);
-                if let Err(error) = store.upsert_wallet_activity_days(&activity_day_rows) {
-                    let message = format!("{error:#}");
-                    for reply_tx in replies {
-                        let _ = reply_tx.send(Err(anyhow!(message.clone())));
-                    }
-                    continue;
-                }
                 for (reply_tx, inserted) in replies.into_iter().zip(results.into_iter()) {
                     let _ = reply_tx.send(Ok(inserted));
                 }
@@ -154,33 +145,6 @@ fn observed_swap_writer_loop(
     }
 
     Ok(())
-}
-
-fn collect_wallet_activity_days_for_inserted_swaps(
-    swaps: &[SwapEvent],
-    inserted: &[bool],
-) -> Vec<WalletActivityDayRow> {
-    let mut dedup: HashMap<(String, chrono::NaiveDate), chrono::DateTime<Utc>> = HashMap::new();
-    for (swap, inserted) in swaps.iter().zip(inserted.iter().copied()) {
-        if !inserted {
-            continue;
-        }
-        let key = (swap.wallet.clone(), swap.ts_utc.date_naive());
-        dedup.entry(key)
-            .and_modify(|current| {
-                if swap.ts_utc > *current {
-                    *current = swap.ts_utc;
-                }
-            })
-            .or_insert(swap.ts_utc);
-    }
-    dedup.into_iter()
-        .map(|((wallet_id, activity_day), last_seen)| WalletActivityDayRow {
-            wallet_id,
-            activity_day,
-            last_seen,
-        })
-        .collect()
 }
 
 fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {

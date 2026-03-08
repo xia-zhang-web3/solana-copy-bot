@@ -160,8 +160,6 @@ impl DiscoveryService {
         let mut delta_fetched = 0usize;
         let mut swaps_evicted_due_cap = 0usize;
         let mut swaps_warm_loaded = 0usize;
-        let activity_days_observed = 0usize;
-        let activity_days_backfilled = 0usize;
         let max_window_swaps_in_memory = self.config.max_window_swaps_in_memory.max(1);
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
         let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
@@ -373,8 +371,6 @@ impl DiscoveryService {
                 swaps_delta_fetched = delta_fetched,
                 swaps_warm_loaded,
                 swaps_evicted_due_cap,
-                wallet_activity_days_observed = activity_days_observed,
-                wallet_activity_days_backfilled = activity_days_backfilled,
                 swaps_fetch_limit = fetch_limit,
                 swaps_fetch_pages = fetch_progress.pages,
                 swaps_fetch_page_limit = fetch_page_limit,
@@ -424,8 +420,6 @@ impl DiscoveryService {
                 swaps_delta_fetched = delta_fetched,
                 swaps_warm_loaded,
                 swaps_evicted_due_cap,
-                wallet_activity_days_observed = activity_days_observed,
-                wallet_activity_days_backfilled = activity_days_backfilled,
                 swaps_fetch_limit = fetch_limit,
                 swaps_fetch_pages = fetch_progress.pages,
                 swaps_fetch_page_limit = fetch_page_limit,
@@ -547,8 +541,6 @@ impl DiscoveryService {
             swaps_delta_fetched = delta_fetched,
             swaps_warm_loaded,
             swaps_evicted_due_cap,
-            wallet_activity_days_observed = activity_days_observed,
-            wallet_activity_days_backfilled = activity_days_backfilled,
             swaps_fetch_limit = fetch_limit,
             swaps_fetch_pages = fetch_progress.pages,
             swaps_fetch_page_limit = fetch_page_limit,
