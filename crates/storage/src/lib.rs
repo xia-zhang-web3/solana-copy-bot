@@ -8,8 +8,8 @@ use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
     CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
-    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, Lamports,
-    SignedLamports, TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
+    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, Lamports, SignedLamports,
+    TokenQualityCacheRow, TokenQualityRpcRow, WalletMetricRow, WalletUpsertRow,
     EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
@@ -157,13 +157,11 @@ impl SqliteStore {
             .context("failed iterating live open exposure lamports rows")?
         {
             let cost_sol: f64 = row.get(0).context("failed reading positions.cost_sol")?;
-            let cost_lamports_raw: Option<i64> =
-                row.get(1).context("failed reading positions.cost_lamports")?;
-            let cost_lamports = position_cost_lamports(
-                cost_sol,
-                cost_lamports_raw,
-                "live open exposure",
-            )?;
+            let cost_lamports_raw: Option<i64> = row
+                .get(1)
+                .context("failed reading positions.cost_lamports")?;
+            let cost_lamports =
+                position_cost_lamports(cost_sol, cost_lamports_raw, "live open exposure")?;
             total = total.checked_add(cost_lamports).ok_or_else(|| {
                 anyhow!("live open exposure lamports overflow while summing positions")
             })?;
@@ -176,9 +174,8 @@ impl SqliteStore {
         conn: &Connection,
         token: &str,
     ) -> Result<ExecutionConfirmStateSnapshot> {
-        let total_exposure_sol = lamports_to_sol(Self::live_open_exposure_lamports_on_conn(
-            conn, None,
-        )?);
+        let total_exposure_sol =
+            lamports_to_sol(Self::live_open_exposure_lamports_on_conn(conn, None)?);
         let token_exposure_sol = lamports_to_sol(Self::live_open_exposure_lamports_on_conn(
             conn,
             Some(token),
@@ -534,7 +531,10 @@ impl SqliteStore {
             .context("failed querying live open position qty/cost by token")?;
         match row {
             Some((qty, cost_sol, cost_lamports_raw))
-                if qty.is_finite() && qty > LIVE_POSITION_OPEN_EPS && cost_sol.is_finite() && cost_sol >= 0.0 =>
+                if qty.is_finite()
+                    && qty > LIVE_POSITION_OPEN_EPS
+                    && cost_sol.is_finite()
+                    && cost_sol >= 0.0 =>
             {
                 let cost_lamports =
                     position_cost_lamports(cost_sol, cost_lamports_raw, "live open position")?;
@@ -662,7 +662,15 @@ impl SqliteStore {
                  ORDER BY opened_ts ASC
                  LIMIT 1",
                 params![token],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()
             .context("failed querying live open position row")?;
@@ -670,10 +678,18 @@ impl SqliteStore {
         match side_norm.as_str() {
             "buy" => {
                 let effective_cost = notional_sol + fee_sol;
-                let effective_cost_lamports = notional_lamports
-                    .checked_add(fee_lamports)
-                    .ok_or_else(|| anyhow!("execution fill cost_lamports overflow for token={token}"))?;
-                if let Some((position_id, current_qty, current_cost, current_cost_lamports_raw, current_pnl)) = existing {
+                let effective_cost_lamports =
+                    notional_lamports.checked_add(fee_lamports).ok_or_else(|| {
+                        anyhow!("execution fill cost_lamports overflow for token={token}")
+                    })?;
+                if let Some((
+                    position_id,
+                    current_qty,
+                    current_cost,
+                    current_cost_lamports_raw,
+                    current_pnl,
+                )) = existing
+                {
                     let current_cost_lamports = position_cost_lamports(
                         current_cost,
                         current_cost_lamports_raw,
@@ -681,7 +697,9 @@ impl SqliteStore {
                     )?;
                     let next_cost_lamports = current_cost_lamports
                         .checked_add(effective_cost_lamports)
-                        .ok_or_else(|| anyhow!("live position cost_lamports overflow for token={token}"))?;
+                        .ok_or_else(|| {
+                            anyhow!("live position cost_lamports overflow for token={token}")
+                        })?;
                     conn.execute(
                         "UPDATE positions
                          SET qty = ?1,
@@ -718,7 +736,10 @@ impl SqliteStore {
                             token,
                             qty,
                             effective_cost,
-                            u64_to_sql_i64("positions.cost_lamports", effective_cost_lamports.as_u64())?,
+                            u64_to_sql_i64(
+                                "positions.cost_lamports",
+                                effective_cost_lamports.as_u64()
+                            )?,
                             ts.to_rfc3339(),
                         ],
                     )
@@ -726,7 +747,14 @@ impl SqliteStore {
                 }
             }
             "sell" => {
-                let Some((position_id, current_qty, current_cost, current_cost_lamports_raw, current_pnl)) = existing else {
+                let Some((
+                    position_id,
+                    current_qty,
+                    current_cost,
+                    current_cost_lamports_raw,
+                    current_pnl,
+                )) = existing
+                else {
                     return Err(anyhow!(
                         "sell fill without open position token={} qty={} notional_sol={}",
                         token,
@@ -768,8 +796,10 @@ impl SqliteStore {
                         current_cost_lamports_raw,
                         "live open position sell update",
                     )?;
-                    let estimated_remaining_cost_lamports =
-                        sol_to_lamports_ceil_storage(next_cost, "remaining live position cost_sol")?;
+                    let estimated_remaining_cost_lamports = sol_to_lamports_ceil_storage(
+                        next_cost,
+                        "remaining live position cost_sol",
+                    )?;
                     if estimated_remaining_cost_lamports > current_cost_lamports {
                         current_cost_lamports
                     } else {
@@ -1105,20 +1135,15 @@ mod tests {
             "expected realized pnl to prefer lamport sidecar, got {pnl}"
         );
 
-        let rug_count = store.shadow_rug_loss_count_since(
-            opened_ts - Duration::minutes(1),
-            -0.70,
-        )?;
+        let rug_count =
+            store.shadow_rug_loss_count_since(opened_ts - Duration::minutes(1), -0.70)?;
         assert_eq!(
             rug_count, 1,
             "expected rug-loss count to prefer exact lamport sidecars"
         );
 
-        let (recent_rug_count, total_count, rug_rate) = store.shadow_rug_loss_rate_recent(
-            opened_ts - Duration::minutes(1),
-            10,
-            -0.70,
-        )?;
+        let (recent_rug_count, total_count, rug_rate) =
+            store.shadow_rug_loss_rate_recent(opened_ts - Duration::minutes(1), 10, -0.70)?;
         assert_eq!(recent_rug_count, 1);
         assert_eq!(total_count, 1);
         assert!((rug_rate - 1.0).abs() < 1e-12);
@@ -1190,7 +1215,10 @@ mod tests {
 
         let (rug_count, total_count, rug_rate) =
             store.shadow_rug_loss_rate_recent(opened_ts - Duration::minutes(1), 10, -0.70)?;
-        assert_eq!(rug_count, 1, "only the positive-entry trade should count as rug");
+        assert_eq!(
+            rug_count, 1,
+            "only the positive-entry trade should count as rug"
+        );
         assert_eq!(
             total_count, 2,
             "zero-entry trades should still remain in the recent sample size"
@@ -1385,7 +1413,10 @@ mod tests {
         )?;
         assert_eq!(position_row.0, 100_005_000);
         assert!((position_row.1 - 0.100005).abs() < 1e-9);
-        assert_eq!(store.live_open_exposure_lamports()?, Lamports::new(100_005_000));
+        assert_eq!(
+            store.live_open_exposure_lamports()?,
+            Lamports::new(100_005_000)
+        );
 
         Ok(())
     }
@@ -2821,10 +2852,81 @@ mod tests {
 
         let counts = store.wallet_active_day_counts_since(
             &["wallet-a".to_string(), "wallet-b".to_string()],
-            NaiveDate::from_ymd_opt(2026, 3, 6).expect("date"),
+            DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
         )?;
         assert_eq!(counts.get("wallet-a"), Some(&1));
-        assert_eq!(counts.get("wallet-b"), Some(&1));
+        assert!(
+            !counts.contains_key("wallet-b"),
+            "same-day activity before exact window_start must not be counted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_wallet_activity_days_since_uses_existing_observed_swaps() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-activity-backfill.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let window_start = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        store.insert_observed_swap(&SwapEvent {
+            signature: "backfill-pre-window".to_string(),
+            wallet: "wallet-a".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenBackfill111111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 1,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T08:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            signature: "backfill-boundary-window".to_string(),
+            wallet: "wallet-a".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenBackfill111111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 2,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        })?;
+        store.insert_observed_swap(&SwapEvent {
+            signature: "backfill-later-day".to_string(),
+            wallet: "wallet-a".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenBackfill111111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 3,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-07T09:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        })?;
+
+        store.backfill_wallet_activity_days_since(window_start)?;
+
+        let counts =
+            store.wallet_active_day_counts_since(&["wallet-a".to_string()], window_start)?;
+        assert_eq!(
+            counts.get("wallet-a"),
+            Some(&2),
+            "backfill should use existing observed_swaps at or after the exact window_start"
+        );
         Ok(())
     }
 
@@ -4339,7 +4441,11 @@ pub(crate) fn signed_lamports_to_sol(lamports: SignedLamports) -> f64 {
 
 pub(crate) fn sol_to_lamports_ceil_storage(sol: f64, label: &str) -> Result<Lamports> {
     if !sol.is_finite() || sol < 0.0 {
-        return Err(anyhow!("invalid {}={} (must be finite and >= 0)", label, sol));
+        return Err(anyhow!(
+            "invalid {}={} (must be finite and >= 0)",
+            label,
+            sol
+        ));
     }
     let scaled = sol * LAMPORTS_PER_SOL;
     if !scaled.is_finite() || scaled > u64::MAX as f64 {
@@ -4354,7 +4460,11 @@ pub(crate) fn sol_to_lamports_ceil_storage(sol: f64, label: &str) -> Result<Lamp
 
 pub(crate) fn sol_to_lamports_floor_storage(sol: f64, label: &str) -> Result<Lamports> {
     if !sol.is_finite() || sol < 0.0 {
-        return Err(anyhow!("invalid {}={} (must be finite and >= 0)", label, sol));
+        return Err(anyhow!(
+            "invalid {}={} (must be finite and >= 0)",
+            label,
+            sol
+        ));
     }
     let scaled = sol * LAMPORTS_PER_SOL;
     if !scaled.is_finite() || scaled > u64::MAX as f64 {
@@ -4444,7 +4554,9 @@ pub(crate) fn shadow_closed_trade_entry_cost_lamports(
         return Ok(Lamports::new(raw as u64));
     }
     sol_to_lamports_ceil_storage(entry_cost_sol, "shadow_closed_trades.entry_cost_sol")
-        .with_context(|| format!("failed deriving shadow closed trade entry_cost_lamports in {context}"))
+        .with_context(|| {
+            format!("failed deriving shadow closed trade entry_cost_lamports in {context}")
+        })
 }
 
 pub(crate) fn shadow_closed_trade_pnl_lamports(

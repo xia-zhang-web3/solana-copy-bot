@@ -163,6 +163,7 @@ impl DiscoveryService {
         let mut swaps_evicted_due_cap = 0usize;
         let mut swaps_warm_loaded = 0usize;
         let mut activity_days_observed = 0usize;
+        let mut activity_days_backfilled = 0usize;
         let max_window_swaps_in_memory = self.config.max_window_swaps_in_memory.max(1);
         let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
         let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
@@ -323,11 +324,13 @@ impl DiscoveryService {
             if !fetched_activity_days.is_empty() {
                 let rows: Vec<WalletActivityDayRow> = fetched_activity_days
                     .into_iter()
-                    .map(|((wallet_id, activity_day), last_seen)| WalletActivityDayRow {
-                        wallet_id,
-                        activity_day,
-                        last_seen,
-                    })
+                    .map(
+                        |((wallet_id, activity_day), last_seen)| WalletActivityDayRow {
+                            wallet_id,
+                            activity_day,
+                            last_seen,
+                        },
+                    )
                     .collect();
                 activity_days_observed = rows.len();
                 if let Err(error) = store.upsert_wallet_activity_days(&rows) {
@@ -336,6 +339,23 @@ impl DiscoveryService {
                         activity_day_rows = rows.len(),
                         "failed persisting wallet activity day aggregates"
                     );
+                }
+            }
+
+            let activity_day_backfill_key = (window_days, window_start.date_naive());
+            if state.last_activity_day_backfill_key != Some(activity_day_backfill_key) {
+                match store.backfill_wallet_activity_days_since(window_start) {
+                    Ok(backfilled) => {
+                        activity_days_backfilled = backfilled;
+                        state.last_activity_day_backfill_key = Some(activity_day_backfill_key);
+                    }
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            window_start = %window_start,
+                            "failed backfilling wallet activity-day aggregates from observed_swaps"
+                        );
+                    }
                 }
             }
 
@@ -399,6 +419,7 @@ impl DiscoveryService {
                 swaps_warm_loaded,
                 swaps_evicted_due_cap,
                 wallet_activity_days_observed = activity_days_observed,
+                wallet_activity_days_backfilled = activity_days_backfilled,
                 swaps_fetch_limit = fetch_limit,
                 swaps_fetch_pages = fetch_progress.pages,
                 swaps_fetch_page_limit = fetch_page_limit,
@@ -449,6 +470,7 @@ impl DiscoveryService {
                 swaps_warm_loaded,
                 swaps_evicted_due_cap,
                 wallet_activity_days_observed = activity_days_observed,
+                wallet_activity_days_backfilled = activity_days_backfilled,
                 swaps_fetch_limit = fetch_limit,
                 swaps_fetch_pages = fetch_progress.pages,
                 swaps_fetch_page_limit = fetch_page_limit,
@@ -571,6 +593,7 @@ impl DiscoveryService {
             swaps_warm_loaded,
             swaps_evicted_due_cap,
             wallet_activity_days_observed = activity_days_observed,
+            wallet_activity_days_backfilled = activity_days_backfilled,
             swaps_fetch_limit = fetch_limit,
             swaps_fetch_pages = fetch_progress.pages,
             swaps_fetch_page_limit = fetch_page_limit,
@@ -668,26 +691,28 @@ impl DiscoveryService {
         }
 
         let wallet_ids: Vec<String> = by_wallet.keys().cloned().collect();
-        let active_day_cutoff =
-            (now - Duration::days(self.config.scoring_window_days.max(1) as i64)).date_naive();
-        let persisted_active_day_counts =
-            match store.wallet_active_day_counts_since(&wallet_ids, active_day_cutoff) {
-                Ok(counts) => counts,
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        wallet_count = wallet_ids.len(),
-                        "failed loading persisted wallet activity-day counts; falling back to cached discovery window"
-                    );
-                    HashMap::new()
-                }
-            };
+        let persisted_active_day_counts = match store.wallet_active_day_counts_since(
+            &wallet_ids,
+            now - Duration::days(self.config.scoring_window_days.max(1) as i64),
+        ) {
+            Ok(counts) => counts,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    wallet_count = wallet_ids.len(),
+                    "failed loading persisted wallet activity-day counts; falling back to cached discovery window"
+                );
+                HashMap::new()
+            }
+        };
 
         by_wallet
             .into_iter()
             .map(|(wallet_id, acc)| {
-                let persisted_active_days =
-                    persisted_active_day_counts.get(&wallet_id).copied().unwrap_or(0);
+                let persisted_active_days = persisted_active_day_counts
+                    .get(&wallet_id)
+                    .copied()
+                    .unwrap_or(0);
                 self.snapshot_from_accumulator_with_persisted_active_days(
                     wallet_id,
                     acc,
@@ -2293,6 +2318,58 @@ mod tests {
         assert!(
             snapshot.eligible,
             "persisted day-level activity should satisfy min_active_days even when the capped tail only contains one day"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_backfills_activity_days_from_existing_observed_swaps_for_eligibility() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-eligibility.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let wallet_id = "wallet_backfill";
+        for (idx, days_ago) in [6, 4, 2, 0].into_iter().enumerate() {
+            let ts = now - Duration::days(days_ago);
+            store.insert_observed_swap(&swap(
+                wallet_id,
+                &format!("backfill-eligibility-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenBackfillElig11111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.min_trades = 1;
+        config.min_active_days = 4;
+        config.min_leader_notional_sol = 0.1;
+        config.min_buy_count = 1;
+        config.min_score = 0.0;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 1.0;
+        config.max_fetch_swaps_per_cycle = 1;
+        config.max_fetch_pages_per_cycle = 1;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.eligible_wallets, 1);
+
+        let counts = store
+            .wallet_active_day_counts_since(&[wallet_id.to_string()], now - Duration::days(7))?;
+        assert_eq!(
+            counts.get(wallet_id),
+            Some(&4),
+            "historical observed_swaps should backfill persisted activity days immediately on upgrade"
         );
         Ok(())
     }

@@ -1,5 +1,5 @@
 use super::DiscoverySummary;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use copybot_core_types::SwapEvent;
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
@@ -38,6 +38,7 @@ pub(super) struct DiscoveryWindowState {
     pub(super) last_snapshot_bucket: Option<DateTime<Utc>>,
     pub(super) last_summary: Option<DiscoverySummary>,
     pub(super) last_publish_at: Option<DateTime<Utc>>,
+    pub(super) last_activity_day_backfill_key: Option<(u32, NaiveDate)>,
 }
 
 impl DiscoveryWindowState {
