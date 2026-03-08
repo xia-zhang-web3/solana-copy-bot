@@ -1561,6 +1561,51 @@ mod tests {
     }
 
     #[test]
+    fn apply_execution_fill_to_positions_exact_drops_qty_sidecar_on_sell_underflow()
+    -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("execution-exact-qty-underflow.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.apply_execution_fill_to_positions_exact(
+            "token-exact-qty-underflow",
+            "buy",
+            2.0,
+            Some(TokenQuantity::new(2_000_000, 6)),
+            0.20,
+            now,
+        )?;
+
+        store.apply_execution_fill_to_positions_exact(
+            "token-exact-qty-underflow",
+            "sell",
+            1.0,
+            Some(TokenQuantity::new(3_000_000, 6)),
+            0.12,
+            now + Duration::seconds(1),
+        )?;
+
+        let row: (f64, Option<String>, Option<i64>) = store.conn.query_row(
+            "SELECT qty, qty_raw, qty_decimals
+             FROM positions
+             WHERE token = ?1
+               AND state = 'open'",
+            params!["token-exact-qty-underflow"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert!((row.0 - 1.0).abs() < 1e-9);
+        assert_eq!(row.1, None);
+        assert_eq!(row.2, None);
+
+        Ok(())
+    }
+
+    #[test]
     fn live_position_queries_ignore_dust_open_row() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("live-dust-open-row.db");
@@ -4711,13 +4756,9 @@ fn merge_position_qty_exact_on_sell(
 ) -> Result<Option<TokenQuantity>> {
     match (current, closed) {
         (Some(current), Some(closed)) if current.decimals() == closed.decimals() => {
-            let raw = current.raw().checked_sub(closed.raw()).ok_or_else(|| {
-                anyhow!(
-                    "position qty_raw underflow while subtracting {} from {}",
-                    closed.raw(),
-                    current.raw()
-                )
-            })?;
+            let Some(raw) = current.raw().checked_sub(closed.raw()) else {
+                return Ok(None);
+            };
             if closing {
                 if raw == 0 {
                     Ok(Some(TokenQuantity::new(0, current.decimals())))
