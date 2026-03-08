@@ -70,6 +70,7 @@ decay_window_days = 7
 follow_top_n = 15
 min_leader_notional_sol = 1.0
 helius_http_url = ""
+fetch_refresh_seconds = 60
 refresh_seconds = 600
 min_trades = 10
 min_active_days = 4

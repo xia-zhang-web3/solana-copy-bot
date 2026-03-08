@@ -202,6 +202,11 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     if let Ok(discovery_http_url) = env::var("SOLANA_COPY_BOT_DISCOVERY_HELIUS_HTTP_URL") {
         config.discovery.helius_http_url = discovery_http_url;
     }
+    if let Some(fetch_refresh_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_DISCOVERY_FETCH_REFRESH_SECONDS", "u64")?
+    {
+        config.discovery.fetch_refresh_seconds = fetch_refresh_seconds;
+    }
     if let Some(refresh_seconds) =
         parse_env_number::<u64>("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS", "u64")?
     {
@@ -779,6 +784,19 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
         return Err(anyhow!(
             "discovery.max_fetch_pages_per_cycle ({}) must be >= 1",
             config.discovery.max_fetch_pages_per_cycle
+        ));
+    }
+    if config.discovery.fetch_refresh_seconds == 0 {
+        return Err(anyhow!(
+            "discovery.fetch_refresh_seconds ({}) must be >= 1",
+            config.discovery.fetch_refresh_seconds
+        ));
+    }
+    if config.discovery.refresh_seconds < config.discovery.fetch_refresh_seconds {
+        return Err(anyhow!(
+            "discovery.refresh_seconds ({}) must be >= discovery.fetch_refresh_seconds ({})",
+            config.discovery.refresh_seconds,
+            config.discovery.fetch_refresh_seconds
         ));
     }
     if config.discovery.fetch_time_budget_ms == 0 {

@@ -496,6 +496,7 @@ pub struct DiscoveryConfig {
     pub follow_top_n: u32,
     pub min_leader_notional_sol: f64,
     pub helius_http_url: String,
+    pub fetch_refresh_seconds: u64,
     pub refresh_seconds: u64,
     pub min_trades: u32,
     pub min_active_days: u32,
@@ -523,6 +524,7 @@ impl Default for DiscoveryConfig {
             follow_top_n: 20,
             min_leader_notional_sol: 0.5,
             helius_http_url: String::new(),
+            fetch_refresh_seconds: 60,
             refresh_seconds: 600,
             min_trades: 8,
             min_active_days: 3,
@@ -555,6 +557,7 @@ impl fmt::Debug for DiscoveryConfig {
                 "helius_http_url",
                 &redacted_url_debug_value(&self.helius_http_url),
             )
+            .field("fetch_refresh_seconds", &self.fetch_refresh_seconds)
             .field("refresh_seconds", &self.refresh_seconds)
             .field("min_trades", &self.min_trades)
             .field("min_active_days", &self.min_active_days)

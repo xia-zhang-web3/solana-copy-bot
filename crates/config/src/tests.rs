@@ -29,6 +29,7 @@ fn shadow_defaults_use_conservative_min_holders_floor() {
 #[test]
 fn discovery_defaults_use_storage_mitigation_limits() {
     let discovery = DiscoveryConfig::default();
+    assert_eq!(discovery.fetch_refresh_seconds, 60);
     assert_eq!(discovery.refresh_seconds, 600);
     assert_eq!(discovery.metric_snapshot_interval_seconds, 1_800);
     assert_eq!(discovery.max_window_swaps_in_memory, 60_000);
@@ -310,60 +311,91 @@ fn load_from_env_allows_shadow_min_holders_zero_to_disable_holder_gate() {
 fn load_from_env_allows_discovery_runtime_storage_mitigation_overrides() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS", "900", || {
-                with_env_var(
-                    "SOLANA_COPY_BOT_DISCOVERY_RUG_LOOKAHEAD_SECONDS",
-                    "600",
-                    || {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_FETCH_REFRESH_SECONDS",
+                "120",
+                || {
+                    with_env_var("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS", "900", || {
                         with_env_var(
-                            "SOLANA_COPY_BOT_DISCOVERY_METRIC_SNAPSHOT_INTERVAL_SECONDS",
-                            "2700",
+                            "SOLANA_COPY_BOT_DISCOVERY_RUG_LOOKAHEAD_SECONDS",
+                            "600",
                             || {
                                 with_env_var(
-                                    "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
-                                    "50000",
+                                    "SOLANA_COPY_BOT_DISCOVERY_METRIC_SNAPSHOT_INTERVAL_SECONDS",
+                                    "2700",
                                     || {
                                         with_env_var(
-                                            "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
-                                            "15000",
+                                            "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
+                                            "50000",
                                             || {
                                                 with_env_var(
-                                                    "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_PAGES_PER_CYCLE",
-                                                    "6",
-                                                    || {
-                                                        with_env_var(
-                                                            "SOLANA_COPY_BOT_DISCOVERY_FETCH_TIME_BUDGET_MS",
-                                                            "21000",
-                                                            || {
-                                                with_env_var(
-                                        "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
-                                        "60",
-                                        || {
-                                            let (cfg, _) = load_from_env_or_default(config_path)
-                                                .expect("load config with discovery mitigation overrides");
-                                            assert_eq!(cfg.discovery.refresh_seconds, 900);
-                                            assert_eq!(cfg.discovery.rug_lookahead_seconds, 600);
-                                            assert_eq!(cfg.discovery.metric_snapshot_interval_seconds, 2_700);
-                                            assert_eq!(cfg.discovery.max_window_swaps_in_memory, 50_000);
-                                            assert_eq!(cfg.discovery.max_fetch_swaps_per_cycle, 15_000);
-                                            assert_eq!(cfg.discovery.max_fetch_pages_per_cycle, 6);
-                                            assert_eq!(cfg.discovery.fetch_time_budget_ms, 21_000);
-                                            assert_eq!(cfg.discovery.observed_swaps_retention_days, 60);
-                                        },
-                                    );
-                                                            },
-                                                        );
-                                                    },
-                                                );
+                                                "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE",
+                                                "15000",
+                                                || {
+                                                    with_env_var(
+                                                        "SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_PAGES_PER_CYCLE",
+                                                        "6",
+                                                        || {
+                                                            with_env_var(
+                                                                "SOLANA_COPY_BOT_DISCOVERY_FETCH_TIME_BUDGET_MS",
+                                                                "21000",
+                                                                || {
+                                                                    with_env_var(
+                                                                        "SOLANA_COPY_BOT_DISCOVERY_OBSERVED_SWAPS_RETENTION_DAYS",
+                                                                        "60",
+                                                                        || {
+                                                                            let (cfg, _) = load_from_env_or_default(config_path)
+                                                                                .expect("load config with discovery mitigation overrides");
+                                                                            assert_eq!(cfg.discovery.fetch_refresh_seconds, 120);
+                                                                            assert_eq!(cfg.discovery.refresh_seconds, 900);
+                                                                            assert_eq!(cfg.discovery.rug_lookahead_seconds, 600);
+                                                                            assert_eq!(cfg.discovery.metric_snapshot_interval_seconds, 2_700);
+                                                                            assert_eq!(cfg.discovery.max_window_swaps_in_memory, 50_000);
+                                                                            assert_eq!(cfg.discovery.max_fetch_swaps_per_cycle, 15_000);
+                                                                            assert_eq!(cfg.discovery.max_fetch_pages_per_cycle, 6);
+                                                                            assert_eq!(cfg.discovery.fetch_time_budget_ms, 21_000);
+                                                                            assert_eq!(cfg.discovery.observed_swaps_retention_days, 60);
+                                                                        },
+                                                                    );
+                                                                },
+                                                            );
+                                                        },
+                                                    );
+                                                },
+                                            );
                                             },
                                         );
                                     },
                                 );
                             },
                         );
-                    },
-                );
-            });
+                    });
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_discovery_publish_cadence_faster_than_fetch() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_FETCH_REFRESH_SECONDS",
+                "120",
+                || {
+                    with_env_var("SOLANA_COPY_BOT_DISCOVERY_REFRESH_SECONDS", "60", || {
+                        let err = load_from_env_or_default(config_path)
+                            .expect_err("publish cadence faster than fetch cadence must fail");
+                        assert!(
+                        err.to_string().contains(
+                            "discovery.refresh_seconds (60) must be >= discovery.fetch_refresh_seconds (120)"
+                        ),
+                        "unexpected error: {err:#}"
+                    );
+                    });
+                },
+            );
         });
     });
 }
@@ -1098,15 +1130,21 @@ fn load_from_env_rejects_invalid_risk_shadow_killswitch_enabled_override() {
 fn load_from_env_rejects_sub_lamport_risk_cap() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {
-            with_env_var("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL", "0.0000000001", || {
-                let err = load_from_env_or_default(config_path)
-                    .expect_err("sub-lamport risk cap must fail exact sizing validation")
-                    .to_string();
-                assert!(
-                    err.contains("risk.max_position_sol must be representable as at least 1 lamport"),
-                    "unexpected error: {err}"
-                );
-            });
+            with_env_var(
+                "SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL",
+                "0.0000000001",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("sub-lamport risk cap must fail exact sizing validation")
+                        .to_string();
+                    assert!(
+                        err.contains(
+                            "risk.max_position_sol must be representable as at least 1 lamport"
+                        ),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
         });
     });
 }

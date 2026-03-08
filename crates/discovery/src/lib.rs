@@ -43,6 +43,7 @@ pub struct DiscoverySummary {
     pub follow_demoted: usize,
     pub active_follow_wallets: usize,
     pub top_wallets: Vec<String>,
+    pub published: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +153,7 @@ impl DiscoveryService {
 
     pub fn run_cycle(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<DiscoverySummary> {
         let cycle_started = Instant::now();
+        let publish_interval_seconds = self.config.refresh_seconds.max(1) as i64;
         let window_days = self.config.scoring_window_days.max(1);
         let window_start = now - Duration::days(window_days as i64);
         let metrics_window_start = self.metrics_window_start(now);
@@ -168,6 +170,7 @@ impl DiscoveryService {
             swaps_window,
             fetch_progress,
             followlist_deactivations_suppressed,
+            publish_due,
         ) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
@@ -316,13 +319,16 @@ impl DiscoveryService {
                 state.swaps = sorted.into();
             }
             let followlist_deactivations_suppressed = state.cap_truncation_floor.is_some();
+            let publish_due = state.last_publish_at.map_or(true, |last_publish_at| {
+                now.signed_duration_since(last_publish_at).num_seconds() >= publish_interval_seconds
+            });
 
             let swaps_window = state.swaps.len();
             if swaps_window == 0 {
                 state.cap_truncation_floor = None;
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
-                (None, None, swaps_window, fetch_progress, false)
+                (None, None, swaps_window, fetch_progress, false, publish_due)
             } else if state.last_snapshot_bucket == Some(metrics_window_start)
                 && state.last_summary.is_some()
             {
@@ -332,6 +338,7 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     followlist_deactivations_suppressed,
+                    publish_due,
                 )
             } else {
                 let snapshots = self.build_wallet_snapshots_from_cached(store, &state.swaps, now);
@@ -341,12 +348,16 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     followlist_deactivations_suppressed,
+                    true,
                 )
             }
         };
 
         if swaps_window == 0 {
             let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+            if publish_due {
+                self.record_live_publish(now);
+            }
             info!(
                 window_start = %window_start,
                 wallets_seen = 0usize,
@@ -368,12 +379,14 @@ impl DiscoveryService {
                 swaps_fetch_limit_reached = fetch_progress.saturated,
                 swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
                 swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                discovery_published = publish_due,
                 discovery_cycle_duration_ms = elapsed_ms,
                 followlist_deactivations_suppressed,
                 "discovery cycle completed"
             );
             return Ok(DiscoverySummary {
                 window_start,
+                published: publish_due,
                 ..DiscoverySummary::default()
             });
         }
@@ -389,7 +402,11 @@ impl DiscoveryService {
                 follow_demoted: 0,
                 active_follow_wallets,
                 top_wallets: previous_summary.top_wallets,
+                published: publish_due,
             };
+            if publish_due {
+                self.record_live_publish(now);
+            }
             info!(
                 window_start = %summary.window_start,
                 wallets_seen = summary.wallets_seen,
@@ -414,6 +431,7 @@ impl DiscoveryService {
                 metrics_window_start = %metrics_window_start,
                 metrics_persisted = false,
                 snapshot_recomputed = false,
+                discovery_published = summary.published,
                 followlist_deactivations_suppressed,
                 discovery_cycle_duration_ms = elapsed_ms,
                 top_wallets = ?summary.top_wallets,
@@ -494,6 +512,7 @@ impl DiscoveryService {
             follow_demoted: follow_delta.deactivated,
             active_follow_wallets,
             top_wallets,
+            published: true,
         };
         {
             let mut state = match self.window_state.lock() {
@@ -505,6 +524,7 @@ impl DiscoveryService {
             };
             state.last_snapshot_bucket = Some(metrics_window_start);
             state.last_summary = Some(summary.clone());
+            state.last_publish_at = Some(now);
         }
         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
@@ -532,6 +552,7 @@ impl DiscoveryService {
             metrics_window_start = %metrics_window_start,
             metrics_persisted = should_persist_metrics,
             snapshot_recomputed = true,
+            discovery_published = summary.published,
             followlist_deactivations_suppressed,
             discovery_cycle_duration_ms = elapsed_ms,
             top_wallets = ?summary.top_wallets,
@@ -560,6 +581,17 @@ impl DiscoveryService {
         let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
         let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
         bucketed_now - Duration::days(self.config.scoring_window_days.max(1) as i64)
+    }
+
+    fn record_live_publish(&self, now: DateTime<Utc>) {
+        let mut state = match self.window_state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("discovery window mutex poisoned while recording publish time; continuing");
+                poisoned.into_inner()
+            }
+        };
+        state.last_publish_at = Some(now);
     }
 
     fn build_wallet_snapshots_from_cached(
@@ -1231,6 +1263,59 @@ mod tests {
             .load_discovery_runtime_cursor()?
             .expect("cursor must advance on next cycle");
         assert_eq!(cursor_after_second.signature, "page-budget-sig-011");
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_advances_cursor_between_publish_ticks() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-fetch-vs-publish-cadence.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let start = now - Duration::minutes(20);
+        for idx in 0..12 {
+            let ts = start + Duration::seconds((idx * 10) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_publish_gate",
+                &format!("publish-gate-sig-{idx:03}"),
+                ts,
+                SOL_MINT,
+                "TokenPublishGate111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.refresh_seconds = 600;
+        config.max_window_swaps_in_memory = 100;
+        config.max_fetch_swaps_per_cycle = 4;
+        config.max_fetch_pages_per_cycle = 1;
+        config.fetch_time_budget_ms = 60_000;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let first_summary = discovery.run_cycle(&store, now)?;
+        assert!(first_summary.published, "first live tick should publish");
+        let cursor_after_first = store
+            .load_discovery_runtime_cursor()?
+            .expect("cursor must persist after first tick");
+        assert_eq!(cursor_after_first.signature, "publish-gate-sig-003");
+
+        let second_summary = discovery.run_cycle(&store, now + Duration::minutes(1))?;
+        assert!(
+            !second_summary.published,
+            "next fast fetch tick inside publish cadence should stay fetch-only"
+        );
+        let cursor_after_second = store
+            .load_discovery_runtime_cursor()?
+            .expect("cursor must advance during fetch-only tick");
+        assert_eq!(cursor_after_second.signature, "publish-gate-sig-007");
         Ok(())
     }
 

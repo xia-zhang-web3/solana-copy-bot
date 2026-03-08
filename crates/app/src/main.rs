@@ -172,7 +172,7 @@ async fn main() -> Result<()> {
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
         config.history_retention.clone(),
-        config.discovery.refresh_seconds,
+        config.discovery.fetch_refresh_seconds,
         config.discovery.observed_swaps_retention_days,
         config.shadow.refresh_seconds,
         config.shadow.max_signal_lag_seconds,
@@ -1400,7 +1400,7 @@ async fn run_app_loop(
     sqlite_path: String,
     heartbeat_seconds: u64,
     history_retention_config: copybot_config::HistoryRetentionConfig,
-    discovery_refresh_seconds: u64,
+    discovery_fetch_refresh_seconds: u64,
     observed_swaps_retention_days: u32,
     shadow_refresh_seconds: u64,
     shadow_max_signal_lag_seconds: u64,
@@ -1418,7 +1418,7 @@ async fn run_app_loop(
         RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64,
     ));
     let mut discovery_interval =
-        time::interval(Duration::from_secs(discovery_refresh_seconds.max(10)));
+        time::interval(Duration::from_secs(discovery_fetch_refresh_seconds.max(1)));
     let mut shadow_interval = time::interval(Duration::from_secs(shadow_refresh_seconds.max(10)));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     execution_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1554,20 +1554,22 @@ async fn run_app_loop(
                 discovery_handle = None;
                 match discovery_result.expect("guard ensures discovery task exists") {
                     Ok(Ok(discovery_output)) => {
-                        let mut snapshot = (*follow_snapshot).clone();
-                        apply_follow_snapshot_update(
-                            &mut snapshot,
-                            discovery_output.active_wallets,
-                            discovery_output.cycle_ts,
-                            follow_event_retention,
-                        );
-                        follow_snapshot = Arc::new(snapshot);
-                        shadow_risk_guard.observe_discovery_cycle(
-                            &store,
-                            discovery_output.cycle_ts,
-                            discovery_output.eligible_wallets,
-                            discovery_output.active_follow_wallets,
-                        );
+                        if discovery_output.published {
+                            let mut snapshot = (*follow_snapshot).clone();
+                            apply_follow_snapshot_update(
+                                &mut snapshot,
+                                discovery_output.active_wallets,
+                                discovery_output.cycle_ts,
+                                follow_event_retention,
+                            );
+                            follow_snapshot = Arc::new(snapshot);
+                            shadow_risk_guard.observe_discovery_cycle(
+                                &store,
+                                discovery_output.cycle_ts,
+                                discovery_output.eligible_wallets,
+                                discovery_output.active_follow_wallets,
+                            );
+                        }
                     }
                     Ok(Err(error)) => {
                         warn!(error = %error, "discovery cycle failed");
@@ -2068,6 +2070,7 @@ struct DiscoveryTaskOutput {
     cycle_ts: DateTime<Utc>,
     eligible_wallets: usize,
     active_follow_wallets: usize,
+    published: bool,
 }
 
 #[cfg(test)]

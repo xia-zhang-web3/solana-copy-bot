@@ -23,6 +23,7 @@ pub(crate) fn spawn_discovery_task(
             cycle_ts: now,
             eligible_wallets: summary.eligible_wallets,
             active_follow_wallets: summary.active_follow_wallets,
+            published: summary.published,
         })
     }
 }
