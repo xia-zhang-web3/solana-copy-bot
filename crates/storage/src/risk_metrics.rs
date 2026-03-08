@@ -1,7 +1,8 @@
 use super::{
-    lamports_to_sol, shadow_closed_trade_entry_cost_lamports, shadow_closed_trade_pnl_lamports,
-    shadow_lot_cost_lamports, signed_lamports_to_sol, shadow::SHADOW_LOT_OPEN_EPS, SqliteStore,
-    LIVE_POSITION_OPEN_EPS,
+    lamports_to_sol, position_pnl_lamports, shadow::SHADOW_LOT_OPEN_EPS,
+    shadow_closed_trade_entry_cost_lamports, shadow_closed_trade_pnl_lamports,
+    shadow_lot_cost_lamports, signed_lamports_to_sol, sol_to_signed_lamports_conservative_storage,
+    SqliteStore, LIVE_POSITION_OPEN_EPS,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -39,8 +40,9 @@ impl SqliteStore {
             .context("failed iterating shadow open notional rows")?
         {
             let cost_sol: f64 = row.get(0).context("failed reading shadow_lots.cost_sol")?;
-            let cost_lamports_raw: Option<i64> =
-                row.get(1).context("failed reading shadow_lots.cost_lamports")?;
+            let cost_lamports_raw: Option<i64> = row
+                .get(1)
+                .context("failed reading shadow_lots.cost_lamports")?;
             let cost_lamports =
                 shadow_lot_cost_lamports(cost_sol, cost_lamports_raw, "shadow open notional")?;
             total = total.checked_add(cost_lamports).ok_or_else(|| {
@@ -65,11 +67,10 @@ impl SqliteStore {
             .context("failed querying shadow pnl rows")?;
         let mut trades = 0_u64;
         let mut pnl = 0.0_f64;
-        while let Some(row) = rows
-            .next()
-            .context("failed iterating shadow pnl rows")?
-        {
-            let pnl_sol: f64 = row.get(0).context("failed reading shadow_closed_trades.pnl_sol")?;
+        while let Some(row) = rows.next().context("failed iterating shadow pnl rows")? {
+            let pnl_sol: f64 = row
+                .get(0)
+                .context("failed reading shadow_closed_trades.pnl_sol")?;
             let pnl_lamports_raw: Option<i64> = row
                 .get(1)
                 .context("failed reading shadow_closed_trades.pnl_lamports")?;
@@ -85,26 +86,42 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT COUNT(*) as trades, COALESCE(SUM(COALESCE(pnl_sol, 0.0)), 0.0) as pnl
+                "SELECT pnl_sol, pnl_lamports
                  FROM positions
                  WHERE state = 'closed'
                    AND closed_ts IS NOT NULL
-                   AND closed_ts >= ?1",
+                   AND closed_ts >= ?1
+                 ORDER BY
+                    julianday(closed_ts) ASC,
+                    closed_ts ASC,
+                    rowid ASC",
             )
             .context("failed to prepare live pnl query")?;
-        let (trades, pnl): (i64, f64) = stmt
-            .query_row(params![since.to_rfc3339()], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .context("failed querying live pnl summary")?;
-        Ok((trades.max(0) as u64, pnl))
+        let mut rows = stmt
+            .query(params![since.to_rfc3339()])
+            .context("failed querying live pnl rows")?;
+        let mut trades = 0_u64;
+        let mut pnl = copybot_core_types::SignedLamports::new(0);
+        while let Some(row) = rows.next().context("failed iterating live pnl rows")? {
+            let pnl_sol: f64 = row.get(0).context("failed reading positions.pnl_sol")?;
+            let pnl_lamports_raw: Option<i64> = row
+                .get(1)
+                .context("failed reading positions.pnl_lamports")?;
+            let position_pnl =
+                position_pnl_lamports(pnl_sol, pnl_lamports_raw, "live realized pnl")?;
+            trades = trades.saturating_add(1);
+            pnl = pnl.checked_add(position_pnl).ok_or_else(|| {
+                anyhow!("live realized pnl lamports overflow while summing positions")
+            })?;
+        }
+        Ok((trades, signed_lamports_to_sol(pnl)))
     }
 
     pub fn live_max_drawdown_since(&self, since: DateTime<Utc>) -> Result<f64> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT COALESCE(pnl_sol, 0.0)
+                "SELECT pnl_sol, pnl_lamports
                  FROM positions
                  WHERE state = 'closed'
                    AND closed_ts IS NOT NULL
@@ -115,31 +132,37 @@ impl SqliteStore {
                     rowid ASC",
             )
             .context("failed to prepare live drawdown query")?;
-        let pnl_rows = stmt
-            .query_map(params![since.to_rfc3339()], |row| row.get::<_, f64>(0))
+        let mut rows = stmt
+            .query(params![since.to_rfc3339()])
             .context("failed querying live drawdown rows")?;
 
-        let mut cumulative_pnl = 0.0_f64;
-        let mut peak_pnl = 0.0_f64;
-        let mut max_drawdown_sol = 0.0_f64;
-        for pnl_row in pnl_rows {
-            let pnl = pnl_row.context("failed reading live drawdown pnl row")?;
-            if !pnl.is_finite() {
-                return Err(anyhow!(
-                    "non-finite closed position pnl in live drawdown series"
-                ));
-            }
-            cumulative_pnl += pnl;
+        let mut cumulative_pnl = copybot_core_types::SignedLamports::new(0);
+        let mut peak_pnl = copybot_core_types::SignedLamports::new(0);
+        let mut max_drawdown = copybot_core_types::Lamports::ZERO;
+        while let Some(row) = rows.next().context("failed iterating live drawdown rows")? {
+            let pnl_sol: f64 = row.get(0).context("failed reading positions.pnl_sol")?;
+            let pnl_lamports_raw: Option<i64> = row
+                .get(1)
+                .context("failed reading positions.pnl_lamports")?;
+            let pnl = position_pnl_lamports(pnl_sol, pnl_lamports_raw, "live drawdown")?;
+            cumulative_pnl = cumulative_pnl
+                .checked_add(pnl)
+                .ok_or_else(|| anyhow!("live drawdown cumulative pnl overflow"))?;
             if cumulative_pnl > peak_pnl {
                 peak_pnl = cumulative_pnl;
             }
-            let drawdown = (peak_pnl - cumulative_pnl).max(0.0);
-            if drawdown > max_drawdown_sol {
-                max_drawdown_sol = drawdown;
+            if cumulative_pnl < peak_pnl {
+                let drawdown = peak_pnl
+                    .checked_sub(cumulative_pnl)
+                    .and_then(|value| value.checked_abs_lamports())
+                    .ok_or_else(|| anyhow!("live drawdown lamports overflow"))?;
+                if drawdown > max_drawdown {
+                    max_drawdown = drawdown;
+                }
             }
         }
 
-        Ok(max_drawdown_sol)
+        Ok(lamports_to_sol(max_drawdown))
     }
 
     pub fn live_unrealized_pnl_sol(&self, as_of: DateTime<Utc>) -> Result<(f64, u64)> {
@@ -166,8 +189,9 @@ impl SqliteStore {
             let token: String = row.get(0).context("failed reading positions.token")?;
             let qty: f64 = row.get(1).context("failed reading positions.qty")?;
             let cost_sol: f64 = row.get(2).context("failed reading positions.cost_sol")?;
-            let cost_lamports_raw: Option<i64> =
-                row.get(3).context("failed reading positions.cost_lamports")?;
+            let cost_lamports_raw: Option<i64> = row
+                .get(3)
+                .context("failed reading positions.cost_lamports")?;
             if !qty.is_finite()
                 || !cost_sol.is_finite()
                 || qty <= LIVE_POSITION_OPEN_EPS
@@ -221,7 +245,7 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT COALESCE(pnl_sol, 0.0)
+                "SELECT pnl_sol, pnl_lamports
                  FROM positions
                  WHERE state = 'closed'
                    AND closed_ts IS NOT NULL
@@ -232,37 +256,56 @@ impl SqliteStore {
                     rowid ASC",
             )
             .context("failed to prepare live drawdown query")?;
-        let pnl_rows = stmt
-            .query_map(params![since.to_rfc3339()], |row| row.get::<_, f64>(0))
+        let mut rows = stmt
+            .query(params![since.to_rfc3339()])
             .context("failed querying live drawdown rows")?;
 
-        let mut cumulative_pnl = 0.0_f64;
-        let mut peak_pnl = 0.0_f64;
-        let mut max_drawdown_sol = 0.0_f64;
-        for pnl_row in pnl_rows {
-            let pnl = pnl_row.context("failed reading live drawdown pnl row")?;
-            if !pnl.is_finite() {
-                return Err(anyhow!(
-                    "non-finite closed position pnl in live drawdown series"
-                ));
-            }
-            cumulative_pnl += pnl;
+        let mut cumulative_pnl = copybot_core_types::SignedLamports::new(0);
+        let mut peak_pnl = copybot_core_types::SignedLamports::new(0);
+        let mut max_drawdown = copybot_core_types::Lamports::ZERO;
+        while let Some(row) = rows.next().context("failed iterating live drawdown rows")? {
+            let pnl_sol: f64 = row.get(0).context("failed reading positions.pnl_sol")?;
+            let pnl_lamports_raw: Option<i64> = row
+                .get(1)
+                .context("failed reading positions.pnl_lamports")?;
+            let pnl =
+                position_pnl_lamports(pnl_sol, pnl_lamports_raw, "live drawdown with unrealized")?;
+            cumulative_pnl = cumulative_pnl
+                .checked_add(pnl)
+                .ok_or_else(|| anyhow!("live drawdown cumulative pnl overflow"))?;
             if cumulative_pnl > peak_pnl {
                 peak_pnl = cumulative_pnl;
             }
-            let drawdown = (peak_pnl - cumulative_pnl).max(0.0);
-            if drawdown > max_drawdown_sol {
-                max_drawdown_sol = drawdown;
+            if cumulative_pnl < peak_pnl {
+                let drawdown = peak_pnl
+                    .checked_sub(cumulative_pnl)
+                    .and_then(|value| value.checked_abs_lamports())
+                    .ok_or_else(|| anyhow!("live drawdown lamports overflow"))?;
+                if drawdown > max_drawdown {
+                    max_drawdown = drawdown;
+                }
             }
         }
 
-        let terminal_pnl = cumulative_pnl + unrealized_pnl_sol;
-        let terminal_drawdown = (peak_pnl - terminal_pnl).max(0.0);
-        if terminal_drawdown > max_drawdown_sol {
-            max_drawdown_sol = terminal_drawdown;
+        let unrealized_pnl =
+            sol_to_signed_lamports_conservative_storage(unrealized_pnl_sol, "unrealized_pnl_sol")?;
+        let terminal_pnl = cumulative_pnl
+            .checked_add(unrealized_pnl)
+            .ok_or_else(|| anyhow!("terminal live drawdown pnl overflow"))?;
+        if terminal_pnl > peak_pnl {
+            peak_pnl = terminal_pnl;
+        }
+        if terminal_pnl < peak_pnl {
+            let terminal_drawdown = peak_pnl
+                .checked_sub(terminal_pnl)
+                .and_then(|value| value.checked_abs_lamports())
+                .ok_or_else(|| anyhow!("terminal live drawdown lamports overflow"))?;
+            if terminal_drawdown > max_drawdown {
+                max_drawdown = terminal_drawdown;
+            }
         }
 
-        Ok(max_drawdown_sol)
+        Ok(lamports_to_sol(max_drawdown))
     }
 
     pub fn shadow_rug_loss_count_since(
@@ -292,7 +335,9 @@ impl SqliteStore {
             let entry_cost_lamports_raw: Option<i64> = row
                 .get(1)
                 .context("failed reading shadow_closed_trades.entry_cost_lamports")?;
-            let pnl_sol: f64 = row.get(2).context("failed reading shadow_closed_trades.pnl_sol")?;
+            let pnl_sol: f64 = row
+                .get(2)
+                .context("failed reading shadow_closed_trades.pnl_sol")?;
             let pnl_lamports_raw: Option<i64> = row
                 .get(3)
                 .context("failed reading shadow_closed_trades.pnl_lamports")?;
@@ -349,7 +394,9 @@ impl SqliteStore {
             let entry_cost_lamports_raw: Option<i64> = row
                 .get(1)
                 .context("failed reading shadow_closed_trades.entry_cost_lamports")?;
-            let pnl_sol: f64 = row.get(2).context("failed reading shadow_closed_trades.pnl_sol")?;
+            let pnl_sol: f64 = row
+                .get(2)
+                .context("failed reading shadow_closed_trades.pnl_sol")?;
             let pnl_lamports_raw: Option<i64> = row
                 .get(3)
                 .context("failed reading shadow_closed_trades.pnl_lamports")?;
