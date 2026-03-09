@@ -60,8 +60,8 @@ seen_signatures_limit = 5000
 mock_interval_ms = 2000
 
 [discovery]
-scoring_window_days = 30
-decay_window_days = 7
+scoring_window_days = 5
+decay_window_days = 5
 follow_top_n = 15
 min_leader_notional_sol = 1.0
 helius_http_url = ""
