@@ -1,0 +1,8 @@
+68:refresh_seconds = 600
+77:metric_snapshot_interval_seconds = 1800
+80:max_window_swaps_in_memory = 60000
+81:max_fetch_swaps_per_cycle = 20000
+82:max_fetch_pages_per_cycle = 5
+83:fetch_time_budget_ms = 15000
+85:observed_swaps_retention_days = 7
+91:refresh_seconds = 60

@@ -38,6 +38,7 @@ pub(super) struct DiscoveryWindowState {
     pub(super) bootstrap_from_persisted_metrics: bool,
     pub(super) last_snapshot_bucket: Option<DateTime<Utc>>,
     pub(super) last_summary: Option<DiscoverySummary>,
+    pub(super) last_summary_from_aggregates: bool,
     pub(super) last_publish_at: Option<DateTime<Utc>>,
 }
 

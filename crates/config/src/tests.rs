@@ -37,6 +37,8 @@ fn discovery_defaults_use_storage_mitigation_limits() {
     assert_eq!(discovery.max_fetch_pages_per_cycle, 5);
     assert_eq!(discovery.fetch_time_budget_ms, 15_000);
     assert_eq!(discovery.observed_swaps_retention_days, 7);
+    assert!(!discovery.scoring_aggregates_write_enabled);
+    assert!(!discovery.scoring_aggregates_enabled);
 }
 
 #[test]

@@ -4,7 +4,7 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
     DiscoveryRuntimeCursor, PersistedWalletMetricSnapshotRow, SqliteStore, WalletMetricRow,
-    WalletUpsertRow,
+    WalletScoringBuyFactRow, WalletScoringQualitySource, WalletUpsertRow,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -73,6 +73,13 @@ struct RugMetrics {
     unevaluated: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuyFactRugStatus {
+    Healthy,
+    Rugged,
+    Unevaluated,
+}
+
 #[derive(Debug, Clone)]
 struct Lot {
     qty: f64,
@@ -100,6 +107,9 @@ struct FetchProgress {
 
 #[derive(Debug, Clone)]
 enum PreparedCycleState {
+    AggregateRecompute {
+        publish_due: bool,
+    },
     Empty {
         publish_due: bool,
         followlist_deactivations_suppressed: bool,
@@ -152,6 +162,26 @@ struct WalletAccumulator {
     buy_observations: Vec<BuyObservation>,
 }
 
+#[derive(Debug, Default)]
+struct AggregateWalletAccumulator {
+    first_seen: Option<DateTime<Utc>>,
+    last_seen: Option<DateTime<Utc>>,
+    trades: u32,
+    spent_sol: f64,
+    realized_pnl_sol: f64,
+    max_buy_notional_sol: f64,
+    wins: u32,
+    closed_trades: u32,
+    hold_samples_sec: Vec<i64>,
+    active_days: HashSet<NaiveDate>,
+    realized_pnl_by_day: HashMap<NaiveDate, f64>,
+    suspicious: bool,
+    buy_total: u32,
+    quality_resolved_buys: u32,
+    tradable_buys: u32,
+    rug_metrics: RugMetrics,
+}
+
 impl DiscoveryService {
     pub fn new(config: DiscoveryConfig, shadow_quality: ShadowConfig) -> Self {
         Self::new_with_helius(config, shadow_quality, None)
@@ -188,6 +218,12 @@ impl DiscoveryService {
         let fetch_time_budget = StdDuration::from_millis(self.config.fetch_time_budget_ms.max(1));
         let retention_days = self.config.observed_swaps_retention_days.max(1);
         let short_retention_window = retention_days < window_days;
+        let aggregate_scoring_ready = self.config.scoring_aggregates_enabled
+            && store.discovery_scoring_ready_for_window(
+                window_start,
+                now,
+                Duration::seconds(self.config.refresh_seconds.max(1) as i64),
+            )?;
         let (swaps_window, fetch_progress, prepared_cycle) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
@@ -351,10 +387,32 @@ impl DiscoveryService {
             });
 
             let swaps_window = state.swaps.len();
-            if swaps_window == 0 {
+            if aggregate_scoring_ready {
+                state.bootstrap_from_persisted_metrics = false;
+                (
+                    swaps_window,
+                    fetch_progress,
+                    if state.last_snapshot_bucket == Some(metrics_window_start)
+                        && state.last_summary_from_aggregates
+                        && state.last_summary.is_some()
+                    {
+                        PreparedCycleState::Cached {
+                            publish_due,
+                            followlist_deactivations_suppressed: false,
+                            summary: state
+                                .last_summary
+                                .clone()
+                                .expect("checked last_summary exists above"),
+                        }
+                    } else {
+                        PreparedCycleState::AggregateRecompute { publish_due }
+                    },
+                )
+            } else if swaps_window == 0 {
                 state.cap_truncation_floor = None;
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
+                state.last_summary_from_aggregates = false;
                 (
                     swaps_window,
                     fetch_progress,
@@ -365,6 +423,7 @@ impl DiscoveryService {
                     },
                 )
             } else if state.last_snapshot_bucket == Some(metrics_window_start)
+                && !state.last_summary_from_aggregates
                 && state.last_summary.is_some()
             {
                 (
@@ -392,7 +451,23 @@ impl DiscoveryService {
             }
         };
 
-        let (publish_due, followlist_activations_suppressed, followlist_deactivations_suppressed, snapshots) = match prepared_cycle {
+        let (
+            publish_due,
+            followlist_activations_suppressed,
+            followlist_deactivations_suppressed,
+            snapshots,
+            scoring_source,
+        ) = match prepared_cycle {
+            PreparedCycleState::AggregateRecompute { publish_due } => {
+                store.finalize_discovery_scoring_rug_facts(now)?;
+                (
+                    publish_due,
+                    false,
+                    false,
+                    self.build_wallet_snapshots_from_aggregates(store, now)?,
+                    "aggregates",
+                )
+            }
             PreparedCycleState::Empty {
                 publish_due,
                 followlist_deactivations_suppressed,
@@ -448,6 +523,7 @@ impl DiscoveryService {
                             swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
                             swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
                             metrics_window_start = %metrics_window_start,
+                            scoring_source = "persisted_wallet_metrics_bootstrap",
                             metrics_persisted = false,
                             snapshot_recomputed = false,
                             discovery_published = summary.published,
@@ -496,6 +572,7 @@ impl DiscoveryService {
                             swaps_fetch_limit_reached = fetch_progress.saturated,
                             swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
                             swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                            scoring_source = "persisted_wallet_metrics_bootstrap_empty",
                             discovery_published = publish_due,
                             discovery_cycle_duration_ms = elapsed_ms,
                             followlist_deactivations_suppressed,
@@ -533,6 +610,7 @@ impl DiscoveryService {
                         swaps_fetch_limit_reached = fetch_progress.saturated,
                         swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
                         swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                        scoring_source = "raw_window_empty",
                         discovery_published = publish_due,
                         discovery_cycle_duration_ms = elapsed_ms,
                         followlist_deactivations_suppressed,
@@ -588,6 +666,7 @@ impl DiscoveryService {
                     swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
                     swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
                     metrics_window_start = %metrics_window_start,
+                    scoring_source = if aggregate_scoring_ready { "aggregates" } else { "raw_window" },
                     metrics_persisted = false,
                     snapshot_recomputed = false,
                     discovery_published = summary.published,
@@ -620,6 +699,7 @@ impl DiscoveryService {
                 short_retention_window,
                 followlist_deactivations_suppressed,
                 self.build_wallet_snapshots_from_cached(store, &swaps, now),
+                "raw_window",
             ),
         };
         let mut wallet_rows: Vec<WalletUpsertRow> = Vec::with_capacity(snapshots.len());
@@ -696,6 +776,7 @@ impl DiscoveryService {
             };
             state.last_snapshot_bucket = Some(metrics_window_start);
             state.last_summary = Some(summary.clone());
+            state.last_summary_from_aggregates = scoring_source == "aggregates";
         }
         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
@@ -721,6 +802,7 @@ impl DiscoveryService {
             swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
             swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
             metrics_window_start = %metrics_window_start,
+            scoring_source,
             metrics_persisted = should_persist_metrics,
             snapshot_recomputed = true,
             discovery_published = summary.published,
@@ -867,6 +949,218 @@ impl DiscoveryService {
         ))
     }
 
+    fn build_wallet_snapshots_from_aggregates(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<WalletSnapshot>> {
+        let window_start = now - Duration::days(self.config.scoring_window_days.max(1) as i64);
+        let snapshot = store.load_wallet_scoring_snapshot_since(window_start)?;
+        let mut by_wallet: HashMap<String, AggregateWalletAccumulator> = HashMap::new();
+
+        for row in snapshot.days {
+            let entry = by_wallet.entry(row.wallet_id).or_default();
+            entry.first_seen = Some(
+                entry
+                    .first_seen
+                    .map(|current| current.min(row.first_seen))
+                    .unwrap_or(row.first_seen),
+            );
+            entry.last_seen = Some(
+                entry
+                    .last_seen
+                    .map(|current| current.max(row.last_seen))
+                    .unwrap_or(row.last_seen),
+            );
+            entry.trades = entry.trades.saturating_add(row.trades);
+            entry.spent_sol += row.spent_sol.max(0.0);
+            entry.max_buy_notional_sol = entry
+                .max_buy_notional_sol
+                .max(row.max_buy_notional_sol.max(0.0));
+            entry.active_days.insert(row.activity_day);
+        }
+
+        for row in snapshot.buy_facts {
+            let entry = by_wallet.entry(row.wallet_id.clone()).or_default();
+            entry.buy_total = entry.buy_total.saturating_add(1);
+            match self.evaluate_buy_fact_tradability(&row) {
+                BuyTradability::Tradable => {
+                    entry.quality_resolved_buys = entry.quality_resolved_buys.saturating_add(1);
+                    entry.tradable_buys = entry.tradable_buys.saturating_add(1);
+                }
+                BuyTradability::Rejected => {
+                    entry.quality_resolved_buys = entry.quality_resolved_buys.saturating_add(1);
+                }
+                BuyTradability::Deferred => {}
+            }
+            match self.evaluate_buy_fact_rug_status(&row, now) {
+                BuyFactRugStatus::Healthy => {
+                    entry.rug_metrics.evaluated = entry.rug_metrics.evaluated.saturating_add(1);
+                }
+                BuyFactRugStatus::Rugged => {
+                    entry.rug_metrics.evaluated = entry.rug_metrics.evaluated.saturating_add(1);
+                    entry.rug_metrics.rugged = entry.rug_metrics.rugged.saturating_add(1);
+                }
+                BuyFactRugStatus::Unevaluated => {
+                    entry.rug_metrics.unevaluated = entry.rug_metrics.unevaluated.saturating_add(1);
+                }
+            }
+        }
+
+        for row in snapshot.close_facts {
+            let entry = by_wallet.entry(row.wallet_id).or_default();
+            entry.realized_pnl_sol += row.pnl_sol;
+            entry.closed_trades = entry.closed_trades.saturating_add(1);
+            if row.win {
+                entry.wins = entry.wins.saturating_add(1);
+            }
+            entry.hold_samples_sec.push(row.hold_seconds.max(0));
+            *entry
+                .realized_pnl_by_day
+                .entry(row.closed_ts.date_naive())
+                .or_insert(0.0) += row.pnl_sol;
+        }
+
+        for (wallet_id, max_count) in snapshot.max_tx_counts {
+            if max_count > self.config.max_tx_per_minute.max(1) {
+                by_wallet.entry(wallet_id).or_default().suspicious = true;
+            }
+        }
+
+        Ok(by_wallet
+            .into_iter()
+            .map(|(wallet_id, acc)| self.snapshot_from_aggregate_accumulator(wallet_id, acc, now))
+            .collect())
+    }
+
+    fn snapshot_from_components(
+        &self,
+        wallet_id: String,
+        first_seen: DateTime<Utc>,
+        last_seen: DateTime<Utc>,
+        trades: u32,
+        active_days: u32,
+        spent_sol: f64,
+        realized_pnl_sol: f64,
+        max_buy_notional_sol: f64,
+        wins: u32,
+        closed_trades: u32,
+        hold_samples_sec: &[i64],
+        realized_pnl_by_day: &HashMap<NaiveDate, f64>,
+        suspicious: bool,
+        buy_total: u32,
+        quality_resolved_buys: u32,
+        tradable_buys: u32,
+        rug_metrics: RugMetrics,
+        now: DateTime<Utc>,
+    ) -> WalletSnapshot {
+        let resolved_buy_ratio = if buy_total > 0 {
+            quality_resolved_buys as f64 / buy_total as f64
+        } else {
+            0.0
+        };
+        let tradable_ratio = if quality_resolved_buys > 0 {
+            (tradable_buys as f64 / quality_resolved_buys as f64) * resolved_buy_ratio.sqrt()
+        } else {
+            0.0
+        };
+        let rug_ratio = if buy_total > 0 {
+            (rug_metrics.rugged.saturating_add(rug_metrics.unevaluated)) as f64 / buy_total as f64
+        } else {
+            0.0
+        };
+        let win_rate = if closed_trades > 0 {
+            wins as f64 / closed_trades as f64
+        } else {
+            0.0
+        };
+        let hold_median_seconds = median_i64(hold_samples_sec).unwrap_or(0);
+        let consistency_ratio = if active_days > 0 {
+            let positive_days = realized_pnl_by_day
+                .values()
+                .filter(|value| **value > 0.0)
+                .count() as f64;
+            positive_days / active_days as f64
+        } else {
+            0.0
+        };
+        let roi = if spent_sol > 1e-9 {
+            realized_pnl_sol / spent_sol
+        } else {
+            0.0
+        };
+        let win_sample_factor = (closed_trades as f64 / 8.0).min(1.0);
+        let hold_quality = hold_time_quality_score(hold_median_seconds);
+        let pnl_component = tanh01(realized_pnl_sol / 2.0);
+        let roi_component = tanh01(roi * 3.0);
+        let win_component = (win_rate * win_sample_factor).clamp(0.0, 1.0);
+        let consistency_component = consistency_ratio.clamp(0.0, 1.0);
+        let penalty_component = if suspicious { 0.0 } else { 1.0 };
+        let base_score = (0.35 * pnl_component)
+            + (0.20 * roi_component)
+            + (0.15 * win_component)
+            + (0.15 * hold_quality)
+            + (0.10 * consistency_component)
+            + (0.05 * penalty_component);
+        let tradable_penalty = tradable_ratio.powf(1.5);
+        let rug_penalty = (1.0 - rug_ratio).clamp(0.0, 1.0).powi(2);
+        let raw_score = (base_score * tradable_penalty * rug_penalty).clamp(0.0, 1.0);
+        let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
+        let eligible = trades >= self.config.min_trades
+            && active_days >= self.config.min_active_days
+            && !suspicious
+            && max_buy_notional_sol >= self.config.min_leader_notional_sol
+            && last_seen >= decay_cutoff
+            && buy_total >= self.config.min_buy_count
+            && tradable_ratio >= self.config.min_tradable_ratio
+            && rug_ratio <= self.config.max_rug_ratio;
+        let score = if eligible { raw_score } else { 0.0 };
+
+        WalletSnapshot {
+            wallet_id,
+            first_seen,
+            last_seen,
+            pnl_sol: realized_pnl_sol,
+            win_rate,
+            trades,
+            closed_trades,
+            hold_median_seconds,
+            score,
+            buy_total,
+            tradable_ratio,
+            rug_ratio,
+            eligible,
+        }
+    }
+
+    fn snapshot_from_aggregate_accumulator(
+        &self,
+        wallet_id: String,
+        acc: AggregateWalletAccumulator,
+        now: DateTime<Utc>,
+    ) -> WalletSnapshot {
+        self.snapshot_from_components(
+            wallet_id,
+            acc.first_seen.unwrap_or(now),
+            acc.last_seen.unwrap_or(now),
+            acc.trades,
+            acc.active_days.len() as u32,
+            acc.spent_sol,
+            acc.realized_pnl_sol,
+            acc.max_buy_notional_sol,
+            acc.wins,
+            acc.closed_trades,
+            &acc.hold_samples_sec,
+            &acc.realized_pnl_by_day,
+            acc.suspicious,
+            acc.buy_total,
+            acc.quality_resolved_buys,
+            acc.tradable_buys,
+            acc.rug_metrics,
+            now,
+        )
+    }
+
     #[cfg(test)]
     fn snapshot_from_accumulator(
         &self,
@@ -907,86 +1201,27 @@ impl DiscoveryService {
             .iter()
             .filter(|buy| buy.quality_resolved && buy.tradable)
             .count() as u32;
-        let resolved_buy_ratio = if buy_total > 0 {
-            quality_resolved_buys as f64 / buy_total as f64
-        } else {
-            0.0
-        };
-        let tradable_ratio = if quality_resolved_buys > 0 {
-            // Deferred quality should penalize tradability without acting like a hard reject.
-            (tradable_buys as f64 / quality_resolved_buys as f64) * resolved_buy_ratio.sqrt()
-        } else {
-            0.0
-        };
         let rug_metrics = self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
-        let rug_ratio = if buy_total > 0 {
-            (rug_metrics.rugged.saturating_add(rug_metrics.unevaluated)) as f64 / buy_total as f64
-        } else {
-            0.0
-        };
-        let win_rate = if acc.closed_trades > 0 {
-            acc.wins as f64 / acc.closed_trades as f64
-        } else {
-            0.0
-        };
-        let hold_median_seconds = median_i64(&acc.hold_samples_sec).unwrap_or(0);
-        let consistency_ratio = if active_days > 0 {
-            let positive_days = acc
-                .realized_pnl_by_day
-                .values()
-                .filter(|value| **value > 0.0)
-                .count() as f64;
-            positive_days / active_days as f64
-        } else {
-            0.0
-        };
-        let roi = if acc.spent_sol > 1e-9 {
-            acc.realized_pnl_sol / acc.spent_sol
-        } else {
-            0.0
-        };
-        let win_sample_factor = (acc.closed_trades as f64 / 8.0).min(1.0);
-        let hold_quality = hold_time_quality_score(hold_median_seconds);
-        let pnl_component = tanh01(acc.realized_pnl_sol / 2.0);
-        let roi_component = tanh01(roi * 3.0);
-        let win_component = (win_rate * win_sample_factor).clamp(0.0, 1.0);
-        let consistency_component = consistency_ratio.clamp(0.0, 1.0);
-        let penalty_component = if acc.suspicious { 0.0 } else { 1.0 };
-        let base_score = (0.35 * pnl_component)
-            + (0.20 * roi_component)
-            + (0.15 * win_component)
-            + (0.15 * hold_quality)
-            + (0.10 * consistency_component)
-            + (0.05 * penalty_component);
-        let tradable_penalty = tradable_ratio.powf(1.5);
-        let rug_penalty = (1.0 - rug_ratio).clamp(0.0, 1.0).powi(2);
-        let raw_score = (base_score * tradable_penalty * rug_penalty).clamp(0.0, 1.0);
-        let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
-        let eligible = acc.trades >= self.config.min_trades
-            && eligibility_active_days >= self.config.min_active_days
-            && !acc.suspicious
-            && acc.max_buy_notional_sol >= self.config.min_leader_notional_sol
-            && last_seen >= decay_cutoff
-            && buy_total >= self.config.min_buy_count
-            && tradable_ratio >= self.config.min_tradable_ratio
-            && rug_ratio <= self.config.max_rug_ratio;
-        let score = if eligible { raw_score } else { 0.0 };
-
-        WalletSnapshot {
+        self.snapshot_from_components(
             wallet_id,
             first_seen,
             last_seen,
-            pnl_sol: acc.realized_pnl_sol,
-            win_rate,
-            trades: acc.trades,
-            closed_trades: acc.closed_trades,
-            hold_median_seconds,
-            score,
+            acc.trades,
+            eligibility_active_days,
+            acc.spent_sol,
+            acc.realized_pnl_sol,
+            acc.max_buy_notional_sol,
+            acc.wins,
+            acc.closed_trades,
+            &acc.hold_samples_sec,
+            &acc.realized_pnl_by_day,
+            acc.suspicious,
             buy_total,
-            tradable_ratio,
-            rug_ratio,
-            eligible,
-        }
+            quality_resolved_buys,
+            tradable_buys,
+            rug_metrics,
+            now,
+        )
     }
 
     fn snapshot_from_persisted_metrics(
@@ -1009,6 +1244,97 @@ impl DiscoveryService {
             tradable_ratio: row.tradable_ratio,
             rug_ratio: row.rug_ratio,
             eligible,
+        }
+    }
+
+    fn evaluate_buy_fact_tradability(&self, row: &WalletScoringBuyFactRow) -> BuyTradability {
+        if self.shadow_quality.min_volume_5m_sol > 0.0
+            && row.market_volume_5m_sol + 1e-12 < self.shadow_quality.min_volume_5m_sol
+        {
+            return BuyTradability::Rejected;
+        }
+        if self.shadow_quality.min_unique_traders_5m > 0
+            && u64::from(row.market_unique_traders_5m) < self.shadow_quality.min_unique_traders_5m
+        {
+            return BuyTradability::Rejected;
+        }
+
+        let mut deferred = false;
+        if self.shadow_quality.min_token_age_seconds > 0 {
+            let Some(token_age_seconds) = row.quality_token_age_seconds else {
+                return if row.quality_source == WalletScoringQualitySource::Deferred {
+                    BuyTradability::Deferred
+                } else {
+                    BuyTradability::Rejected
+                };
+            };
+            if token_age_seconds < self.shadow_quality.min_token_age_seconds {
+                return BuyTradability::Rejected;
+            }
+        }
+
+        if self.shadow_quality.min_holders > 0 {
+            match row.quality_source {
+                WalletScoringQualitySource::Fresh => {
+                    let Some(holders) = row.quality_holders else {
+                        return BuyTradability::Rejected;
+                    };
+                    if holders < self.shadow_quality.min_holders {
+                        return BuyTradability::Rejected;
+                    }
+                }
+                WalletScoringQualitySource::Stale => {
+                    if let Some(holders) = row.quality_holders {
+                        if holders < self.shadow_quality.min_holders {
+                            return BuyTradability::Rejected;
+                        }
+                    }
+                    deferred = true;
+                }
+                WalletScoringQualitySource::Deferred => deferred = true,
+                WalletScoringQualitySource::Missing => return BuyTradability::Rejected,
+            }
+        }
+
+        if self.shadow_quality.min_liquidity_sol > 0.0 {
+            let liquidity_sol = match row.quality_source {
+                WalletScoringQualitySource::Fresh => row
+                    .quality_liquidity_sol
+                    .unwrap_or(row.market_liquidity_proxy_sol),
+                _ => row.market_liquidity_proxy_sol,
+            };
+            if liquidity_sol + 1e-12 < self.shadow_quality.min_liquidity_sol {
+                return BuyTradability::Rejected;
+            }
+        }
+
+        if deferred {
+            BuyTradability::Deferred
+        } else {
+            BuyTradability::Tradable
+        }
+    }
+
+    fn evaluate_buy_fact_rug_status(
+        &self,
+        row: &WalletScoringBuyFactRow,
+        now: DateTime<Utc>,
+    ) -> BuyFactRugStatus {
+        if row.rug_check_after_ts > now
+            || row.rug_volume_lookahead_sol.is_none()
+            || row.rug_unique_traders_lookahead.is_none()
+        {
+            return BuyFactRugStatus::Unevaluated;
+        }
+
+        let thin_volume = row.rug_volume_lookahead_sol.unwrap_or(0.0) + 1e-12
+            < self.config.thin_market_min_volume_sol;
+        let thin_traders = row.rug_unique_traders_lookahead.unwrap_or(0)
+            < self.config.thin_market_min_unique_traders;
+        if thin_volume || thin_traders {
+            BuyFactRugStatus::Rugged
+        } else {
+            BuyFactRugStatus::Healthy
         }
     }
 
@@ -1222,7 +1548,9 @@ mod tests {
     use super::*;
     use anyhow::Context;
     use copybot_config::ShadowConfig;
-    use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore, WalletActivityDayRow};
+    use copybot_storage::{
+        DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore, WalletActivityDayRow,
+    };
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -1743,7 +2071,9 @@ mod tests {
     fn short_retention_bootstrap_does_not_republish_every_tick_or_repersist_metrics() -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;
-        let db_path = temp.path().join("test-short-retention-bootstrap-cadence.db");
+        let db_path = temp
+            .path()
+            .join("test-short-retention-bootstrap-cadence.db");
         let mut store = SqliteStore::open(Path::new(&db_path))?;
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
@@ -1787,7 +2117,10 @@ mod tests {
         let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let first_now = base_now + Duration::minutes(31);
         let first_summary = discovery.run_cycle(&store, first_now)?;
-        assert!(first_summary.published, "first bootstrap tick should publish");
+        assert!(
+            first_summary.published,
+            "first bootstrap tick should publish"
+        );
         assert!(
             !store.wallet_metrics_window_exists(discovery.metrics_window_start(first_now))?,
             "bootstrap-only cycle must not write a new wallet_metrics bucket from carried persisted snapshots"
@@ -2745,6 +3078,160 @@ mod tests {
             "persisted wallet_activity_days should satisfy eligibility even when the in-memory tail remains short"
         );
         Ok(())
+    }
+
+    #[test]
+    fn aggregate_scoring_requires_explicit_coverage_activation() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("aggregate-scoring-coverage-gate.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-09T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 1.0;
+        config.thin_market_min_unique_traders = 1;
+        config.scoring_aggregates_enabled = true;
+
+        let mut swaps = Vec::new();
+        for idx in 0..6 {
+            let buy_ts = now - Duration::days(3) + Duration::minutes((idx * 20) as i64);
+            let sell_ts = buy_ts + Duration::minutes(6);
+            let buy = swap(
+                "wallet_aggregate_gate",
+                &format!("aggregate-gate-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenAggregateGate111111111111111111111111",
+                1.0,
+                100.0,
+            );
+            let sell = swap(
+                "wallet_aggregate_gate",
+                &format!("aggregate-gate-sell-{idx}"),
+                sell_ts,
+                "TokenAggregateGate111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            );
+            store.insert_observed_swap(&buy)?;
+            store.insert_observed_swap(&sell)?;
+            swaps.push(buy);
+            swaps.push(sell);
+        }
+
+        store.reset_discovery_scoring_tables()?;
+        store.apply_discovery_scoring_batch(&swaps, &aggregate_write_config(&config))?;
+        store.delete_observed_swaps_before(now + Duration::seconds(1))?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(
+            summary.eligible_wallets, 0,
+            "aggregate rows alone must not activate until coverage is marked ready"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_scoring_can_score_wallets_without_raw_hot_window() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("aggregate-scoring-live-path.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-09T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 1.0;
+        config.thin_market_min_unique_traders = 1;
+        config.scoring_aggregates_enabled = true;
+
+        let window_start = now - Duration::days(config.scoring_window_days as i64);
+        let mut swaps = Vec::new();
+        for idx in 0..6 {
+            let buy_ts = now - Duration::days(3) + Duration::minutes((idx * 20) as i64);
+            let sell_ts = buy_ts + Duration::minutes(6);
+            let buy = swap(
+                "wallet_aggregate_live",
+                &format!("aggregate-live-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenAggregateLive111111111111111111111111",
+                1.0,
+                100.0,
+            );
+            let sell = swap(
+                "wallet_aggregate_live",
+                &format!("aggregate-live-sell-{idx}"),
+                sell_ts,
+                "TokenAggregateLive111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            );
+            store.insert_observed_swap(&buy)?;
+            store.insert_observed_swap(&sell)?;
+            swaps.push(buy);
+            swaps.push(sell);
+        }
+
+        store.reset_discovery_scoring_tables()?;
+        store.apply_discovery_scoring_batch(&swaps, &aggregate_write_config(&config))?;
+        store.finalize_discovery_scoring_rug_facts(now)?;
+        store.set_discovery_scoring_covered_since(window_start)?;
+        store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now,
+            slot: 999,
+            signature: "aggregate-covered-through".to_string(),
+        })?;
+        store.delete_observed_swaps_before(now + Duration::seconds(1))?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.eligible_wallets, 1);
+        assert_eq!(summary.active_follow_wallets, 1);
+        assert!(
+            summary
+                .top_wallets
+                .iter()
+                .any(|label| label.starts_with("wallet_aggregate_live:")),
+            "aggregate scoring should produce the profitable wallet even with an empty raw window"
+        );
+        Ok(())
+    }
+
+    fn aggregate_write_config(config: &DiscoveryConfig) -> DiscoveryAggregateWriteConfig {
+        DiscoveryAggregateWriteConfig {
+            max_tx_per_minute: config.max_tx_per_minute,
+            rug_lookahead_seconds: config.rug_lookahead_seconds as u32,
+            helius_http_url: None,
+            min_token_age_hint_seconds: None,
+        }
     }
 
     fn swap(

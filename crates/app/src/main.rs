@@ -11,7 +11,10 @@ use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
-use copybot_storage::{sqlite_contention_snapshot, Lamports, SignedLamports, SqliteStore};
+use copybot_storage::{
+    sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, Lamports, SignedLamports,
+    SqliteStore,
+};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
 #[cfg(test)]
@@ -204,11 +207,22 @@ async fn main() -> Result<()> {
     let discovery = DiscoveryService::new_with_helius(
         config.discovery.clone(),
         config.shadow.clone(),
-        discovery_http_url,
+        discovery_http_url.clone(),
     );
     let shadow = ShadowService::new_with_helius(config.shadow.clone(), shadow_http_url);
     let execution_runtime =
         ExecutionRuntime::from_config(config.execution.clone(), config.risk.clone());
+    let discovery_scoring_retention_days = config
+        .discovery
+        .scoring_window_days
+        .max(config.discovery.decay_window_days)
+        .saturating_add(1);
+    let discovery_aggregate_write_config = DiscoveryAggregateWriteConfig {
+        max_tx_per_minute: config.discovery.max_tx_per_minute,
+        rug_lookahead_seconds: config.discovery.rug_lookahead_seconds as u32,
+        helius_http_url: None,
+        min_token_age_hint_seconds: Some(config.shadow.min_token_age_seconds),
+    };
 
     run_app_loop(
         store,
@@ -223,6 +237,9 @@ async fn main() -> Result<()> {
         config.discovery.fetch_refresh_seconds,
         config.discovery.refresh_seconds,
         config.discovery.observed_swaps_retention_days,
+        discovery_scoring_retention_days,
+        config.discovery.scoring_aggregates_write_enabled,
+        discovery_aggregate_write_config,
         config.shadow.refresh_seconds,
         config.shadow.max_signal_lag_seconds,
         config.shadow.causal_holdback_enabled,
@@ -1491,6 +1508,9 @@ async fn run_app_loop(
     discovery_fetch_refresh_seconds: u64,
     discovery_refresh_seconds: u64,
     observed_swaps_retention_days: u32,
+    discovery_scoring_retention_days: u32,
+    discovery_scoring_writes_enabled: bool,
+    discovery_aggregate_write_config: DiscoveryAggregateWriteConfig,
     shadow_refresh_seconds: u64,
     shadow_max_signal_lag_seconds: u64,
     shadow_causal_holdback_enabled: bool,
@@ -1531,9 +1551,14 @@ async fn run_app_loop(
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
-    let observed_swap_writer =
-        ObservedSwapWriter::start(sqlite_path.clone(), observed_swaps_retention_days)
-            .context("failed to start observed swap writer")?;
+    let observed_swap_writer = ObservedSwapWriter::start(
+        sqlite_path.clone(),
+        observed_swaps_retention_days,
+        discovery_scoring_retention_days,
+        discovery_scoring_writes_enabled,
+        discovery_aggregate_write_config,
+    )
+    .context("failed to start observed swap writer")?;
     let history_retention = HistoryRetentionRunner::new(history_retention_config);
     let history_retention_sweep_interval = Duration::from_secs(history_retention.sweep_seconds());
     let mut last_history_retention_sweep = StdInstant::now()

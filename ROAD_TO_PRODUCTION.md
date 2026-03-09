@@ -2288,4 +2288,164 @@ Formal verdict:
 4. Следующий durable remediation path уже про storage/capacity hygiene, а не про rollback of this hotfix:
    1. stop treating hot SQLite as an archive,
    2. implement retention/archive for raw history,
-   3. move live `state/` off root filesystem in a controlled maintenance window.
+   3. move live `state/` off root filesystem in a controlled maintenance window,
+   4. move discovery/followlist scoring onto a persisted aggregate layer instead of month-scale raw `observed_swaps`,
+   5. keep aggregate writes in the ingestion writer path or a separate serialized writer path, not the discovery hot path,
+   6. remove urgent bridges (`bootstrap`, promotion suppression) only after aggregate backfill + live rollout + trend snapshots + scoring-parity confirmation.
+
+### 2026-03-09 — PRED2-3 aggregate scoring redesign landed in code (staged activation)
+
+Статус:
+
+1. New aggregate schema landed via `0035_discovery_scoring_aggregates.sql`:
+   1. `wallet_scoring_days`,
+   2. `wallet_scoring_tx_minutes`,
+   3. `wallet_scoring_open_lots`,
+   4. `wallet_scoring_carryover_lots`,
+   5. `wallet_scoring_buy_facts`,
+   6. `wallet_scoring_close_facts`,
+   7. `discovery_scoring_state`.
+2. Aggregate writes are prepared outside the raw observed-swap write transaction and are gated by
+   `discovery.scoring_aggregates_write_enabled`; tracked configs keep that flag `false` for now.
+3. Live raw retention now respects a temporary backfill source-protection watermark so a concurrent
+   replay does not lose source rows mid-run.
+4. Discovery can read score inputs from aggregates, but only when all are true:
+   1. `discovery.scoring_aggregates_enabled = true`,
+   2. `discovery_scoring_state.covered_since_ts <= scoring_window_start`,
+   3. `discovery_scoring_state.covered_through_ts` is near-head,
+   4. no latched `materialization_gap_since_ts` exists.
+5. Aggregate write coverage now uses an exact covered cursor (`ts`, `slot`, `signature`), and the
+   first aggregate-enabled startup replays raw rows after that cursor before accepting new live
+   writes.
+6. Continuity gaps are latched and cleared on exact cursor semantics as well; replay only clears the
+   blocker when it actually observes the exact latched gap row, and a full forward repair fails
+   closed if that row is already missing from raw source.
+7. Startup replay follows the same exact-gap rule, but unlike operator backfill it does not fail the
+   writer when the gap row is already gone; raw ingestion keeps running while aggregate readiness
+   stays blocked until explicit repair.
+8. Tracked configs intentionally keep aggregate reads disabled too:
+   1. `discovery.scoring_aggregates_write_enabled = false`,
+   2. `discovery.scoring_aggregates_enabled = false`.
+8. New admin tooling landed:
+   1. `cargo run -p copybot-storage --bin backfill_discovery_scoring -- ...`
+   2. exact cursor resume is required because aggregate replay is not overlap-idempotent,
+   3. scoring policy is loaded from `--config`,
+   4. backfill refuses to run if either aggregate writes or aggregate reads are already enabled in
+      the target runtime config,
+   5. mature rug facts are finalized during replay instead of being deferred to a later discovery
+      cycle,
+   6. parity backfill defaults to the same no-implicit-Helius policy as the live writer unless the
+      operator explicitly opts in with `--helius-http-url`.
+8. Any live aggregate materialization failure now latches a continuity blocker; readiness stays
+   false until replay/backfill repairs the gap.
+9. This means rollout now proceeds in safe stages:
+   1. deploy code,
+   2. keep aggregate writes/reads disabled,
+   3. run aggregate backfill,
+   4. do an exact tail catch-up,
+   5. compare parity/trends,
+   6. optionally mark historical coverage,
+   7. enable aggregate writes,
+   8. confirm runtime/trend health and near-head `covered_through_ts`,
+   9. flip aggregate scoring reads on,
+   10. only later remove urgent bridges.
+
+### 2026-03-09 — morning post-`77458f3` overnight runtime snapshot
+
+Источник:
+
+1. `ops/server_reports/2026-03-09_morning_post_main_runtime_report.md`
+
+Краткий статус:
+
+1. Overnight окно после полного rollout `origin/main = 77458f3` (`~8h 01m`) получилось clean:
+   1. `solana-copy-bot.service active`, `NRestarts=0`,
+   2. `copybot-executor.service active`, `NRestarts=0`,
+   3. `copybot-adapter.service active`, `NRestarts=0`.
+2. В свежем post-rollout journal window after `2026-03-08 22:22 UTC` не видно новых:
+   1. `database is locked`,
+   2. `failed to insert observed swap batch`,
+   3. `failed to record heartbeat`,
+   4. `disk I/O error`.
+3. Discovery/runtime утром near-head and low-pressure:
+   1. `observed_swaps_max_ts=2026-03-09T06:24:10.094923980+00:00`,
+   2. `discovery_cursor_ts=2026-03-09T06:23:33.168740896+00:00`,
+   3. direct `cursor/head gap ~= 37s`,
+   4. latest `discovery_cycle_duration_ms ~19`,
+   5. `swaps_fetch_limit_reached=false`,
+   6. `swaps_fetch_pages=1`,
+   7. `swaps_query_rows_last_page ~ 10.1k-12.0k`.
+4. Storage headroom remains materially healthier than on the disk-full incident night:
+   1. `/dev/root 145G`, `93G used`, `53G avail`, `64%`,
+   2. `live_copybot.db ~88G`,
+   3. `live_copybot.db-wal ~57M`.
+5. Ingestion/backpressure remains bounded:
+   1. latest `ingestion_lag_ms_p95=1747`, `p99=1858`,
+   2. latest `ws_to_fetch_queue_depth=1`,
+   3. transient queue spikes to `34/52/80/94/109` drained immediately,
+   4. `ws_notifications_backpressured=133`, `ws_notifications_replaced_oldest=133`,
+   5. `sqlite_busy_error_total=10`, `sqlite_write_retry_total=10` stayed flat in the captured tail.
+6. Business output remains unchanged at this checkpoint:
+   1. `wallet_activity_day_rows=687740` (`2026-03-07 .. 2026-03-09`),
+   2. `active_follow_wallets=0`,
+   3. `total_follow_wallet_rows=0`,
+   4. `copy_signals_rows=0`,
+   5. `orders_rows=0`,
+   6. `shadow_lots_rows=0`.
+
+Операционный вывод:
+
+1. Полный rollout `77458f3` overnight выглядит runtime-healthy: short-retention disk hotfix работает как intended, root headroom держится, WAL не разрастается обратно, discovery утром near-head.
+2. Этот утренний snapshot не показывает нового rollback-worthy incident.
+3. Followlist/business-output вопрос остается отдельным track; текущий отчет фиксирует именно runtime state после rollout.
+
+### 2026-03-09 — evening pre-PRED2-3-rollout runtime snapshot
+
+Источник:
+
+1. `ops/server_reports/2026-03-09_evening_pre_pred23_rollout_runtime_report.md`
+
+Краткий статус:
+
+1. До любой новой накатки патча live остается clean and near-head:
+   1. `solana-copy-bot.service active`, `NRestarts=0`,
+   2. `copybot-executor.service active`, `NRestarts=0`,
+   3. `copybot-adapter.service active`, `NRestarts=0`,
+   4. свежий `recent_errors.txt` пустой по:
+      1. `database is locked`,
+      2. `failed to insert observed swap batch`,
+      3. `failed to record heartbeat`,
+      4. `disk I/O error`,
+      5. `discovery cycle still running`.
+2. Discovery/runtime at the checkpoint still look low-pressure:
+   1. `observed_swaps_max_ts=2026-03-09T16:55:52.023488109+00:00`,
+   2. `discovery_cursor_ts=2026-03-09T16:55:33.309359041+00:00`,
+   3. direct `cursor/head gap ~= 19s`,
+   4. latest `discovery_cycle_duration_ms=22`,
+   5. tail window stayed around `~16-25 ms`,
+   6. `swaps_fetch_limit_reached=false`,
+   7. `swaps_fetch_pages=1`.
+3. Ingestion/backpressure remain bounded in the captured tail:
+   1. latest `ingestion_lag_ms_p95=1770`, `p99=1835`,
+   2. latest `ws_to_fetch_queue_depth=1`,
+   3. `sqlite_busy_error_total=31`, `sqlite_write_retry_total=31` stayed flat,
+   4. `ws_notifications_backpressured=4083`, `ws_notifications_replaced_oldest=4083` also stayed flat.
+4. Disk state remains operationally safe before rollout, but the main DB file is still large:
+   1. `/dev/root 145G`, `101G used`, `45G avail`, `70%`,
+   2. `live_copybot.db ~96G`,
+   3. `live_copybot.db-wal ~62M`,
+   4. `PRAGMA freelist_count=0`.
+5. Business-state snapshot remains unchanged:
+   1. `wallet_activity_day_rows=821842` (`2026-03-07 .. 2026-03-09`),
+   2. `active_follow_wallets=0`,
+   3. `total_follow_wallet_rows=0`,
+   4. `copy_signals_rows=0`,
+   5. `orders_rows=0`,
+   6. `shadow_lots_rows=0`,
+   7. latest discovery logs still show `eligible_wallets=0` and `followlist_deactivations_suppressed=true`.
+
+Операционный вывод:
+
+1. Это хороший pre-rollout baseline: live runtime сейчас стабильный, near-head и без свежих incident-сигналов.
+2. Если дальше катить новый PRED2-3 patch, сравнивать надо именно с этим checkpoint, а не с disk-full/night incident.
+3. При этом storage-growth проблема остается отдельной: WAL маленький и root healthy, но сам `.db` уже `~96G`, так что long-term storage hygiene по-прежнему нужен независимо от текущей runtime stability.

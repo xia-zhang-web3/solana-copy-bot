@@ -1,0 +1,13 @@
+observed_swaps_max_ts|2026-03-09T16:55:52.023488109+00:00
+discovery_cursor_ts|2026-03-09T16:55:33.309359041+00:00
+wallet_activity_day_rows|821842
+wallet_activity_day_min|2026-03-07
+wallet_activity_day_max|2026-03-09
+followlist_total|0
+active_followlist|0
+copy_signals_rows|0
+orders_rows|0
+shadow_lots_rows|0
+sqlite_page_size|4096
+sqlite_page_count|25011929
+sqlite_freelist_count|0

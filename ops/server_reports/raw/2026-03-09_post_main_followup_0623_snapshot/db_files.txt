@@ -1,0 +1,3 @@
+-rw-r--r-- 1 copybot copybot  88G Mar  9 06:24 /var/www/solana-copy-bot/state/live_copybot.db
+-rw-r--r-- 1 copybot copybot 128K Mar  9 06:24 /var/www/solana-copy-bot/state/live_copybot.db-shm
+-rw-r--r-- 1 copybot copybot  57M Mar  9 06:24 /var/www/solana-copy-bot/state/live_copybot.db-wal

@@ -1,0 +1,9 @@
+2026-03-09T06:24:10.094923980+00:00|2026-03-09T06:23:33.168740896+00:00
+wallet_activity_day_rows|687740
+wallet_activity_day_min|2026-03-07
+wallet_activity_day_max|2026-03-09
+active_follow_wallets|0
+total_follow_wallet_rows|0
+copy_signals_rows|0
+orders_rows|0
+shadow_lots_rows|0

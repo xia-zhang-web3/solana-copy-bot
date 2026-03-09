@@ -81,6 +81,8 @@ max_fetch_swaps_per_cycle = 20000
 max_fetch_pages_per_cycle = 5
 fetch_time_budget_ms = 15000
 observed_swaps_retention_days = 7
+scoring_aggregates_write_enabled = false
+scoring_aggregates_enabled = false
 
 [shadow]
 enabled = true

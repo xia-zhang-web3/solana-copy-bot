@@ -205,7 +205,18 @@ Required direction:
 4. Split hot vs cold storage:
    - hot SQLite for runtime windows
    - archived older raw swaps outside live DB
-5. Add a compaction strategy after retention actually starts deleting old rows.
+5. Keep aggregate writes out of the discovery hot path:
+   - update aggregates in the ingestion writer path or a separate serialized writer path
+   - do not reintroduce heavy write contention into discovery
+6. Add a compaction strategy after retention actually starts deleting old rows.
+7. Remove urgent bridges only after:
+   - historical aggregate backfill
+   - exact tail catch-up
+   - explicit activation of live aggregate writes
+   - live rollout
+   - trend snapshots
+   - confirmation that aggregate-based scoring is equivalent to current policy
+   - explicit activation of aggregate reads, rather than switching immediately on backfill completion
 
 ## Bottom Line
 

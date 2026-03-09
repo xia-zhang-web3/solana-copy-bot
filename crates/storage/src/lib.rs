@@ -33,6 +33,7 @@ static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 mod discovery;
+mod discovery_scoring;
 mod execution_orders;
 mod history_retention;
 mod market_data;
@@ -103,6 +104,69 @@ pub struct PersistedWalletMetricSnapshotRow {
     pub rug_ratio: f64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryAggregateWriteConfig {
+    pub max_tx_per_minute: u32,
+    pub rug_lookahead_seconds: u32,
+    pub helius_http_url: Option<String>,
+    pub min_token_age_hint_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletScoringDayRow {
+    pub wallet_id: String,
+    pub activity_day: NaiveDate,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub trades: u32,
+    pub spent_sol: f64,
+    pub max_buy_notional_sol: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WalletScoringQualitySource {
+    Fresh,
+    Stale,
+    Deferred,
+    Missing,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletScoringBuyFactRow {
+    pub wallet_id: String,
+    pub token: String,
+    pub ts: DateTime<Utc>,
+    pub notional_sol: f64,
+    pub market_volume_5m_sol: f64,
+    pub market_unique_traders_5m: u32,
+    pub market_liquidity_proxy_sol: f64,
+    pub quality_source: WalletScoringQualitySource,
+    pub quality_token_age_seconds: Option<u64>,
+    pub quality_holders: Option<u64>,
+    pub quality_liquidity_sol: Option<f64>,
+    pub rug_check_after_ts: DateTime<Utc>,
+    pub rug_volume_lookahead_sol: Option<f64>,
+    pub rug_unique_traders_lookahead: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletScoringCloseFactRow {
+    pub wallet_id: String,
+    pub token: String,
+    pub closed_ts: DateTime<Utc>,
+    pub pnl_sol: f64,
+    pub hold_seconds: i64,
+    pub win: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletScoringSnapshot {
+    pub days: Vec<WalletScoringDayRow>,
+    pub buy_facts: Vec<WalletScoringBuyFactRow>,
+    pub close_facts: Vec<WalletScoringCloseFactRow>,
+    pub max_tx_counts: std::collections::HashMap<String, u32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ShadowLotRow {
     pub id: i64,
@@ -132,7 +196,7 @@ pub struct TokenMarketStats {
     pub unique_traders_5m: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryRuntimeCursor {
     pub ts_utc: DateTime<Utc>,
     pub slot: u64,
@@ -3922,6 +3986,304 @@ mod tests {
             Some(&2),
             "backfill should use existing observed_swaps at or after the exact window_start"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_scoring_coverage_marker_gates_window_readiness() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("discovery-scoring-coverage.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let window_start = DateTime::parse_from_rfc3339("2026-03-01T00:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-03-09T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let max_lag = Duration::minutes(10);
+        assert!(!store.discovery_scoring_ready_for_window(window_start, now, max_lag)?);
+
+        store.set_discovery_scoring_covered_since(window_start - Duration::hours(1))?;
+        assert!(
+            !store.discovery_scoring_ready_for_window(window_start, now, max_lag)?,
+            "covered_since alone must not activate aggregate reads without a near-head watermark"
+        );
+
+        store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(5),
+            slot: 42,
+            signature: "covered-through-ready".to_string(),
+        })?;
+        assert!(store.discovery_scoring_ready_for_window(window_start, now, max_lag)?);
+
+        store.set_discovery_scoring_materialization_gap_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(15),
+            slot: 100,
+            signature: "gap-row".to_string(),
+        })?;
+        assert!(
+            !store.discovery_scoring_ready_for_window(window_start, now, max_lag)?,
+            "latched materialization gaps must block aggregate readiness even with near-head watermarks"
+        );
+        store.clear_discovery_scoring_materialization_gap_if_cursor_observed(
+            &DiscoveryRuntimeCursor {
+                ts_utc: now - Duration::minutes(30),
+                slot: 0,
+                signature: String::new(),
+            },
+        )?;
+        assert!(
+            !store.discovery_scoring_ready_for_window(window_start, now, max_lag)?,
+            "observing an earlier cursor must not clear the exact continuity blocker"
+        );
+        store.clear_discovery_scoring_materialization_gap_if_cursor_observed(
+            &DiscoveryRuntimeCursor {
+                ts_utc: now - Duration::minutes(15),
+                slot: 100,
+                signature: "gap-row".to_string(),
+            },
+        )?;
+        assert!(store.discovery_scoring_ready_for_window(window_start, now, max_lag)?);
+
+        store.set_discovery_scoring_materialization_gap_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(15),
+            slot: 100,
+            signature: "gap-row-b".to_string(),
+        })?;
+        store.clear_discovery_scoring_materialization_gap_if_cursor_observed(
+            &DiscoveryRuntimeCursor {
+                ts_utc: now - Duration::minutes(15),
+                slot: 100,
+                signature: "zzz-after-gap".to_string(),
+            },
+        )?;
+        assert!(
+            !store.discovery_scoring_ready_for_window(window_start, now, max_lag)?,
+            "observing a different row at the same timestamp must not clear the exact continuity blocker"
+        );
+        store.clear_discovery_scoring_materialization_gap_if_cursor_observed(
+            &DiscoveryRuntimeCursor {
+                ts_utc: now - Duration::minutes(15),
+                slot: 100,
+                signature: "gap-row-b".to_string(),
+            },
+        )?;
+        assert!(store.discovery_scoring_ready_for_window(window_start, now, max_lag)?);
+
+        store.set_discovery_scoring_covered_since(window_start + Duration::hours(1))?;
+        assert!(
+            !store.discovery_scoring_ready_for_window(window_start, now, max_lag)?,
+            "coverage marker later than window_start must not enable aggregate reads yet"
+        );
+
+        store.set_discovery_scoring_covered_since(window_start - Duration::hours(1))?;
+        let later_now = now + Duration::hours(3);
+        assert!(
+            !store.discovery_scoring_ready_for_window(window_start, later_now, max_lag)?,
+            "stale covered_through watermark must keep aggregate reads disabled"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_discovery_scoring_batch_records_fifo_buy_and_close_facts() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("discovery-scoring-batch.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let buy_one = SwapEvent {
+            signature: "scoring-buy-1".to_string(),
+            wallet: "wallet-scoring".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenScoring11111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 1,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let buy_two = SwapEvent {
+            signature: "scoring-buy-2".to_string(),
+            wallet: "wallet-scoring".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenScoring11111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 50.0,
+            exact_amounts: None,
+            slot: 2,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:05:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let sell = SwapEvent {
+            signature: "scoring-sell-1".to_string(),
+            wallet: "wallet-scoring".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "TokenScoring11111111111111111111111111111".to_string(),
+            token_out: "So11111111111111111111111111111111111111112".to_string(),
+            amount_in: 120.0,
+            amount_out: 3.0,
+            exact_amounts: None,
+            slot: 3,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T11:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let swaps = vec![buy_one.clone(), buy_two.clone(), sell.clone()];
+        store.insert_observed_swaps_batch(&swaps)?;
+
+        store.apply_discovery_scoring_batch(
+            &swaps,
+            &DiscoveryAggregateWriteConfig {
+                max_tx_per_minute: 50,
+                rug_lookahead_seconds: 60,
+                helius_http_url: None,
+                min_token_age_hint_seconds: None,
+            },
+        )?;
+
+        let days = store.load_wallet_scoring_days_since(
+            DateTime::parse_from_rfc3339("2026-03-06T00:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[0].trades, 3);
+        assert!((days[0].spent_sol - 2.0).abs() < 1e-9);
+        assert!((days[0].max_buy_notional_sol - 1.0).abs() < 1e-9);
+
+        let buy_facts = store.load_wallet_scoring_buy_facts_since(
+            DateTime::parse_from_rfc3339("2026-03-06T00:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(buy_facts.len(), 2);
+
+        let close_facts = store.load_wallet_scoring_close_facts_since(
+            DateTime::parse_from_rfc3339("2026-03-06T00:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(close_facts.len(), 2, "sell should close two FIFO segments");
+        let total_pnl: f64 = close_facts.iter().map(|row| row.pnl_sol).sum();
+        assert!(
+            (total_pnl - 1.6).abs() < 1e-9,
+            "expected FIFO pnl split across close facts"
+        );
+
+        let (remaining_qty, remaining_cost): (f64, f64) = store.conn.query_row(
+            "SELECT qty, cost_sol
+             FROM wallet_scoring_open_lots
+             WHERE wallet_id = 'wallet-scoring'
+               AND token = 'TokenScoring11111111111111111111111111111'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert!((remaining_qty - 30.0).abs() < 1e-9);
+        assert!((remaining_cost - 0.6).abs() < 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn prune_discovery_scoring_keeps_old_open_lots_for_late_sell_accounting() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("discovery-scoring-open-lot-retention.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let buy = SwapEvent {
+            signature: "carryover-buy".to_string(),
+            wallet: "wallet-carryover".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenCarryover111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 1,
+            ts_utc: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[buy.clone()])?;
+        store.apply_discovery_scoring_batch(&[buy], &DiscoveryAggregateWriteConfig::default())?;
+
+        let cutoff = DateTime::parse_from_rfc3339("2026-02-10T00:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        store.prune_discovery_scoring_before(cutoff)?;
+
+        let open_lot_count: i64 =
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM wallet_scoring_open_lots", [], |row| {
+                    row.get(0)
+                })?;
+        assert_eq!(
+            open_lot_count, 1,
+            "still-open scoring inventory must survive retention prune until consumed"
+        );
+
+        let carryover_count: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM wallet_scoring_carryover_lots",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(carryover_count, 0);
+
+        let sell = SwapEvent {
+            signature: "carryover-sell".to_string(),
+            wallet: "wallet-carryover".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "TokenCarryover111111111111111111111111111".to_string(),
+            token_out: "So11111111111111111111111111111111111111112".to_string(),
+            amount_in: 100.0,
+            amount_out: 2.0,
+            exact_amounts: None,
+            slot: 2,
+            ts_utc: DateTime::parse_from_rfc3339("2026-02-15T00:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[sell.clone()])?;
+        store.apply_discovery_scoring_batch(&[sell], &DiscoveryAggregateWriteConfig::default())?;
+
+        let close_fact_count: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM wallet_scoring_close_facts
+             WHERE sell_signature = 'carryover-sell'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(close_fact_count, 1);
+        let (pnl_sol, hold_seconds): (f64, i64) = store.conn.query_row(
+            "SELECT pnl_sol, hold_seconds
+             FROM wallet_scoring_close_facts
+             WHERE sell_signature = 'carryover-sell'
+               AND segment_index = 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert!((pnl_sol - 1.0).abs() < 1e-9);
+        assert!(hold_seconds > 0);
+
+        let remaining_open_lots: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM wallet_scoring_open_lots
+             WHERE wallet_id = 'wallet-carryover'
+               AND token = 'TokenCarryover111111111111111111111111111'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(remaining_open_lots, 0);
         Ok(())
     }
 

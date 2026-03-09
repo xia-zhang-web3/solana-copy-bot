@@ -514,6 +514,8 @@ pub struct DiscoveryConfig {
     pub max_fetch_pages_per_cycle: usize,
     pub fetch_time_budget_ms: u64,
     pub observed_swaps_retention_days: u32,
+    pub scoring_aggregates_write_enabled: bool,
+    pub scoring_aggregates_enabled: bool,
 }
 
 impl Default for DiscoveryConfig {
@@ -542,6 +544,8 @@ impl Default for DiscoveryConfig {
             max_fetch_pages_per_cycle: 5,
             fetch_time_budget_ms: 15_000,
             observed_swaps_retention_days: 7,
+            scoring_aggregates_write_enabled: false,
+            scoring_aggregates_enabled: false,
         }
     }
 }
@@ -589,6 +593,14 @@ impl fmt::Debug for DiscoveryConfig {
             .field(
                 "observed_swaps_retention_days",
                 &self.observed_swaps_retention_days,
+            )
+            .field(
+                "scoring_aggregates_write_enabled",
+                &self.scoring_aggregates_write_enabled,
+            )
+            .field(
+                "scoring_aggregates_enabled",
+                &self.scoring_aggregates_enabled,
             )
             .finish()
     }
