@@ -74,7 +74,8 @@ CREATE TABLE exact_money_cutover_state(
 INSERT INTO observed_swaps VALUES
   ('sig-1', '2026-03-08T00:00:00+00:00', '100', 6, '200', 6),
   ('sig-2', '2026-03-08T00:01:00+00:00', NULL, NULL, NULL, NULL),
-  ('sig-3', '2026-03-08T00:02:00+00:00', '300', 6, NULL, NULL);
+  ('sig-3', '2026-03-08T00:02:00+00:00', '300', 6, NULL, NULL),
+  ('sig-4', '2026-03-08T00:03:00+00:00', '', 6, '400', 6);
 
 INSERT INTO copy_signals VALUES
   ('copy-1', '2026-03-08T01:00:00+00:00', 1000, 'leader_exact_lamports'),
@@ -126,10 +127,12 @@ assert_contains() {
   fi
 }
 
-assert_contains "observed_swaps_total_rows: 3"
+assert_contains "observed_swaps_total_rows: 4"
 assert_contains "observed_swaps_exact_rows: 1"
 assert_contains "observed_swaps_partial_exact_rows: 1"
 assert_contains "observed_swaps_mixed_state: yes"
+assert_contains "observed_swaps_invalid_exact_rows: 1"
+assert_contains "observed_swaps_invalid_exact_detected: yes"
 assert_contains "observed_swaps_post_cutover_rows: 0"
 assert_contains "observed_swaps_post_cutover_exact_rows: 0"
 assert_contains "copy_signals_total_rows: 3"

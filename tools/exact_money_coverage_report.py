@@ -556,6 +556,38 @@ def invalid_exact_coverage(
     return InvalidExactCoverage(name, invalid_rows, zero_raw_rows)
 
 
+def invalid_observed_swaps_coverage(
+    conn: sqlite3.Connection,
+    name: str,
+    query: CoverageQuery,
+) -> InvalidExactCoverage:
+    table = "observed_swaps"
+    required_columns = (
+        "qty_in_raw",
+        "qty_in_decimals",
+        "qty_out_raw",
+        "qty_out_decimals",
+    )
+    if not has_required_tables(conn, query) or not table_exists(conn, table):
+        return InvalidExactCoverage(name, None, None)
+    if any(not column_exists(conn, table, column) for column in required_columns):
+        return InvalidExactCoverage(name, None, None)
+    invalid_rows = count_where(
+        conn,
+        query.row_source,
+        (
+            "("
+            f"{invalid_exact_qty_sidecar_predicate('qty_in_raw', 'qty_in_decimals')} "
+            "OR "
+            f"{invalid_exact_qty_sidecar_predicate('qty_out_raw', 'qty_out_decimals')}"
+            ") "
+            "AND qty_in_raw IS NOT NULL AND qty_in_decimals IS NOT NULL "
+            "AND qty_out_raw IS NOT NULL AND qty_out_decimals IS NOT NULL"
+        ),
+    )
+    return InvalidExactCoverage(name, invalid_rows, None)
+
+
 def print_invalid_exact_coverage(coverage: InvalidExactCoverage) -> None:
     print(
         f"{coverage.name}_invalid_exact_rows: "
@@ -604,6 +636,16 @@ def main(argv: list[str]) -> int:
             ["qty_in_raw", "qty_in_decimals", "qty_out_raw", "qty_out_decimals"],
             CoverageQuery("observed_swaps", "ts"),
             cutover,
+            invalid_predicate=(
+                f"({invalid_exact_qty_sidecar_predicate('qty_in_raw', 'qty_in_decimals')}) "
+                "OR "
+                f"({invalid_exact_qty_sidecar_predicate('qty_out_raw', 'qty_out_decimals')})"
+            ),
+        )
+        observed_swaps_invalid_exact = invalid_observed_swaps_coverage(
+            conn,
+            "observed_swaps",
+            CoverageQuery("observed_swaps", "ts"),
         )
         copy_signals = coverage_custom_predicates(
             conn,
@@ -797,6 +839,7 @@ def main(argv: list[str]) -> int:
         print(f"exact_money_cutover_recorded_ts: {cutover.recorded_ts}")
         print(f"exact_money_cutover_note: {cutover.note or 'n/a'}")
     print_coverage(observed_swaps)
+    print_invalid_exact_coverage(observed_swaps_invalid_exact)
     print_coverage(copy_signals)
     print_coverage(fills)
     print_coverage(fills_qty)
