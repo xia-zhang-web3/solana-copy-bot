@@ -1136,7 +1136,12 @@ impl DiscoveryService {
             + (0.10 * consistency_component)
             + (0.05 * penalty_component);
         let tradable_penalty = tradable_ratio.powf(1.5);
-        let rug_penalty = (1.0 - rug_ratio).clamp(0.0, 1.0).powi(2);
+        let rug_checks_disabled = self.config.max_rug_ratio >= 1.0;
+        let rug_penalty = if rug_checks_disabled {
+            1.0
+        } else {
+            (1.0 - rug_ratio).clamp(0.0, 1.0).powi(2)
+        };
         let raw_score = (base_score * tradable_penalty * rug_penalty).clamp(0.0, 1.0);
         let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
         let eligible = trades >= self.config.min_trades
@@ -1146,7 +1151,7 @@ impl DiscoveryService {
             && last_seen >= decay_cutoff
             && buy_total >= self.config.min_buy_count
             && tradable_ratio >= self.config.min_tradable_ratio
-            && rug_ratio <= self.config.max_rug_ratio;
+            && (rug_checks_disabled || rug_ratio <= self.config.max_rug_ratio);
         let score = if eligible { raw_score } else { 0.0 };
 
         WalletSnapshot {
@@ -2550,6 +2555,57 @@ mod tests {
         assert!(
             !snapshot.eligible,
             "wallet should not pass tradability gating when only a small minority of buys are resolved"
+        );
+    }
+
+    #[test]
+    fn max_rug_ratio_one_disables_rug_penalty_and_gate() {
+        let now = DateTime::parse_from_rfc3339("2026-03-05T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let mut config = DiscoveryConfig::default();
+        config.min_trades = 10;
+        config.min_active_days = 3;
+        config.min_leader_notional_sol = 0.5;
+        config.min_buy_count = 10;
+        config.min_tradable_ratio = 0.25;
+        config.max_rug_ratio = 1.0;
+        let discovery = DiscoveryService::new(config, copybot_config::ShadowConfig::default());
+
+        let snapshot = discovery.snapshot_from_components(
+            "wallet_rug_disabled".to_string(),
+            now - Duration::days(3),
+            now,
+            16,
+            3,
+            10.0,
+            3.5,
+            1.2,
+            5,
+            5,
+            &[114, 120, 98, 130, 117],
+            &HashMap::new(),
+            false,
+            12,
+            12,
+            12,
+            RugMetrics {
+                evaluated: 12,
+                rugged: 12,
+                unevaluated: 0,
+            },
+            now,
+        );
+
+        assert!(snapshot.eligible, "rug gate must be bypassed at max_rug_ratio=1.0");
+        assert!(
+            snapshot.score > 0.4,
+            "rug penalty must no longer zero the score when emergency rug disable is active"
+        );
+        assert!(
+            (snapshot.rug_ratio - 1.0).abs() < 1e-9,
+            "the raw rug_ratio can stay 1.0 while the emergency override bypasses it"
         );
     }
 
