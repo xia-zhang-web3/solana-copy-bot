@@ -1012,6 +1012,61 @@ impl SqliteStore {
         self.upsert_discovery_scoring_state_ts("covered_since_ts", covered_since)
     }
 
+    pub fn set_discovery_scoring_backfill_progress(
+        &self,
+        start_ts: DateTime<Utc>,
+        cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<()> {
+        self.with_immediate_transaction_retry(
+            "discovery scoring backfill progress update",
+            |conn| {
+                let now = Utc::now().to_rfc3339();
+                conn.execute(
+                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
+                 VALUES ('backfill_progress_start_ts', ?1, ?2)
+                 ON CONFLICT(state_key) DO UPDATE SET
+                    state_value = excluded.state_value,
+                    updated_at = excluded.updated_at",
+                    params![start_ts.to_rfc3339(), &now],
+                )
+                .context("failed upserting discovery_scoring_state.backfill_progress_start_ts")?;
+                conn.execute(
+                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
+                 VALUES ('backfill_progress_cursor_ts', ?1, ?2)
+                 ON CONFLICT(state_key) DO UPDATE SET
+                    state_value = excluded.state_value,
+                    updated_at = excluded.updated_at",
+                    params![cursor.ts_utc.to_rfc3339(), &now],
+                )
+                .context("failed upserting discovery_scoring_state.backfill_progress_cursor_ts")?;
+                conn.execute(
+                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
+                 VALUES ('backfill_progress_cursor_slot', ?1, ?2)
+                 ON CONFLICT(state_key) DO UPDATE SET
+                    state_value = excluded.state_value,
+                    updated_at = excluded.updated_at",
+                    params![cursor.slot.to_string(), &now],
+                )
+                .context(
+                    "failed upserting discovery_scoring_state.backfill_progress_cursor_slot",
+                )?;
+                conn.execute(
+                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
+                 VALUES ('backfill_progress_cursor_signature', ?1, ?2)
+                 ON CONFLICT(state_key) DO UPDATE SET
+                    state_value = excluded.state_value,
+                    updated_at = excluded.updated_at",
+                    params![&cursor.signature, &now],
+                )
+                .context(
+                    "failed upserting discovery_scoring_state.backfill_progress_cursor_signature",
+                )?;
+                Ok(0usize)
+            },
+        )?;
+        Ok(())
+    }
+
     pub fn set_discovery_scoring_materialization_gap_cursor(
         &self,
         cursor: &DiscoveryRuntimeCursor,
@@ -1190,8 +1245,81 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn clear_discovery_scoring_backfill_progress(&self) -> Result<()> {
+        self.with_immediate_transaction_retry(
+            "discovery scoring backfill progress clear",
+            |conn| {
+                conn.execute(
+                    "DELETE FROM discovery_scoring_state
+                 WHERE state_key IN (
+                    'backfill_progress_start_ts',
+                    'backfill_progress_cursor_ts',
+                    'backfill_progress_cursor_slot',
+                    'backfill_progress_cursor_signature'
+                 )",
+                    [],
+                )
+                .context("failed clearing discovery scoring backfill progress")?;
+                Ok(0usize)
+            },
+        )?;
+        Ok(())
+    }
+
     pub fn load_discovery_scoring_covered_since(&self) -> Result<Option<DateTime<Utc>>> {
         self.load_discovery_scoring_state_ts("covered_since_ts")
+    }
+
+    pub fn load_discovery_scoring_backfill_progress(
+        &self,
+    ) -> Result<Option<(DateTime<Utc>, DiscoveryRuntimeCursor)>> {
+        let Some(start_ts) = self.load_discovery_scoring_state_ts("backfill_progress_start_ts")?
+        else {
+            return Ok(None);
+        };
+        let cursor_ts = self.load_discovery_scoring_state_ts("backfill_progress_cursor_ts")?;
+        let slot_raw = self
+            .conn
+            .query_row(
+                "SELECT state_value
+                 FROM discovery_scoring_state
+                 WHERE state_key = 'backfill_progress_cursor_slot'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("failed querying discovery_scoring_state.backfill_progress_cursor_slot")?;
+        let signature = self
+            .conn
+            .query_row(
+                "SELECT state_value
+                 FROM discovery_scoring_state
+                 WHERE state_key = 'backfill_progress_cursor_signature'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context(
+                "failed querying discovery_scoring_state.backfill_progress_cursor_signature",
+            )?;
+        match (cursor_ts, slot_raw, signature) {
+            (Some(ts_utc), Some(slot_raw), Some(signature)) => {
+                let slot = slot_raw.parse::<u64>().with_context(|| {
+                    format!(
+                        "invalid discovery_scoring_state.backfill_progress_cursor_slot value: {slot_raw}"
+                    )
+                })?;
+                Ok(Some((
+                    start_ts,
+                    DiscoveryRuntimeCursor {
+                        ts_utc,
+                        slot,
+                        signature,
+                    },
+                )))
+            }
+            _ => Ok(None),
+        }
     }
 
     pub fn load_discovery_scoring_materialization_gap_cursor(
@@ -1324,10 +1452,10 @@ impl SqliteStore {
         {
             return Ok(false);
         }
-        let Some(covered_through) = self.load_discovery_scoring_covered_through()? else {
+        let Some(covered_through) = self.load_discovery_scoring_covered_through_cursor()? else {
             return Ok(false);
         };
-        Ok(covered_since <= window_start && covered_through + max_lag >= now)
+        Ok(covered_since <= window_start && covered_through.ts_utc + max_lag >= now)
     }
 
     pub fn prune_discovery_scoring_before(&self, cutoff: DateTime<Utc>) -> Result<usize> {

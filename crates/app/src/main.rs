@@ -50,6 +50,9 @@ use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
 use crate::history_retention::HistoryRetentionRunner;
 use crate::observed_swap_writer::ObservedSwapWriter;
+use crate::observed_swap_writer::{
+    OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT,
+};
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
     apply_follow_snapshot_update, handle_shadow_task_output, spawn_shadow_worker_task,
@@ -134,10 +137,14 @@ async fn main() -> Result<()> {
     let cli_config = parse_config_arg();
     let default_path = cli_config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
     let (mut config, loaded_config_path) = load_from_env_or_default(&default_path)?;
-    let applied_source_override = apply_ingestion_source_override(
-        &mut config.ingestion.source,
-        load_ingestion_source_override(),
-    );
+    let (applied_source_override, invalid_source_override_error) =
+        match load_ingestion_source_override() {
+            Ok(source_override) => (
+                apply_ingestion_source_override(&mut config.ingestion.source, source_override),
+                None,
+            ),
+            Err(error) => (None, Some(error)),
+        };
     resolve_execution_adapter_secrets(&mut config.execution, loaded_config_path.as_path())?;
 
     init_tracing(&config.system.log_level, config.system.log_json)?;
@@ -150,6 +157,12 @@ async fn main() -> Result<()> {
         info!(
             source = %source_override,
             "applying ingestion source override from failover file (override has highest priority)"
+        );
+    }
+    if let Some(error) = invalid_source_override_error.as_ref() {
+        warn!(
+            error = %error,
+            "ignoring invalid ingestion source override file"
         );
     }
     validate_execution_runtime_contract(&config.execution, &config.system.env)?;
@@ -263,11 +276,15 @@ fn parse_config_arg() -> Option<PathBuf> {
     None
 }
 
-fn load_ingestion_source_override() -> Option<String> {
+fn load_ingestion_source_override() -> Result<Option<String>> {
     let override_path = env::var("SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE")
         .unwrap_or_else(|_| DEFAULT_INGESTION_OVERRIDE_PATH.to_string());
-    let content = fs::read_to_string(&override_path).ok()?;
+    let content = match fs::read_to_string(&override_path) {
+        Ok(content) => content,
+        Err(_) => return Ok(None),
+    };
     parse_ingestion_source_override(&content)
+        .with_context(|| format!("invalid ingestion source override in {override_path}"))
 }
 
 fn apply_ingestion_source_override(
@@ -281,7 +298,7 @@ fn apply_ingestion_source_override(
     None
 }
 
-fn parse_ingestion_source_override(content: &str) -> Option<String> {
+fn parse_ingestion_source_override(content: &str) -> Result<Option<String>> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -299,10 +316,18 @@ fn parse_ingestion_source_override(content: &str) -> Option<String> {
             .trim_matches('\'')
             .to_string();
         if !source.is_empty() {
-            return normalize_ingestion_source(&source).ok();
+            return normalize_ingestion_source(&source).map(Some);
         }
     }
-    None
+    Ok(None)
+}
+
+fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message == OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT
+            || message == OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT
+    })
 }
 
 fn ingestion_error_backoff_ms(consecutive_errors: u32) -> u64 {
@@ -2106,6 +2131,11 @@ async fn run_app_loop(
                     }
                     Err(error) => {
                         let error_chain = format_error_chain(&error);
+                        if observed_swap_writer_error_requires_restart(&error) {
+                            return Err(error).context(
+                                "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                            );
+                        }
                         warn!(
                             error = %error,
                             error_chain = %error_chain,
@@ -4742,14 +4772,16 @@ mod app_tests {
     }
 
     #[test]
-    fn parse_ingestion_source_override_reads_valid_source_key() {
+    fn parse_ingestion_source_override_reads_supported_source_key() {
         let content = r#"
 # comment
-SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws
+SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone_grpc
 "#;
         assert_eq!(
-            parse_ingestion_source_override(content).as_deref(),
-            Some("helius_ws")
+            parse_ingestion_source_override(content)
+                .expect("valid override should parse")
+                .as_deref(),
+            Some("yellowstone_grpc")
         );
     }
 
@@ -4760,15 +4792,22 @@ FOO=bar
 SOLANA_COPY_BOT_INGESTION_SOURCE=
 this-is-not-a-valid-line
 "#;
-        assert!(parse_ingestion_source_override(content).is_none());
+        assert!(parse_ingestion_source_override(content)
+            .expect("invalid lines without source value should be ignored")
+            .is_none());
     }
 
     #[test]
     fn parse_ingestion_source_override_rejects_invalid_source_value() {
         let content = r#"
-SOLANA_COPY_BOT_INGESTION_SOURCE=laserstream
+SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws
 "#;
-        assert!(parse_ingestion_source_override(content).is_none());
+        let error = parse_ingestion_source_override(content)
+            .expect_err("unsupported override source must warn and reject");
+        assert!(
+            error.to_string().contains("helius_ws"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -4777,9 +4816,29 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=laserstream
 SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
 "#;
         assert_eq!(
-            parse_ingestion_source_override(content).as_deref(),
+            parse_ingestion_source_override(content)
+                .expect("yellowstone alias should normalize")
+                .as_deref(),
             Some("yellowstone_grpc")
         );
+    }
+
+    #[test]
+    fn observed_swap_writer_closed_channel_error_requires_restart() {
+        let error = anyhow!("observed swap writer channel closed");
+        assert!(observed_swap_writer_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn observed_swap_writer_closed_reply_error_requires_restart() {
+        let error = anyhow!("observed swap writer reply channel closed");
+        assert!(observed_swap_writer_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn transient_observed_swap_write_errors_do_not_require_restart() {
+        let error = anyhow!("database is locked");
+        assert!(!observed_swap_writer_error_requires_restart(&error));
     }
 
     #[test]
@@ -4854,10 +4913,11 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
 
     #[test]
     fn apply_ingestion_source_override_has_priority_over_existing_source() {
-        let mut source = "yellowstone_grpc".to_string();
-        let applied = apply_ingestion_source_override(&mut source, Some("helius_ws".to_string()));
-        assert_eq!(applied.as_deref(), Some("helius_ws"));
-        assert_eq!(source, "helius_ws");
+        let mut source = "mock".to_string();
+        let applied =
+            apply_ingestion_source_override(&mut source, Some("yellowstone_grpc".to_string()));
+        assert_eq!(applied.as_deref(), Some("yellowstone_grpc"));
+        assert_eq!(source, "yellowstone_grpc");
     }
 
     #[test]

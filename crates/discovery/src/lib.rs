@@ -27,6 +27,7 @@ const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
 const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
+const AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
@@ -109,6 +110,8 @@ struct FetchProgress {
 enum PreparedCycleState {
     AggregateRecompute {
         publish_due: bool,
+        followlist_activations_suppressed: bool,
+        followlist_deactivations_suppressed: bool,
     },
     Empty {
         publish_due: bool,
@@ -117,6 +120,7 @@ enum PreparedCycleState {
     },
     Cached {
         publish_due: bool,
+        followlist_activations_suppressed: bool,
         followlist_deactivations_suppressed: bool,
         summary: DiscoverySummary,
     },
@@ -389,6 +393,12 @@ impl DiscoveryService {
             let swaps_window = state.swaps.len();
             if aggregate_scoring_ready {
                 state.bootstrap_from_persisted_metrics = false;
+                if !state.last_summary_from_aggregates {
+                    state.arm_aggregate_transition_guard(
+                        AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES,
+                    );
+                }
+                let aggregate_transition_suppressed = state.aggregate_transition_suppressed();
                 (
                     swaps_window,
                     fetch_progress,
@@ -398,21 +408,26 @@ impl DiscoveryService {
                     {
                         PreparedCycleState::Cached {
                             publish_due,
-                            followlist_deactivations_suppressed: false,
+                            followlist_activations_suppressed: aggregate_transition_suppressed,
+                            followlist_deactivations_suppressed: aggregate_transition_suppressed,
                             summary: state
                                 .last_summary
                                 .clone()
                                 .expect("checked last_summary exists above"),
                         }
                     } else {
-                        PreparedCycleState::AggregateRecompute { publish_due }
+                        PreparedCycleState::AggregateRecompute {
+                            publish_due,
+                            followlist_activations_suppressed: aggregate_transition_suppressed,
+                            followlist_deactivations_suppressed: aggregate_transition_suppressed,
+                        }
                     },
                 )
             } else if swaps_window == 0 {
                 state.cap_truncation_floor = None;
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
-                state.last_summary_from_aggregates = false;
+                state.note_scoring_source(false);
                 (
                     swaps_window,
                     fetch_progress,
@@ -431,6 +446,7 @@ impl DiscoveryService {
                     fetch_progress,
                     PreparedCycleState::Cached {
                         publish_due,
+                        followlist_activations_suppressed: false,
                         followlist_deactivations_suppressed,
                         summary: state
                             .last_summary
@@ -458,12 +474,16 @@ impl DiscoveryService {
             snapshots,
             scoring_source,
         ) = match prepared_cycle {
-            PreparedCycleState::AggregateRecompute { publish_due } => {
+            PreparedCycleState::AggregateRecompute {
+                publish_due,
+                followlist_activations_suppressed,
+                followlist_deactivations_suppressed,
+            } => {
                 store.finalize_discovery_scoring_rug_facts(now)?;
                 (
                     publish_due,
-                    false,
-                    false,
+                    followlist_activations_suppressed,
+                    followlist_deactivations_suppressed,
                     self.build_wallet_snapshots_from_aggregates(store, now)?,
                     "aggregates",
                 )
@@ -625,6 +645,7 @@ impl DiscoveryService {
             }
             PreparedCycleState::Cached {
                 publish_due,
+                followlist_activations_suppressed,
                 followlist_deactivations_suppressed,
                 summary: previous_summary,
             } => {
@@ -643,6 +664,16 @@ impl DiscoveryService {
                 };
                 if publish_due {
                     self.record_live_publish(now);
+                }
+                if aggregate_scoring_ready {
+                    let mut state = match self.window_state.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => {
+                            warn!("discovery window mutex poisoned while advancing aggregate transition guard; continuing");
+                            poisoned.into_inner()
+                        }
+                    };
+                    state.note_scoring_source(true);
                 }
                 info!(
                     window_start = %summary.window_start,
@@ -670,6 +701,7 @@ impl DiscoveryService {
                     metrics_persisted = false,
                     snapshot_recomputed = false,
                     discovery_published = summary.published,
+                    followlist_activations_suppressed,
                     followlist_deactivations_suppressed,
                     discovery_cycle_duration_ms = elapsed_ms,
                     top_wallets = ?summary.top_wallets,
@@ -776,7 +808,7 @@ impl DiscoveryService {
             };
             state.last_snapshot_bucket = Some(metrics_window_start);
             state.last_summary = Some(summary.clone());
-            state.last_summary_from_aggregates = scoring_source == "aggregates";
+            state.note_scoring_source(scoring_source == "aggregates");
         }
         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
@@ -806,6 +838,7 @@ impl DiscoveryService {
             metrics_persisted = should_persist_metrics,
             snapshot_recomputed = true,
             discovery_published = summary.published,
+            followlist_activations_suppressed,
             followlist_deactivations_suppressed,
             discovery_cycle_duration_ms = elapsed_ms,
             top_wallets = ?summary.top_wallets,
@@ -3147,6 +3180,107 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_scoring_transition_guard_suppresses_initial_followlist_flip() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("aggregate-scoring-transition-guard.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-09T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.refresh_seconds = 3600;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 1.0;
+        config.thin_market_min_unique_traders = 1;
+        config.scoring_aggregates_enabled = true;
+
+        let window_start = now - Duration::days(config.scoring_window_days as i64);
+        let mut swaps = Vec::new();
+        for idx in 0..6 {
+            let buy_ts = now - Duration::days(3) + Duration::minutes((idx * 20) as i64);
+            let sell_ts = buy_ts + Duration::minutes(6);
+            let buy = swap(
+                "wallet_aggregate_new",
+                &format!("aggregate-transition-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenAggregateTransition11111111111111111111",
+                1.0,
+                100.0,
+            );
+            let sell = swap(
+                "wallet_aggregate_new",
+                &format!("aggregate-transition-sell-{idx}"),
+                sell_ts,
+                "TokenAggregateTransition11111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            );
+            store.insert_observed_swap(&buy)?;
+            store.insert_observed_swap(&sell)?;
+            swaps.push(buy);
+            swaps.push(sell);
+        }
+
+        store.reset_discovery_scoring_tables()?;
+        store.apply_discovery_scoring_batch(&swaps, &aggregate_write_config(&config))?;
+        store.finalize_discovery_scoring_rug_facts(now)?;
+        store.set_discovery_scoring_covered_since(window_start)?;
+        store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now,
+            slot: 999,
+            signature: "aggregate-transition-covered-through".to_string(),
+        })?;
+        store.delete_observed_swaps_before(now + Duration::seconds(1))?;
+        store.persist_discovery_cycle(
+            &[],
+            &[],
+            &[String::from("wallet_legacy_follow")],
+            true,
+            true,
+            now - Duration::days(1),
+            "seed_followlist",
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+
+        let first = discovery.run_cycle(&store, now)?;
+        assert_eq!(first.follow_promoted, 0);
+        assert_eq!(first.follow_demoted, 0);
+        let active = store.list_active_follow_wallets()?;
+        assert!(active.contains("wallet_legacy_follow"));
+        assert!(!active.contains("wallet_aggregate_new"));
+
+        let second = discovery.run_cycle(&store, now + Duration::minutes(10))?;
+        assert_eq!(second.follow_promoted, 0);
+        assert_eq!(second.follow_demoted, 0);
+
+        let third = discovery.run_cycle(&store, now + Duration::minutes(20))?;
+        assert_eq!(third.follow_promoted, 0);
+        assert_eq!(third.follow_demoted, 0);
+
+        let fourth = discovery.run_cycle(&store, now + Duration::minutes(30))?;
+        assert_eq!(fourth.follow_promoted, 1);
+        assert_eq!(fourth.follow_demoted, 1);
+        let active = store.list_active_follow_wallets()?;
+        assert!(!active.contains("wallet_legacy_follow"));
+        assert!(active.contains("wallet_aggregate_new"));
+        Ok(())
+    }
+
+    #[test]
     fn aggregate_scoring_can_score_wallets_without_raw_hot_window() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("aggregate-scoring-live-path.db");
@@ -3214,7 +3348,7 @@ mod tests {
         let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery.run_cycle(&store, now)?;
         assert_eq!(summary.eligible_wallets, 1);
-        assert_eq!(summary.active_follow_wallets, 1);
+        assert_eq!(summary.active_follow_wallets, 0);
         assert!(
             summary
                 .top_wallets

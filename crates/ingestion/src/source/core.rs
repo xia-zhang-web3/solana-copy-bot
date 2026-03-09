@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), allow(dead_code))]
+
 use anyhow::{anyhow, Result};
 use reqwest::header::RETRY_AFTER;
 use std::collections::{HashMap, HashSet, VecDeque};

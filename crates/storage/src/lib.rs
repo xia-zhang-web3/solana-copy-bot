@@ -4011,6 +4011,21 @@ mod tests {
             !store.discovery_scoring_ready_for_window(window_start, now, max_lag)?,
             "covered_since alone must not activate aggregate reads without a near-head watermark"
         );
+        store.conn.execute(
+            "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
+             VALUES ('covered_through_ts', ?1, ?2)
+             ON CONFLICT(state_key) DO UPDATE SET
+                state_value = excluded.state_value,
+                updated_at = excluded.updated_at",
+            params![
+                (now - Duration::minutes(5)).to_rfc3339(),
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        assert!(
+            !store.discovery_scoring_ready_for_window(window_start, now, max_lag)?,
+            "timestamp-only covered_through state must not enable aggregate reads without the exact cursor"
+        );
 
         store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
             ts_utc: now - Duration::minutes(5),

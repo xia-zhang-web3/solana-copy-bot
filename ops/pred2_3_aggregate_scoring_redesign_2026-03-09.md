@@ -2,6 +2,12 @@
 
 Date: 2026-03-09
 
+Scope note:
+
+1. Production ingestion scope is now `yellowstone_grpc` only.
+2. `helius_ws` is explicitly unsupported as an ingestion source and is treated as legacy dead
+   backup code, not part of the rollout safety contract for this redesign.
+
 ## Goal
 
 Close the architectural conflict between:
@@ -36,23 +42,27 @@ Aggregate writes run in the observed-swap serialized writer path, not in discove
 1. `ObservedSwapWriter` writes raw swaps and wallet activity days first, then optionally materializes
    discovery scoring aggregates as a second phase.
 2. Heavy aggregate preparation no longer runs inside the raw observed-swap write transaction.
-3. Live runtime aggregate writes are explicitly gated by `discovery.scoring_aggregates_write_enabled`.
-4. runtime retention respects a temporary backfill source-protection watermark, so live raw sweeps
+3. Live ingest acknowledgements return after raw insert success; aggregate materialization remains on
+   the same serialized worker thread, but no longer blocks `observed_swap_writer.write()` latency.
+4. Live runtime aggregate writes are explicitly gated by `discovery.scoring_aggregates_write_enabled`.
+5. runtime retention respects a temporary backfill source-protection watermark, so live raw sweeps
    do not delete the slice that a concurrent backfill replay is reading.
-5. still-open lots are retained until consumption; retention only prunes historical facts, not
+6. still-open lots are retained until consumption; retention only prunes historical facts, not
    live cost-basis inventory.
-6. `wallet_scoring_carryover_lots` exists as a reserved escape hatch for future/manual compaction
+7. `wallet_scoring_carryover_lots` exists as a reserved escape hatch for future/manual compaction
    flows, but normal retention no longer depends on collapsing live open lots.
-7. aggregate write coverage now advances on an exact cursor chain (`ts`, `slot`, `signature`), not
+8. aggregate write coverage now advances on an exact cursor chain (`ts`, `slot`, `signature`), not
    on timestamp alone.
-8. the first startup with `discovery.scoring_aggregates_write_enabled = true` replays every raw row
+9. the first startup with `discovery.scoring_aggregates_write_enabled = true` replays every raw row
    after the last exact covered cursor before it accepts new live writes.
-9. continuity gaps are also latched on an exact cursor chain, and repair only clears them when a
+10. continuity gaps are also latched on an exact cursor chain, and repair only clears them when a
    successful replay actually observes the exact latched gap cursor.
-10. startup replay now uses the same exact observation rule: if it reprocesses the latched gap row,
+11. startup replay now uses the same exact observation rule: if it reprocesses the latched gap row,
     it clears the blocker automatically; if that row is already absent from raw source, startup keeps
     raw ingestion alive but leaves readiness blocked for explicit backfill repair.
-11. WAL truncate checkpoint remains part of the retention reclaim flow.
+12. if the observed-swap writer thread dies, the main app loop now fails fast instead of silently
+    continuing on stale ingestion.
+13. WAL truncate checkpoint remains part of the retention reclaim flow.
 
 ### 3. Aggregate read path
 
@@ -64,7 +74,8 @@ Aggregate reads are gated by three conditions:
 
 1. `discovery.scoring_aggregates_enabled = true`
 2. `discovery_scoring_state.covered_since_ts <= scoring_window_start`
-3. `discovery_scoring_state.covered_through_ts` is near-head (within discovery refresh lag)
+3. `discovery_scoring_state.covered_through_*` is present as a full exact cursor and its
+   `covered_through_ts` component is near-head (within discovery refresh lag)
 4. no latched `materialization_gap_since_ts` is present
 
 If either condition is false, discovery stays on the existing hotfix/raw fallback path.
@@ -89,13 +100,16 @@ Properties:
 3. exact resume cursor support
 4. explicit `--reset` guard for non-idempotent aggregate rebuilds
 5. optional `--mark-covered` to write the historical coverage marker only when the operator intends
-   to make the backfill eligible for later live use
-6. config-derived scoring policy; parity-critical knobs come from `--config`, not ad-hoc CLI defaults
-7. backfill refuses to run if either aggregate writes or aggregate reads are enabled in the target
+   to make the backfill eligible for later live use, and only when continuous lineage from the same
+   `start_ts` is proven by persisted backfill progress
+6. resumed backfill itself also requires matching persisted backfill progress; a first run from an
+   arbitrary later cursor is rejected fail-closed and cannot seed fake lineage
+7. config-derived scoring policy; parity-critical knobs come from `--config`, not ad-hoc CLI defaults
+8. backfill refuses to run if either aggregate writes or aggregate reads are enabled in the target
    runtime config
-8. mature rug facts are finalized as the replay cursor advances, so historical aggregate quality
+9. mature rug facts are finalized as the replay cursor advances, so historical aggregate quality
    does not depend on a later discovery cycle
-9. backfill now matches live writer policy by default: no implicit Helius quality fetches unless
+10. backfill now matches live writer policy by default: no implicit Helius quality fetches unless
    the operator explicitly passes `--helius-http-url`
 
 ## Current Rollout Mode
@@ -117,8 +131,14 @@ That means:
    disabled until replay/backfill repairs it,
 7. the activation race between final tail catch-up and write enable is closed by startup replay from
    the exact covered cursor.
-6. if backfill is run against the live DB, runtime raw retention is temporarily pinned by TTL so
+8. the first three aggregate-scored discovery cycles suppress both followlist promotions and
+   followlist demotions, creating an explicit burn-in window before any live followlist churn.
+9. if backfill is run against the live DB, runtime raw retention is temporarily pinned by TTL so
    the replay source does not disappear mid-run.
+10. config activation is fail-closed: `discovery.scoring_aggregates_enabled = true` now requires
+    `discovery.scoring_aggregates_write_enabled = true`.
+11. stale failover override files that still request `SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws`
+    now emit an explicit warning after tracing is initialized instead of being silently ignored.
 
 ## Backfill Procedure
 
@@ -173,14 +193,16 @@ Safety rules:
 2. keep `discovery.scoring_aggregates_enabled = false` during the historical rebuild
 3. if online raw ingestion continues during backfill, do a final exact tail catch-up before any
    activation step
-4. `--mark-covered` is safe for historical coverage, but aggregate reads must still wait for a
-   near-head `covered_through_ts`
-5. the backfill source-protection pin is temporary; long runs must finish before TTL expiry or
+4. `--mark-covered` on a resumed run is allowed only when persisted backfill progress proves that
+   the replay is a continuous continuation from the same `start_ts`; arbitrary `resume_*` cannot
+   certify historical coverage
+5. aggregate reads must still wait for a near-head exact `covered_through_*` cursor
+6. the backfill source-protection pin is temporary; long runs must finish before TTL expiry or
    refresh it by continuing normal batch progress
-6. a successful full forward replay only clears the continuity blocker when it actually observes the
+7. a successful full forward replay only clears the continuity blocker when it actually observes the
    exact latched gap cursor; if that row has already fallen out of raw source, the repair fails
    closed instead of clearing the blocker
-7. enabling live aggregate writes no longer requires a quiesced stop; startup replay covers raw rows
+8. enabling live aggregate writes no longer requires a quiesced stop; startup replay covers raw rows
    that arrived after the final backfill cursor but before the new writer came up
 
 ## Activation Procedure

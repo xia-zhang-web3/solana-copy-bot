@@ -421,6 +421,53 @@ fn load_from_env_allows_discovery_retention_shorter_than_scoring_window() {
 }
 
 #[test]
+fn load_from_env_applies_discovery_aggregate_flag_overrides() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_SCORING_AGGREGATES_WRITE_ENABLED",
+                "true",
+                || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_DISCOVERY_SCORING_AGGREGATES_ENABLED",
+                        "true",
+                        || {
+                            let (cfg, _) = load_from_env_or_default(config_path)
+                                .expect("aggregate flag overrides should load");
+                            assert!(cfg.discovery.scoring_aggregates_write_enabled);
+                            assert!(cfg.discovery.scoring_aggregates_enabled);
+                        },
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_discovery_aggregate_reads_without_writes() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_DISCOVERY_SCORING_AGGREGATES_ENABLED",
+                "true",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("aggregate reads without writes must fail config load")
+                        .to_string();
+                    assert!(
+                        err.contains(
+                            "discovery.scoring_aggregates_enabled requires discovery.scoring_aggregates_write_enabled = true"
+                        ),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
 fn load_from_env_rejects_discovery_fetch_cap_above_window_cap() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {

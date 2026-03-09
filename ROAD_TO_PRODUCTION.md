@@ -2297,7 +2297,9 @@ Formal verdict:
 
 Статус:
 
-1. New aggregate schema landed via `0035_discovery_scoring_aggregates.sql`:
+1. Production ingestion scope is now `yellowstone_grpc` only; `helius_ws` is explicitly unsupported
+   as an ingestion source and is out of rollout scope for aggregate-scoring safety.
+2. New aggregate schema landed via `0035_discovery_scoring_aggregates.sql`:
    1. `wallet_scoring_days`,
    2. `wallet_scoring_tx_minutes`,
    3. `wallet_scoring_open_lots`,
@@ -2305,28 +2307,46 @@ Formal verdict:
    5. `wallet_scoring_buy_facts`,
    6. `wallet_scoring_close_facts`,
    7. `discovery_scoring_state`.
-2. Aggregate writes are prepared outside the raw observed-swap write transaction and are gated by
+3. Aggregate writes are prepared outside the raw observed-swap write transaction and are gated by
    `discovery.scoring_aggregates_write_enabled`; tracked configs keep that flag `false` for now.
-3. Live raw retention now respects a temporary backfill source-protection watermark so a concurrent
+4. Live ingest acknowledgements now return after raw insert success; aggregate materialization stays
+   serialized on the same writer thread, but no longer blocks `observed_swap_writer.write()`
+   latency in the main ingest loop.
+5. Live raw retention now respects a temporary backfill source-protection watermark so a concurrent
    replay does not lose source rows mid-run.
-4. Discovery can read score inputs from aggregates, but only when all are true:
+6. Discovery can read score inputs from aggregates, but only when all are true:
    1. `discovery.scoring_aggregates_enabled = true`,
    2. `discovery_scoring_state.covered_since_ts <= scoring_window_start`,
-   3. `discovery_scoring_state.covered_through_ts` is near-head,
+   3. `discovery_scoring_state.covered_through_*` exists as a full exact cursor and its
+      `covered_through_ts` component is near-head,
    4. no latched `materialization_gap_since_ts` exists.
-5. Aggregate write coverage now uses an exact covered cursor (`ts`, `slot`, `signature`), and the
+6. Aggregate write coverage now uses an exact covered cursor (`ts`, `slot`, `signature`), and the
    first aggregate-enabled startup replays raw rows after that cursor before accepting new live
    writes.
-6. Continuity gaps are latched and cleared on exact cursor semantics as well; replay only clears the
+7. Continuity gaps are latched and cleared on exact cursor semantics as well; replay only clears the
    blocker when it actually observes the exact latched gap row, and a full forward repair fails
    closed if that row is already missing from raw source.
-7. Startup replay follows the same exact-gap rule, but unlike operator backfill it does not fail the
+8. Startup replay follows the same exact-gap rule, but unlike operator backfill it does not fail the
    writer when the gap row is already gone; raw ingestion keeps running while aggregate readiness
    stays blocked until explicit repair.
-8. Tracked configs intentionally keep aggregate reads disabled too:
+9. `--mark-covered` on a resumed backfill now requires persisted progress proving continuous lineage
+   from the same `start_ts`; arbitrary `resume_*` can no longer certify historical coverage.
+10. Aggregate read activation now has an explicit transition guard: the first three aggregate-scored
+    discovery cycles suppress both followlist promotions and followlist demotions before any live
+    followlist churn is allowed.
+11. The main app loop now treats `observed swap writer channel closed` / `reply channel closed` as a
+    fatal restart signal, so a dead writer no longer leaves ingestion silently stale.
+12. Stale failover override files that still request `SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws`
+    now emit an explicit warning after tracing is initialized instead of being silently ignored.
+13. Config activation is fail-closed too: `discovery.scoring_aggregates_enabled = true` now requires
+    `discovery.scoring_aggregates_write_enabled = true`, and both flags now have explicit env
+    overrides for controlled rollout/testing.
+14. Resumed backfill is fail-closed too: a first run from an arbitrary later cursor is rejected
+    unless persisted backfill progress already proves continuous lineage from the same `start_ts`.
+15. Tracked configs intentionally keep aggregate reads disabled too:
    1. `discovery.scoring_aggregates_write_enabled = false`,
    2. `discovery.scoring_aggregates_enabled = false`.
-8. New admin tooling landed:
+16. New admin tooling landed:
    1. `cargo run -p copybot-storage --bin backfill_discovery_scoring -- ...`
    2. exact cursor resume is required because aggregate replay is not overlap-idempotent,
    3. scoring policy is loaded from `--config`,
@@ -2336,9 +2356,9 @@ Formal verdict:
       cycle,
    6. parity backfill defaults to the same no-implicit-Helius policy as the live writer unless the
       operator explicitly opts in with `--helius-http-url`.
-8. Any live aggregate materialization failure now latches a continuity blocker; readiness stays
+17. Any live aggregate materialization failure now latches a continuity blocker; readiness stays
    false until replay/backfill repairs the gap.
-9. This means rollout now proceeds in safe stages:
+18. This means rollout now proceeds in safe stages:
    1. deploy code,
    2. keep aggregate writes/reads disabled,
    3. run aggregate backfill,

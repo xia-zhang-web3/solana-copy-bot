@@ -252,6 +252,16 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     )? {
         config.discovery.observed_swaps_retention_days = observed_swaps_retention_days;
     }
+    if let Some(scoring_aggregates_write_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_DISCOVERY_SCORING_AGGREGATES_WRITE_ENABLED")?
+    {
+        config.discovery.scoring_aggregates_write_enabled = scoring_aggregates_write_enabled;
+    }
+    if let Some(scoring_aggregates_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_DISCOVERY_SCORING_AGGREGATES_ENABLED")?
+    {
+        config.discovery.scoring_aggregates_enabled = scoring_aggregates_enabled;
+    }
     if let Ok(shadow_http_url) = env::var("SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL") {
         config.shadow.helius_http_url = shadow_http_url;
     }
@@ -739,6 +749,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_shadow_universe_config(config)?;
     validate_shadow_quality_thresholds(config)?;
     validate_discovery_storage_mitigation_config(config)?;
+    validate_discovery_aggregate_activation_config(config)?;
     validate_execution_exact_sizing_config(config)?;
     validate_history_retention_config(config)?;
     Ok(())
@@ -750,6 +761,17 @@ fn validate_shadow_universe_config(config: &AppConfig) -> Result<()> {
     if follow_top_n < min_active {
         return Err(anyhow!(
             "discovery.follow_top_n ({follow_top_n}) must be >= risk.shadow_universe_min_active_follow_wallets ({min_active})"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_discovery_aggregate_activation_config(config: &AppConfig) -> Result<()> {
+    if config.discovery.scoring_aggregates_enabled
+        && !config.discovery.scoring_aggregates_write_enabled
+    {
+        return Err(anyhow!(
+            "discovery.scoring_aggregates_enabled requires discovery.scoring_aggregates_write_enabled = true"
         ));
     }
     Ok(())

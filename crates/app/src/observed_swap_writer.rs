@@ -11,6 +11,10 @@ use tracing::{info, warn};
 const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
 const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
+pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT: &str =
+    "observed swap writer channel closed";
+pub(crate) const OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT: &str =
+    "observed swap writer reply channel closed";
 
 #[derive(Clone)]
 struct ObservedSwapWriterConfig {
@@ -91,10 +95,10 @@ impl ObservedSwapWriter {
                 reply_tx,
             })
             .await
-            .context("observed swap writer channel closed")?;
+            .context(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)?;
         reply_rx
             .await
-            .context("observed swap writer reply channel closed")?
+            .context(OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT)?
     }
 
     pub(crate) fn shutdown(mut self) -> Result<()> {
@@ -142,6 +146,9 @@ fn observed_swap_writer_loop(
 
         match store.insert_observed_swaps_batch_with_activity_days(&swaps) {
             Ok(results) => {
+                for (reply_tx, inserted) in replies.into_iter().zip(results.iter().copied()) {
+                    let _ = reply_tx.send(Ok(inserted));
+                }
                 if config.aggregate_writes_enabled {
                     let inserted_swaps: Vec<SwapEvent> = swaps
                         .iter()
@@ -202,9 +209,6 @@ fn observed_swap_writer_loop(
                             }
                         }
                     }
-                }
-                for (reply_tx, inserted) in replies.into_iter().zip(results.into_iter()) {
-                    let _ = reply_tx.send(Ok(inserted));
                 }
             }
             Err(error) => {

@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), allow(dead_code))]
+
 use chrono::Utc;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};

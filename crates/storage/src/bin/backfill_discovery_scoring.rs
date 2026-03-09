@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::load_from_path;
 use copybot_core_types::SwapEvent;
-use copybot_storage::{DiscoveryAggregateWriteConfig, SqliteStore};
+use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -29,6 +29,10 @@ struct Config {
     mark_covered: bool,
     resume_after: Option<Cursor>,
     aggregate_write_config: DiscoveryAggregateWriteConfig,
+}
+
+fn cursor_matches_runtime(left: &Cursor, right: &DiscoveryRuntimeCursor) -> bool {
+    left.ts == right.ts_utc && left.slot == right.slot && left.signature == right.signature
 }
 
 fn main() -> Result<()> {
@@ -205,6 +209,28 @@ fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
     }
     refresh_backfill_source_protection(store, config.start_ts)?;
 
+    if let Some(resume_after) = config.resume_after.as_ref() {
+        let Some((progress_start_ts, progress_cursor)) =
+            store.load_discovery_scoring_backfill_progress()?
+        else {
+            bail!(
+                "resumed backfill requires persisted backfill progress proving continuous lineage from start_ts; use --reset for a new rebuild"
+            );
+        };
+        if progress_start_ts != config.start_ts
+            || !cursor_matches_runtime(resume_after, &progress_cursor)
+        {
+            if config.mark_covered {
+                bail!(
+                    "--mark-covered resume cursor does not match persisted backfill progress for the requested start_ts"
+                );
+            }
+            bail!(
+                "resumed backfill cursor does not match persisted backfill progress for the requested start_ts"
+            );
+        }
+    }
+
     let mut cursor = config.resume_after.clone().unwrap_or_else(|| Cursor {
         ts: config.start_ts,
         slot: 0,
@@ -259,6 +285,14 @@ fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
             slot: last_swap.slot,
             signature: last_swap.signature.clone(),
         };
+        store.set_discovery_scoring_backfill_progress(
+            config.start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: cursor.ts,
+                slot: cursor.slot,
+                signature: cursor.signature.clone(),
+            },
+        )?;
         total_rows = total_rows.saturating_add(page.len());
         batches = batches.saturating_add(1);
         println!(
@@ -296,13 +330,12 @@ fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
 
     if config.mark_covered {
         store.set_discovery_scoring_covered_since(config.start_ts)?;
-        store.set_discovery_scoring_covered_through_cursor(
-            &copybot_storage::DiscoveryRuntimeCursor {
-                ts_utc: cursor.ts,
-                slot: cursor.slot,
-                signature: cursor.signature.clone(),
-            },
-        )?;
+        store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: cursor.ts,
+            slot: cursor.slot,
+            signature: cursor.signature.clone(),
+        })?;
+        store.clear_discovery_scoring_backfill_progress()?;
         println!(
             "event=coverage_marked covered_since_ts={} covered_through_ts={} covered_through_slot={} covered_through_signature={}",
             config.start_ts.to_rfc3339(),
@@ -381,6 +414,18 @@ mod tests {
             slot: 100,
             signature: "sig-gap-missing".to_string(),
         })?;
+        store.set_discovery_scoring_backfill_progress(
+            DateTime::parse_from_rfc3339("2026-03-06T09:55:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            &DiscoveryRuntimeCursor {
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:55:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+                slot: 0,
+                signature: String::new(),
+            },
+        )?;
 
         let config = Config {
             db_path: db_path.clone(),
@@ -420,6 +465,118 @@ mod tests {
                 signature: "sig-gap-missing".to_string(),
             }),
             "repair failure must keep the exact continuity blocker latched"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mark_covered_with_resume_requires_matching_persisted_backfill_progress() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-mark-covered-lineage.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let replay_swap = SwapEvent {
+            signature: "sig-lineage".to_string(),
+            wallet: "wallet-lineage".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenLineage1111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 200,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[replay_swap])?;
+
+        let config = Config {
+            db_path: db_path.clone(),
+            start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            end_ts: None,
+            batch_size: 128,
+            sleep_ms: 0,
+            reset: false,
+            mark_covered: true,
+            resume_after: Some(Cursor {
+                ts: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+                slot: 199,
+                signature: "sig-resume".to_string(),
+            }),
+            aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+        };
+
+        let error = run_with_store(&mut store, &config)
+            .expect_err("coverage marking must fail closed without persisted continuous lineage");
+        assert!(
+            format!("{error:#}").contains("persisted backfill progress"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(store.load_discovery_scoring_covered_since()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn resumed_backfill_requires_persisted_continuous_lineage_or_reset() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-resume-lineage-required.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        store.insert_observed_swaps_batch(&[SwapEvent {
+            signature: "sig-mid-history".to_string(),
+            wallet: "wallet-mid-history".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenMidHistory111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 321,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        }])?;
+
+        let config = Config {
+            db_path: db_path.clone(),
+            start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            end_ts: None,
+            batch_size: 128,
+            sleep_ms: 0,
+            reset: false,
+            mark_covered: false,
+            resume_after: Some(Cursor {
+                ts: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+                slot: 320,
+                signature: "sig-midpoint".to_string(),
+            }),
+            aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+        };
+
+        let error = run_with_store(&mut store, &config)
+            .expect_err("first resumed run without persisted lineage must fail closed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("resumed backfill requires persisted backfill progress"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            None,
+            "failed resumed run must not seed fake persisted lineage"
         );
         Ok(())
     }

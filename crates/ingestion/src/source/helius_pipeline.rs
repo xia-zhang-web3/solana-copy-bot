@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), allow(dead_code))]
+
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};

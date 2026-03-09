@@ -50,10 +50,9 @@ pub(crate) fn normalize_ingestion_queue_overflow_policy(value: &str) -> Result<S
 pub fn normalize_ingestion_source(value: &str) -> Result<String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "mock" => Ok(String::from("mock")),
-        "helius" | "helius_ws" => Ok(String::from("helius_ws")),
         "yellowstone" | "yellowstone_grpc" => Ok(String::from("yellowstone_grpc")),
         other => Err(anyhow!(
-            "ingestion.source must be one of: mock, helius_ws, yellowstone_grpc; got {other:?}"
+            "ingestion.source must be one of: mock, yellowstone_grpc; got {other:?}"
         )),
     }
 }

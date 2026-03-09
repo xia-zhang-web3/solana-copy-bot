@@ -17,7 +17,9 @@ use tracing::warn;
 use yellowstone_grpc_proto::prelude::{CommitmentLevel, TransactionStatusMeta, UiTokenAmount};
 
 mod core;
+#[allow(dead_code)]
 mod helius_parser;
+#[allow(dead_code)]
 mod helius_pipeline;
 mod queue;
 mod rate_limit;
@@ -73,7 +75,6 @@ pub struct IngestionRuntimeSnapshot {
 
 pub enum IngestionSource {
     Mock(MockSource),
-    HeliusWs(HeliusWsSource),
     YellowstoneGrpc(YellowstoneGrpcSource),
 }
 
@@ -88,7 +89,9 @@ impl IngestionSource {
                     .cloned()
                     .unwrap_or_default(),
             ))),
-            "helius" | "helius_ws" => Ok(Self::HeliusWs(HeliusWsSource::new(config)?)),
+            "helius" | "helius_ws" => Err(anyhow!(
+                "ingestion.source=helius_ws is no longer supported; use yellowstone_grpc"
+            )),
             "yellowstone" | "yellowstone_grpc" => {
                 Ok(Self::YellowstoneGrpc(YellowstoneGrpcSource::new(config)?))
             }
@@ -99,7 +102,6 @@ impl IngestionSource {
     pub async fn next_observation(&mut self) -> Result<Option<RawSwapObservation>> {
         match self {
             Self::Mock(source) => source.next_observation().await,
-            Self::HeliusWs(source) => source.next_observation().await,
             Self::YellowstoneGrpc(source) => source.next_observation().await,
         }
     }
@@ -107,12 +109,12 @@ impl IngestionSource {
     pub fn runtime_snapshot(&self) -> Option<IngestionRuntimeSnapshot> {
         match self {
             Self::Mock(_) => None,
-            Self::HeliusWs(source) => Some(source.runtime_snapshot()),
             Self::YellowstoneGrpc(source) => Some(source.runtime_snapshot()),
         }
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn redacted_url_for_log(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -195,6 +197,7 @@ impl MockSource {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct LogsNotification {
     signature: String,
     slot: u64,
@@ -205,18 +208,21 @@ struct LogsNotification {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct FetchedObservation {
     raw: RawSwapObservation,
     arrival_seq: u64,
     fetch_latency_ms: u64,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 type HeliusWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const WS_IDLE_TIMEOUT_SECS: u64 = 45;
 const TELEMETRY_SAMPLE_CAPACITY: usize = 4096;
 
+#[cfg_attr(not(test), allow(dead_code))]
 type NotificationQueue = OverflowQueue<LogsNotification>;
 type RawObservationQueue = OverflowQueue<FetchedObservation>;
 
@@ -226,6 +232,7 @@ struct SeenSignatureEntry {
     seen_at: Instant,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 struct HeliusPipeline {
     output_rx: mpsc::Receiver<FetchedObservation>,
     ws_to_fetch_depth: Arc<AtomicUsize>,
@@ -243,6 +250,7 @@ impl Drop for HeliusPipeline {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 struct HeliusRuntimeConfig {
     ws_url: String,
     http_endpoints: Vec<Arc<HeliusEndpoint>>,
@@ -264,6 +272,7 @@ struct HeliusRuntimeConfig {
     telemetry: Arc<IngestionTelemetry>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl HeliusRuntimeConfig {
     fn next_http_endpoint(&self) -> Arc<HeliusEndpoint> {
         let len = self.http_endpoints.len();
@@ -272,6 +281,7 @@ impl HeliusRuntimeConfig {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct HeliusWsSource {
     runtime_config: Arc<HeliusRuntimeConfig>,
     fetch_concurrency: usize,
@@ -283,12 +293,14 @@ pub struct HeliusWsSource {
     pipeline: Option<HeliusPipeline>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 enum OutputRecvOutcome {
     Item(FetchedObservation),
     ChannelClosed,
     TimedOut,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl HeliusWsSource {
     pub fn new(config: &IngestionConfig) -> Result<Self> {
         let mut interested_program_ids: HashSet<String> =
@@ -799,6 +811,22 @@ mod tests {
             "https://rpc.example.com/v1"
         );
         assert_eq!(redacted_url_for_log(""), "");
+    }
+
+    #[test]
+    fn from_config_rejects_helius_ingestion_source() {
+        let mut config = IngestionConfig::default();
+        config.source = "helius_ws".to_string();
+        let error = match IngestionSource::from_config(&config) {
+            Ok(_) => panic!("helius ingestion source must reject"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("ingestion.source=helius_ws is no longer supported"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]

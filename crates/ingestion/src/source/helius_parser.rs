@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), allow(dead_code))]
+
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
