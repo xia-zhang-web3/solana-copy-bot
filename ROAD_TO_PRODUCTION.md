@@ -2469,3 +2469,91 @@ Formal verdict:
 1. Это хороший pre-rollout baseline: live runtime сейчас стабильный, near-head и без свежих incident-сигналов.
 2. Если дальше катить новый PRED2-3 patch, сравнивать надо именно с этим checkpoint, а не с disk-full/night incident.
 3. При этом storage-growth проблема остается отдельной: WAL маленький и root healthy, но сам `.db` уже `~96G`, так что long-term storage hygiene по-прежнему нужен независимо от текущей runtime stability.
+
+### 2026-03-09 — emergency 5d profile activated followlist; shadow path confirmed alive
+
+Источник:
+
+1. `ops/server_reports/2026-03-09_late_evening_emergency_profile_followlist_and_shadow_status.md`
+
+Краткий статус:
+
+1. После live emergency-profile cutover (`scoring_window_days = 5`, `decay_window_days = 5`, `min_active_days = 3`, `min_score = 0.4`, `max_rug_ratio = 1.0`) `0 active wallets` blocker больше не воспроизводится:
+   1. latest `wallet_metrics.window_start = 2026-03-04T20:24:00+00:00`,
+   2. `positive_score_wallet_rows = 518`,
+   3. `followlist.active = 39`.
+2. Shadow path тоже уже жив end-to-end:
+   1. `copy_signals = 95`,
+   2. `shadow_lots = 20`,
+   3. logs repeatedly show `shadow followed wallet swap reached pipeline`,
+   4. logs repeatedly show `shadow signal recorded`.
+3. `orders = 0` at this checkpoint is not a discovery/followlist failure anymore.
+4. The immediate blocker for live orders is operational execution config:
+   1. `/etc/solana-copy-bot/live.server.toml` still has `[execution].enabled = false`,
+   2. runtime is therefore intentionally shadow-only,
+   3. current executor/adapter signer config still points at placeholder/devnet-looking material (`11111111111111111111111111111111`, `executor-signer.devnet.json`).
+5. Shadow quality/risk gates are not the main explanation for `orders = 0`:
+   1. quality metrics are being evaluated successfully,
+   2. many followed swaps are dropped at `stage="notional"` with `reason="below_notional"`,
+   3. some are dropped at `stage="quality"` with `reason="too_new"`,
+   4. but zero orders are explained earlier by `execution.enabled = false`.
+
+Операционный вывод:
+
+1. Emergency discovery/profile work did achieve the main business rescue target: active wallets now exist in live runtime and shadow signals are flowing.
+2. The active blocker has moved downstream from discovery to execution.
+3. The next track should be a controlled `shadow -> live execution` cutover:
+   1. verify / replace signer material,
+   2. enable execution,
+   3. restart executor + adapter + app,
+   4. monitor order submit / reject path.
+4. The temporary server-only debug knob `metric_snapshot_interval_seconds = 60` can stay in place until the execution cutover diagnosis is complete, then should be returned to `1800`.
+
+### 2026-03-09 — pinned WAL from stale sqlite readers; disk recovery completed
+
+Источник:
+
+1. `ops/server_reports/2026-03-09_late_evening_pinned_wal_recovery_report.md`
+
+Краткий статус:
+
+1. Новый disk-pressure incident был не только про “DB уже большая”, а про конкретный pinned WAL failure mode:
+   1. `/dev/root free` упал до `~3.1-3.8G`,
+   2. `live_copybot.db ~98G`,
+   3. `live_copybot.db-wal ~36G`,
+   4. два stale diagnostic `sqlite3` reader process pair’а держали `db/db-wal/db-shm` открытыми:
+      1. `197958/197959` (start observed `2026-03-09 20:15:03 UTC`),
+      2. `198074/198075` (start observed `2026-03-09 20:15:43 UTC`).
+2. Recovery path был таким:
+   1. stale readers killed,
+   2. temporary server-only debug knob returned `metric_snapshot_interval_seconds = 60 -> 1800`,
+   3. `solana-copy-bot.service` stopped,
+   4. static `PRAGMA wal_checkpoint(TRUNCATE)` completed,
+   5. `solana-copy-bot.service` restarted cleanly.
+3. Recovery result:
+   1. `/dev/root free ~41G`,
+   2. `live_copybot.db-wal ~52M`,
+   3. `solana-copy-bot.service active`,
+   4. fresh process restarted with `sqlite_busy_error_total=0`, `sqlite_write_retry_total=0`.
+4. Immediate post-recovery business checkpoint stayed alive:
+   1. `followlist.active = 301`,
+   2. `copy_signals = 2954`,
+   3. `shadow_lots = 34`.
+5. A later spot check still showed live shadow behavior:
+   1. `followlist.active = 15`,
+   2. `copy_signals = 2985`,
+   3. `shadow_lots = 34`.
+   4. The exact followlist count continued to move with new discovery cycles and should not be read as a disk-recovery regression by itself.
+
+Операционный вывод:
+
+1. This recovery confirms a distinct operational failure mode:
+   1. stale sqlite readers can pin WAL and look like a mysterious disk leak.
+2. The incident is removed, but the system is still not storage-safe by design:
+   1. `state/` remains on root,
+   2. main DB is already `~99G` on a `145G` root filesystem,
+   3. checkpoint recovery on this storage is slow enough to be operationally expensive.
+3. Therefore the infra priority does not change:
+   1. move `state/` to a dedicated volume,
+   2. keep retention / archive discipline,
+   3. avoid long-lived ad hoc sqlite diagnostics against the live DB.
