@@ -14,6 +14,7 @@ SERVICE="${SERVICE:-solana-copy-bot}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/live.toml}}"
 ADAPTER_ENV_PATH="${ADAPTER_ENV_PATH:-adapter.env}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-state/runtime-readiness-$(date -u +"%Y%m%dT%H%M%SZ")}"
+EXACT_MONEY_CUTOVER_HELPER_PATH="${EXACT_MONEY_CUTOVER_HELPER_PATH:-$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh}"
 
 RUN_TESTS="${RUN_TESTS:-false}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
@@ -273,6 +274,7 @@ route_fee_nested_pretrade_fee_policy_guard_reason_code="n/a"
 route_fee_nested_signoff_guard_window_id="n/a"
 
 exact_money_db_path="$(first_non_empty "${DB_PATH:-}" "$(if [[ -f "$CONFIG_PATH" ]]; then cfg_value sqlite path; fi)")"
+exact_money_output_root="$OUTPUT_ROOT/exact_money_cutover_evidence"
 exact_money_output=""
 exact_money_exit_code="3"
 exact_money_guard_verdict="UNKNOWN"
@@ -282,6 +284,18 @@ exact_money_cutover_ts="n/a"
 exact_money_post_cutover_surface_failures="n/a"
 exact_money_invalid_exact_rows_total="n/a"
 exact_money_forbidden_merge_rows_total="n/a"
+exact_money_readiness_exit_code="n/a"
+exact_money_readiness_guard_verdict="n/a"
+exact_money_readiness_guard_reason_code="n/a"
+exact_money_legacy_export_exit_code="n/a"
+exact_money_legacy_export_verdict="n/a"
+exact_money_legacy_export_reason_code="n/a"
+exact_money_legacy_approximate_rows_total="n/a"
+exact_money_post_cutover_approximate_rows_total="n/a"
+exact_money_artifact_summary="n/a"
+exact_money_summary_sha256="n/a"
+exact_money_artifact_manifest="n/a"
+exact_money_manifest_sha256="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if [[ "$runtime_readiness_run_adapter_final_norm" == "true" ]]; then
@@ -1191,78 +1205,199 @@ if [[ "$exact_money_cutover_required_norm" == "true" ]]; then
     exact_money_exit_code=0
     exact_money_guard_verdict="UNKNOWN"
     exact_money_guard_reason_code="db_path_missing"
-    exact_money_output="exact_money_cutover_present: n/a
+    exact_money_readiness_exit_code="0"
+    exact_money_readiness_guard_verdict="UNKNOWN"
+    exact_money_readiness_guard_reason_code="db_path_missing"
+    exact_money_legacy_export_exit_code="0"
+    exact_money_legacy_export_verdict="SKIP"
+    exact_money_legacy_export_reason_code="not_run"
+    exact_money_output="exact_money_cutover_evidence_verdict: UNKNOWN
+exact_money_cutover_evidence_reason_code: db_path_missing
+exact_money_cutover_present: n/a
 exact_money_cutover_ts: n/a
-exact_money_post_cutover_surface_failures: n/a
-exact_money_invalid_exact_rows_total: n/a
-exact_money_forbidden_merge_rows_total: n/a
-exact_money_cutover_guard_verdict: UNKNOWN
-exact_money_cutover_guard_reason_code: db_path_missing"
+readiness_exit_code: 0
+readiness_guard_verdict: UNKNOWN
+readiness_guard_reason_code: db_path_missing
+readiness_post_cutover_surface_failures: n/a
+readiness_invalid_exact_rows_total: n/a
+readiness_forbidden_merge_rows_total: n/a
+legacy_export_exit_code: 0
+legacy_export_verdict: SKIP
+legacy_export_reason_code: not_run
+legacy_approximate_rows_total: n/a
+post_cutover_approximate_rows_total: n/a
+artifact_summary: n/a
+summary_sha256: n/a
+artifact_manifest: n/a
+manifest_sha256: n/a"
   elif [[ ! -f "$exact_money_db_path" ]]; then
     exact_money_exit_code=0
     exact_money_guard_verdict="UNKNOWN"
     exact_money_guard_reason_code="db_missing"
-    exact_money_output="exact_money_cutover_present: n/a
+    exact_money_readiness_exit_code="0"
+    exact_money_readiness_guard_verdict="UNKNOWN"
+    exact_money_readiness_guard_reason_code="db_missing"
+    exact_money_legacy_export_exit_code="0"
+    exact_money_legacy_export_verdict="SKIP"
+    exact_money_legacy_export_reason_code="not_run"
+    exact_money_output="exact_money_cutover_evidence_verdict: UNKNOWN
+exact_money_cutover_evidence_reason_code: db_missing
+exact_money_cutover_present: n/a
 exact_money_cutover_ts: n/a
-exact_money_post_cutover_surface_failures: n/a
-exact_money_invalid_exact_rows_total: n/a
-exact_money_forbidden_merge_rows_total: n/a
-exact_money_cutover_guard_verdict: UNKNOWN
-exact_money_cutover_guard_reason_code: db_missing"
+readiness_exit_code: 0
+readiness_guard_verdict: UNKNOWN
+readiness_guard_reason_code: db_missing
+readiness_post_cutover_surface_failures: n/a
+readiness_invalid_exact_rows_total: n/a
+readiness_forbidden_merge_rows_total: n/a
+legacy_export_exit_code: 0
+legacy_export_verdict: SKIP
+legacy_export_reason_code: not_run
+legacy_approximate_rows_total: n/a
+post_cutover_approximate_rows_total: n/a
+artifact_summary: n/a
+summary_sha256: n/a
+artifact_manifest: n/a
+manifest_sha256: n/a"
   else
     if exact_money_output="$(
-      bash "$ROOT_DIR/tools/exact_money_cutover_readiness_report.sh" "$exact_money_db_path" 2>&1
+      OUTPUT_DIR="$exact_money_output_root" \
+        bash "$EXACT_MONEY_CUTOVER_HELPER_PATH" "$exact_money_db_path" 2>&1
     )"; then
       exact_money_exit_code=0
     else
       exact_money_exit_code=$?
     fi
-    exact_money_guard_verdict_raw="$(trim_string "$(extract_field "exact_money_cutover_guard_verdict" "$exact_money_output")")"
+    exact_money_guard_verdict_raw="$(trim_string "$(extract_field "exact_money_cutover_evidence_verdict" "$exact_money_output")")"
     exact_money_guard_verdict_raw_upper="$(printf '%s' "$exact_money_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
     exact_money_guard_verdict="$(normalize_strict_guard_verdict "$exact_money_guard_verdict_raw")"
     if [[ -z "$exact_money_guard_verdict_raw" ]]; then
-      input_errors+=("exact money readiness exact_money_cutover_guard_verdict must be non-empty")
+      input_errors+=("exact money evidence exact_money_cutover_evidence_verdict must be non-empty")
       exact_money_guard_verdict="UNKNOWN"
     elif [[ "$exact_money_guard_verdict_raw_upper" != "PASS" && "$exact_money_guard_verdict_raw_upper" != "WARN" && "$exact_money_guard_verdict_raw_upper" != "UNKNOWN" && "$exact_money_guard_verdict_raw_upper" != "SKIP" ]]; then
-      input_errors+=("exact money readiness exact_money_cutover_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${exact_money_guard_verdict_raw})")
+      input_errors+=("exact money evidence exact_money_cutover_evidence_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${exact_money_guard_verdict_raw})")
       exact_money_guard_verdict="UNKNOWN"
     fi
-    exact_money_guard_reason_code="$(trim_string "$(extract_field "exact_money_cutover_guard_reason_code" "$exact_money_output")")"
+    exact_money_guard_reason_code="$(trim_string "$(extract_field "exact_money_cutover_evidence_reason_code" "$exact_money_output")")"
     if [[ -z "$exact_money_guard_reason_code" ]]; then
-      input_errors+=("exact money readiness exact_money_cutover_guard_reason_code must be non-empty")
+      input_errors+=("exact money evidence exact_money_cutover_evidence_reason_code must be non-empty")
       exact_money_guard_reason_code="n/a"
     fi
     exact_money_cutover_present="$(trim_string "$(extract_field "exact_money_cutover_present" "$exact_money_output")")"
     exact_money_cutover_ts="$(trim_string "$(extract_field "exact_money_cutover_ts" "$exact_money_output")")"
+    exact_money_readiness_exit_code_raw="$(trim_string "$(extract_field "readiness_exit_code" "$exact_money_output")")"
+    if [[ -z "$exact_money_readiness_exit_code_raw" || "$exact_money_readiness_exit_code_raw" == "n/a" ]]; then
+      input_errors+=("exact money evidence readiness_exit_code must be a non-negative integer")
+      exact_money_readiness_exit_code="n/a"
+    elif ! exact_money_readiness_exit_code="$(parse_u64_token_strict "$exact_money_readiness_exit_code_raw")"; then
+      input_errors+=("exact money evidence readiness_exit_code must be a non-negative integer (got: ${exact_money_readiness_exit_code_raw})")
+      exact_money_readiness_exit_code="n/a"
+    fi
+    exact_money_readiness_guard_verdict_raw="$(trim_string "$(extract_field "readiness_guard_verdict" "$exact_money_output")")"
+    exact_money_readiness_guard_verdict_raw_upper="$(printf '%s' "$exact_money_readiness_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    exact_money_readiness_guard_verdict="$(normalize_strict_guard_verdict "$exact_money_readiness_guard_verdict_raw")"
+    if [[ -z "$exact_money_readiness_guard_verdict_raw" ]]; then
+      input_errors+=("exact money evidence readiness_guard_verdict must be non-empty")
+      exact_money_readiness_guard_verdict="UNKNOWN"
+    elif [[ "$exact_money_readiness_guard_verdict_raw_upper" != "PASS" && "$exact_money_readiness_guard_verdict_raw_upper" != "WARN" && "$exact_money_readiness_guard_verdict_raw_upper" != "UNKNOWN" && "$exact_money_readiness_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("exact money evidence readiness_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${exact_money_readiness_guard_verdict_raw})")
+      exact_money_readiness_guard_verdict="UNKNOWN"
+    fi
+    exact_money_readiness_guard_reason_code="$(trim_string "$(extract_field "readiness_guard_reason_code" "$exact_money_output")")"
+    if [[ -z "$exact_money_readiness_guard_reason_code" ]]; then
+      input_errors+=("exact money evidence readiness_guard_reason_code must be non-empty")
+      exact_money_readiness_guard_reason_code="n/a"
+    fi
+    exact_money_legacy_export_exit_code_raw="$(trim_string "$(extract_field "legacy_export_exit_code" "$exact_money_output")")"
+    if [[ -z "$exact_money_legacy_export_exit_code_raw" || "$exact_money_legacy_export_exit_code_raw" == "n/a" ]]; then
+      input_errors+=("exact money evidence legacy_export_exit_code must be a non-negative integer")
+      exact_money_legacy_export_exit_code="n/a"
+    elif ! exact_money_legacy_export_exit_code="$(parse_u64_token_strict "$exact_money_legacy_export_exit_code_raw")"; then
+      input_errors+=("exact money evidence legacy_export_exit_code must be a non-negative integer (got: ${exact_money_legacy_export_exit_code_raw})")
+      exact_money_legacy_export_exit_code="n/a"
+    fi
+    exact_money_legacy_export_verdict_raw="$(trim_string "$(extract_field "legacy_export_verdict" "$exact_money_output")")"
+    exact_money_legacy_export_verdict_raw_upper="$(printf '%s' "$exact_money_legacy_export_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    exact_money_legacy_export_verdict="$(normalize_strict_guard_verdict "$exact_money_legacy_export_verdict_raw")"
+    if [[ -z "$exact_money_legacy_export_verdict_raw" ]]; then
+      input_errors+=("exact money evidence legacy_export_verdict must be non-empty")
+      exact_money_legacy_export_verdict="UNKNOWN"
+    elif [[ "$exact_money_legacy_export_verdict_raw_upper" != "PASS" && "$exact_money_legacy_export_verdict_raw_upper" != "WARN" && "$exact_money_legacy_export_verdict_raw_upper" != "UNKNOWN" && "$exact_money_legacy_export_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("exact money evidence legacy_export_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${exact_money_legacy_export_verdict_raw})")
+      exact_money_legacy_export_verdict="UNKNOWN"
+    fi
+    exact_money_legacy_export_reason_code="$(trim_string "$(extract_field "legacy_export_reason_code" "$exact_money_output")")"
+    if [[ -z "$exact_money_legacy_export_reason_code" ]]; then
+      input_errors+=("exact money evidence legacy_export_reason_code must be non-empty")
+      exact_money_legacy_export_reason_code="n/a"
+    fi
     if [[ "$exact_money_guard_verdict" == "PASS" || "$exact_money_guard_verdict" == "WARN" ]]; then
-      exact_money_post_cutover_surface_failures_raw="$(trim_string "$(extract_field "exact_money_post_cutover_surface_failures" "$exact_money_output")")"
+      exact_money_post_cutover_surface_failures_raw="$(trim_string "$(extract_field "readiness_post_cutover_surface_failures" "$exact_money_output")")"
       if [[ -z "$exact_money_post_cutover_surface_failures_raw" || "$exact_money_post_cutover_surface_failures_raw" == "n/a" ]]; then
-        input_errors+=("exact money readiness exact_money_post_cutover_surface_failures must be a non-negative integer")
+        input_errors+=("exact money evidence readiness_post_cutover_surface_failures must be a non-negative integer")
         exact_money_post_cutover_surface_failures="n/a"
       elif ! exact_money_post_cutover_surface_failures="$(parse_u64_token_strict "$exact_money_post_cutover_surface_failures_raw")"; then
-        input_errors+=("exact money readiness exact_money_post_cutover_surface_failures must be a non-negative integer (got: ${exact_money_post_cutover_surface_failures_raw})")
+        input_errors+=("exact money evidence readiness_post_cutover_surface_failures must be a non-negative integer (got: ${exact_money_post_cutover_surface_failures_raw})")
         exact_money_post_cutover_surface_failures="n/a"
       fi
-      exact_money_invalid_exact_rows_total_raw="$(trim_string "$(extract_field "exact_money_invalid_exact_rows_total" "$exact_money_output")")"
+      exact_money_invalid_exact_rows_total_raw="$(trim_string "$(extract_field "readiness_invalid_exact_rows_total" "$exact_money_output")")"
       if [[ -z "$exact_money_invalid_exact_rows_total_raw" || "$exact_money_invalid_exact_rows_total_raw" == "n/a" ]]; then
-        input_errors+=("exact money readiness exact_money_invalid_exact_rows_total must be a non-negative integer")
+        input_errors+=("exact money evidence readiness_invalid_exact_rows_total must be a non-negative integer")
         exact_money_invalid_exact_rows_total="n/a"
       elif ! exact_money_invalid_exact_rows_total="$(parse_u64_token_strict "$exact_money_invalid_exact_rows_total_raw")"; then
-        input_errors+=("exact money readiness exact_money_invalid_exact_rows_total must be a non-negative integer (got: ${exact_money_invalid_exact_rows_total_raw})")
+        input_errors+=("exact money evidence readiness_invalid_exact_rows_total must be a non-negative integer (got: ${exact_money_invalid_exact_rows_total_raw})")
         exact_money_invalid_exact_rows_total="n/a"
       fi
-      exact_money_forbidden_merge_rows_total_raw="$(trim_string "$(extract_field "exact_money_forbidden_merge_rows_total" "$exact_money_output")")"
+      exact_money_forbidden_merge_rows_total_raw="$(trim_string "$(extract_field "readiness_forbidden_merge_rows_total" "$exact_money_output")")"
       if [[ -z "$exact_money_forbidden_merge_rows_total_raw" || "$exact_money_forbidden_merge_rows_total_raw" == "n/a" ]]; then
-        input_errors+=("exact money readiness exact_money_forbidden_merge_rows_total must be a non-negative integer")
+        input_errors+=("exact money evidence readiness_forbidden_merge_rows_total must be a non-negative integer")
         exact_money_forbidden_merge_rows_total="n/a"
       elif ! exact_money_forbidden_merge_rows_total="$(parse_u64_token_strict "$exact_money_forbidden_merge_rows_total_raw")"; then
-        input_errors+=("exact money readiness exact_money_forbidden_merge_rows_total must be a non-negative integer (got: ${exact_money_forbidden_merge_rows_total_raw})")
+        input_errors+=("exact money evidence readiness_forbidden_merge_rows_total must be a non-negative integer (got: ${exact_money_forbidden_merge_rows_total_raw})")
         exact_money_forbidden_merge_rows_total="n/a"
+      fi
+      exact_money_legacy_approximate_rows_total_raw="$(trim_string "$(extract_field "legacy_approximate_rows_total" "$exact_money_output")")"
+      if [[ -z "$exact_money_legacy_approximate_rows_total_raw" || "$exact_money_legacy_approximate_rows_total_raw" == "n/a" ]]; then
+        input_errors+=("exact money evidence legacy_approximate_rows_total must be a non-negative integer")
+        exact_money_legacy_approximate_rows_total="n/a"
+      elif ! exact_money_legacy_approximate_rows_total="$(parse_u64_token_strict "$exact_money_legacy_approximate_rows_total_raw")"; then
+        input_errors+=("exact money evidence legacy_approximate_rows_total must be a non-negative integer (got: ${exact_money_legacy_approximate_rows_total_raw})")
+        exact_money_legacy_approximate_rows_total="n/a"
+      fi
+      exact_money_post_cutover_approximate_rows_total_raw="$(trim_string "$(extract_field "post_cutover_approximate_rows_total" "$exact_money_output")")"
+      if [[ -z "$exact_money_post_cutover_approximate_rows_total_raw" || "$exact_money_post_cutover_approximate_rows_total_raw" == "n/a" ]]; then
+        input_errors+=("exact money evidence post_cutover_approximate_rows_total must be a non-negative integer")
+        exact_money_post_cutover_approximate_rows_total="n/a"
+      elif ! exact_money_post_cutover_approximate_rows_total="$(parse_u64_token_strict "$exact_money_post_cutover_approximate_rows_total_raw")"; then
+        input_errors+=("exact money evidence post_cutover_approximate_rows_total must be a non-negative integer (got: ${exact_money_post_cutover_approximate_rows_total_raw})")
+        exact_money_post_cutover_approximate_rows_total="n/a"
       fi
     else
       exact_money_post_cutover_surface_failures="n/a"
       exact_money_invalid_exact_rows_total="n/a"
       exact_money_forbidden_merge_rows_total="n/a"
+      exact_money_legacy_approximate_rows_total="n/a"
+      exact_money_post_cutover_approximate_rows_total="n/a"
+    fi
+    exact_money_artifact_summary="$(trim_string "$(extract_field "artifact_summary" "$exact_money_output")")"
+    if [[ -z "$exact_money_artifact_summary" ]]; then
+      input_errors+=("exact money evidence artifact_summary must be non-empty")
+      exact_money_artifact_summary="n/a"
+    fi
+    exact_money_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$exact_money_output")")"
+    if [[ -z "$exact_money_summary_sha256" ]]; then
+      input_errors+=("exact money evidence summary_sha256 must be non-empty")
+      exact_money_summary_sha256="n/a"
+    fi
+    exact_money_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$exact_money_output")")"
+    if [[ -z "$exact_money_artifact_manifest" ]]; then
+      input_errors+=("exact money evidence artifact_manifest must be non-empty")
+      exact_money_artifact_manifest="n/a"
+    fi
+    exact_money_manifest_sha256="$(trim_string "$(extract_field "manifest_sha256" "$exact_money_output")")"
+    if [[ -z "$exact_money_manifest_sha256" ]]; then
+      input_errors+=("exact money evidence manifest_sha256 must be non-empty")
+      exact_money_manifest_sha256="n/a"
     fi
   fi
 else
@@ -1274,18 +1409,36 @@ else
   exact_money_post_cutover_surface_failures="n/a"
   exact_money_invalid_exact_rows_total="n/a"
   exact_money_forbidden_merge_rows_total="n/a"
-  exact_money_output="exact_money_cutover_present: n/a
+  exact_money_readiness_exit_code="0"
+  exact_money_readiness_guard_verdict="SKIP"
+  exact_money_readiness_guard_reason_code="gate_disabled"
+  exact_money_legacy_export_exit_code="0"
+  exact_money_legacy_export_verdict="SKIP"
+  exact_money_legacy_export_reason_code="gate_disabled"
+  exact_money_output="exact_money_cutover_evidence_verdict: SKIP
+exact_money_cutover_evidence_reason_code: gate_disabled
+exact_money_cutover_present: n/a
 exact_money_cutover_ts: n/a
-exact_money_post_cutover_surface_failures: n/a
-exact_money_invalid_exact_rows_total: n/a
-exact_money_forbidden_merge_rows_total: n/a
-exact_money_cutover_guard_verdict: SKIP
-exact_money_cutover_guard_reason_code: gate_disabled"
+readiness_exit_code: 0
+readiness_guard_verdict: SKIP
+readiness_guard_reason_code: gate_disabled
+readiness_post_cutover_surface_failures: n/a
+readiness_invalid_exact_rows_total: n/a
+readiness_forbidden_merge_rows_total: n/a
+legacy_export_exit_code: 0
+legacy_export_verdict: SKIP
+legacy_export_reason_code: gate_disabled
+legacy_approximate_rows_total: n/a
+post_cutover_approximate_rows_total: n/a
+artifact_summary: n/a
+summary_sha256: n/a
+artifact_manifest: n/a
+manifest_sha256: n/a"
 fi
 
 adapter_capture_path="$OUTPUT_ROOT/adapter_rollout_final_captured_${timestamp_compact}.txt"
 route_fee_capture_path="$OUTPUT_ROOT/execution_route_fee_final_captured_${timestamp_compact}.txt"
-exact_money_capture_path="$OUTPUT_ROOT/exact_money_cutover_readiness_captured_${timestamp_compact}.txt"
+exact_money_capture_path="$OUTPUT_ROOT/exact_money_cutover_evidence_captured_${timestamp_compact}.txt"
 printf '%s\n' "$adapter_output" >"$adapter_capture_path"
 printf '%s\n' "$route_fee_output" >"$route_fee_capture_path"
 printf '%s\n' "$exact_money_output" >"$exact_money_capture_path"
@@ -1336,13 +1489,17 @@ elif [[ "$runtime_readiness_run_route_fee_final_norm" == "true" && "$route_fee_v
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="route/fee final package is NO_GO: ${route_fee_reason:-n/a}"
   runtime_readiness_reason_code="route_fee_no_go"
+elif [[ "$exact_money_cutover_required_norm" == "true" && "$exact_money_exit_code" -ne 0 ]]; then
+  runtime_readiness_verdict="NO_GO"
+  runtime_readiness_reason="exact money cutover evidence helper failed with exit ${exact_money_exit_code}"
+  runtime_readiness_reason_code="exact_money_cutover_failed"
 elif [[ "$exact_money_cutover_required_norm" == "true" && "$exact_money_guard_verdict" == "UNKNOWN" ]]; then
   runtime_readiness_verdict="NO_GO"
-  runtime_readiness_reason="exact money cutover readiness verdict unknown: ${exact_money_guard_reason_code:-n/a}"
+  runtime_readiness_reason="exact money cutover evidence verdict unknown: ${exact_money_guard_reason_code:-n/a}"
   runtime_readiness_reason_code="exact_money_cutover_unknown"
 elif [[ "$exact_money_cutover_required_norm" == "true" && "$exact_money_guard_verdict" != "PASS" ]]; then
   runtime_readiness_verdict="NO_GO"
-  runtime_readiness_reason="exact money cutover readiness not PASS (${exact_money_guard_verdict}): ${exact_money_guard_reason_code:-n/a}"
+  runtime_readiness_reason="exact money cutover evidence not PASS (${exact_money_guard_verdict}): ${exact_money_guard_reason_code:-n/a}"
   runtime_readiness_reason_code="exact_money_cutover_not_pass"
 elif [[ "$runtime_readiness_run_adapter_final_norm" == "true" && "$adapter_verdict" == "HOLD" ]]; then
   runtime_readiness_verdict="HOLD"
@@ -1505,8 +1662,20 @@ exact_money_cutover_ts: ${exact_money_cutover_ts:-n/a}
 exact_money_post_cutover_surface_failures: ${exact_money_post_cutover_surface_failures:-n/a}
 exact_money_invalid_exact_rows_total: ${exact_money_invalid_exact_rows_total:-n/a}
 exact_money_forbidden_merge_rows_total: ${exact_money_forbidden_merge_rows_total:-n/a}
+exact_money_readiness_exit_code: ${exact_money_readiness_exit_code:-n/a}
+exact_money_readiness_guard_verdict: ${exact_money_readiness_guard_verdict:-n/a}
+exact_money_readiness_guard_reason_code: ${exact_money_readiness_guard_reason_code:-n/a}
+exact_money_legacy_export_exit_code: ${exact_money_legacy_export_exit_code:-n/a}
+exact_money_legacy_export_verdict: ${exact_money_legacy_export_verdict:-n/a}
+exact_money_legacy_export_reason_code: ${exact_money_legacy_export_reason_code:-n/a}
+exact_money_legacy_approximate_rows_total: ${exact_money_legacy_approximate_rows_total:-n/a}
+exact_money_post_cutover_approximate_rows_total: ${exact_money_post_cutover_approximate_rows_total:-n/a}
 exact_money_cutover_guard_verdict: ${exact_money_guard_verdict:-n/a}
 exact_money_cutover_guard_reason_code: ${exact_money_guard_reason_code:-n/a}
+artifact_exact_money_summary: ${exact_money_artifact_summary:-n/a}
+exact_money_summary_sha256: ${exact_money_summary_sha256:-n/a}
+artifact_exact_money_manifest: ${exact_money_artifact_manifest:-n/a}
+exact_money_manifest_sha256: ${exact_money_manifest_sha256:-n/a}
 runtime_readiness_verdict: $runtime_readiness_verdict
 runtime_readiness_reason: ${runtime_readiness_reason:-n/a}
 runtime_readiness_reason_code: ${runtime_readiness_reason_code:-n/a}
@@ -1596,6 +1765,8 @@ adapter_artifact_summary_sha256: $adapter_artifact_summary_sha256
 adapter_artifact_manifest_sha256: $adapter_artifact_manifest_sha256
 route_fee_artifact_summary_sha256: $route_fee_artifact_summary_sha256
 route_fee_artifact_manifest_sha256: $route_fee_artifact_manifest_sha256
+exact_money_evidence_summary_sha256: ${exact_money_summary_sha256:-n/a}
+exact_money_evidence_manifest_sha256: ${exact_money_manifest_sha256:-n/a}
 EOF_MANIFEST
 manifest_sha256="$(sha256_file_value "$manifest_path")"
 
@@ -1609,11 +1780,15 @@ echo "artifact_summary: $summary_path"
 echo "artifact_adapter_capture: $adapter_capture_path"
 echo "artifact_route_fee_capture: $route_fee_capture_path"
 echo "artifact_exact_money_capture: $exact_money_capture_path"
+echo "artifact_exact_money_summary: ${exact_money_artifact_summary:-n/a}"
+echo "artifact_exact_money_manifest: ${exact_money_artifact_manifest:-n/a}"
 echo "artifact_manifest: $manifest_path"
 echo "summary_sha256: $summary_sha256"
 echo "adapter_capture_sha256: $adapter_capture_sha256"
 echo "route_fee_capture_sha256: $route_fee_capture_sha256"
 echo "exact_money_capture_sha256: $exact_money_capture_sha256"
+echo "exact_money_summary_sha256: ${exact_money_summary_sha256:-n/a}"
+echo "exact_money_manifest_sha256: ${exact_money_manifest_sha256:-n/a}"
 echo "manifest_sha256: $manifest_sha256"
 echo "package_bundle_artifacts_written: $package_bundle_artifacts_written"
 echo "package_bundle_exit_code: $package_bundle_exit_code"

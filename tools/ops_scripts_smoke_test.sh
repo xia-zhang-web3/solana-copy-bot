@@ -1104,6 +1104,52 @@ VALUES (1, datetime('now', '-4 minutes'), datetime('now', '-3 minutes'), 'exact_
 SQL
 }
 
+write_stub_exact_money_cutover_evidence_helper() {
+  local target_path="$1"
+  cat >"$target_path" <<'EOF_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+
+DB_PATH="${1:-}"
+OUTPUT_DIR="${OUTPUT_DIR:-}"
+if [[ -z "$DB_PATH" || -z "$OUTPUT_DIR" ]]; then
+  exit 64
+fi
+mkdir -p "$OUTPUT_DIR"
+
+summary_path="$OUTPUT_DIR/exact_money_cutover_evidence_summary_stub.txt"
+manifest_path="$OUTPUT_DIR/exact_money_cutover_evidence_manifest_stub.txt"
+printf 'stub exact money summary for %s\n' "$DB_PATH" >"$summary_path"
+summary_sha256="$(shasum -a 256 "$summary_path" | awk '{print $1}')"
+printf 'summary_path=%s\nsummary_sha256=%s\n' "$summary_path" "$summary_sha256" >"$manifest_path"
+manifest_sha256="$(shasum -a 256 "$manifest_path" | awk '{print $1}')"
+
+cat <<EOF_OUT
+exact_money_cutover_evidence_verdict: PASS
+exact_money_cutover_evidence_reason_code: cutover_evidence_ready
+exact_money_cutover_present: yes
+exact_money_cutover_ts: 2026-03-08T00:30:00+00:00
+readiness_exit_code: 0
+readiness_guard_verdict: PASS
+readiness_guard_reason_code: post_cutover_exact_ready
+readiness_post_cutover_surface_failures: 0
+readiness_invalid_exact_rows_total: 0
+readiness_forbidden_merge_rows_total: 0
+legacy_export_exit_code: 0
+legacy_export_verdict: PASS
+legacy_export_reason_code: legacy_evidence_exported
+legacy_approximate_rows_total: 11
+post_cutover_approximate_rows_total: 0
+artifact_summary: $summary_path
+summary_sha256: $summary_sha256
+artifact_manifest: $manifest_path
+manifest_sha256: $manifest_sha256
+EOF_OUT
+exit 7
+EOF_STUB
+  chmod +x "$target_path"
+}
+
 assert_contains() {
   local haystack="$1"
   local needle="$2"
@@ -7183,11 +7229,17 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
   assert_field_equals "$output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$output" "exact_money_cutover_required" "true"
+  assert_field_equals "$output" "exact_money_cutover_exit_code" "0"
   assert_field_equals "$output" "exact_money_cutover_guard_verdict" "PASS"
-  assert_field_equals "$output" "exact_money_cutover_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$output" "exact_money_cutover_guard_reason_code" "cutover_evidence_ready"
   assert_field_equals "$output" "exact_money_post_cutover_surface_failures" "0"
   assert_field_equals "$output" "exact_money_invalid_exact_rows_total" "0"
   assert_field_equals "$output" "exact_money_forbidden_merge_rows_total" "0"
+  assert_field_equals "$output" "exact_money_readiness_guard_verdict" "PASS"
+  assert_field_equals "$output" "exact_money_readiness_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$output" "exact_money_legacy_export_verdict" "PASS"
+  assert_field_equals "$output" "exact_money_legacy_export_reason_code" "legacy_evidence_exported"
+  assert_field_equals "$output" "exact_money_post_cutover_approximate_rows_total" "0"
   assert_field_equals "$output" "go_nogo_pretrade_min_sol_reserve_lamports_observed" "50000000"
   assert_field_equals "$output" "go_nogo_pretrade_max_fee_overhead_bps_observed" "1000"
   assert_field_equals "$output" "go_nogo_pretrade_fee_policy_guard_verdict" "PASS"
@@ -7304,6 +7356,12 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "executor_backend_mode" "upstream"
   assert_contains "$output" "artifacts_written: true"
   assert_contains "$output" "artifact_exact_money_capture:"
+  assert_contains "$output" "artifact_exact_money_summary:"
+  assert_contains "$output" "artifact_exact_money_manifest:"
+  assert_sha256_field "$output" "exact_money_summary_sha256"
+  assert_sha256_field "$output" "exact_money_manifest_sha256"
+  assert_sha256_field_matches_file "$output" "exact_money_summary_sha256" "artifact_exact_money_summary"
+  assert_sha256_field_matches_file "$output" "exact_money_manifest_sha256" "artifact_exact_money_manifest"
   assert_sha256_field "$output" "summary_sha256"
   assert_sha256_field "$output" "manifest_sha256"
   assert_sha256_field "$output" "preflight_capture_sha256"
@@ -7315,6 +7373,18 @@ run_execution_server_rollout_report_case() {
   assert_sha256_field "$output" "exact_money_capture_sha256"
   assert_sha256_field_matches_file "$output" "summary_sha256" "artifact_summary"
   assert_sha256_field_matches_file "$output" "manifest_sha256" "artifact_manifest"
+  local exact_money_summary_path=""
+  exact_money_summary_path="$(extract_field "artifact_exact_money_summary" "$output")"
+  if [[ "$exact_money_summary_path" != "$output_root"/steps/exact_money_cutover_evidence/* ]]; then
+    echo "expected server rollout exact money summary artifact under $output_root/steps/exact_money_cutover_evidence, got $exact_money_summary_path" >&2
+    exit 1
+  fi
+  local exact_money_manifest_path=""
+  exact_money_manifest_path="$(extract_field "artifact_exact_money_manifest" "$output")"
+  if [[ "$exact_money_manifest_path" != "$output_root"/steps/exact_money_cutover_evidence/* ]]; then
+    echo "expected server rollout exact money manifest artifact under $output_root/steps/exact_money_cutover_evidence, got $exact_money_manifest_path" >&2
+    exit 1
+  fi
   if ! ls "$output_root"/execution_server_rollout_summary_*.txt >/dev/null 2>&1; then
     echo "expected server rollout summary artifact in $output_root" >&2
     exit 1
@@ -7323,6 +7393,54 @@ run_execution_server_rollout_report_case() {
     echo "expected server rollout manifest artifact in $output_root" >&2
     exit 1
   fi
+  local exact_money_helper_stub="$TMP_DIR/server-rollout-exact-money-helper-stub.sh"
+  write_stub_exact_money_cutover_evidence_helper "$exact_money_helper_stub"
+  local exact_money_fail_output=""
+  local exact_money_fail_exit_code=0
+  if exact_money_fail_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-exact-money-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="true" \
+      GO_NOGO_MIN_CONFIRMED_ORDERS="1" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      EXACT_MONEY_CUTOVER_HELPER_PATH="$exact_money_helper_stub" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60
+  )"; then
+    exact_money_fail_exit_code=0
+  else
+    exact_money_fail_exit_code=$?
+  fi
+  if [[ "$exact_money_fail_exit_code" -ne 3 ]]; then
+    echo "expected server rollout exact-money helper failure exit code 3, got $exact_money_fail_exit_code" >&2
+    echo "$exact_money_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$exact_money_fail_output" "exact_money_cutover_exit_code" "7"
+  assert_field_equals "$exact_money_fail_output" "exact_money_cutover_guard_verdict" "PASS"
+  assert_field_equals "$exact_money_fail_output" "exact_money_readiness_guard_verdict" "PASS"
+  assert_field_equals "$exact_money_fail_output" "exact_money_legacy_export_verdict" "PASS"
+  assert_field_equals "$exact_money_fail_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$exact_money_fail_output" "server_rollout_reason_code" "exact_money_cutover_failed"
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] execution server rollout report (fast)"
     return
@@ -7395,7 +7513,12 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$skip_direct_output" "exact_money_cutover_required" "true"
   assert_field_equals "$skip_direct_output" "exact_money_cutover_guard_verdict" "PASS"
-  assert_field_equals "$skip_direct_output" "exact_money_cutover_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$skip_direct_output" "exact_money_cutover_guard_reason_code" "cutover_evidence_ready"
+  assert_field_equals "$skip_direct_output" "exact_money_readiness_guard_verdict" "PASS"
+  assert_field_equals "$skip_direct_output" "exact_money_readiness_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$skip_direct_output" "exact_money_legacy_export_verdict" "PASS"
+  assert_field_equals "$skip_direct_output" "exact_money_legacy_export_reason_code" "legacy_evidence_exported"
+  assert_field_equals "$skip_direct_output" "exact_money_post_cutover_approximate_rows_total" "0"
   assert_field_equals "$skip_direct_output" "go_nogo_pretrade_min_sol_reserve_lamports_observed" "n/a"
   assert_field_equals "$skip_direct_output" "go_nogo_pretrade_max_fee_overhead_bps_observed" "n/a"
   assert_field_equals "$skip_direct_output" "go_nogo_pretrade_fee_policy_guard_verdict" "SKIP"
@@ -9344,11 +9467,17 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
   assert_field_equals "$pass_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$pass_output" "exact_money_cutover_required" "true"
+  assert_field_equals "$pass_output" "exact_money_cutover_exit_code" "0"
   assert_field_equals "$pass_output" "exact_money_cutover_guard_verdict" "PASS"
-  assert_field_equals "$pass_output" "exact_money_cutover_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$pass_output" "exact_money_cutover_guard_reason_code" "cutover_evidence_ready"
   assert_field_equals "$pass_output" "exact_money_post_cutover_surface_failures" "0"
   assert_field_equals "$pass_output" "exact_money_invalid_exact_rows_total" "0"
   assert_field_equals "$pass_output" "exact_money_forbidden_merge_rows_total" "0"
+  assert_field_equals "$pass_output" "exact_money_readiness_guard_verdict" "PASS"
+  assert_field_equals "$pass_output" "exact_money_readiness_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$pass_output" "exact_money_legacy_export_verdict" "PASS"
+  assert_field_equals "$pass_output" "exact_money_legacy_export_reason_code" "legacy_evidence_exported"
+  assert_field_equals "$pass_output" "exact_money_post_cutover_approximate_rows_total" "0"
   assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_jito_rpc_policy" "false"
@@ -9426,15 +9555,33 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_contains "$pass_output" "artifact_summary:"
   assert_contains "$pass_output" "artifact_adapter_capture:"
   assert_contains "$pass_output" "artifact_exact_money_capture:"
+  assert_contains "$pass_output" "artifact_exact_money_summary:"
+  assert_contains "$pass_output" "artifact_exact_money_manifest:"
   assert_contains "$pass_output" "artifact_route_fee_capture:"
   assert_contains "$pass_output" "artifact_manifest:"
   assert_sha256_field "$pass_output" "summary_sha256"
   assert_sha256_field "$pass_output" "adapter_capture_sha256"
   assert_sha256_field "$pass_output" "exact_money_capture_sha256"
+  assert_sha256_field "$pass_output" "exact_money_summary_sha256"
+  assert_sha256_field "$pass_output" "exact_money_manifest_sha256"
+  assert_sha256_field_matches_file "$pass_output" "exact_money_summary_sha256" "artifact_exact_money_summary"
+  assert_sha256_field_matches_file "$pass_output" "exact_money_manifest_sha256" "artifact_exact_money_manifest"
   assert_sha256_field "$pass_output" "route_fee_capture_sha256"
   assert_sha256_field "$pass_output" "manifest_sha256"
   assert_sha256_field_matches_file "$pass_output" "summary_sha256" "artifact_summary"
   assert_sha256_field_matches_file "$pass_output" "manifest_sha256" "artifact_manifest"
+  local runtime_exact_money_summary_path=""
+  runtime_exact_money_summary_path="$(extract_field "artifact_exact_money_summary" "$pass_output")"
+  if [[ "$runtime_exact_money_summary_path" != "$artifacts_dir"/exact_money_cutover_evidence/* ]]; then
+    echo "expected runtime readiness exact money summary artifact under $artifacts_dir/exact_money_cutover_evidence, got $runtime_exact_money_summary_path" >&2
+    exit 1
+  fi
+  local runtime_exact_money_manifest_path=""
+  runtime_exact_money_manifest_path="$(extract_field "artifact_exact_money_manifest" "$pass_output")"
+  if [[ "$runtime_exact_money_manifest_path" != "$artifacts_dir"/exact_money_cutover_evidence/* ]]; then
+    echo "expected runtime readiness exact money manifest artifact under $artifacts_dir/exact_money_cutover_evidence, got $runtime_exact_money_manifest_path" >&2
+    exit 1
+  fi
   if ! ls "$artifacts_dir"/execution_runtime_readiness_summary_*.txt >/dev/null 2>&1; then
     echo "expected runtime readiness summary artifact in $artifacts_dir" >&2
     exit 1
@@ -9447,7 +9594,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
     echo "expected adapter final capture artifact in $artifacts_dir" >&2
     exit 1
   fi
-  if ! ls "$artifacts_dir"/exact_money_cutover_readiness_captured_*.txt >/dev/null 2>&1; then
+  if ! ls "$artifacts_dir"/exact_money_cutover_evidence_captured_*.txt >/dev/null 2>&1; then
     echo "expected exact money cutover capture artifact in $artifacts_dir" >&2
     exit 1
   fi
@@ -9455,6 +9602,52 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
     echo "expected route/fee final capture artifact in $artifacts_dir" >&2
     exit 1
   fi
+  local runtime_exact_money_helper_stub="$TMP_DIR/runtime-readiness-exact-money-helper-stub.sh"
+  write_stub_exact_money_cutover_evidence_helper "$runtime_exact_money_helper_stub"
+  local exact_money_fail_output=""
+  local exact_money_fail_exit_code=0
+  if exact_money_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-exact-money-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      EXACT_MONEY_CUTOVER_HELPER_PATH="$runtime_exact_money_helper_stub" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"; then
+    exact_money_fail_exit_code=0
+  else
+    exact_money_fail_exit_code=$?
+  fi
+  if [[ "$exact_money_fail_exit_code" -ne 3 ]]; then
+    echo "expected runtime readiness exact-money helper failure exit code 3, got $exact_money_fail_exit_code" >&2
+    echo "$exact_money_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$exact_money_fail_output" "exact_money_cutover_exit_code" "7"
+  assert_field_equals "$exact_money_fail_output" "exact_money_cutover_guard_verdict" "PASS"
+  assert_field_equals "$exact_money_fail_output" "exact_money_readiness_guard_verdict" "PASS"
+  assert_field_equals "$exact_money_fail_output" "exact_money_legacy_export_verdict" "PASS"
+  assert_field_equals "$exact_money_fail_output" "runtime_readiness_verdict" "NO_GO"
+  assert_field_equals "$exact_money_fail_output" "runtime_readiness_reason_code" "exact_money_cutover_failed"
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] execution runtime readiness report (fast)"
     return
@@ -9590,6 +9783,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "exact_money_cutover_required" "false"
   assert_field_equals "$strict_override_output" "exact_money_cutover_guard_verdict" "SKIP"
   assert_field_equals "$strict_override_output" "exact_money_cutover_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_override_output" "exact_money_readiness_guard_verdict" "SKIP"
+  assert_field_equals "$strict_override_output" "exact_money_readiness_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_override_output" "exact_money_legacy_export_verdict" "SKIP"
+  assert_field_equals "$strict_override_output" "exact_money_legacy_export_reason_code" "gate_disabled"
   assert_field_equals "$strict_override_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_executor_upstream" "false"
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_jito_rpc_policy" "false"
