@@ -80,6 +80,16 @@ class ExactMoneyCoverageReport:
     shadow_closed_trades_invalid_exact: InvalidExactCoverage
 
 
+@dataclass(frozen=True)
+class LegacyEvidenceSurface:
+    name: str
+    table: str
+    query: CoverageQuery
+    exact_predicate: str
+    export_select_sql: str
+    order_by_sql: str
+
+
 def usage() -> None:
     print("usage: exact_money_coverage_report.py <sqlite.db>", file=sys.stderr)
 
@@ -610,6 +620,182 @@ def invalid_observed_swaps_coverage(
         ),
     )
     return InvalidExactCoverage(name, invalid_rows, None)
+
+
+def legacy_evidence_surfaces() -> tuple[LegacyEvidenceSurface, ...]:
+    observed_swaps_invalid_predicate = (
+        f"({invalid_exact_qty_sidecar_predicate('qty_in_raw', 'qty_in_decimals')}) "
+        "OR "
+        f"({invalid_exact_qty_sidecar_predicate('qty_out_raw', 'qty_out_decimals')})"
+    )
+    observed_swaps_exact_predicate = (
+        "qty_in_raw IS NOT NULL AND qty_in_decimals IS NOT NULL "
+        "AND qty_out_raw IS NOT NULL AND qty_out_decimals IS NOT NULL "
+        f"AND NOT ({observed_swaps_invalid_predicate})"
+    )
+    fills_qty_invalid_predicate = fake_exact_qty_predicate(
+        "qty_raw", "qty_decimals", "notional_lamports"
+    )
+    positions_qty_invalid_predicate = fake_exact_qty_predicate(
+        "qty_raw", "qty_decimals", "cost_lamports"
+    )
+    shadow_lots_qty_invalid_predicate = fake_exact_qty_predicate(
+        "qty_raw", "qty_decimals", "cost_lamports"
+    )
+    shadow_closed_trades_qty_invalid_predicate = fake_exact_qty_predicate(
+        "qty_raw", "qty_decimals", "entry_cost_lamports"
+    )
+    return (
+        LegacyEvidenceSurface(
+            name="observed_swaps",
+            table="observed_swaps",
+            query=CoverageQuery("observed_swaps", "ts"),
+            exact_predicate=observed_swaps_exact_predicate,
+            export_select_sql=(
+                "SELECT observed_swaps.rowid AS export_rowid, observed_swaps.* "
+                "FROM observed_swaps"
+            ),
+            order_by_sql="observed_swaps.ts, observed_swaps.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="copy_signals",
+            table="copy_signals",
+            query=CoverageQuery("copy_signals", "ts"),
+            exact_predicate=(
+                "notional_lamports IS NOT NULL "
+                "AND notional_origin = 'leader_exact_lamports'"
+            ),
+            export_select_sql=(
+                "SELECT copy_signals.rowid AS export_rowid, copy_signals.* "
+                "FROM copy_signals"
+            ),
+            order_by_sql="copy_signals.ts, copy_signals.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="fills",
+            table="fills",
+            query=CoverageQuery(
+                "fills JOIN orders ON orders.order_id = fills.order_id",
+                "COALESCE(orders.confirm_ts, orders.submit_ts)",
+                ("fills", "orders"),
+            ),
+            exact_predicate="notional_lamports IS NOT NULL AND fee_lamports IS NOT NULL",
+            export_select_sql=(
+                "SELECT fills.rowid AS export_rowid, fills.*, "
+                "orders.submit_ts AS order_submit_ts, "
+                "orders.confirm_ts AS order_confirm_ts "
+                "FROM fills JOIN orders ON orders.order_id = fills.order_id"
+            ),
+            order_by_sql="COALESCE(orders.confirm_ts, orders.submit_ts), fills.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="fills_qty",
+            table="fills",
+            query=CoverageQuery(
+                "fills JOIN orders ON orders.order_id = fills.order_id",
+                "COALESCE(orders.confirm_ts, orders.submit_ts)",
+                ("fills", "orders"),
+            ),
+            exact_predicate=(
+                "qty_raw IS NOT NULL AND qty_decimals IS NOT NULL "
+                f"AND NOT ({fills_qty_invalid_predicate})"
+            ),
+            export_select_sql=(
+                "SELECT fills.rowid AS export_rowid, fills.*, "
+                "orders.submit_ts AS order_submit_ts, "
+                "orders.confirm_ts AS order_confirm_ts "
+                "FROM fills JOIN orders ON orders.order_id = fills.order_id"
+            ),
+            order_by_sql="COALESCE(orders.confirm_ts, orders.submit_ts), fills.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="positions",
+            table="positions",
+            query=CoverageQuery("positions", "opened_ts"),
+            exact_predicate="cost_lamports IS NOT NULL",
+            export_select_sql=(
+                "SELECT positions.rowid AS export_rowid, positions.* FROM positions"
+            ),
+            order_by_sql="positions.opened_ts, positions.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="positions_qty",
+            table="positions",
+            query=CoverageQuery("positions", "opened_ts"),
+            exact_predicate=(
+                "qty_raw IS NOT NULL AND qty_decimals IS NOT NULL "
+                f"AND NOT ({positions_qty_invalid_predicate})"
+            ),
+            export_select_sql=(
+                "SELECT positions.rowid AS export_rowid, positions.* FROM positions"
+            ),
+            order_by_sql="positions.opened_ts, positions.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="shadow_lots",
+            table="shadow_lots",
+            query=CoverageQuery("shadow_lots", "opened_ts"),
+            exact_predicate="cost_lamports IS NOT NULL",
+            export_select_sql=(
+                "SELECT shadow_lots.rowid AS export_rowid, shadow_lots.* FROM shadow_lots"
+            ),
+            order_by_sql="shadow_lots.opened_ts, shadow_lots.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="shadow_lots_qty",
+            table="shadow_lots",
+            query=CoverageQuery("shadow_lots", "opened_ts"),
+            exact_predicate=(
+                "qty_raw IS NOT NULL AND qty_decimals IS NOT NULL "
+                f"AND NOT ({shadow_lots_qty_invalid_predicate})"
+            ),
+            export_select_sql=(
+                "SELECT shadow_lots.rowid AS export_rowid, shadow_lots.* FROM shadow_lots"
+            ),
+            order_by_sql="shadow_lots.opened_ts, shadow_lots.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="shadow_closed_trades",
+            table="shadow_closed_trades",
+            query=CoverageQuery("shadow_closed_trades", "closed_ts"),
+            exact_predicate=(
+                "entry_cost_lamports IS NOT NULL "
+                "AND exit_value_lamports IS NOT NULL "
+                "AND pnl_lamports IS NOT NULL"
+            ),
+            export_select_sql=(
+                "SELECT shadow_closed_trades.rowid AS export_rowid, shadow_closed_trades.* "
+                "FROM shadow_closed_trades"
+            ),
+            order_by_sql="shadow_closed_trades.closed_ts, shadow_closed_trades.rowid",
+        ),
+        LegacyEvidenceSurface(
+            name="shadow_closed_trades_qty",
+            table="shadow_closed_trades",
+            query=CoverageQuery("shadow_closed_trades", "closed_ts"),
+            exact_predicate=(
+                "qty_raw IS NOT NULL AND qty_decimals IS NOT NULL "
+                f"AND NOT ({shadow_closed_trades_qty_invalid_predicate})"
+            ),
+            export_select_sql=(
+                "SELECT shadow_closed_trades.rowid AS export_rowid, shadow_closed_trades.* "
+                "FROM shadow_closed_trades"
+            ),
+            order_by_sql="shadow_closed_trades.closed_ts, shadow_closed_trades.rowid",
+        ),
+    )
+
+
+def legacy_approximate_predicate(
+    surface: LegacyEvidenceSurface, cutover_ts: str
+) -> str:
+    return f"({surface.query.time_expr} < '{cutover_ts}') AND NOT ({surface.exact_predicate})"
+
+
+def post_cutover_approximate_predicate(
+    surface: LegacyEvidenceSurface, cutover_ts: str
+) -> str:
+    return f"({surface.query.time_expr} >= '{cutover_ts}') AND NOT ({surface.exact_predicate})"
 
 
 def print_invalid_exact_coverage(coverage: InvalidExactCoverage) -> None:
