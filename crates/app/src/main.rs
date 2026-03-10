@@ -2842,6 +2842,27 @@ mod app_tests {
     }
 
     #[test]
+    fn validate_execution_runtime_contract_rejects_invalid_pretrade_max_fee_overhead_bps() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.mode = "adapter_submit_confirm".to_string();
+        execution.rpc_http_url = "http://rpc.local".to_string();
+        execution.submit_adapter_http_url = "http://adapter.local".to_string();
+        execution.execution_signer_pubkey = "signer-pubkey".to_string();
+        execution.pretrade_max_fee_overhead_bps = 10_001;
+
+        let error = validate_execution_runtime_contract(&execution, "paper")
+            .expect_err("fee overhead guard outside 0..=10000 must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.pretrade_max_fee_overhead_bps must be in 0..=10000"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
     fn validate_execution_runtime_contract_rejects_invalid_contract_version_token() {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;

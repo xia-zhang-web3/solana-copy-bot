@@ -2,10 +2,17 @@ use anyhow::{anyhow, Context, Result};
 use copybot_core_types::Lamports;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration as StdDuration;
 
 use crate::intent::ExecutionIntent;
 use crate::money::{checked_add_lamports, lamports_to_sol, sol_to_lamports_ceil};
+use crate::submitter::{
+    dynamic_tip_lamports_from_compute_budget, priority_fee_lamports_from_compute_budget,
+};
+
+const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
+const ESTIMATED_ATA_CREATE_RENT_LAMPORTS: u64 = 2_039_280;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreTradeDecisionKind {
@@ -123,9 +130,16 @@ pub struct RpcPreTradeChecker {
     endpoints: Vec<String>,
     execution_signer_pubkey: String,
     min_sol_reserve_lamports: Lamports,
+    max_fee_overhead_bps: Option<u32>,
     require_token_account: bool,
     allow_missing_token_account_for_buy: bool,
     max_priority_fee_micro_lamports: Option<u64>,
+    submit_dynamic_cu_price_enabled: bool,
+    submit_dynamic_tip_lamports_enabled: bool,
+    submit_dynamic_tip_lamports_multiplier_bps: u32,
+    route_tip_lamports: HashMap<String, u64>,
+    route_compute_unit_limit: HashMap<String, u32>,
+    route_compute_unit_price_micro_lamports: HashMap<String, u64>,
     client: Client,
 }
 
@@ -136,9 +150,16 @@ impl RpcPreTradeChecker {
         timeout_ms: u64,
         execution_signer_pubkey: &str,
         min_sol_reserve: f64,
+        pretrade_max_fee_overhead_bps: u32,
         require_token_account: bool,
         allow_missing_token_account_for_buy: bool,
         pretrade_max_priority_fee_lamports: u64,
+        route_tip_lamports: &BTreeMap<String, u64>,
+        route_compute_unit_limit: &BTreeMap<String, u32>,
+        route_compute_unit_price_micro_lamports: &BTreeMap<String, u64>,
+        submit_dynamic_cu_price_enabled: bool,
+        submit_dynamic_tip_lamports_enabled: bool,
+        submit_dynamic_tip_lamports_multiplier_bps: u32,
     ) -> Option<Self> {
         let mut endpoints = Vec::new();
         let primary = primary_url.trim();
@@ -158,6 +179,28 @@ impl RpcPreTradeChecker {
                 Ok(value) => value,
                 Err(_) => return None,
             };
+        let max_fee_overhead_bps = if pretrade_max_fee_overhead_bps == 0 {
+            None
+        } else {
+            Some(pretrade_max_fee_overhead_bps)
+        };
+        let route_tip_lamports = normalize_route_u64_policy(route_tip_lamports);
+        let route_compute_unit_limit = normalize_route_u32_policy(route_compute_unit_limit);
+        let route_compute_unit_price_micro_lamports =
+            normalize_route_u64_policy(route_compute_unit_price_micro_lamports);
+        if max_fee_overhead_bps.is_some()
+            && (route_tip_lamports.is_empty()
+                || route_compute_unit_limit.is_empty()
+                || route_compute_unit_price_micro_lamports.is_empty())
+        {
+            return None;
+        }
+        if submit_dynamic_tip_lamports_enabled
+            && (submit_dynamic_tip_lamports_multiplier_bps == 0
+                || submit_dynamic_tip_lamports_multiplier_bps > 100_000)
+        {
+            return None;
+        }
 
         let timeout = StdDuration::from_millis(timeout_ms.max(500));
         let client = match Client::builder().timeout(timeout).build() {
@@ -169,6 +212,7 @@ impl RpcPreTradeChecker {
             endpoints,
             execution_signer_pubkey: signer.to_string(),
             min_sol_reserve_lamports,
+            max_fee_overhead_bps,
             require_token_account,
             allow_missing_token_account_for_buy,
             max_priority_fee_micro_lamports: if pretrade_max_priority_fee_lamports == 0 {
@@ -176,6 +220,12 @@ impl RpcPreTradeChecker {
             } else {
                 Some(pretrade_max_priority_fee_lamports)
             },
+            submit_dynamic_cu_price_enabled,
+            submit_dynamic_tip_lamports_enabled,
+            submit_dynamic_tip_lamports_multiplier_bps,
+            route_tip_lamports,
+            route_compute_unit_limit,
+            route_compute_unit_price_micro_lamports,
             client,
         })
     }
@@ -289,6 +339,138 @@ impl RpcPreTradeChecker {
         }
     }
 
+    fn needs_token_account_lookup(&self, intent: &ExecutionIntent) -> bool {
+        self.require_token_account
+            || (self.max_fee_overhead_bps.is_some()
+                && matches!(intent.side, crate::intent::ExecutionSide::Buy))
+    }
+
+    fn evaluate_fee_overhead_policy(
+        &self,
+        intent: &ExecutionIntent,
+        route: &str,
+        token_account_exists: bool,
+        allow_detail: &mut String,
+    ) -> Option<PreTradeDecision> {
+        let Some(max_fee_overhead_bps) = self.max_fee_overhead_bps else {
+            return None;
+        };
+        if !matches!(intent.side, crate::intent::ExecutionSide::Buy) {
+            return None;
+        }
+
+        let normalized_route = route.trim().to_ascii_lowercase();
+        let evaluation = (|| -> Result<Option<PreTradeDecision>> {
+            let static_tip_lamports = self
+                .route_tip_lamports
+                .get(normalized_route.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing route tip policy for pretrade fee overhead route={}",
+                        normalized_route
+                    )
+                })?;
+            let route_cu_limit = self
+                .route_compute_unit_limit
+                .get(normalized_route.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing compute unit limit policy for pretrade fee overhead route={}",
+                        normalized_route
+                    )
+                })?;
+            let static_route_cu_price_micro_lamports = self
+                .route_compute_unit_price_micro_lamports
+                .get(normalized_route.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing compute unit price policy for pretrade fee overhead route={}",
+                        normalized_route
+                    )
+                })?;
+            let effective_route_cu_price_micro_lamports = if self.submit_dynamic_cu_price_enabled {
+                self.max_priority_fee_micro_lamports
+                    .unwrap_or(static_route_cu_price_micro_lamports)
+                    .max(static_route_cu_price_micro_lamports)
+            } else {
+                static_route_cu_price_micro_lamports
+            };
+            let priority_fee_lamports = priority_fee_lamports_from_compute_budget(
+                route_cu_limit,
+                effective_route_cu_price_micro_lamports,
+            );
+            let dynamic_tip_lamports = if self.submit_dynamic_tip_lamports_enabled {
+                dynamic_tip_lamports_from_compute_budget(
+                    route_cu_limit,
+                    effective_route_cu_price_micro_lamports,
+                    self.submit_dynamic_tip_lamports_multiplier_bps,
+                )
+            } else {
+                0
+            };
+            let estimated_tip_lamports = static_tip_lamports.max(dynamic_tip_lamports);
+            let estimated_network_fee_lamports = DEFAULT_BASE_FEE_LAMPORTS
+                .checked_add(priority_fee_lamports)
+                .ok_or_else(|| anyhow!("estimated network fee lamports overflow"))?;
+            let estimated_ata_create_rent_lamports = if token_account_exists {
+                0
+            } else {
+                ESTIMATED_ATA_CREATE_RENT_LAMPORTS
+            };
+            let estimated_total_fee_lamports = estimated_network_fee_lamports
+                .checked_add(estimated_tip_lamports)
+                .and_then(|value| value.checked_add(estimated_ata_create_rent_lamports))
+                .ok_or_else(|| anyhow!("estimated total fee lamports overflow"))?;
+            let notional_lamports = intent.notional_lamports()?.as_u64();
+            let fee_overhead_bps =
+                fee_overhead_bps_ceil(estimated_total_fee_lamports, notional_lamports);
+            allow_detail.push_str(&format!(
+                " estimated_fee_overhead_bps={} estimated_total_fee_sol={:.6}",
+                fee_overhead_bps,
+                lamports_to_sol(Lamports::new(estimated_total_fee_lamports))
+            ));
+            if estimated_ata_create_rent_lamports > 0
+                && !allow_detail.contains("token_account=create_on_submit")
+            {
+                allow_detail.push_str(" token_account=create_on_submit");
+            }
+
+            if fee_overhead_exceeds_limit(
+                estimated_total_fee_lamports,
+                notional_lamports,
+                max_fee_overhead_bps,
+            ) {
+                return Ok(Some(PreTradeDecision::reject(
+                    "pretrade_fee_overhead_too_high",
+                    format!(
+                        "route={} notional_sol={:.6} estimated_total_fee_sol={:.6} estimated_network_fee_sol={:.6} estimated_tip_sol={:.6} estimated_ata_create_rent_sol={:.6} fee_overhead_bps={} max_fee_overhead_bps={}",
+                        normalized_route,
+                        lamports_to_sol(Lamports::new(notional_lamports)),
+                        lamports_to_sol(Lamports::new(estimated_total_fee_lamports)),
+                        lamports_to_sol(Lamports::new(estimated_network_fee_lamports)),
+                        lamports_to_sol(Lamports::new(estimated_tip_lamports)),
+                        lamports_to_sol(Lamports::new(estimated_ata_create_rent_lamports)),
+                        fee_overhead_bps,
+                        max_fee_overhead_bps
+                    ),
+                )));
+            }
+
+            Ok(None)
+        })();
+
+        match evaluation {
+            Ok(value) => value,
+            Err(error) => Some(PreTradeDecision::reject(
+                "pretrade_fee_policy_invalid",
+                error.to_string(),
+            )),
+        }
+    }
+
     fn evaluate_token_account_policy(
         &self,
         intent: &ExecutionIntent,
@@ -318,6 +500,51 @@ impl RpcPreTradeChecker {
             ),
         ))
     }
+}
+
+fn normalize_route_u64_policy(values: &BTreeMap<String, u64>) -> HashMap<String, u64> {
+    values
+        .iter()
+        .filter_map(|(route, value)| {
+            let normalized = route.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                None
+            } else {
+                Some((normalized, *value))
+            }
+        })
+        .collect()
+}
+
+fn normalize_route_u32_policy(values: &BTreeMap<String, u32>) -> HashMap<String, u32> {
+    values
+        .iter()
+        .filter_map(|(route, value)| {
+            let normalized = route.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                None
+            } else {
+                Some((normalized, *value))
+            }
+        })
+        .collect()
+}
+
+fn fee_overhead_exceeds_limit(
+    estimated_total_fee_lamports: u64,
+    notional_lamports: u64,
+    max_fee_overhead_bps: u32,
+) -> bool {
+    (estimated_total_fee_lamports as u128).saturating_mul(10_000u128)
+        > (notional_lamports as u128).saturating_mul(max_fee_overhead_bps as u128)
+}
+
+fn fee_overhead_bps_ceil(estimated_total_fee_lamports: u64, notional_lamports: u64) -> u64 {
+    let numerator = (estimated_total_fee_lamports as u128)
+        .saturating_mul(10_000u128)
+        .saturating_add((notional_lamports as u128).saturating_sub(1));
+    let value = numerator / (notional_lamports as u128);
+    value.min(u64::MAX as u128).try_into().unwrap_or(u64::MAX)
 }
 
 impl PreTradeChecker for RpcPreTradeChecker {
@@ -356,7 +583,7 @@ impl PreTradeChecker for RpcPreTradeChecker {
 
             let mut allow_detail = balance_decision.detail;
 
-            if self.require_token_account {
+            if self.needs_token_account_lookup(intent) {
                 let token_account_exists =
                     match self.query_token_account_exists(endpoint, intent.token.trim()) {
                         Ok(value) => value,
@@ -368,6 +595,14 @@ impl PreTradeChecker for RpcPreTradeChecker {
                 if let Some(decision) = self.evaluate_token_account_policy(
                     intent,
                     endpoint,
+                    token_account_exists,
+                    &mut allow_detail,
+                ) {
+                    return Ok(decision);
+                }
+                if let Some(decision) = self.evaluate_fee_overhead_policy(
+                    intent,
+                    route,
                     token_account_exists,
                     &mut allow_detail,
                 ) {
@@ -499,6 +734,27 @@ mod tests {
         }
     }
 
+    fn route_tip_lamports(values: &[(&str, u64)]) -> BTreeMap<String, u64> {
+        values
+            .iter()
+            .map(|(route, value)| ((*route).to_string(), *value))
+            .collect()
+    }
+
+    fn route_cu_limits(values: &[(&str, u32)]) -> BTreeMap<String, u32> {
+        values
+            .iter()
+            .map(|(route, value)| ((*route).to_string(), *value))
+            .collect()
+    }
+
+    fn route_cu_prices(values: &[(&str, u64)]) -> BTreeMap<String, u64> {
+        values
+            .iter()
+            .map(|(route, value)| ((*route).to_string(), *value))
+            .collect()
+    }
+
     fn spawn_pretrade_rpc_server(responses: Vec<String>) -> Option<(String, JoinHandle<()>)> {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(value) => value,
@@ -615,9 +871,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            0,
             false,
             false,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
 
@@ -640,9 +903,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.0000000001,
+            0,
             false,
             false,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
 
@@ -661,9 +931,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            0,
             false,
             false,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
 
@@ -685,9 +962,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            0,
             false,
             false,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
 
@@ -742,9 +1026,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            0,
             true,
             true,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
         let mut allow_detail = "rpc_pretrade_ok".to_string();
@@ -776,9 +1067,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            0,
             true,
             true,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
         let mut allow_detail = "rpc_pretrade_ok".to_string();
@@ -805,9 +1103,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            0,
             true,
             false,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
         let mut allow_detail = "rpc_pretrade_ok".to_string();
@@ -834,9 +1139,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            0,
             true,
             false,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
         let mut allow_detail = "rpc_pretrade_ok".to_string();
@@ -894,9 +1206,16 @@ mod tests {
             1_000,
             "11111111111111111111111111111111",
             0.05,
+            0,
             true,
             true,
             0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            10_000,
         )
         .expect("checker should initialize");
 
@@ -909,6 +1228,171 @@ mod tests {
         );
 
         handle.join().expect("join pretrade rpc test server");
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_fee_overhead_policy_rejects_buy_when_missing_ata_makes_overhead_too_high(
+    ) -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            1_000,
+            false,
+            true,
+            0,
+            &route_tip_lamports(&[("rpc", 10_000)]),
+            &route_cu_limits(&[("rpc", 300_000)]),
+            &route_cu_prices(&[("rpc", 1_500)]),
+            false,
+            false,
+            10_000,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+
+        let decision = checker
+            .evaluate_fee_overhead_policy(
+                &make_intent(ExecutionSide::Buy, 0.01),
+                "rpc",
+                false,
+                &mut allow_detail,
+            )
+            .expect("buy should reject when ATA overhead dominates notional");
+
+        assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
+        assert_eq!(decision.reason_code, "pretrade_fee_overhead_too_high");
+        assert!(
+            decision
+                .detail
+                .contains("estimated_ata_create_rent_sol=0.002039"),
+            "unexpected detail: {}",
+            decision.detail
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_fee_overhead_policy_allows_buy_when_fee_fraction_is_within_limit() -> Result<()>
+    {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            1_000,
+            false,
+            true,
+            0,
+            &route_tip_lamports(&[("rpc", 10_000)]),
+            &route_cu_limits(&[("rpc", 300_000)]),
+            &route_cu_prices(&[("rpc", 1_500)]),
+            false,
+            false,
+            10_000,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+
+        let decision = checker.evaluate_fee_overhead_policy(
+            &make_intent(ExecutionSide::Buy, 0.1),
+            "rpc",
+            true,
+            &mut allow_detail,
+        );
+
+        assert!(
+            decision.is_none(),
+            "fee fraction should be within configured limit"
+        );
+        assert!(
+            allow_detail.contains("estimated_fee_overhead_bps="),
+            "unexpected allow detail: {}",
+            allow_detail
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_fee_overhead_policy_uses_dynamic_caps_for_conservative_buy_estimate(
+    ) -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            2_000,
+            false,
+            true,
+            10_000,
+            &route_tip_lamports(&[("jito", 10_000)]),
+            &route_cu_limits(&[("jito", 300_000)]),
+            &route_cu_prices(&[("jito", 1_000)]),
+            true,
+            true,
+            20_000,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+
+        let decision = checker
+            .evaluate_fee_overhead_policy(
+                &make_intent(ExecutionSide::Buy, 0.00008),
+                "jito",
+                true,
+                &mut allow_detail,
+            )
+            .expect("dynamic conservative estimate should reject small buy");
+
+        assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
+        assert_eq!(decision.reason_code, "pretrade_fee_overhead_too_high");
+        assert!(
+            decision.detail.contains("estimated_tip_sol=0.000010")
+                || decision.detail.contains("estimated_tip_sol=0.000006"),
+            "unexpected detail: {}",
+            decision.detail
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_fee_overhead_policy_does_not_block_sell() -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            1_000,
+            false,
+            true,
+            0,
+            &route_tip_lamports(&[("rpc", 10_000)]),
+            &route_cu_limits(&[("rpc", 300_000)]),
+            &route_cu_prices(&[("rpc", 1_500)]),
+            false,
+            false,
+            10_000,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+
+        let decision = checker.evaluate_fee_overhead_policy(
+            &make_intent(ExecutionSide::Sell, 0.0005),
+            "rpc",
+            false,
+            &mut allow_detail,
+        );
+
+        assert!(
+            decision.is_none(),
+            "sell path must not be blocked by buy fee overhead guard"
+        );
         Ok(())
     }
 

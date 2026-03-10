@@ -50,6 +50,7 @@ pub(crate) fn validate_execution_runtime_contract(
             submit_fastlane_enabled = config.submit_fastlane_enabled,
             submit_adapter_contract_version = %config.submit_adapter_contract_version,
             submit_adapter_require_policy_echo = config.submit_adapter_require_policy_echo,
+            pretrade_max_fee_overhead_bps = config.pretrade_max_fee_overhead_bps,
             pretrade_require_token_account = config.pretrade_require_token_account,
             pretrade_max_priority_fee_micro_lamports_per_cu = config.pretrade_max_priority_fee_lamports,
             "execution runtime contract validated"
@@ -214,6 +215,11 @@ fn validate_routes_contract(config: &ExecutionConfig, env: &str, mode: &str) -> 
     if !config.pretrade_min_sol_reserve.is_finite() || config.pretrade_min_sol_reserve < 0.0 {
         return Err(anyhow!(
             "execution.pretrade_min_sol_reserve must be finite and >= 0 when execution is enabled"
+        ));
+    }
+    if config.pretrade_max_fee_overhead_bps > 10_000 {
+        return Err(anyhow!(
+            "execution.pretrade_max_fee_overhead_bps must be in 0..=10000 when execution is enabled"
         ));
     }
     if config.slippage_bps < 0.0 {

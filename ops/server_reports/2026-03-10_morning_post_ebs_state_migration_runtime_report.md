@@ -130,3 +130,63 @@ The EBS state migration succeeded.
 - services recovered cleanly,
 - live runtime resumed with near-head cursor movement,
 - shadow path remained alive after the cutover.
+
+## Post-Soak Checkpoint
+
+Additional soak validation taken around `2026-03-10 12:05 Europe/Kiev` / `10:05 UTC`:
+
+```text
+/dev/root       145G total, 112G used, 33G avail, 78%
+/dev/nvme1n1    492G total, 108G used, 359G avail, 24%
+```
+
+State volume remained mounted correctly:
+
+```text
+/dev/nvme1n1 ext4 491.1G 107.4G 358.7G /var/www/solana-copy-bot/state
+```
+
+DB files remained healthy on the new volume:
+
+```text
+live_copybot.db      ~108G
+live_copybot.db-wal  ~149M
+live_copybot.db-shm  ~320K
+```
+
+Runtime remained clean after soak:
+
+```text
+solana-copy-bot.service   active
+copybot-adapter.service   active
+copybot-executor.service  active
+NRestarts                 = 0
+```
+
+Live heads were still moving near-head:
+
+```text
+observed_swaps_max_ts      = 2026-03-10T10:06:21.633082418+00:00
+discovery_runtime.cursor   = 2026-03-10T10:06:04.763182497+00:00
+direct cursor/head gap     ~= 16.9s
+```
+
+Business activity also remained live:
+
+```text
+followlist.active       = 356
+copy_signals            = 42036
+shadow_lots             = 63
+shadow_closed_trades    = 667
+```
+
+Recent logs continued to show normal shadow processing:
+
+- `shadow followed wallet swap reached pipeline`
+- `shadow signal recorded`
+
+Operational conclusion after soak:
+
+1. The migration remains stable after the initial soak window.
+2. The new EBS volume is ready for an AWS snapshot.
+3. The old backup directory should still be retained until that AWS snapshot completes and one more quick runtime check is clean.

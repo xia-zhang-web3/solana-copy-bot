@@ -235,9 +235,16 @@ impl ExecutionRuntime {
                     config.poll_interval_ms.max(500),
                     &config.execution_signer_pubkey,
                     config.pretrade_min_sol_reserve,
+                    config.pretrade_max_fee_overhead_bps,
                     config.pretrade_require_token_account,
                     false,
                     config.pretrade_max_priority_fee_lamports,
+                    &config.submit_route_tip_lamports,
+                    &config.submit_route_compute_unit_limit,
+                    &config.submit_route_compute_unit_price_micro_lamports,
+                    config.submit_dynamic_cu_price_enabled,
+                    config.submit_dynamic_tip_lamports_enabled,
+                    config.submit_dynamic_tip_lamports_multiplier_bps,
                 ) {
                     Some(value) => Box::new(value),
                     None => Box::new(FailClosedPreTradeChecker::new(
@@ -275,9 +282,16 @@ impl ExecutionRuntime {
                     config.poll_interval_ms.max(500),
                     &config.execution_signer_pubkey,
                     config.pretrade_min_sol_reserve,
+                    config.pretrade_max_fee_overhead_bps,
                     config.pretrade_require_token_account,
                     true,
                     config.pretrade_max_priority_fee_lamports,
+                    &config.submit_route_tip_lamports,
+                    &config.submit_route_compute_unit_limit,
+                    &config.submit_route_compute_unit_price_micro_lamports,
+                    config.submit_dynamic_cu_price_enabled,
+                    config.submit_dynamic_tip_lamports_enabled,
+                    config.submit_dynamic_tip_lamports_multiplier_bps,
                 ) {
                     Some(value) => Box::new(value),
                     None => Box::new(FailClosedPreTradeChecker::new(

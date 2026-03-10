@@ -78,6 +78,7 @@ pub struct ExecutionConfig {
     pub submit_timeout_ms: u64,
     pub execution_signer_pubkey: String,
     pub pretrade_min_sol_reserve: f64,
+    pub pretrade_max_fee_overhead_bps: u32,
     pub pretrade_require_token_account: bool,
     /// Legacy field name kept for backward compatibility.
     /// Unit is micro-lamports per CU (not plain lamports).
@@ -131,6 +132,7 @@ impl Default for ExecutionConfig {
             submit_timeout_ms: 3_000,
             execution_signer_pubkey: String::new(),
             pretrade_min_sol_reserve: 0.05,
+            pretrade_max_fee_overhead_bps: 0,
             pretrade_require_token_account: false,
             pretrade_max_priority_fee_lamports: 0,
             slippage_bps: 50.0,
@@ -252,6 +254,10 @@ impl fmt::Debug for ExecutionConfig {
             .field("submit_timeout_ms", &self.submit_timeout_ms)
             .field("execution_signer_pubkey", &self.execution_signer_pubkey)
             .field("pretrade_min_sol_reserve", &self.pretrade_min_sol_reserve)
+            .field(
+                "pretrade_max_fee_overhead_bps",
+                &self.pretrade_max_fee_overhead_bps,
+            )
             .field(
                 "pretrade_require_token_account",
                 &self.pretrade_require_token_account,

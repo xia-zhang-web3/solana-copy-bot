@@ -482,6 +482,12 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.pretrade_min_sol_reserve = pretrade_min_sol_reserve;
     }
+    if let Some(pretrade_max_fee_overhead_bps) = parse_env_number::<u32>(
+        "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS",
+        "u32",
+    )? {
+        config.execution.pretrade_max_fee_overhead_bps = pretrade_max_fee_overhead_bps;
+    }
     if let Some(pretrade_require_token_account) =
         parse_env_bool("SOLANA_COPY_BOT_EXECUTION_PRETRADE_REQUIRE_TOKEN_ACCOUNT")?
     {

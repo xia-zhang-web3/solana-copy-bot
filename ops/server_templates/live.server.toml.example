@@ -145,6 +145,7 @@ submit_dynamic_tip_lamports_multiplier_bps = 10000
 submit_timeout_ms = 3000
 execution_signer_pubkey = "11111111111111111111111111111111"
 pretrade_min_sol_reserve = 0.05
+pretrade_max_fee_overhead_bps = 1000
 pretrade_require_token_account = false
 pretrade_max_priority_fee_lamports = 0
 slippage_bps = 50.0

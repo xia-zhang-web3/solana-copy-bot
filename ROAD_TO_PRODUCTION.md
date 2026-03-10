@@ -2654,3 +2654,39 @@ Formal verdict:
    2. create an AWS snapshot of the new EBS volume,
    3. only then delete `/var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z`.
 3. A post-restart `shadow risk timed pause activated` warning also appeared, but that is a shadow risk-gate issue and should not be misread as a storage migration regression.
+
+### 2026-03-10 — post-soak EBS migration checkpoint is clean; safe to create AWS snapshot
+
+Источник:
+
+1. `ops/server_reports/2026-03-10_morning_post_ebs_state_migration_runtime_report.md`
+
+Краткий статус:
+
+1. A post-soak checkpoint around `2026-03-10 12:05 Europe/Kiev` confirmed that the migrated runtime remained healthy on the new EBS volume:
+   1. `/dev/root = 145G total, 112G used, 33G avail`,
+   2. `/dev/nvme1n1 = 492G total, 108G used, 359G avail`,
+   3. `state/` still mounted from `/dev/nvme1n1`.
+2. DB files remained healthy on the new volume:
+   1. `live_copybot.db ~108G`,
+   2. `live_copybot.db-wal ~149M`,
+   3. `live_copybot.db-shm ~320K`.
+3. Services remained clean through the soak window:
+   1. `solana-copy-bot.service`, `copybot-adapter.service`, `copybot-executor.service` all `active`,
+   2. `NRestarts = 0`,
+   3. recent logs still show `shadow followed wallet swap reached pipeline` and `shadow signal recorded`.
+4. Live heads remained near-head:
+   1. `observed_swaps_max_ts = 2026-03-10T10:06:21.633082418+00:00`,
+   2. `discovery_runtime.cursor_ts = 2026-03-10T10:06:04.763182497+00:00`,
+   3. direct `cursor/head gap ~= 16.9s`.
+5. Business activity remained alive after soak:
+   1. `followlist.active = 356`,
+   2. `copy_signals = 42036`,
+   3. `shadow_lots = 63`,
+   4. `shadow_closed_trades = 667`.
+
+Операционный вывод:
+
+1. The EBS migration has now passed the short soak window cleanly.
+2. The next operational step is to create an AWS snapshot of the new `copybot-state` volume.
+3. The retained rollback backup `/var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z` should remain in place until that AWS snapshot completes and one more quick runtime check stays clean.

@@ -993,7 +993,7 @@ fn normalize_route_cu_price(route_caps: &BTreeMap<String, u64>) -> HashMap<Strin
         .collect()
 }
 
-fn dynamic_tip_lamports_from_compute_budget(
+pub(crate) fn dynamic_tip_lamports_from_compute_budget(
     cu_limit: u32,
     cu_price_micro_lamports: u64,
     multiplier_bps: u32,
@@ -1006,7 +1006,10 @@ fn dynamic_tip_lamports_from_compute_budget(
         .unwrap_or(EXECUTION_ROUTE_TIP_LAMPORTS_MAX)
 }
 
-fn priority_fee_lamports_from_compute_budget(cu_limit: u32, cu_price_micro_lamports: u64) -> u64 {
+pub(crate) fn priority_fee_lamports_from_compute_budget(
+    cu_limit: u32,
+    cu_price_micro_lamports: u64,
+) -> u64 {
     let numerator = (cu_limit as u128)
         .saturating_mul(cu_price_micro_lamports as u128)
         .saturating_add(999_999);
