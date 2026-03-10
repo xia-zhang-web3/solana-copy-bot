@@ -2690,3 +2690,75 @@ Formal verdict:
 1. The EBS migration has now passed the short soak window cleanly.
 2. The next operational step is to create an AWS snapshot of the new `copybot-state` volume.
 3. The retained rollback backup `/var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z` should remain in place until that AWS snapshot completes and one more quick runtime check stays clean.
+
+### 2026-03-10 — EBS snapshot completed; old root backup is now safe to remove
+
+Источник:
+
+1. `ops/server_reports/2026-03-10_morning_post_ebs_state_migration_runtime_report.md`
+
+Краткий статус:
+
+1. AWS snapshot of the new dedicated state volume completed successfully:
+   1. `snapshot_id = snap-0f41f0a025e9d31f5`,
+   2. `status = completed`.
+2. A post-snapshot health-check remained clean:
+   1. `solana-copy-bot.service`, `copybot-adapter.service`, `copybot-executor.service` all `active`,
+   2. `NRestarts = 0`,
+   3. `/var/www/solana-copy-bot/state` still mounted from `/dev/nvme1n1`.
+3. Runtime remained near-head:
+   1. `discovery_runtime.cursor_ts = 2026-03-10T13:43:04.770272796+00:00`,
+   2. `observed_swaps_max_ts = 2026-03-10T13:43:32.869169321+00:00`,
+   3. direct `cursor/head gap ~= 28.1s`.
+4. Business activity remained live:
+   1. `followlist.active = 439`,
+   2. `copy_signals = 51227`,
+   3. `shadow_lots = 63`,
+   4. `shadow_closed_trades = 667`.
+5. Disk state after snapshot:
+   1. root still shows `~33G free` only because the retained backup tree is still present,
+   2. new state volume shows `~357G free`,
+   3. DB files on the new volume remain healthy: `live_copybot.db ~110G`, `live_copybot.db-wal ~149M`, `live_copybot.db-shm ~320K`.
+
+Операционный вывод:
+
+1. The EBS state migration has now passed all intended safety gates:
+   1. successful cutover,
+   2. short soak window,
+   3. completed AWS snapshot,
+   4. clean post-snapshot runtime check.
+2. The retained rollback backup `/var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z` is now safe to delete when ready to reclaim root disk space.
+
+### 2026-03-10 — retained root backup removed; EBS migration fully completed
+
+Источник:
+
+1. `ops/server_reports/2026-03-10_morning_post_ebs_state_migration_runtime_report.md`
+
+Краткий статус:
+
+1. The retained rollback backup was deleted after successful snapshot completion:
+   1. removed path `=/var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z`,
+   2. reclaimed root space `~106G`.
+2. Disk state after cleanup:
+   1. `/dev/root = 145G total, 5.6G used, 139G avail, 4%`,
+   2. `/dev/nvme1n1 = 492G total, 110G used, 357G avail, 24%`.
+3. Runtime remained healthy after cleanup:
+   1. `solana-copy-bot.service`, `copybot-adapter.service`, `copybot-executor.service` all `active`,
+   2. `NRestarts = 0`,
+   3. recent logs still show active shadow processing.
+4. Live heads stayed near-head after cleanup:
+   1. `discovery_runtime.cursor_ts = 2026-03-10T13:50:04.755001069+00:00`,
+   2. `observed_swaps_max_ts = 2026-03-10T13:50:16.011140292+00:00`,
+   3. direct `cursor/head gap ~= 11.3s`.
+5. Business activity stayed live:
+   1. `followlist.active = 439`,
+   2. `copy_signals = 51938`,
+   3. `shadow_lots = 63`,
+   4. `shadow_closed_trades = 667`.
+
+Операционный вывод:
+
+1. The storage migration track is now operationally complete.
+2. `state/` is isolated on dedicated EBS, protected by snapshot, and no longer duplicated on root.
+3. Root filesystem headroom is restored and the immediate disk-pressure risk from the old state tree is removed.

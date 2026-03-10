@@ -190,3 +190,121 @@ Operational conclusion after soak:
 1. The migration remains stable after the initial soak window.
 2. The new EBS volume is ready for an AWS snapshot.
 3. The old backup directory should still be retained until that AWS snapshot completes and one more quick runtime check is clean.
+
+## Post-Snapshot Checkpoint
+
+AWS snapshot of the new state volume was created successfully:
+
+```text
+snapshot_id = snap-0f41f0a025e9d31f5
+status      = completed
+```
+
+Post-snapshot runtime check around `2026-03-10 15:43 Europe/Kiev` / `13:43 UTC` remained clean:
+
+```text
+/dev/root       145G total, 112G used, 33G avail, 78%
+/dev/nvme1n1    492G total, 110G used, 357G avail, 24%
+```
+
+Mount and DB files remained healthy:
+
+```text
+/dev/nvme1n1 ext4 491.1G 109.5G 357.0G /var/www/solana-copy-bot/state
+live_copybot.db      ~110G
+live_copybot.db-wal  ~149M
+live_copybot.db-shm  ~320K
+```
+
+Runtime stayed healthy:
+
+```text
+solana-copy-bot.service   active
+copybot-adapter.service   active
+copybot-executor.service  active
+NRestarts                 = 0
+```
+
+Live heads continued moving near-head:
+
+```text
+discovery_runtime.cursor   = 2026-03-10T13:43:04.770272796+00:00
+observed_swaps_max_ts      = 2026-03-10T13:43:32.869169321+00:00
+direct cursor/head gap     ~= 28.1s
+```
+
+Business activity remained alive:
+
+```text
+followlist.active       = 439
+copy_signals            = 51227
+shadow_lots             = 63
+shadow_closed_trades    = 667
+```
+
+Recent logs still showed ongoing shadow processing:
+
+- `shadow followed wallet swap reached pipeline`
+- `shadow signal recorded`
+
+Operational conclusion after snapshot:
+
+1. The dedicated EBS migration is now fully protected by a completed AWS snapshot.
+2. Runtime remained healthy after snapshot completion.
+3. The retained rollback backup directory `/var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z` is now safe to delete once the operator is ready to reclaim root space.
+
+## Post-Cleanup Checkpoint
+
+The retained rollback backup was deleted after snapshot completion:
+
+```text
+removed = /var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z
+reclaimed_root_space ~= 106G
+```
+
+Disk state after cleanup:
+
+```text
+/dev/root       145G total, 5.6G used, 139G avail, 4%
+/dev/nvme1n1    492G total, 110G used, 357G avail, 24%
+```
+
+Runtime remained healthy after cleanup:
+
+```text
+solana-copy-bot.service   active
+copybot-adapter.service   active
+copybot-executor.service  active
+NRestarts                 = 0
+```
+
+Live heads were still moving near-head:
+
+```text
+discovery_runtime.cursor   = 2026-03-10T13:50:04.755001069+00:00
+observed_swaps_max_ts      = 2026-03-10T13:50:16.011140292+00:00
+direct cursor/head gap     ~= 11.3s
+```
+
+Business activity stayed live:
+
+```text
+followlist.active       = 439
+copy_signals            = 51938
+shadow_lots             = 63
+shadow_closed_trades    = 667
+```
+
+Recent logs still showed normal shadow processing immediately after cleanup:
+
+- `shadow followed wallet swap reached pipeline`
+- `shadow signal recorded`
+
+## Final Operational Verdict
+
+The dedicated EBS migration is operationally complete.
+
+1. `state/` has been moved off root onto the dedicated EBS volume.
+2. The new volume has passed cutover, soak, AWS snapshot, and post-snapshot runtime verification.
+3. The old root backup has been safely removed.
+4. Root filesystem headroom is now restored to a healthy level.
