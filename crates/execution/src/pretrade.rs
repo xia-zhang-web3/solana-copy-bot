@@ -540,6 +540,9 @@ fn fee_overhead_exceeds_limit(
 }
 
 fn fee_overhead_bps_ceil(estimated_total_fee_lamports: u64, notional_lamports: u64) -> u64 {
+    if notional_lamports == 0 {
+        return u64::MAX;
+    }
     let numerator = (estimated_total_fee_lamports as u128)
         .saturating_mul(10_000u128)
         .saturating_add((notional_lamports as u128).saturating_sub(1));
@@ -1394,6 +1397,45 @@ mod tests {
             "sell path must not be blocked by buy fee overhead guard"
         );
         Ok(())
+    }
+
+    #[test]
+    fn rpc_pretrade_fee_overhead_policy_rejects_zero_lamport_notional_without_panicking(
+    ) -> Result<()> {
+        let checker = RpcPreTradeChecker::new(
+            "https://rpc.primary.example",
+            "",
+            1_000,
+            "11111111111111111111111111111111",
+            0.05,
+            1_000,
+            false,
+            true,
+            0,
+            &route_tip_lamports(&[("rpc", 10_000)]),
+            &route_cu_limits(&[("rpc", 300_000)]),
+            &route_cu_prices(&[("rpc", 1_500)]),
+            false,
+            false,
+            10_000,
+        )
+        .expect("checker should initialize");
+        let mut allow_detail = "rpc_pretrade_ok".to_string();
+        let mut intent = make_intent(ExecutionSide::Buy, 0.1);
+        intent.notional_lamports = Lamports::ZERO;
+
+        let decision = checker
+            .evaluate_fee_overhead_policy(&intent, "rpc", true, &mut allow_detail)
+            .expect("zero lamport notional should fail closed without panic");
+
+        assert_eq!(decision.kind, PreTradeDecisionKind::TerminalReject);
+        assert_eq!(decision.reason_code, "pretrade_fee_policy_invalid");
+        Ok(())
+    }
+
+    #[test]
+    fn fee_overhead_bps_ceil_saturates_when_notional_is_zero() {
+        assert_eq!(fee_overhead_bps_ceil(5_000, 0), u64::MAX);
     }
 
     #[test]

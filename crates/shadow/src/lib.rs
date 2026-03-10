@@ -1,7 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_config::ShadowConfig;
-use copybot_core_types::{Lamports, SwapEvent, TokenQuantity};
+use copybot_core_types::{
+    Lamports, SwapEvent, TokenQuantity, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE,
+    COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
+};
 use copybot_storage::{CopySignalRow, SqliteStore};
 use std::collections::{HashMap, HashSet};
 use tracing::info;
@@ -400,13 +403,26 @@ impl ShadowService {
             "shadow:{}:{}:{}:{}",
             swap.signature, swap.wallet, candidate.side, candidate.token
         );
+        let (signal_notional_lamports, signal_notional_origin) =
+            if let Some(exact_notional) = copy_notional_lamports {
+                (
+                    Some(exact_notional),
+                    COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS.to_string(),
+                )
+            } else {
+                (
+                    sol_to_lamports_ceil(copy_notional_sol),
+                    COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+                )
+            };
         let signal = CopySignalRow {
             signal_id: signal_id.clone(),
             wallet_id: swap.wallet.clone(),
             side: candidate.side.clone(),
             token: candidate.token.clone(),
             notional_sol: copy_notional_sol,
-            notional_lamports: copy_notional_lamports,
+            notional_lamports: signal_notional_lamports,
+            notional_origin: signal_notional_origin,
             ts: swap.ts_utc,
             status: "shadow_recorded".to_string(),
         };
@@ -551,7 +567,14 @@ mod tests {
         assert_eq!(buy_signal.side, "buy");
         let signals = store.list_copy_signals_by_status("shadow_recorded", 10)?;
         assert_eq!(signals.len(), 1);
-        assert_eq!(signals[0].notional_lamports, None);
+        assert_eq!(
+            signals[0].notional_lamports,
+            Some(Lamports::new(500_000_000))
+        );
+        assert_eq!(
+            signals[0].notional_origin,
+            COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE
+        );
         assert!(store.shadow_open_lots_count()? > 0);
 
         let sell = SwapEvent {
@@ -702,7 +725,14 @@ mod tests {
             .expect_recorded("buy signal expected");
         let signals = store.list_copy_signals_by_status("shadow_recorded", 10)?;
         assert_eq!(signals.len(), 1);
-        assert_eq!(signals[0].notional_lamports, None);
+        assert_eq!(
+            signals[0].notional_lamports,
+            Some(Lamports::new(500_000_000))
+        );
+        assert_eq!(
+            signals[0].notional_origin,
+            COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE
+        );
 
         let lots = store.list_shadow_lots("leader-wallet", "TokenMint")?;
         assert_eq!(lots.len(), 1, "expected single open lot before dusting");

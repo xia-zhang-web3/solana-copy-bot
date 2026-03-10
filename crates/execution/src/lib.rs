@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{ExecutionConfig, RiskConfig};
+#[cfg(test)]
+use copybot_core_types::COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE;
 use copybot_storage::{
     CopySignalRow, InsertExecutionOrderPendingOutcome, MarkOrderDroppedOutcome,
     ScheduleOrderRetryOutcome, SqliteStore, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
@@ -93,6 +95,15 @@ impl ExecutionRuntime {
             "execution_failed" => SignalResult::Failed,
             _ => SignalResult::Skipped,
         }
+    }
+
+    fn is_submitted_or_reconcile_status(status: &str) -> bool {
+        matches!(
+            status,
+            "execution_submitted"
+                | EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                | EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS
+        )
     }
 
     fn drop_pre_submit_order_or_sync_signal(
@@ -478,8 +489,65 @@ impl ExecutionRuntime {
         buy_submit_pause_reason: Option<&str>,
         report: &mut ExecutionBatchReport,
     ) -> Result<SignalResult> {
-        let intent = match ExecutionIntent::try_from(signal.clone()) {
+        let exact_money_cutover_active = store.exact_money_cutover_active_at(signal.ts)?;
+        let attempt = 1;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, attempt);
+        let mut order = store.execution_order_by_client_order_id(&client_order_id)?;
+        if let Some(existing) = order.as_ref() {
+            if signal.status != existing.status {
+                store.update_copy_signal_status(&signal.signal_id, existing.status.as_str())?;
+            }
+            debug!(
+                signal_id = %signal.signal_id,
+                client_order_id = %client_order_id,
+                existing_status = %existing.status,
+                "execution idempotency hit"
+            );
+        }
+
+        let lifecycle_status = order
+            .as_ref()
+            .map(|value| value.status.as_str())
+            .unwrap_or(signal.status.as_str());
+        let allow_existing_order_legacy_notional_fallback = order
+            .as_ref()
+            .is_some_and(|value| Self::is_submitted_or_reconcile_status(value.status.as_str()));
+        let intent = match ExecutionIntent::from_signal_row(
+            signal.clone(),
+            exact_money_cutover_active,
+        ) {
             Ok(value) => value,
+            Err(error) if allow_existing_order_legacy_notional_fallback => {
+                warn!(
+                    signal_id = %signal.signal_id,
+                    client_order_id = %client_order_id,
+                    lifecycle_status,
+                    error = %error,
+                    "existing submitted/reconcile order has unusable durable notional; falling back to legacy signal notional to preserve confirm/reconcile polling"
+                );
+                match ExecutionIntent::from_existing_submitted_signal_row(
+                    signal.clone(),
+                    exact_money_cutover_active,
+                ) {
+                    Ok(value) => value,
+                    Err(rescue_error) => {
+                        store.update_copy_signal_status(&signal.signal_id, "execution_failed")?;
+                        let details = json!({
+                            "signal_id": signal.signal_id,
+                            "reason": "invalid_intent",
+                            "error": rescue_error.to_string()
+                        })
+                        .to_string();
+                        let _ = store.insert_risk_event(
+                            "execution_invalid_intent",
+                            "error",
+                            now,
+                            Some(&details),
+                        );
+                        return Ok(SignalResult::Failed);
+                    }
+                }
+            }
             Err(error) => {
                 store.update_copy_signal_status(&signal.signal_id, "execution_failed")?;
                 let details = json!({
@@ -497,26 +565,6 @@ impl ExecutionRuntime {
                 return Ok(SignalResult::Failed);
             }
         };
-
-        let attempt = 1;
-        let client_order_id = idempotency::client_order_id(&intent.signal_id, attempt);
-        let mut order = store.execution_order_by_client_order_id(&client_order_id)?;
-        if let Some(existing) = order.as_ref() {
-            if signal.status != existing.status {
-                store.update_copy_signal_status(&intent.signal_id, existing.status.as_str())?;
-            }
-            debug!(
-                signal_id = %intent.signal_id,
-                client_order_id = %client_order_id,
-                existing_status = %existing.status,
-                "execution idempotency hit"
-            );
-        }
-
-        let lifecycle_status = order
-            .as_ref()
-            .map(|value| value.status.as_str())
-            .unwrap_or(signal.status.as_str());
 
         if self.should_pause_buy_submission(&intent, lifecycle_status, buy_submit_pause_reason) {
             return Ok(SignalResult::Skipped);
@@ -1125,6 +1173,7 @@ mod tests {
             token: token.to_string(),
             notional_sol,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -1179,6 +1228,7 @@ mod tests {
             token: "token-next".to_string(),
             notional_sol: 0.00000000005,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         })?;
@@ -1249,6 +1299,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now - Duration::seconds(10),
             status: "shadow_recorded".to_string(),
         })?;
@@ -1259,6 +1310,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -1308,6 +1360,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now - Duration::seconds(20),
             status: "execution_pending".to_string(),
         })?;
@@ -1318,6 +1371,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now - Duration::seconds(5),
             status: "shadow_recorded".to_string(),
         })?;
@@ -1364,6 +1418,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -1418,6 +1473,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -1497,6 +1553,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -1569,6 +1626,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -1611,6 +1669,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -1682,6 +1741,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         })?;
@@ -1724,6 +1784,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         };
@@ -1803,6 +1864,7 @@ mod tests {
             token: "token-route-submit".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -1905,6 +1967,7 @@ mod tests {
             token: "token-route-submit-fastlane".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2002,6 +2065,7 @@ mod tests {
             token: "token-route-submit-blocked".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2095,6 +2159,7 @@ mod tests {
             token: "token-route-submit-fastlane-blocked".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2187,6 +2252,7 @@ mod tests {
             token: "token-dynamic-submit-policy".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2284,6 +2350,7 @@ mod tests {
             token: "token-dynamic-submit-policy-hint-floor".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2375,6 +2442,7 @@ mod tests {
             token: "token-dynamic-submit-policy-retryable".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2465,6 +2533,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         };
@@ -2543,6 +2612,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         };
@@ -2627,6 +2697,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         };
@@ -2710,6 +2781,7 @@ mod tests {
             token: "token-buy-daily".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2801,6 +2873,7 @@ mod tests {
             token: "token-buy-drawdown".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2878,6 +2951,7 @@ mod tests {
             token: "token-daily-unrealized".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -2968,6 +3042,7 @@ mod tests {
             token: "token-drawdown-unrealized".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -3035,6 +3110,7 @@ mod tests {
             token: "token-buy-missing-price".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -3108,6 +3184,7 @@ mod tests {
             token: "token-buy-legacy-open-risk".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -3194,6 +3271,7 @@ mod tests {
             token: "token-window-new".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -3240,6 +3318,7 @@ mod tests {
             token: "token-route-pretrade".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -3317,6 +3396,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: Utc::now(),
             status: "shadow_recorded".to_string(),
         })?;
@@ -3368,6 +3448,146 @@ mod tests {
     }
 
     #[test]
+    fn process_batch_fails_closed_on_post_cutover_signal_without_durable_notional_lamports(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("batch-post-cutover-missing-notional-lamports")?;
+        let now = Utc::now();
+        store.upsert_exact_money_cutover_state(
+            now - Duration::seconds(1),
+            Some("test-post-cutover-missing-notional-lamports"),
+        )?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:s7b:w:buy:t1".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let runtime = make_paper_runtime(RiskConfig::default());
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.failed, 1);
+
+        let failed = store.list_copy_signals_by_status("execution_failed", 10)?;
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            store.risk_event_count_by_type("execution_invalid_intent")?,
+            1,
+            "post-cutover signal without durable lamport mirror must emit invalid-intent risk event"
+        );
+        assert!(
+            store
+                .execution_order_by_client_order_id("cb_shadow_s7b_w_buy_t1_a1")?
+                .is_none(),
+            "invalid post-cutover intent must fail before creating order rows"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_keeps_submitted_order_pollable_when_post_cutover_signal_lacks_durable_notional_lamports(
+    ) -> Result<()> {
+        let (store, db_path) =
+            make_test_store("batch-post-cutover-missing-notional-existing-order")?;
+        let now = Utc::now();
+        store.upsert_exact_money_cutover_state(
+            now - Duration::seconds(1),
+            Some("test-post-cutover-missing-notional-existing-order"),
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s7d:w:buy:t1".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.1,
+            notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: now,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-post-cutover-existing-order-1",
+                &signal.signal_id,
+                &client_order_id,
+                "rpc",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-post-cutover-existing-order-1",
+            "rpc",
+            "sig-post-cutover-existing-order",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(ErrorConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.confirm_retry_scheduled_by_route.get("rpc"), Some(&1));
+        assert_eq!(
+            store.risk_event_count_by_type("execution_invalid_intent")?,
+            0
+        );
+        assert_eq!(
+            store
+                .list_copy_signals_by_status("execution_submitted", 10)?
+                .len(),
+            1,
+            "existing submitted order must remain pollable instead of being flipped to execution_failed"
+        );
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("existing submitted order should remain present")?;
+        assert_eq!(order.status, "execution_submitted");
+        assert_eq!(order.err_code, None);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_fails_confirm_when_price_unavailable_without_fallback() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-price-missing")?;
         let now = Utc::now();
@@ -3378,6 +3598,7 @@ mod tests {
             token: "token-missing".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3452,6 +3673,7 @@ mod tests {
             token: "token-missing-manual".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3550,6 +3772,7 @@ mod tests {
             token: "token-fee".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -3636,6 +3859,7 @@ mod tests {
             token: "token-fee-hint".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -3730,6 +3954,7 @@ mod tests {
             token: "token-fee-rpc-priority".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
@@ -3819,6 +4044,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.125,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3971,6 +4197,7 @@ mod tests {
             token: "token-obs-sell".to_string(),
             notional_sol: 0.10,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -4150,6 +4377,7 @@ mod tests {
             token: "token-obs-sign".to_string(),
             notional_sol: 0.10,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -4672,6 +4900,7 @@ mod tests {
             token: "token-timeout-reconcile".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -4825,6 +5054,7 @@ mod tests {
             token: "token-reconcile-surface-refresh".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -4961,6 +5191,7 @@ mod tests {
             token: "token-confirmed-reconcile-timeout-stable".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -5108,6 +5339,7 @@ mod tests {
             token: "token-timeout-surface-refresh".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -5237,6 +5469,7 @@ mod tests {
             token: "token-reconcile-fee-telemetry".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };
@@ -5373,6 +5606,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -5457,6 +5691,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: submit_ts,
             status: "execution_submitted".to_string(),
         };

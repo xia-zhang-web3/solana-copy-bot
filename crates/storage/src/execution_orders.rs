@@ -5,6 +5,9 @@ use super::{
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
+use copybot_core_types::{
+    COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
+};
 use rusqlite::{params, OptionalExtension};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,11 +65,36 @@ impl SqliteStore {
     }
 
     pub fn insert_copy_signal(&self, signal: &CopySignalRow) -> Result<bool> {
-        let notional_origin = if signal.notional_lamports.is_some() {
-            "leader_exact_lamports"
-        } else {
-            "leader_approximate"
-        };
+        let notional_origin = signal.notional_origin.as_str();
+        if signal
+            .notional_lamports
+            .is_some_and(|value| value.as_u64() == 0)
+        {
+            return Err(anyhow!(
+                "copy signal {} has zero notional_lamports for notional_origin={}",
+                signal.signal_id,
+                notional_origin
+            ));
+        }
+        match notional_origin {
+            COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS => {
+                if signal.notional_lamports.is_none() {
+                    return Err(anyhow!(
+                        "copy signal {} missing notional_lamports for exact notional_origin={}",
+                        signal.signal_id,
+                        notional_origin
+                    ));
+                }
+            }
+            COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE => {}
+            other => {
+                return Err(anyhow!(
+                    "copy signal {} has unsupported notional_origin={}",
+                    signal.signal_id,
+                    other
+                ));
+            }
+        }
         let notional_lamports_sql = signal
             .notional_lamports
             .map(|value| u64_to_sql_i64("copy_signals.notional_lamports", value.as_u64()))
@@ -155,11 +183,20 @@ impl SqliteStore {
                 row.get(5)
                     .context("failed reading copy_signals.notional_lamports")?,
             )?;
-            let notional_lamports = if notional_origin == "leader_exact_lamports" {
-                parsed_notional_lamports.map(crate::Lamports::new)
-            } else {
-                None
-            };
+            match notional_origin.as_str() {
+                COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS
+                | COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE => {}
+                other => {
+                    return Err(anyhow!(
+                        "unsupported copy_signals.notional_origin={} for signal {}",
+                        other,
+                        row.get::<_, String>(0).context(
+                            "failed reading copy_signals.signal_id for notional_origin error"
+                        )?
+                    ));
+                }
+            }
+            let notional_lamports = parsed_notional_lamports.map(crate::Lamports::new);
             out.push(CopySignalRow {
                 signal_id: row
                     .get(0)
@@ -173,6 +210,7 @@ impl SqliteStore {
                     .get(4)
                     .context("failed reading copy_signals.notional_sol")?,
                 notional_lamports,
+                notional_origin,
                 ts,
                 status: row.get(8).context("failed reading copy_signals.status")?,
             });

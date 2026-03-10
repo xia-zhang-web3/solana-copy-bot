@@ -10,6 +10,7 @@ pub use copybot_core_types::{
     CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
     FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, Lamports, SignedLamports,
     TokenQualityCacheRow, TokenQualityRpcRow, TokenQuantity, WalletMetricRow, WalletUpsertRow,
+    COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
     EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
@@ -2029,6 +2030,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2129,6 +2131,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: Some(Lamports::new(250_000_000)),
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS.to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
         };
@@ -2150,7 +2153,8 @@ mod tests {
     }
 
     #[test]
-    fn copy_signal_approximate_origin_masks_non_exact_notional_sidecar_on_read() -> Result<()> {
+    fn copy_signal_approximate_origin_preserves_approximate_notional_sidecar_on_read() -> Result<()>
+    {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("copy-signal-approx-origin.db");
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
@@ -2180,7 +2184,78 @@ mod tests {
 
         let signals = store.list_copy_signals_by_status("shadow_recorded", 10)?;
         assert_eq!(signals.len(), 1);
-        assert_eq!(signals[0].notional_lamports, None);
+        assert_eq!(
+            signals[0].notional_lamports,
+            Some(Lamports::new(250_000_000))
+        );
+        assert_eq!(
+            signals[0].notional_origin,
+            COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn insert_copy_signal_rejects_exact_origin_without_notional_lamports() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("copy-signal-missing-exact-notional.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:45:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let err = store
+            .insert_copy_signal(&CopySignalRow {
+                signal_id: "shadow:sig-missing-exact:wallet:buy:token-a".to_string(),
+                wallet_id: "wallet-1".to_string(),
+                side: "buy".to_string(),
+                token: "token-a".to_string(),
+                notional_sol: 0.25,
+                notional_lamports: None,
+                notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS.to_string(),
+                ts: now,
+                status: "shadow_recorded".to_string(),
+            })
+            .expect_err("exact origin without lamport mirror must fail closed");
+        assert!(
+            err.to_string().contains("missing notional_lamports"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn insert_copy_signal_rejects_zero_notional_lamports() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("copy-signal-zero-notional.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T12:50:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let err = store
+            .insert_copy_signal(&CopySignalRow {
+                signal_id: "shadow:sig-zero-notional:wallet:buy:token-a".to_string(),
+                wallet_id: "wallet-1".to_string(),
+                side: "buy".to_string(),
+                token: "token-a".to_string(),
+                notional_sol: 0.25,
+                notional_lamports: Some(Lamports::ZERO),
+                notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+                ts: now,
+                status: "shadow_recorded".to_string(),
+            })
+            .expect_err("zero lamport mirror must fail closed");
+        assert!(
+            err.to_string().contains("zero notional_lamports"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 
@@ -2204,6 +2279,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.10,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2799,6 +2875,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2904,6 +2981,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -2998,6 +3076,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS.to_string(),
         };
@@ -3085,6 +3164,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS.to_string(),
         };
@@ -3169,6 +3249,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS.to_string(),
         };
@@ -3236,6 +3317,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS.to_string(),
         };
@@ -3308,6 +3390,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS.to_string(),
         };
@@ -3385,6 +3468,7 @@ mod tests {
             token: "token-fee".to_string(),
             notional_sol: 0.20,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3447,6 +3531,7 @@ mod tests {
             token: "token-fee".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now + Duration::seconds(2),
             status: "execution_submitted".to_string(),
         };
@@ -3530,6 +3615,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -3586,6 +3672,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -3642,6 +3729,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.1,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_pending".to_string(),
         };
@@ -3701,6 +3789,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3788,6 +3877,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3854,6 +3944,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3920,6 +4011,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };
@@ -3996,6 +4088,7 @@ mod tests {
             token: "token-a".to_string(),
             notional_sol: 0.25,
             notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
             ts: now,
             status: "execution_submitted".to_string(),
         };

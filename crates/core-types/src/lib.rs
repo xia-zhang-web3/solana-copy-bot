@@ -191,9 +191,13 @@ pub struct CopySignalRow {
     pub token: String,
     pub notional_sol: f64,
     pub notional_lamports: Option<Lamports>,
+    pub notional_origin: String,
     pub ts: DateTime<Utc>,
     pub status: String,
 }
+
+pub const COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS: &str = "leader_exact_lamports";
+pub const COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE: &str = "leader_approximate";
 
 #[derive(Debug, Clone)]
 pub struct ExecutionOrderRow {
