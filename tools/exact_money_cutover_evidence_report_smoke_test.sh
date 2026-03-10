@@ -2,14 +2,20 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d -t exact-money-legacy-export.XXXXXX)"
-DB_NO_CUTOVER="$TMP_DIR/no-cutover.db"
+TMP_DIR="$(mktemp -d -t exact-money-cutover-evidence.XXXXXX)"
+DB_SKIP="$TMP_DIR/skip.db"
 DB_PASS="$TMP_DIR/pass.db"
 DB_WARN="$TMP_DIR/warn.db"
+OUT_SKIP="$TMP_DIR/out-skip"
 OUT_PASS="$TMP_DIR/out-pass"
 OUT_WARN="$TMP_DIR/out-warn"
+ORIGINAL_READINESS_SCRIPT="$ROOT_DIR/tools/exact_money_cutover_readiness_report.sh"
+READINESS_SCRIPT_BACKUP="$TMP_DIR/exact_money_cutover_readiness_report.sh.original"
 
 cleanup() {
+  if [[ -f "$READINESS_SCRIPT_BACKUP" ]]; then
+    mv "$READINESS_SCRIPT_BACKUP" "$ORIGINAL_READINESS_SCRIPT"
+  fi
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
@@ -127,71 +133,75 @@ assert_contains() {
   fi
 }
 
-create_schema "$DB_NO_CUTOVER"
-if python3 "$ROOT_DIR/tools/export_exact_money_legacy_evidence.py" "$DB_NO_CUTOVER" "$TMP_DIR/no-cutover-out" >/tmp/exact-money-legacy-export.err 2>&1; then
-  echo "expected legacy evidence export to fail without cutover marker" >&2
-  exit 1
-fi
-if ! grep -q "exact money cutover marker is missing" /tmp/exact-money-legacy-export.err; then
-  echo "missing no-cutover failure detail" >&2
-  cat /tmp/exact-money-legacy-export.err >&2
-  exit 1
-fi
-rm -f /tmp/exact-money-legacy-export.err
+create_schema "$DB_SKIP"
+skip_output="$(OUTPUT_DIR="$OUT_SKIP" bash "$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh" "$DB_SKIP")"
+assert_contains "$skip_output" "exact_money_cutover_evidence_verdict: SKIP"
+assert_contains "$skip_output" "exact_money_cutover_evidence_reason_code: cutover_not_marked"
+assert_contains "$skip_output" "readiness_guard_verdict: SKIP"
+assert_contains "$skip_output" "legacy_export_verdict: SKIP"
+assert_contains "$skip_output" "legacy_export_reason_code: cutover_not_marked"
+assert_contains "$skip_output" "artifact_readiness_capture: $OUT_SKIP/"
+assert_contains "$skip_output" "artifact_legacy_export_capture: $OUT_SKIP/"
 
 create_schema "$DB_PASS"
 seed_pass_fixture "$DB_PASS"
-pass_output="$(python3 "$ROOT_DIR/tools/export_exact_money_legacy_evidence.py" "$DB_PASS" "$OUT_PASS")"
-
-assert_contains "$pass_output" "exact_money_legacy_export_verdict: PASS"
-assert_contains "$pass_output" "exact_money_legacy_export_reason_code: legacy_evidence_exported"
+pass_output="$(OUTPUT_DIR="$OUT_PASS" bash "$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh" "$DB_PASS")"
+assert_contains "$pass_output" "exact_money_cutover_evidence_verdict: PASS"
+assert_contains "$pass_output" "exact_money_cutover_evidence_reason_code: cutover_evidence_ready"
+assert_contains "$pass_output" "readiness_guard_verdict: PASS"
+assert_contains "$pass_output" "legacy_export_verdict: PASS"
 assert_contains "$pass_output" "legacy_approximate_rows_total: 11"
 assert_contains "$pass_output" "post_cutover_approximate_rows_total: 0"
-assert_contains "$pass_output" "observed_swaps_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "copy_signals_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "fills_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "fills_qty_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "positions_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "positions_qty_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "positions_pnl_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "shadow_lots_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "shadow_lots_qty_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "shadow_closed_trades_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "shadow_closed_trades_qty_legacy_approximate_rows: 1"
-assert_contains "$pass_output" "artifact_summary: $OUT_PASS/exact_money_legacy_export_summary.txt"
-assert_contains "$pass_output" "artifact_manifest: $OUT_PASS/exact_money_legacy_export_manifest.txt"
+assert_contains "$pass_output" "artifact_legacy_export_summary: $OUT_PASS/legacy_export/exact_money_legacy_export_summary.txt"
+assert_contains "$pass_output" "artifact_legacy_export_manifest: $OUT_PASS/legacy_export/exact_money_legacy_export_manifest.txt"
+if ! [[ -f "$OUT_PASS/legacy_export/exact_money_legacy_observed_swaps.csv" ]]; then
+  echo "missing nested legacy export csv artifact" >&2
+  exit 1
+fi
+if ! ls "$OUT_PASS"/exact_money_cutover_evidence_summary_*.txt >/dev/null 2>&1; then
+  echo "missing cutover evidence summary artifact" >&2
+  exit 1
+fi
+if ! ls "$OUT_PASS"/exact_money_cutover_evidence_manifest_*.txt >/dev/null 2>&1; then
+  echo "missing cutover evidence manifest artifact" >&2
+  exit 1
+fi
 
-if ! [[ -f "$OUT_PASS/exact_money_legacy_observed_swaps.csv" ]]; then
-  echo "missing observed_swaps legacy csv" >&2
-  exit 1
-fi
-if ! [[ -f "$OUT_PASS/exact_money_legacy_export_summary.txt" ]]; then
-  echo "missing summary artifact" >&2
-  exit 1
-fi
-if ! [[ -f "$OUT_PASS/exact_money_legacy_export_manifest.txt" ]]; then
-  echo "missing manifest artifact" >&2
-  exit 1
-fi
-if [[ "$(wc -l <"$OUT_PASS/exact_money_legacy_observed_swaps.csv")" -ne 2 ]]; then
-  echo "expected observed_swaps legacy csv to contain one data row plus header" >&2
-  cat "$OUT_PASS/exact_money_legacy_observed_swaps.csv" >&2
-  exit 1
-fi
-if ! grep -q "obs-legacy" "$OUT_PASS/exact_money_legacy_observed_swaps.csv"; then
-  echo "expected observed_swaps legacy csv to include obs-legacy row" >&2
-  cat "$OUT_PASS/exact_money_legacy_observed_swaps.csv" >&2
-  exit 1
-fi
+cp "$ORIGINAL_READINESS_SCRIPT" "$READINESS_SCRIPT_BACKUP"
+cat >"$ORIGINAL_READINESS_SCRIPT" <<'EOF_STUB_READINESS'
+#!/usr/bin/env bash
+cat <<'EOF_STUB_READINESS_OUTPUT'
+exact_money_cutover_present: yes
+exact_money_cutover_ts: 2026-03-08T00:30:00+00:00
+exact_money_post_cutover_surface_failures: 0
+exact_money_invalid_exact_rows_total: 0
+exact_money_forbidden_merge_rows_total: 0
+exact_money_cutover_guard_verdict: PASS
+exact_money_cutover_guard_reason_code: post_cutover_exact_ready
+EOF_STUB_READINESS_OUTPUT
+exit 7
+EOF_STUB_READINESS
+chmod +x "$ORIGINAL_READINESS_SCRIPT"
+
+readiness_fail_output="$(OUTPUT_DIR="$TMP_DIR/out-readiness-fail" bash "$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh" "$DB_PASS")"
+assert_contains "$readiness_fail_output" "exact_money_cutover_evidence_verdict: UNKNOWN"
+assert_contains "$readiness_fail_output" "exact_money_cutover_evidence_reason_code: readiness_failed"
+assert_contains "$readiness_fail_output" "readiness_exit_code: 7"
+assert_contains "$readiness_fail_output" "readiness_guard_verdict: PASS"
+assert_contains "$readiness_fail_output" "legacy_export_verdict: SKIP"
+assert_contains "$readiness_fail_output" "legacy_export_reason_code: readiness_failed"
+
+mv "$READINESS_SCRIPT_BACKUP" "$ORIGINAL_READINESS_SCRIPT"
 
 cp "$DB_PASS" "$DB_WARN"
 sqlite3 "$DB_WARN" <<'SQL'
 INSERT INTO orders VALUES ('ord-post-approx', '2026-03-08T01:10:00+00:00', '2026-03-08T01:11:00+00:00');
 INSERT INTO fills VALUES (3, 'ord-post-approx', NULL, NULL, NULL, NULL);
 SQL
-warn_output="$(python3 "$ROOT_DIR/tools/export_exact_money_legacy_evidence.py" "$DB_WARN" "$OUT_WARN")"
-assert_contains "$warn_output" "exact_money_legacy_export_verdict: WARN"
-assert_contains "$warn_output" "exact_money_legacy_export_reason_code: post_cutover_approximate_detected"
+warn_output="$(OUTPUT_DIR="$OUT_WARN" bash "$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh" "$DB_WARN")"
+assert_contains "$warn_output" "exact_money_cutover_evidence_verdict: WARN"
+assert_contains "$warn_output" "readiness_guard_verdict: WARN"
+assert_contains "$warn_output" "legacy_export_verdict: WARN"
 assert_contains "$warn_output" "post_cutover_approximate_rows_total: 2"
 
-echo "[ok] exact money legacy evidence export smoke"
+echo "[ok] exact money cutover evidence report smoke"

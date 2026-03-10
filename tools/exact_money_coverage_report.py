@@ -732,6 +732,16 @@ def legacy_evidence_surfaces() -> tuple[LegacyEvidenceSurface, ...]:
             order_by_sql="positions.opened_ts, positions.rowid",
         ),
         LegacyEvidenceSurface(
+            name="positions_pnl",
+            table="positions",
+            query=CoverageQuery("positions", "COALESCE(closed_ts, opened_ts)"),
+            exact_predicate="pnl_lamports IS NOT NULL",
+            export_select_sql=(
+                "SELECT positions.rowid AS export_rowid, positions.* FROM positions"
+            ),
+            order_by_sql="COALESCE(positions.closed_ts, positions.opened_ts), positions.rowid",
+        ),
+        LegacyEvidenceSurface(
             name="shadow_lots",
             table="shadow_lots",
             query=CoverageQuery("shadow_lots", "opened_ts"),
