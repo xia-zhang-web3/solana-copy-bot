@@ -258,7 +258,10 @@ SELECT
     2
   ) AS confirm_price_unavailable_rate_pct,
   ROUND(
-    100.0 * SUM(CASE WHEN err_code = 'confirm_observed_fill_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    100.0 * SUM(CASE WHEN err_code IN (
+      'confirm_observed_fill_unavailable_manual_reconcile_required',
+      'confirm_exact_qty_unusable_post_cutover_manual_reconcile_required'
+    ) THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
     2
   ) AS confirm_observed_fill_unavailable_rate_pct
 FROM window_orders
@@ -861,7 +864,10 @@ SELECT
   SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_timeout_orders,
   SUM(CASE WHEN err_code IN ('confirm_error', 'confirm_error_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_error_orders,
   SUM(CASE WHEN err_code = 'confirm_price_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) AS confirm_price_unavailable_orders,
-  SUM(CASE WHEN err_code = 'confirm_observed_fill_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) AS confirm_observed_fill_unavailable_orders,
+  SUM(CASE WHEN err_code IN (
+    'confirm_observed_fill_unavailable_manual_reconcile_required',
+    'confirm_exact_qty_unusable_post_cutover_manual_reconcile_required'
+  ) THEN 1 ELSE 0 END) AS confirm_observed_fill_unavailable_orders,
   ROUND(
     100.0 * SUM(CASE WHEN status = 'execution_confirmed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
     2
@@ -945,7 +951,10 @@ route_kpi AS (
     SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_timeout_orders,
     SUM(CASE WHEN err_code IN ('confirm_error', 'confirm_error_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_error_orders,
     SUM(CASE WHEN err_code = 'confirm_price_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) AS confirm_price_unavailable_orders,
-    SUM(CASE WHEN err_code = 'confirm_observed_fill_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) AS confirm_observed_fill_unavailable_orders,
+    SUM(CASE WHEN err_code IN (
+      'confirm_observed_fill_unavailable_manual_reconcile_required',
+      'confirm_exact_qty_unusable_post_cutover_manual_reconcile_required'
+    ) THEN 1 ELSE 0 END) AS confirm_observed_fill_unavailable_orders,
     ROUND(
       100.0 * SUM(CASE WHEN status = 'execution_confirmed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
       2
@@ -967,7 +976,10 @@ route_kpi AS (
       2
     ) AS confirm_price_unavailable_rate_pct,
     ROUND(
-      100.0 * SUM(CASE WHEN err_code = 'confirm_observed_fill_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      100.0 * SUM(CASE WHEN err_code IN (
+        'confirm_observed_fill_unavailable_manual_reconcile_required',
+        'confirm_exact_qty_unusable_post_cutover_manual_reconcile_required'
+      ) THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
       2
     ) AS confirm_observed_fill_unavailable_rate_pct
   FROM window_orders
@@ -1128,7 +1140,10 @@ route_kpi AS (
       2
     ) AS confirm_price_unavailable_rate_pct,
     ROUND(
-      100.0 * SUM(CASE WHEN err_code = 'confirm_observed_fill_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      100.0 * SUM(CASE WHEN err_code IN (
+        'confirm_observed_fill_unavailable_manual_reconcile_required',
+        'confirm_exact_qty_unusable_post_cutover_manual_reconcile_required'
+      ) THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
       2
     ) AS confirm_observed_fill_unavailable_rate_pct
   FROM window_orders

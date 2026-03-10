@@ -361,6 +361,77 @@ impl SqliteStore {
         })
     }
 
+    fn exact_money_cutover_ts_on_conn(conn: &Connection) -> Result<Option<DateTime<Utc>>> {
+        let table_exists = conn
+            .query_row(
+                "SELECT 1
+                 FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name = 'exact_money_cutover_state'
+                 LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .context("failed checking exact_money_cutover_state presence")?
+            .is_some();
+        if !table_exists {
+            return Ok(None);
+        }
+
+        let cutover_ts_raw: Option<String> = conn
+            .query_row(
+                "SELECT cutover_ts
+                 FROM exact_money_cutover_state
+                 WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed loading exact money cutover timestamp")?;
+        let Some(cutover_ts_raw) = cutover_ts_raw else {
+            return Ok(None);
+        };
+
+        let cutover_ts = DateTime::parse_from_rfc3339(&cutover_ts_raw)
+            .with_context(|| {
+                format!("invalid exact_money_cutover_state.cutover_ts={cutover_ts_raw}")
+            })?
+            .with_timezone(&Utc);
+        Ok(Some(cutover_ts))
+    }
+
+    pub fn exact_money_cutover_ts(&self) -> Result<Option<DateTime<Utc>>> {
+        Self::exact_money_cutover_ts_on_conn(&self.conn)
+    }
+
+    pub fn exact_money_cutover_active_at(&self, ts: DateTime<Utc>) -> Result<bool> {
+        Ok(self
+            .exact_money_cutover_ts()?
+            .map(|cutover_ts| ts >= cutover_ts)
+            .unwrap_or(false))
+    }
+
+    pub fn upsert_exact_money_cutover_state(
+        &self,
+        cutover_ts: DateTime<Utc>,
+        note: Option<&str>,
+    ) -> Result<()> {
+        let recorded_ts = Utc::now();
+        self.conn
+            .execute(
+                "INSERT INTO exact_money_cutover_state(id, cutover_ts, recorded_ts, note)
+                 VALUES (1, ?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET
+                   cutover_ts = excluded.cutover_ts,
+                   recorded_ts = excluded.recorded_ts,
+                   note = excluded.note",
+                params![cutover_ts.to_rfc3339(), recorded_ts.to_rfc3339(), note],
+            )
+            .context("failed upserting exact_money_cutover_state")?;
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -6311,6 +6382,28 @@ mod tests {
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         assert_eq!(remaining, vec!["warn-pending", "warn-fresh"]);
+        Ok(())
+    }
+
+    #[test]
+    fn exact_money_cutover_state_round_trips_and_applies_activation_boundary() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("exact-money-cutover-state.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        assert_eq!(store.exact_money_cutover_ts()?, None);
+
+        let cutover_ts = DateTime::parse_from_rfc3339("2026-03-10T08:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.upsert_exact_money_cutover_state(cutover_ts, Some("test-cutover"))?;
+
+        assert_eq!(store.exact_money_cutover_ts()?, Some(cutover_ts));
+        assert!(!store.exact_money_cutover_active_at(cutover_ts - Duration::seconds(1))?);
+        assert!(store.exact_money_cutover_active_at(cutover_ts)?);
+        assert!(store.exact_money_cutover_active_at(cutover_ts + Duration::seconds(1))?);
         Ok(())
     }
 

@@ -83,6 +83,23 @@ impl ExecutionRuntime {
         self.mode == "adapter_submit_confirm" && self.manual_reconcile_required_on_confirm_failure
     }
 
+    fn active_exact_money_cutover_ts(
+        &self,
+        store: &SqliteStore,
+        ts: DateTime<Utc>,
+    ) -> Result<Option<DateTime<Utc>>> {
+        if self.mode != "adapter_submit_confirm" {
+            return Ok(None);
+        }
+        let Some(cutover_ts) = store.exact_money_cutover_ts()? else {
+            return Ok(None);
+        };
+        if ts < cutover_ts {
+            return Ok(None);
+        }
+        Ok(Some(cutover_ts))
+    }
+
     fn resolve_synthetic_price(
         &self,
         store: &SqliteStore,
@@ -304,7 +321,9 @@ impl ExecutionRuntime {
                     Ok(SignalResult::Failed)
                 };
 
-                let (fill, used_price_fallback, fallback_source) = if let Some(observed_fill) =
+                let (fill, fill_source, used_price_fallback, fallback_source) = if let Some(
+                    observed_fill,
+                ) =
                     confirm.observed_fill
                 {
                     match build_fill_from_confirmed_observation(
@@ -314,7 +333,7 @@ impl ExecutionRuntime {
                         self.slippage_bps,
                         execution_fee_sol,
                     ) {
-                        Ok(fill) => (Some(fill), false, None),
+                        Ok(fill) => (Some(fill), "observed", false, None),
                         Err(error) => {
                             let synthetic_price =
                                 self.resolve_synthetic_price(store, intent, route, confirmed_at)?;
@@ -373,7 +392,12 @@ impl ExecutionRuntime {
                             };
                             let (fill, used_price_fallback, fallback_source) =
                                 build_synthetic_fill(resolution)?;
-                            (Some(fill), used_price_fallback, fallback_source)
+                            (
+                                Some(fill),
+                                "synthetic",
+                                used_price_fallback,
+                                fallback_source,
+                            )
                         }
                     }
                 } else {
@@ -432,11 +456,55 @@ impl ExecutionRuntime {
                     };
                     let (fill, used_price_fallback, fallback_source) =
                         build_synthetic_fill(resolution)?;
-                    (Some(fill), used_price_fallback, fallback_source)
+                    (
+                        Some(fill),
+                        "synthetic",
+                        used_price_fallback,
+                        fallback_source,
+                    )
                 };
                 let Some(fill) = fill else {
                     return Ok(SignalResult::Failed);
                 };
+                let post_cutover_exact_qty_state = match fill.qty_exact {
+                    Some(exact_qty) if exact_qty.raw() > 0 => None,
+                    Some(_) => Some("zero_raw"),
+                    None => Some("missing"),
+                };
+                if let Some(exact_qty_state) = post_cutover_exact_qty_state {
+                    if let Some(cutover_ts) =
+                        self.active_exact_money_cutover_ts(store, confirmed_at)?
+                    {
+                        return self.skip_confirm_manual_reconcile(
+                            store,
+                            intent,
+                            order_id,
+                            lifecycle_status,
+                            current_err_code,
+                            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+                            Some(confirmed_at),
+                            route,
+                            now,
+                            report,
+                            "confirm_exact_qty_unusable_post_cutover_manual_reconcile_required",
+                            "execution_confirm_exact_qty_unusable_post_cutover_manual_reconcile_required",
+                            json!({
+                                "signal_id": intent.signal_id,
+                                "order_id": order_id,
+                                "token": intent.token,
+                                "route": route,
+                                "err_code": "confirm_exact_qty_unusable_post_cutover_manual_reconcile_required",
+                                "reason": "post_cutover_exact_qty_unusable",
+                                "exact_qty_state": exact_qty_state,
+                                "fill_source": fill_source,
+                                "manual_reconcile_required": true,
+                                "exact_money_cutover_ts": cutover_ts.to_rfc3339(),
+                                "used_price_fallback": used_price_fallback,
+                                "fallback_source": fallback_source,
+                            }),
+                        );
+                    }
+                }
                 accumulate_route_sum(
                     &mut report.confirm_network_fee_lamports_sum_by_route,
                     route,

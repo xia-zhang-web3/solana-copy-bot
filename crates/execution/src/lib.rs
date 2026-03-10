@@ -4254,6 +4254,266 @@ mod tests {
     }
 
     #[test]
+    fn process_batch_keeps_post_cutover_reconcile_pending_when_observed_fill_lacks_exact_qty(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-post-cutover-observed-no-exact")?;
+        let now = Utc::now();
+        let client_order_id = seed_submitted_buy_signal(
+            &store,
+            "shadow:cutover:wallet:buy:token-cutover-obs",
+            "token-cutover-obs",
+            0.1,
+            now,
+            "sig-cutover-obs",
+        )?;
+        store.upsert_exact_money_cutover_state(now - Duration::seconds(1), Some("test-cutover"))?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(SequenceConfirmer::new(vec![confirm::ConfirmationResult {
+                status: ConfirmationStatus::Confirmed,
+                confirmed_at: Some(now + Duration::seconds(1)),
+                network_fee_lamports: Some(5_000),
+                network_fee_lookup_error: None,
+                observed_fill: Some(confirm::ObservedExecutionFill {
+                    signer_balance_delta_lamports: -100_005_000,
+                    token_delta_qty: 1.5,
+                    token_delta_exact: None,
+                }),
+                detail: "observed_exact_missing_post_cutover".to_string(),
+            }])),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.confirm_retry_scheduled_by_route.get("paper"),
+            Some(&1)
+        );
+        assert_eq!(store.live_open_exposure_sol()?, 0.0);
+        assert!(
+            store
+                .live_open_position_qty_cost("token-cutover-obs")?
+                .is_none(),
+            "post-cutover approximate observed fill must not create live position"
+        );
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("post-cutover observed fill order should remain present")?;
+        assert_eq!(order.status, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS);
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_exact_qty_unusable_post_cutover_manual_reconcile_required")
+        );
+        assert_eq!(
+            store.risk_event_count_by_type(
+                "execution_confirm_exact_qty_unusable_post_cutover_manual_reconcile_required"
+            )?,
+            1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_keeps_post_cutover_reconcile_pending_when_observed_fill_has_zero_raw_exact_qty(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-post-cutover-observed-zero-raw")?;
+        let now = Utc::now();
+        let client_order_id = seed_submitted_buy_signal(
+            &store,
+            "shadow:cutover:wallet:buy:token-cutover-zero-raw",
+            "token-cutover-zero-raw",
+            0.1,
+            now,
+            "sig-cutover-zero-raw",
+        )?;
+        store.upsert_exact_money_cutover_state(now - Duration::seconds(1), Some("test-cutover"))?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(SequenceConfirmer::new(vec![confirm::ConfirmationResult {
+                status: ConfirmationStatus::Confirmed,
+                confirmed_at: Some(now + Duration::seconds(1)),
+                network_fee_lamports: Some(5_000),
+                network_fee_lookup_error: None,
+                observed_fill: Some(confirm::ObservedExecutionFill {
+                    signer_balance_delta_lamports: -100_005_000,
+                    token_delta_qty: 1.5,
+                    token_delta_exact: Some(TokenQuantity::new(0, 6)),
+                }),
+                detail: "observed_exact_zero_raw_post_cutover".to_string(),
+            }])),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.confirm_retry_scheduled_by_route.get("paper"),
+            Some(&1)
+        );
+        assert_eq!(store.live_open_exposure_sol()?, 0.0);
+        assert!(
+            store
+                .live_open_position_qty_cost("token-cutover-zero-raw")?
+                .is_none(),
+            "post-cutover zero-raw exact observation must not create live position"
+        );
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("post-cutover zero-raw observed fill order should remain present")?;
+        assert_eq!(order.status, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS);
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_exact_qty_unusable_post_cutover_manual_reconcile_required")
+        );
+        assert_eq!(
+            store.risk_event_count_by_type(
+                "execution_confirm_exact_qty_unusable_post_cutover_manual_reconcile_required"
+            )?,
+            1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_keeps_post_cutover_reconcile_pending_for_synthetic_qty_without_manual_reconcile_flag(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirm-post-cutover-synthetic-no-exact")?;
+        let now = Utc::now();
+        seed_token_price(
+            &store,
+            "token-cutover-synth",
+            now,
+            "sig-price-cutover-synth",
+        )?;
+        let client_order_id = seed_submitted_buy_signal(
+            &store,
+            "shadow:cutover:wallet:buy:token-cutover-synth",
+            "token-cutover-synth",
+            0.1,
+            now,
+            "sig-cutover-synth",
+        )?;
+        store.upsert_exact_money_cutover_state(now - Duration::seconds(1), Some("test-cutover"))?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: false,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(SequenceConfirmer::new(vec![confirm::ConfirmationResult {
+                status: ConfirmationStatus::Confirmed,
+                confirmed_at: Some(now + Duration::seconds(1)),
+                network_fee_lamports: Some(5_000),
+                network_fee_lookup_error: None,
+                observed_fill: None,
+                detail: "synthetic_exact_missing_post_cutover".to_string(),
+            }])),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.confirmed, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.confirm_retry_scheduled_by_route.get("paper"),
+            Some(&1)
+        );
+        assert_eq!(store.live_open_exposure_sol()?, 0.0);
+        assert!(
+            store
+                .live_open_position_qty_cost("token-cutover-synth")?
+                .is_none(),
+            "post-cutover synthetic fill must not create live position"
+        );
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("post-cutover synthetic fill order should remain present")?;
+        assert_eq!(order.status, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS);
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_exact_qty_unusable_post_cutover_manual_reconcile_required")
+        );
+        assert_eq!(
+            store.risk_event_count_by_type(
+                "execution_confirm_exact_qty_unusable_post_cutover_manual_reconcile_required"
+            )?,
+            1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn process_batch_records_post_confirm_total_exposure_risk_breach() -> Result<()> {
         let (store, db_path) = make_test_store("batch-confirm-total-exposure-breach")?;
         let now = Utc::now();

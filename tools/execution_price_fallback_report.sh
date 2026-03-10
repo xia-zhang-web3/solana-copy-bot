@@ -69,6 +69,7 @@ WITH fallback_events AS (
       'execution_price_unavailable_fallback_used',
       'execution_confirm_price_unavailable_manual_reconcile_required',
       'execution_confirm_observed_fill_unavailable_manual_reconcile_required',
+      'execution_confirm_exact_qty_unusable_post_cutover_manual_reconcile_required',
       'execution_confirm_price_unavailable',
       'execution_confirm_failed_manual_reconcile_required',
       'execution_confirm_timeout_manual_reconcile_required'
@@ -112,6 +113,7 @@ WHERE type IN (
     'execution_price_unavailable_fallback_used',
     'execution_confirm_price_unavailable_manual_reconcile_required',
     'execution_confirm_observed_fill_unavailable_manual_reconcile_required',
+    'execution_confirm_exact_qty_unusable_post_cutover_manual_reconcile_required',
     'execution_confirm_price_unavailable',
     'execution_confirm_failed_manual_reconcile_required',
     'execution_confirm_timeout_manual_reconcile_required'
