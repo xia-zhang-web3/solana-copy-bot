@@ -2610,3 +2610,47 @@ Formal verdict:
    2. the main DB is already `~105G`,
    3. another pinned reader / WAL-growth incident would still be expensive.
 3. The next infra step should therefore be a dedicated EBS volume for `/var/www/solana-copy-bot/state`, followed by a controlled state migration.
+
+### 2026-03-10 — dedicated EBS state migration completed successfully
+
+Источник:
+
+1. `ops/server_reports/2026-03-10_morning_post_ebs_state_migration_runtime_report.md`
+
+Краткий статус:
+
+1. `/var/www/solana-copy-bot/state` is now mounted from a dedicated `500 GiB gp3` EBS volume in `eu-central-1b`:
+   1. Linux device `=/dev/nvme1n1`,
+   2. filesystem `= ext4`,
+   3. mountpoint verification: `/dev/nvme1n1 ext4 491.1G 105.9G 360.1G /var/www/solana-copy-bot/state`.
+2. The previous on-root state tree was intentionally retained as a temporary safety backup:
+   1. `/var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z`,
+   2. size `~106G`,
+   3. it was **not** deleted immediately after cutover.
+3. Runtime recovered cleanly after the migration:
+   1. `solana-copy-bot.service`, `copybot-adapter.service`, `copybot-executor.service` all `active`,
+   2. `solana-copy-bot.service ActiveEnterTimestamp = Tue 2026-03-10 07:52:06 UTC`,
+   3. `NRestarts = 0`.
+4. Live heads were moving immediately after restart:
+   1. `observed_swaps_max_ts = 2026-03-10T07:55:17.543212246+00:00`,
+   2. `discovery_runtime.cursor_ts = 2026-03-10T07:55:03.044826516+00:00`,
+   3. direct `cursor/head gap ~= 14.5s`.
+5. Business state remained alive after the storage cutover:
+   1. `followlist.active = 304`,
+   2. `copy_signals = 32950`,
+   3. `shadow_lots = 63`,
+   4. `shadow_closed_trades = 667`,
+   5. realized shadow PnL = `+2.190049326 SOL`.
+6. Disk state after migration:
+   1. root still shows `~33G free` because the old state tree is still present as backup,
+   2. the new state volume has `~361G free`,
+   3. current DB files on the new volume: `live_copybot.db ~106G`, `live_copybot.db-wal ~149M`, `live_copybot.db-shm ~320K`.
+
+Операционный вывод:
+
+1. The main infra blocker is materially reduced: `state/` is no longer on the root filesystem failure domain.
+2. The migration should be treated as successful, but not fully finalized yet:
+   1. keep the old state backup for a short soak period,
+   2. create an AWS snapshot of the new EBS volume,
+   3. only then delete `/var/www/solana-copy-bot/state.pre_ebs.20260310T073735Z`.
+3. A post-restart `shadow risk timed pause activated` warning also appeared, but that is a shadow risk-gate issue and should not be misread as a storage migration regression.

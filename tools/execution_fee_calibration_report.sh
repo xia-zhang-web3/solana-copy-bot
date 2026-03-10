@@ -250,7 +250,7 @@ SELECT
     2
   ) AS timeout_rate_pct,
   ROUND(
-    100.0 * SUM(CASE WHEN status = 'execution_submitted_reconcile_pending' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+    100.0 * SUM(CASE WHEN status IN ('execution_submitted_reconcile_pending', 'execution_confirmed_reconcile_pending') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
     2
   ) AS reconcile_pending_rate_pct,
   ROUND(
@@ -856,8 +856,8 @@ SELECT
   SUM(CASE WHEN status = 'execution_confirmed' THEN 1 ELSE 0 END) AS confirmed_orders,
   SUM(CASE WHEN status = 'execution_failed' THEN 1 ELSE 0 END) AS failed_orders,
   SUM(CASE WHEN status = 'execution_dropped' THEN 1 ELSE 0 END) AS dropped_orders,
-  SUM(CASE WHEN status = 'execution_submitted_reconcile_pending' THEN 1 ELSE 0 END) AS reconcile_pending_orders,
-  SUM(CASE WHEN status IN ('execution_pending', 'execution_simulated', 'execution_submitted', 'execution_submitted_reconcile_pending') THEN 1 ELSE 0 END) AS inflight_orders,
+  SUM(CASE WHEN status IN ('execution_submitted_reconcile_pending', 'execution_confirmed_reconcile_pending') THEN 1 ELSE 0 END) AS reconcile_pending_orders,
+  SUM(CASE WHEN status IN ('execution_pending', 'execution_simulated', 'execution_submitted', 'execution_submitted_reconcile_pending', 'execution_confirmed_reconcile_pending') THEN 1 ELSE 0 END) AS inflight_orders,
   SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_timeout_orders,
   SUM(CASE WHEN err_code IN ('confirm_error', 'confirm_error_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_error_orders,
   SUM(CASE WHEN err_code = 'confirm_price_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) AS confirm_price_unavailable_orders,
@@ -941,7 +941,7 @@ route_kpi AS (
     COUNT(*) AS attempted_orders,
     SUM(CASE WHEN status = 'execution_confirmed' THEN 1 ELSE 0 END) AS confirmed_orders,
     SUM(CASE WHEN status = 'execution_failed' THEN 1 ELSE 0 END) AS failed_orders,
-    SUM(CASE WHEN status = 'execution_submitted_reconcile_pending' THEN 1 ELSE 0 END) AS reconcile_pending_orders,
+    SUM(CASE WHEN status IN ('execution_submitted_reconcile_pending', 'execution_confirmed_reconcile_pending') THEN 1 ELSE 0 END) AS reconcile_pending_orders,
     SUM(CASE WHEN err_code IN ('confirm_timeout', 'confirm_timeout_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_timeout_orders,
     SUM(CASE WHEN err_code IN ('confirm_error', 'confirm_error_manual_reconcile_required') THEN 1 ELSE 0 END) AS confirm_error_orders,
     SUM(CASE WHEN err_code = 'confirm_price_unavailable_manual_reconcile_required' THEN 1 ELSE 0 END) AS confirm_price_unavailable_orders,
@@ -959,7 +959,7 @@ route_kpi AS (
       2
     ) AS timeout_rate_pct,
     ROUND(
-      100.0 * SUM(CASE WHEN status = 'execution_submitted_reconcile_pending' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      100.0 * SUM(CASE WHEN status IN ('execution_submitted_reconcile_pending', 'execution_confirmed_reconcile_pending') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
       2
     ) AS reconcile_pending_rate_pct,
     ROUND(
@@ -1120,7 +1120,7 @@ route_kpi AS (
       2
     ) AS timeout_rate_pct,
     ROUND(
-      100.0 * SUM(CASE WHEN status = 'execution_submitted_reconcile_pending' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+      100.0 * SUM(CASE WHEN status IN ('execution_submitted_reconcile_pending', 'execution_confirmed_reconcile_pending') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
       2
     ) AS reconcile_pending_rate_pct,
     ROUND(

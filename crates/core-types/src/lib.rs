@@ -224,6 +224,8 @@ pub enum InsertExecutionOrderPendingOutcome {
 
 pub const EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS: &str =
     "execution_submitted_reconcile_pending";
+pub const EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS: &str =
+    "execution_confirmed_reconcile_pending";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExecutionConfirmStateSnapshot {

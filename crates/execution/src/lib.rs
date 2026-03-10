@@ -3,7 +3,8 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::{ExecutionConfig, RiskConfig};
 use copybot_storage::{
     CopySignalRow, InsertExecutionOrderPendingOutcome, MarkOrderDroppedOutcome,
-    ScheduleOrderRetryOutcome, SqliteStore, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+    ScheduleOrderRetryOutcome, SqliteStore, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -407,6 +408,7 @@ impl ExecutionRuntime {
         for status in [
             "execution_submitted",
             EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
             "execution_simulated",
             "execution_pending",
             "shadow_recorded",
@@ -600,7 +602,9 @@ impl ExecutionRuntime {
             "execution_simulated" => {
                 self.process_simulated_order(store, &intent, &client_order_id, &order, now, report)
             }
-            "execution_submitted" | EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS => {
+            "execution_submitted"
+            | EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+            | EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS => {
                 self.process_submitted_order(store, &intent, &order, now, report)
             }
             other => {
@@ -3498,14 +3502,14 @@ mod tests {
         let order = store
             .execution_order_by_client_order_id(&client_order_id)?
             .context("order should remain present after missing-price manual-reconcile pending")?;
-        assert_eq!(order.status, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS);
+        assert_eq!(order.status, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS);
         assert_eq!(
             order.err_code.as_deref(),
             Some("confirm_price_unavailable_manual_reconcile_required")
         );
         assert_eq!(
             store
-                .list_copy_signals_by_status(EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS, 10)?
+                .list_copy_signals_by_status(EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS, 10)?
                 .len(),
             1
         );
@@ -4101,7 +4105,7 @@ mod tests {
         let order = store
             .execution_order_by_client_order_id(&client_order_id)?
             .context("manual reconcile pending order should remain present when observed fill is missing")?;
-        assert_eq!(order.status, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS);
+        assert_eq!(order.status, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS);
         assert_eq!(
             order.err_code.as_deref(),
             Some("confirm_observed_fill_unavailable_manual_reconcile_required")
@@ -4219,7 +4223,7 @@ mod tests {
         let order = store
             .execution_order_by_client_order_id(&client_order_id)?
             .context("observed sign mismatch order should remain present after reconcile-pending transition")?;
-        assert_eq!(order.status, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS);
+        assert_eq!(order.status, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS);
         assert_eq!(
             order.err_code.as_deref(),
             Some("confirm_observed_fill_unavailable_manual_reconcile_required")
@@ -4643,7 +4647,7 @@ mod tests {
             .context("order should remain present after observed-fill reconcile-pending refresh")?;
         assert_eq!(
             pending_after_fill_gap.status,
-            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS
         );
         assert_eq!(
             pending_after_fill_gap.err_code.as_deref(),
@@ -4659,6 +4663,153 @@ mod tests {
                 "execution_confirm_observed_fill_unavailable_manual_reconcile_required"
             )?,
             1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_keeps_confirmed_reconcile_surface_stable_on_late_timeout_poll() -> Result<()> {
+        let (store, db_path) = make_test_store("batch-confirmed-reconcile-late-timeout-stable")?;
+        let now = Utc::now();
+        let submit_ts = now - Duration::seconds(30);
+        seed_token_price(
+            &store,
+            "token-confirmed-reconcile-timeout-stable",
+            now,
+            "sig-price-confirmed-reconcile-timeout-stable",
+        )?;
+        let signal = CopySignalRow {
+            signal_id: "shadow:s11c:w:buy:t-confirmed-reconcile-timeout-stable".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-confirmed-reconcile-timeout-stable".to_string(),
+            notional_sol: 0.1,
+            notional_lamports: None,
+            ts: submit_ts,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&signal)?;
+
+        let client_order_id = idempotency::client_order_id(&signal.signal_id, 1);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-confirmed-reconcile-timeout-stable-1",
+                &signal.signal_id,
+                &client_order_id,
+                "rpc",
+                submit_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-confirmed-reconcile-timeout-stable-1",
+            "rpc",
+            "sig-confirmed-reconcile-timeout-stable",
+            submit_ts,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 5,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "rpc".to_string(),
+            submit_route_order: vec!["rpc".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(SequenceConfirmer::new(vec![
+                confirm::ConfirmationResult {
+                    status: ConfirmationStatus::Confirmed,
+                    confirmed_at: Some(now + Duration::seconds(1)),
+                    network_fee_lamports: Some(5_000),
+                    network_fee_lookup_error: None,
+                    observed_fill: None,
+                    detail: "confirmed_missing_observed_fill".to_string(),
+                },
+                confirm::ConfirmationResult {
+                    status: ConfirmationStatus::Timeout,
+                    confirmed_at: None,
+                    network_fee_lamports: None,
+                    network_fee_lookup_error: None,
+                    observed_fill: None,
+                    detail: "forced_timeout_after_confirmed_reconcile".to_string(),
+                },
+            ])),
+        };
+
+        let first = runtime.process_batch(&store, now, None)?;
+        assert_eq!(first.failed, 0);
+        assert_eq!(first.skipped, 1);
+        let pending_after_fill_gap = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should remain present after confirmed reconcile transition")?;
+        assert_eq!(
+            pending_after_fill_gap.status,
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS
+        );
+        assert_eq!(
+            pending_after_fill_gap.err_code.as_deref(),
+            Some("confirm_observed_fill_unavailable_manual_reconcile_required")
+        );
+        assert_eq!(
+            store.risk_event_count_by_type(
+                "execution_confirm_observed_fill_unavailable_manual_reconcile_required"
+            )?,
+            1
+        );
+        assert_eq!(
+            store
+                .risk_event_count_by_type("execution_confirm_timeout_manual_reconcile_required")?,
+            0
+        );
+
+        let second = runtime.process_batch(&store, now + Duration::seconds(1), None)?;
+        assert_eq!(second.failed, 0);
+        assert_eq!(second.skipped, 1);
+        let still_confirmed_pending = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("order should remain present after late timeout on confirmed reconcile")?;
+        assert_eq!(
+            still_confirmed_pending.status,
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS
+        );
+        assert_eq!(
+            still_confirmed_pending.err_code.as_deref(),
+            Some("confirm_observed_fill_unavailable_manual_reconcile_required")
+        );
+        assert_eq!(
+            store.risk_event_count_by_type(
+                "execution_confirm_observed_fill_unavailable_manual_reconcile_required"
+            )?,
+            1
+        );
+        assert_eq!(
+            store
+                .risk_event_count_by_type("execution_confirm_timeout_manual_reconcile_required")?,
+            0,
+            "late timeout poll must not rewrite a confirmed reconcile surface back to timeout"
         );
 
         let _ = std::fs::remove_file(db_path);

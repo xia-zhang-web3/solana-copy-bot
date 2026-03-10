@@ -9,7 +9,8 @@ use crate::{
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_storage::{
-    FinalizeExecutionConfirmOutcome, SqliteStore, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+    FinalizeExecutionConfirmOutcome, SqliteStore, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 use serde_json::json;
 use tracing::warn;
@@ -21,6 +22,24 @@ struct SyntheticPriceResolution {
 }
 
 impl ExecutionRuntime {
+    fn manual_reconcile_surface_after_confirm_failure<'a>(
+        lifecycle_status: &str,
+        current_err_code: Option<&'a str>,
+        fallback_err_code: &'a str,
+    ) -> (&'static str, &'a str) {
+        if lifecycle_status == EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS {
+            (
+                EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+                current_err_code.unwrap_or(fallback_err_code),
+            )
+        } else {
+            (
+                EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+                fallback_err_code,
+            )
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn skip_confirm_manual_reconcile(
         &self,
@@ -29,6 +48,8 @@ impl ExecutionRuntime {
         order_id: &str,
         lifecycle_status: &str,
         current_err_code: Option<&str>,
+        reconcile_status: &str,
+        confirmed_at: Option<DateTime<Utc>>,
         route: &str,
         now: DateTime<Utc>,
         report: &mut ExecutionBatchReport,
@@ -36,14 +57,19 @@ impl ExecutionRuntime {
         risk_event_type: &str,
         details: serde_json::Value,
     ) -> Result<SignalResult> {
-        let surface_changed = lifecycle_status != EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
-            || current_err_code != Some(err_code);
+        let surface_changed =
+            lifecycle_status != reconcile_status || current_err_code != Some(err_code);
         if surface_changed {
-            store.mark_order_reconcile_pending(order_id, err_code)?;
-            store.update_copy_signal_status(
-                &intent.signal_id,
-                EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
-            )?;
+            if reconcile_status == EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS {
+                store.mark_order_confirmed_reconcile_pending(
+                    order_id,
+                    err_code,
+                    confirmed_at.unwrap_or(now),
+                )?;
+            } else {
+                store.mark_order_reconcile_pending(order_id, err_code)?;
+            }
+            store.update_copy_signal_status(&intent.signal_id, reconcile_status)?;
         }
         if surface_changed {
             let _ =
@@ -149,22 +175,31 @@ impl ExecutionRuntime {
                     self.mode, manual_reconcile_required, error
                 );
                 if manual_reconcile_required {
+                    let (reconcile_status, reconcile_err_code) =
+                        Self::manual_reconcile_surface_after_confirm_failure(
+                            lifecycle_status,
+                            current_err_code,
+                            err_code,
+                        );
                     return self.skip_confirm_manual_reconcile(
                         store,
                         intent,
                         order_id,
                         lifecycle_status,
                         current_err_code,
+                        reconcile_status,
+                        None,
                         route,
                         now,
                         report,
-                        err_code,
+                        reconcile_err_code,
                         "execution_confirm_failed_manual_reconcile_required",
                         json!({
                             "signal_id": intent.signal_id,
                             "order_id": order_id,
                             "mode": self.mode,
                             "manual_reconcile_required": true,
+                            "err_code": reconcile_err_code,
                             "deadline": deadline.to_rfc3339(),
                             "error": error.to_string(),
                         }),
@@ -305,6 +340,8 @@ impl ExecutionRuntime {
                                     order_id,
                                     lifecycle_status,
                                     current_err_code,
+                                    EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+                                    Some(confirmed_at),
                                     route,
                                     now,
                                     report,
@@ -362,6 +399,8 @@ impl ExecutionRuntime {
                             order_id,
                             lifecycle_status,
                             current_err_code,
+                            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+                            Some(confirmed_at),
                             route,
                             now,
                             report,
@@ -634,22 +673,31 @@ impl ExecutionRuntime {
                     "confirm_timeout"
                 };
                 if manual_reconcile_required {
+                    let (reconcile_status, reconcile_err_code) =
+                        Self::manual_reconcile_surface_after_confirm_failure(
+                            lifecycle_status,
+                            current_err_code,
+                            err_code,
+                        );
                     return self.skip_confirm_manual_reconcile(
                         store,
                         intent,
                         order_id,
                         lifecycle_status,
                         current_err_code,
+                        reconcile_status,
+                        None,
                         route,
                         now,
                         report,
-                        err_code,
+                        reconcile_err_code,
                         "execution_confirm_timeout_manual_reconcile_required",
                         json!({
                             "signal_id": intent.signal_id,
                             "order_id": order_id,
                             "mode": self.mode,
                             "manual_reconcile_required": true,
+                            "err_code": reconcile_err_code,
                             "deadline": deadline.to_rfc3339(),
                             "detail": confirm.detail,
                         }),

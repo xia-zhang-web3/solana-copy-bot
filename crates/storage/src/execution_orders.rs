@@ -1,6 +1,7 @@
 use super::{
     parse_non_negative_i64, u64_to_sql_i64, CopySignalRow, ExecutionOrderRow,
-    InsertExecutionOrderPendingOutcome, SqliteStore, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+    InsertExecutionOrderPendingOutcome, SqliteStore, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -516,6 +517,7 @@ impl SqliteStore {
         const EXPECTED: &[&str] = &[
             "execution_submitted",
             EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
         ];
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
@@ -523,11 +525,12 @@ impl SqliteStore {
                  SET status = 'execution_confirmed',
                      confirm_ts = ?1
                  WHERE order_id = ?2
-                   AND status IN ('execution_submitted', ?3)",
+                   AND status IN ('execution_submitted', ?3, ?4)",
                 params![
                     confirm_ts.to_rfc3339(),
                     order_id,
-                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+                    EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS
                 ],
             )
         })?;
@@ -600,6 +603,7 @@ impl SqliteStore {
             "execution_simulated",
             "execution_submitted",
             EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
         ];
         let changed = self.execute_with_retry(|conn| {
             conn.execute(
@@ -612,13 +616,15 @@ impl SqliteStore {
                        'execution_pending',
                        'execution_simulated',
                        'execution_submitted',
-                       ?4
+                       ?4,
+                       ?5
                    )",
                 params![
                     err_code,
                     detail,
                     order_id,
-                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+                    EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS
                 ],
             )
         })?;
@@ -633,29 +639,92 @@ impl SqliteStore {
     }
 
     pub fn mark_order_reconcile_pending(&self, order_id: &str, err_code: &str) -> Result<()> {
-        const EXPECTED: &[&str] = &[
+        self.mark_order_reconcile_pending_with_status(
+            order_id,
+            err_code,
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+            None,
+        )
+    }
+
+    pub fn mark_order_confirmed_reconcile_pending(
+        &self,
+        order_id: &str,
+        err_code: &str,
+        confirm_ts: DateTime<Utc>,
+    ) -> Result<()> {
+        self.mark_order_reconcile_pending_with_status(
+            order_id,
+            err_code,
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+            Some(confirm_ts),
+        )
+    }
+
+    fn mark_order_reconcile_pending_with_status(
+        &self,
+        order_id: &str,
+        err_code: &str,
+        pending_status: &str,
+        confirm_ts: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        const SUBMITTED_RECONCILE_EXPECTED: &[&str] = &[
             "execution_submitted",
             EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
         ];
-        let changed = self.execute_with_retry(|conn| {
-            conn.execute(
-                "UPDATE orders
-                 SET status = ?1,
-                     err_code = ?2
-                 WHERE order_id = ?3
-                   AND status IN ('execution_submitted', ?1)",
-                params![
-                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
-                    err_code,
-                    order_id
-                ],
+        const CONFIRMED_RECONCILE_EXPECTED: &[&str] = &[
+            "execution_submitted",
+            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+        ];
+        let confirm_ts = confirm_ts.map(|value| value.to_rfc3339());
+        let (changed, expected) = if pending_status == EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+        {
+            (
+                self.execute_with_retry(|conn| {
+                    conn.execute(
+                        "UPDATE orders
+                         SET status = ?1,
+                             err_code = ?2,
+                             confirm_ts = COALESCE(?3, confirm_ts)
+                         WHERE order_id = ?4
+                           AND status IN ('execution_submitted', ?1)",
+                        params![pending_status, err_code, confirm_ts, order_id],
+                    )
+                })?,
+                SUBMITTED_RECONCILE_EXPECTED,
             )
-        })?;
+        } else if pending_status == EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS {
+            (
+                self.execute_with_retry(|conn| {
+                    conn.execute(
+                        "UPDATE orders
+                         SET status = ?1,
+                             err_code = ?2,
+                             confirm_ts = COALESCE(?3, confirm_ts)
+                         WHERE order_id = ?4
+                           AND status IN ('execution_submitted', ?1, ?5)",
+                        params![
+                            pending_status,
+                            err_code,
+                            confirm_ts,
+                            order_id,
+                            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                        ],
+                    )
+                })?,
+                CONFIRMED_RECONCILE_EXPECTED,
+            )
+        } else {
+            return Err(anyhow!(
+                "failed marking order reconcile-pending: unsupported pending status={pending_status}"
+            ));
+        };
         if changed == 0 {
             return Err(self.unexpected_order_status_error(
                 order_id,
                 "marking order reconcile-pending",
-                EXPECTED,
+                expected,
             )?);
         }
         Ok(())

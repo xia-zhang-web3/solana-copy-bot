@@ -10,7 +10,7 @@ pub use copybot_core_types::{
     CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
     FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, Lamports, SignedLamports,
     TokenQualityCacheRow, TokenQualityRpcRow, TokenQuantity, WalletMetricRow, WalletUpsertRow,
-    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+    EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
@@ -444,6 +444,7 @@ impl SqliteStore {
         const CONFIRM_EXPECTED: &[&str] = &[
             "execution_submitted",
             EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
         ];
         for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
             if let Err(error) = self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION") {
@@ -482,7 +483,9 @@ impl SqliteStore {
                 }
                 if !matches!(
                     status.as_str(),
-                    "execution_submitted" | EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                    "execution_submitted"
+                        | EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                        | EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS
                 ) {
                     return Err(anyhow!(
                         "failed finalizing confirmed order: order_id={} has unexpected status={}",
@@ -541,11 +544,12 @@ impl SqliteStore {
                              confirm_ts = ?1,
                              err_code = NULL
                          WHERE order_id = ?2
-                           AND status IN ('execution_submitted', ?3)",
+                           AND status IN ('execution_submitted', ?3, ?4)",
                         params![
                             confirmed_ts.to_rfc3339(),
                             order_id,
-                            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS
+                            EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+                            EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS
                         ],
                     )
                     .context("failed marking order confirmed in finalize confirm transaction")?;
@@ -2989,6 +2993,91 @@ mod tests {
     }
 
     #[test]
+    fn finalize_execution_confirmed_order_accepts_confirmed_reconcile_pending_status() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("execution-confirm-confirmed-reconcile-pending.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-confirmed-reconcile:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            notional_lamports: None,
+            ts: now,
+            status: EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS.to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+
+        let order_id = "ord-confirmed-reconcile-pending-1";
+        let client_order_id = "cb_confirmed_reconcile_pending_a1";
+        assert_eq!(
+            store.insert_execution_order_pending(
+                order_id,
+                &signal.signal_id,
+                client_order_id,
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            order_id,
+            "paper",
+            "paper:tx-confirmed-reconcile-pending",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.mark_order_confirmed_reconcile_pending(
+            order_id,
+            "confirm_observed_fill_unavailable_manual_reconcile_required",
+            now + Duration::seconds(1),
+        )?;
+
+        let outcome = store.finalize_execution_confirmed_order(
+            order_id,
+            &signal.signal_id,
+            "token-a",
+            "buy",
+            1.0,
+            0.25,
+            0.25,
+            0.0,
+            50.0,
+            now + Duration::seconds(2),
+        )?;
+        let FinalizeExecutionConfirmOutcome::Applied(snapshot) = outcome else {
+            panic!("expected applied outcome, got {:?}", outcome);
+        };
+        assert!((snapshot.total_exposure_sol - 0.25).abs() < 1e-9);
+        assert_eq!(snapshot.open_positions, 1);
+
+        let order = store
+            .execution_order_by_client_order_id(client_order_id)?
+            .context("expected order row after confirmed reconcile finalize")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(order.err_code, None);
+        assert_eq!(order.confirm_ts, Some(now + Duration::seconds(2)));
+
+        Ok(())
+    }
+
+    #[test]
     fn mark_order_confirmed_accepts_reconcile_pending_status() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
@@ -3049,6 +3138,157 @@ mod tests {
         assert_eq!(
             order.err_code.as_deref(),
             Some("confirm_timeout_manual_reconcile_required")
+        );
+        assert_eq!(order.confirm_ts, Some(now + Duration::seconds(1)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn mark_order_confirmed_accepts_confirmed_reconcile_pending_status() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("mark-order-confirmed-confirmed-reconcile-pending.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-direct-confirmed-reconcile:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            notional_lamports: None,
+            ts: now,
+            status: EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS.to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-direct-confirmed-reconcile-1",
+                &signal.signal_id,
+                "cb_direct_confirmed_reconcile_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-direct-confirmed-reconcile-1",
+            "paper",
+            "paper:tx-direct-confirmed-reconcile",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.mark_order_confirmed_reconcile_pending(
+            "ord-direct-confirmed-reconcile-1",
+            "confirm_observed_fill_unavailable_manual_reconcile_required",
+            now + Duration::seconds(1),
+        )?;
+
+        store.mark_order_confirmed(
+            "ord-direct-confirmed-reconcile-1",
+            now + Duration::seconds(2),
+        )?;
+
+        let order = store
+            .execution_order_by_client_order_id("cb_direct_confirmed_reconcile_a1")?
+            .context("expected order row after direct confirmed-reconcile helper")?;
+        assert_eq!(order.status, "execution_confirmed");
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_observed_fill_unavailable_manual_reconcile_required")
+        );
+        assert_eq!(order.confirm_ts, Some(now + Duration::seconds(2)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn mark_order_reconcile_pending_rejects_downgrade_from_confirmed_reconcile_pending(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("mark-order-reconcile-pending-downgrade-rejected.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-02-19T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let signal = CopySignalRow {
+            signal_id: "shadow:sig-reconcile-downgrade-guard:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.25,
+            notional_lamports: None,
+            ts: now,
+            status: EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS.to_string(),
+        };
+        assert!(store.insert_copy_signal(&signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-reconcile-downgrade-guard-1",
+                &signal.signal_id,
+                "cb_reconcile_downgrade_guard_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-reconcile-downgrade-guard-1",
+            "paper",
+            "paper:tx-reconcile-downgrade-guard",
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.mark_order_confirmed_reconcile_pending(
+            "ord-reconcile-downgrade-guard-1",
+            "confirm_observed_fill_unavailable_manual_reconcile_required",
+            now + Duration::seconds(1),
+        )?;
+
+        let error = store
+            .mark_order_reconcile_pending(
+                "ord-reconcile-downgrade-guard-1",
+                "confirm_timeout_manual_reconcile_required",
+            )
+            .expect_err("confirmed reconcile surface must not downgrade back to submitted");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected status=execution_confirmed_reconcile_pending"),
+            "unexpected error: {error}"
+        );
+
+        let order = store
+            .execution_order_by_client_order_id("cb_reconcile_downgrade_guard_a1")?
+            .context("expected order row after rejected downgrade attempt")?;
+        assert_eq!(order.status, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS);
+        assert_eq!(
+            order.err_code.as_deref(),
+            Some("confirm_observed_fill_unavailable_manual_reconcile_required")
         );
         assert_eq!(order.confirm_ts, Some(now + Duration::seconds(1)));
 
