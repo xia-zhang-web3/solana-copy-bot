@@ -18,6 +18,8 @@ GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
 GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="${GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY:-false}"
 GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
+GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="${GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE:-false}"
+GO_NOGO_MIN_CONFIRMED_ORDERS="${GO_NOGO_MIN_CONFIRMED_ORDERS:-1}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
 GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}"
 ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
@@ -44,6 +46,18 @@ parse_signoff_bool_setting_into() {
   printf -v "$output_var" '%s' "$parsed_value"
 }
 
+parse_signoff_positive_u64_setting_into() {
+  local setting_name="$1"
+  local raw_value="$2"
+  local output_var="$3"
+  local parsed_value=""
+  if ! parsed_value="$(parse_positive_u64_token_strict "$raw_value")"; then
+    input_errors+=("${setting_name} must be an integer >= 1, got: ${raw_value}")
+    parsed_value="1"
+  fi
+  printf -v "$output_var" '%s' "$parsed_value"
+}
+
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream
@@ -51,6 +65,8 @@ parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUI
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" "$GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" go_nogo_require_followlist_activity
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" go_nogo_require_non_bootstrap_signer
 parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" "$GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" go_nogo_require_submit_verify_strict
+parse_signoff_bool_setting_into "GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE" "$GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE" go_nogo_require_confirmed_execution_sample
+parse_signoff_positive_u64_setting_into "GO_NOGO_MIN_CONFIRMED_ORDERS" "$GO_NOGO_MIN_CONFIRMED_ORDERS" go_nogo_min_confirmed_orders
 parse_signoff_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
 parse_signoff_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
 
@@ -184,6 +200,10 @@ declare -a window_non_bootstrap_signer_guard_reason_codes=()
 declare -a window_go_nogo_require_submit_verify_strict=()
 declare -a window_submit_verify_guard_verdicts=()
 declare -a window_submit_verify_guard_reason_codes=()
+declare -a window_go_nogo_require_confirmed_execution_sample=()
+declare -a window_go_nogo_min_confirmed_orders=()
+declare -a window_confirmed_execution_sample_guard_verdicts=()
+declare -a window_confirmed_execution_sample_guard_reason_codes=()
 
 window_total=0
 go_nogo_go_count=0
@@ -229,6 +249,8 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity" \
       GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer" \
       GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict" \
+      GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="$go_nogo_require_confirmed_execution_sample" \
+      GO_NOGO_MIN_CONFIRMED_ORDERS="$go_nogo_min_confirmed_orders" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" \
@@ -443,6 +465,35 @@ if ((${#input_errors[@]} == 0)); then
       input_errors+=("window ${window_hours}h nested go/no-go submit_verify_guard_reason_code must be non-empty")
       submit_verify_guard_reason_code="n/a"
     fi
+    go_nogo_require_confirmed_execution_sample_raw="$(trim_string "$(extract_field "go_nogo_require_confirmed_execution_sample" "$go_nogo_output")")"
+    if ! go_nogo_require_confirmed_execution_sample_nested="$(extract_bool_field_strict "go_nogo_require_confirmed_execution_sample" "$go_nogo_output")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_confirmed_execution_sample must be boolean token, got: ${go_nogo_require_confirmed_execution_sample_raw:-<empty>}")
+      go_nogo_require_confirmed_execution_sample_nested="unknown"
+    elif [[ "$go_nogo_require_confirmed_execution_sample_nested" != "$go_nogo_require_confirmed_execution_sample" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_require_confirmed_execution_sample mismatch: nested=${go_nogo_require_confirmed_execution_sample_nested} expected=${go_nogo_require_confirmed_execution_sample}")
+    fi
+    go_nogo_min_confirmed_orders_raw="$(trim_string "$(extract_field "go_nogo_min_confirmed_orders" "$go_nogo_output")")"
+    if ! go_nogo_min_confirmed_orders_nested="$(parse_positive_u64_token_strict "$go_nogo_min_confirmed_orders_raw")"; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_min_confirmed_orders must be an integer >= 1, got: ${go_nogo_min_confirmed_orders_raw:-<empty>}")
+      go_nogo_min_confirmed_orders_nested="1"
+    elif [[ "$go_nogo_min_confirmed_orders_nested" != "$go_nogo_min_confirmed_orders" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go go_nogo_min_confirmed_orders mismatch: nested=${go_nogo_min_confirmed_orders_nested} expected=${go_nogo_min_confirmed_orders}")
+    fi
+    confirmed_execution_sample_guard_verdict_raw="$(trim_string "$(extract_field "confirmed_execution_sample_guard_verdict" "$go_nogo_output")")"
+    confirmed_execution_sample_guard_verdict_raw_upper="$(printf '%s' "$confirmed_execution_sample_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    confirmed_execution_sample_guard_verdict="$(normalize_strict_guard_verdict "$confirmed_execution_sample_guard_verdict_raw")"
+    if [[ -z "$confirmed_execution_sample_guard_verdict_raw" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go confirmed_execution_sample_guard_verdict must be non-empty")
+      confirmed_execution_sample_guard_verdict="UNKNOWN"
+    elif [[ "$confirmed_execution_sample_guard_verdict_raw_upper" != "PASS" && "$confirmed_execution_sample_guard_verdict_raw_upper" != "WARN" && "$confirmed_execution_sample_guard_verdict_raw_upper" != "UNKNOWN" && "$confirmed_execution_sample_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go confirmed_execution_sample_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${confirmed_execution_sample_guard_verdict_raw})")
+      confirmed_execution_sample_guard_verdict="UNKNOWN"
+    fi
+    confirmed_execution_sample_guard_reason_code="$(trim_string "$(extract_field "confirmed_execution_sample_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$confirmed_execution_sample_guard_reason_code" ]]; then
+      input_errors+=("window ${window_hours}h nested go/no-go confirmed_execution_sample_guard_reason_code must be non-empty")
+      confirmed_execution_sample_guard_reason_code="n/a"
+    fi
     if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
       if [[ "$executor_backend_mode_guard_verdict" == "SKIP" ]]; then
         input_errors+=("window ${window_hours}h nested go/no-go executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -510,6 +561,15 @@ if ((${#input_errors[@]} == 0)); then
     else
       if [[ "$submit_verify_guard_verdict" != "SKIP" ]]; then
         input_errors+=("window ${window_hours}h nested go/no-go submit_verify_guard_verdict must be SKIP when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=false (got: ${submit_verify_guard_verdict})")
+      fi
+    fi
+    if [[ "$go_nogo_require_confirmed_execution_sample" == "true" ]]; then
+      if [[ "$confirmed_execution_sample_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go confirmed_execution_sample_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=true")
+      fi
+    else
+      if [[ "$confirmed_execution_sample_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("window ${window_hours}h nested go/no-go confirmed_execution_sample_guard_verdict must be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=false (got: ${confirmed_execution_sample_guard_verdict})")
       fi
     fi
 
@@ -609,6 +669,10 @@ if ((${#input_errors[@]} == 0)); then
     window_go_nogo_require_submit_verify_strict+=("${go_nogo_require_submit_verify_strict_nested:-unknown}")
     window_submit_verify_guard_verdicts+=("${submit_verify_guard_verdict:-UNKNOWN}")
     window_submit_verify_guard_reason_codes+=("${submit_verify_guard_reason_code:-n/a}")
+    window_go_nogo_require_confirmed_execution_sample+=("${go_nogo_require_confirmed_execution_sample_nested:-unknown}")
+    window_go_nogo_min_confirmed_orders+=("${go_nogo_min_confirmed_orders_nested:-1}")
+    window_confirmed_execution_sample_guard_verdicts+=("${confirmed_execution_sample_guard_verdict:-UNKNOWN}")
+    window_confirmed_execution_sample_guard_reason_codes+=("${confirmed_execution_sample_guard_reason_code:-n/a}")
 
     if route_is_value "$primary_route"; then
       if [[ "$primary_route_seen" == "false" ]]; then
@@ -751,6 +815,8 @@ go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc
 go_nogo_require_followlist_activity: $go_nogo_require_followlist_activity
 go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer
 go_nogo_require_submit_verify_strict: $go_nogo_require_submit_verify_strict
+go_nogo_require_confirmed_execution_sample: $go_nogo_require_confirmed_execution_sample
+go_nogo_min_confirmed_orders: $go_nogo_min_confirmed_orders
 executor_env_path: $EXECUTOR_ENV_PATH
 go_nogo_test_mode: $go_nogo_test_mode_norm
 route_fee_signoff_test_verdict_override: ${route_fee_signoff_test_verdict_override_raw:-n/a}
@@ -816,6 +882,10 @@ for idx in "${!window_ids[@]}"; do
   summary_output+=$'\n'"window_${window_id}h_go_nogo_require_submit_verify_strict: ${window_go_nogo_require_submit_verify_strict[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_submit_verify_guard_verdict: ${window_submit_verify_guard_verdicts[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_submit_verify_guard_reason_code: ${window_submit_verify_guard_reason_codes[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_go_nogo_require_confirmed_execution_sample: ${window_go_nogo_require_confirmed_execution_sample[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_go_nogo_min_confirmed_orders: ${window_go_nogo_min_confirmed_orders[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_confirmed_execution_sample_guard_verdict: ${window_confirmed_execution_sample_guard_verdicts[$idx]}"
+  summary_output+=$'\n'"window_${window_id}h_confirmed_execution_sample_guard_reason_code: ${window_confirmed_execution_sample_guard_reason_codes[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_summary_sha256: ${window_go_nogo_summary_sha256[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_calibration_sha256: ${window_go_nogo_calibration_sha256[$idx]}"
   summary_output+=$'\n'"window_${window_id}h_go_nogo_capture_path: ${window_go_nogo_capture_paths[$idx]}"

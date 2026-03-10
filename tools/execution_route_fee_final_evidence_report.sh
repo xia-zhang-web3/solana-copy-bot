@@ -19,6 +19,8 @@ GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
 GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="${GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY:-false}"
 GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
+GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="${GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE:-false}"
+GO_NOGO_MIN_CONFIRMED_ORDERS="${GO_NOGO_MIN_CONFIRMED_ORDERS:-1}"
 GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
 GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}"
@@ -45,6 +47,18 @@ parse_final_bool_setting_into() {
   printf -v "$output_var" '%s' "$parsed_value"
 }
 
+parse_final_positive_u64_setting_into() {
+  local setting_name="$1"
+  local raw_value="$2"
+  local output_var="$3"
+  local parsed_value=""
+  if ! parsed_value="$(parse_positive_u64_token_strict "$raw_value")"; then
+    input_errors+=("${setting_name} must be an integer >= 1, got: ${raw_value}")
+    parsed_value="1"
+  fi
+  printf -v "$output_var" '%s' "$parsed_value"
+}
+
 parse_final_bool_setting_into "GO_NOGO_REQUIRE_JITO_RPC_POLICY" "$GO_NOGO_REQUIRE_JITO_RPC_POLICY" go_nogo_require_jito_rpc_policy
 parse_final_bool_setting_into "GO_NOGO_REQUIRE_FASTLANE_DISABLED" "$GO_NOGO_REQUIRE_FASTLANE_DISABLED" go_nogo_require_fastlane_disabled
 parse_final_bool_setting_into "GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" "$GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM" go_nogo_require_executor_upstream
@@ -52,6 +66,8 @@ parse_final_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE
 parse_final_bool_setting_into "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" "$GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" go_nogo_require_followlist_activity
 parse_final_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" go_nogo_require_non_bootstrap_signer
 parse_final_bool_setting_into "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" "$GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" go_nogo_require_submit_verify_strict
+parse_final_bool_setting_into "GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE" "$GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE" go_nogo_require_confirmed_execution_sample
+parse_final_positive_u64_setting_into "GO_NOGO_MIN_CONFIRMED_ORDERS" "$GO_NOGO_MIN_CONFIRMED_ORDERS" go_nogo_min_confirmed_orders
 parse_final_bool_setting_into "GO_NOGO_TEST_MODE" "$GO_NOGO_TEST_MODE" go_nogo_test_mode_norm
 parse_final_bool_setting_into "PACKAGE_BUNDLE_ENABLED" "$PACKAGE_BUNDLE_ENABLED" package_bundle_enabled_norm
 
@@ -99,6 +115,10 @@ signoff_nested_non_bootstrap_signer_guard_reason_code="n/a"
 signoff_nested_go_nogo_require_submit_verify_strict="unknown"
 signoff_nested_submit_verify_guard_verdict="unknown"
 signoff_nested_submit_verify_guard_reason_code="n/a"
+signoff_nested_go_nogo_require_confirmed_execution_sample="unknown"
+signoff_nested_go_nogo_min_confirmed_orders="1"
+signoff_nested_confirmed_execution_sample_guard_verdict="unknown"
+signoff_nested_confirmed_execution_sample_guard_reason_code="n/a"
 signoff_guard_window_id="n/a"
 if ((${#input_errors[@]} == 0)); then
   if signoff_output="$(
@@ -112,6 +132,8 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity" \
       GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer" \
       GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict" \
+      GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="$go_nogo_require_confirmed_execution_sample" \
+      GO_NOGO_MIN_CONFIRMED_ORDERS="$go_nogo_min_confirmed_orders" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
@@ -197,6 +219,10 @@ if ((${#input_errors[@]} == 0)); then
   signoff_guard_require_submit_verify_strict_key="window_${signoff_guard_window_id}h_go_nogo_require_submit_verify_strict"
   signoff_guard_submit_verify_verdict_key="window_${signoff_guard_window_id}h_submit_verify_guard_verdict"
   signoff_guard_submit_verify_reason_code_key="window_${signoff_guard_window_id}h_submit_verify_guard_reason_code"
+  signoff_guard_require_confirmed_execution_sample_key="window_${signoff_guard_window_id}h_go_nogo_require_confirmed_execution_sample"
+  signoff_guard_min_confirmed_orders_key="window_${signoff_guard_window_id}h_go_nogo_min_confirmed_orders"
+  signoff_guard_confirmed_execution_sample_verdict_key="window_${signoff_guard_window_id}h_confirmed_execution_sample_guard_verdict"
+  signoff_guard_confirmed_execution_sample_reason_code_key="window_${signoff_guard_window_id}h_confirmed_execution_sample_guard_reason_code"
 
   signoff_nested_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "$signoff_guard_backend_mode_verdict_key" "$signoff_output")")"
   signoff_nested_executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$signoff_nested_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
@@ -360,6 +386,35 @@ if ((${#input_errors[@]} == 0)); then
     input_errors+=("nested route/fee signoff ${signoff_guard_submit_verify_reason_code_key} must be non-empty")
     signoff_nested_submit_verify_guard_reason_code="n/a"
   fi
+  signoff_nested_go_nogo_require_confirmed_execution_sample_raw="$(trim_string "$(extract_field "$signoff_guard_require_confirmed_execution_sample_key" "$signoff_output")")"
+  if ! signoff_nested_go_nogo_require_confirmed_execution_sample="$(extract_bool_field_strict "$signoff_guard_require_confirmed_execution_sample_key" "$signoff_output")"; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_require_confirmed_execution_sample_key} must be boolean token, got: ${signoff_nested_go_nogo_require_confirmed_execution_sample_raw:-<empty>}")
+    signoff_nested_go_nogo_require_confirmed_execution_sample="unknown"
+  elif [[ "$signoff_nested_go_nogo_require_confirmed_execution_sample" != "$go_nogo_require_confirmed_execution_sample" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_require_confirmed_execution_sample_key} mismatch: nested=${signoff_nested_go_nogo_require_confirmed_execution_sample} expected=${go_nogo_require_confirmed_execution_sample}")
+  fi
+  signoff_nested_go_nogo_min_confirmed_orders_raw="$(trim_string "$(extract_field "$signoff_guard_min_confirmed_orders_key" "$signoff_output")")"
+  if ! signoff_nested_go_nogo_min_confirmed_orders="$(parse_positive_u64_token_strict "$signoff_nested_go_nogo_min_confirmed_orders_raw")"; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_min_confirmed_orders_key} must be an integer >= 1, got: ${signoff_nested_go_nogo_min_confirmed_orders_raw:-<empty>}")
+    signoff_nested_go_nogo_min_confirmed_orders="1"
+  elif [[ "$signoff_nested_go_nogo_min_confirmed_orders" != "$go_nogo_min_confirmed_orders" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_min_confirmed_orders_key} mismatch: nested=${signoff_nested_go_nogo_min_confirmed_orders} expected=${go_nogo_min_confirmed_orders}")
+  fi
+  signoff_nested_confirmed_execution_sample_guard_verdict_raw="$(trim_string "$(extract_field "$signoff_guard_confirmed_execution_sample_verdict_key" "$signoff_output")")"
+  signoff_nested_confirmed_execution_sample_guard_verdict_raw_upper="$(printf '%s' "$signoff_nested_confirmed_execution_sample_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  signoff_nested_confirmed_execution_sample_guard_verdict="$(normalize_strict_guard_verdict "$signoff_nested_confirmed_execution_sample_guard_verdict_raw")"
+  if [[ -z "$signoff_nested_confirmed_execution_sample_guard_verdict_raw" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_confirmed_execution_sample_verdict_key} must be non-empty")
+    signoff_nested_confirmed_execution_sample_guard_verdict="UNKNOWN"
+  elif [[ "$signoff_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "PASS" && "$signoff_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "WARN" && "$signoff_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "UNKNOWN" && "$signoff_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_confirmed_execution_sample_verdict_key} must be one of PASS,WARN,UNKNOWN,SKIP (got: ${signoff_nested_confirmed_execution_sample_guard_verdict_raw})")
+    signoff_nested_confirmed_execution_sample_guard_verdict="UNKNOWN"
+  fi
+  signoff_nested_confirmed_execution_sample_guard_reason_code="$(trim_string "$(extract_field "$signoff_guard_confirmed_execution_sample_reason_code_key" "$signoff_output")")"
+  if [[ -z "$signoff_nested_confirmed_execution_sample_guard_reason_code" ]]; then
+    input_errors+=("nested route/fee signoff ${signoff_guard_confirmed_execution_sample_reason_code_key} must be non-empty")
+    signoff_nested_confirmed_execution_sample_guard_reason_code="n/a"
+  fi
   if [[ "$go_nogo_require_executor_upstream" == "true" ]]; then
     if [[ "$signoff_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested route/fee signoff ${signoff_guard_backend_mode_verdict_key} cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -429,6 +484,15 @@ if ((${#input_errors[@]} == 0)); then
       input_errors+=("nested route/fee signoff ${signoff_guard_submit_verify_verdict_key} must be SKIP when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=false (got: ${signoff_nested_submit_verify_guard_verdict})")
     fi
   fi
+  if [[ "$go_nogo_require_confirmed_execution_sample" == "true" ]]; then
+    if [[ "$signoff_nested_confirmed_execution_sample_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff ${signoff_guard_confirmed_execution_sample_verdict_key} cannot be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=true")
+    fi
+  else
+    if [[ "$signoff_nested_confirmed_execution_sample_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested route/fee signoff ${signoff_guard_confirmed_execution_sample_verdict_key} must be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=false (got: ${signoff_nested_confirmed_execution_sample_guard_verdict})")
+    fi
+  fi
 
   if [[ "$signoff_verdict" == "UNKNOWN" ]]; then
     signoff_reason="unable to classify route/fee signoff verdict (exit=$signoff_exit_code)"
@@ -482,6 +546,8 @@ go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc
 go_nogo_require_followlist_activity: $go_nogo_require_followlist_activity
 go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer
 go_nogo_require_submit_verify_strict: $go_nogo_require_submit_verify_strict
+go_nogo_require_confirmed_execution_sample: $go_nogo_require_confirmed_execution_sample
+go_nogo_min_confirmed_orders: $go_nogo_min_confirmed_orders
 executor_env_path: $EXECUTOR_ENV_PATH
 go_nogo_test_mode: $go_nogo_test_mode_norm
 route_fee_signoff_test_verdict_override: ${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-n/a}
@@ -531,6 +597,10 @@ signoff_nested_non_bootstrap_signer_guard_reason_code: ${signoff_nested_non_boot
 signoff_nested_go_nogo_require_submit_verify_strict: ${signoff_nested_go_nogo_require_submit_verify_strict:-unknown}
 signoff_nested_submit_verify_guard_verdict: ${signoff_nested_submit_verify_guard_verdict:-unknown}
 signoff_nested_submit_verify_guard_reason_code: ${signoff_nested_submit_verify_guard_reason_code:-n/a}
+signoff_nested_go_nogo_require_confirmed_execution_sample: ${signoff_nested_go_nogo_require_confirmed_execution_sample:-unknown}
+signoff_nested_go_nogo_min_confirmed_orders: ${signoff_nested_go_nogo_min_confirmed_orders:-1}
+signoff_nested_confirmed_execution_sample_guard_verdict: ${signoff_nested_confirmed_execution_sample_guard_verdict:-unknown}
+signoff_nested_confirmed_execution_sample_guard_reason_code: ${signoff_nested_confirmed_execution_sample_guard_reason_code:-n/a}
 final_route_fee_package_verdict: $signoff_verdict
 final_route_fee_package_reason: ${signoff_reason:-n/a}
 final_route_fee_package_reason_code: ${signoff_reason_code:-n/a}
