@@ -6366,6 +6366,38 @@ mod tests {
     }
 
     #[test]
+    fn latest_risk_event_by_type_returns_latest_row() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("risk-events-latest.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let first_ts = DateTime::parse_from_rfc3339("2026-03-10T08:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let second_ts = DateTime::parse_from_rfc3339("2026-03-10T08:05:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let third_ts = DateTime::parse_from_rfc3339("2026-03-10T08:06:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.insert_risk_event("shadow_risk_pause", "warn", first_ts, Some("{\"seq\":1}"))?;
+        store.insert_risk_event("other_event", "warn", second_ts, Some("{\"seq\":2}"))?;
+        store.insert_risk_event("shadow_risk_pause", "warn", third_ts, Some("{\"seq\":3}"))?;
+
+        let latest = store
+            .latest_risk_event_by_type("shadow_risk_pause")?
+            .expect("latest event");
+        assert_eq!(latest.event_type, "shadow_risk_pause");
+        assert_eq!(latest.ts, third_ts.to_rfc3339());
+        assert_eq!(latest.details_json.as_deref(), Some("{\"seq\":3}"));
+        assert!(latest.rowid > 0);
+        Ok(())
+    }
+
+    #[test]
     fn apply_history_retention_deletes_terminal_execution_history_child_first() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("execution-history-retention.db");

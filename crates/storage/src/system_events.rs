@@ -61,6 +61,30 @@ impl SqliteStore {
         Ok(count.max(0) as u64)
     }
 
+    pub fn latest_risk_event_by_type(&self, event_type: &str) -> Result<Option<RiskEventRow>> {
+        self.conn
+            .query_row(
+                "SELECT rowid, event_id, type, severity, ts, details_json
+                 FROM risk_events
+                 WHERE type = ?1
+                 ORDER BY rowid DESC
+                 LIMIT 1",
+                params![event_type],
+                |row| {
+                    Ok(RiskEventRow {
+                        rowid: row.get(0)?,
+                        event_id: row.get(1)?,
+                        event_type: row.get(2)?,
+                        severity: row.get(3)?,
+                        ts: row.get(4)?,
+                        details_json: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to load latest risk event by type")
+    }
+
     pub fn list_risk_events_after_cursor(
         &self,
         cursor: Option<i64>,

@@ -838,6 +838,68 @@ impl ShadowRiskGuard {
         }
     }
 
+    fn restore_pause_from_store(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+        if !self.config.shadow_killswitch_enabled {
+            return;
+        }
+        let restore_result = (|| -> Result<Option<(DateTime<Utc>, String)>> {
+            let Some(pause_event) = store.latest_risk_event_by_type("shadow_risk_pause")? else {
+                return Ok(None);
+            };
+            if let Some(cleared_event) =
+                store.latest_risk_event_by_type("shadow_risk_pause_cleared")?
+            {
+                if cleared_event.rowid > pause_event.rowid {
+                    return Ok(None);
+                }
+            }
+            let details_json = pause_event
+                .details_json
+                .as_deref()
+                .ok_or_else(|| anyhow!("shadow_risk_pause missing details_json"))?;
+            let details: serde_json::Value = serde_json::from_str(details_json)
+                .context("failed to parse shadow_risk_pause details_json")?;
+            let until_raw = details
+                .get("until")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow!("shadow_risk_pause missing until"))?;
+            let until = DateTime::parse_from_rfc3339(until_raw)
+                .context("failed to parse shadow_risk_pause until")?
+                .with_timezone(&Utc);
+            if until <= now {
+                return Ok(None);
+            }
+            let pause_type = details
+                .get("pause_type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("timed_pause");
+            let detail = details
+                .get("detail")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("restored_from_risk_event_rowid={}", pause_event.rowid));
+            Ok(Some((
+                until,
+                format!("{pause_type}: {detail}; until={}", until.to_rfc3339()),
+            )))
+        })();
+        match restore_result {
+            Ok(Some((until, reason))) => {
+                self.pause_until = Some(until);
+                self.pause_reason = Some(reason.clone());
+                info!(
+                    reason = %reason,
+                    until = %until.to_rfc3339(),
+                    "restored shadow risk timed pause from durable state"
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(error = %error, "failed to restore shadow risk timed pause");
+            }
+        }
+    }
+
     fn shadow_soft_exposure_cap_lamports(&self) -> Result<Lamports> {
         sol_to_lamports_floor(
             self.config.shadow_soft_exposure_cap_sol,
@@ -1597,6 +1659,7 @@ async fn run_app_loop(
         .context("failed to load open shadow lot index")?;
     let stale_lot_max_hold_hours = risk_config.max_hold_hours;
     let mut shadow_risk_guard = ShadowRiskGuard::new(risk_config);
+    shadow_risk_guard.restore_pause_from_store(&store, Utc::now());
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -3954,6 +4017,97 @@ mod app_tests {
         assert!(
             guard.pause_reason.is_none(),
             "timed pause reason should clear after pause duration elapses and exposure normalizes"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_restores_active_timed_pause_after_restart() -> Result<()> {
+        let (store, db_path) = make_test_store("timed-pause-restore-active")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let now = Utc::now();
+        let mut original_guard = ShadowRiskGuard::new(cfg.clone());
+        original_guard.activate_pause(
+            &store,
+            now,
+            chrono::Duration::minutes(5),
+            "restart_test",
+            "active pause should survive restart".to_string(),
+        );
+
+        let restore_at = now + chrono::Duration::seconds(30);
+        let mut restarted_guard = ShadowRiskGuard::new(cfg);
+        restarted_guard.restore_pause_from_store(&store, restore_at);
+
+        match restarted_guard.can_open_buy(&store, restore_at, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("restart_test")),
+            other => panic!("expected restored timed pause block after restart, got {other:?}"),
+        }
+        assert!(
+            restarted_guard.pause_until.is_some(),
+            "active durable pause should be restored into runtime state after restart"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            0
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_does_not_restore_cleared_timed_pause_after_restart() -> Result<()> {
+        let (store, db_path) = make_test_store("timed-pause-restore-cleared")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let now = Utc::now();
+        let mut original_guard = ShadowRiskGuard::new(cfg.clone());
+        original_guard.activate_pause(
+            &store,
+            now,
+            chrono::Duration::minutes(5),
+            "restart_test",
+            "cleared pause should stay cleared".to_string(),
+        );
+        original_guard.clear_pause(&store, now + chrono::Duration::seconds(10));
+
+        let mut restarted_guard = ShadowRiskGuard::new(cfg);
+        restarted_guard.restore_pause_from_store(&store, now + chrono::Duration::seconds(20));
+
+        match restarted_guard.can_open_buy(&store, now + chrono::Duration::seconds(20), true) {
+            BuyRiskDecision::Allow => {}
+            other => {
+                panic!("expected cleared timed pause to stay cleared after restart, got {other:?}")
+            }
+        }
+        assert!(
+            restarted_guard.pause_until.is_none(),
+            "cleared durable pause should not be restored after restart"
+        );
+        assert!(
+            restarted_guard.pause_reason.is_none(),
+            "cleared durable pause reason should stay empty after restart"
         );
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
         assert_eq!(
