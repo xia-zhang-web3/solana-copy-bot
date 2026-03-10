@@ -56,6 +56,30 @@ class InvalidExactCoverage:
     zero_raw_rows: int | None
 
 
+@dataclass(frozen=True)
+class ExactMoneyCoverageReport:
+    cutover: CutoverState | None
+    observed_swaps: TableCoverage
+    observed_swaps_invalid_exact: InvalidExactCoverage
+    copy_signals: TableCoverage
+    fills: TableCoverage
+    fills_qty: TableCoverage
+    positions: TableCoverage
+    positions_qty: TableCoverage
+    positions_pnl: TableCoverage
+    shadow_lots: TableCoverage
+    shadow_lots_qty: TableCoverage
+    shadow_closed_trades: TableCoverage
+    shadow_closed_trades_qty: TableCoverage
+    positions_bucket: BucketCoverage
+    shadow_lots_bucket: BucketCoverage
+    shadow_closed_trades_bucket: BucketCoverage
+    fills_invalid_exact: InvalidExactCoverage
+    positions_invalid_exact: InvalidExactCoverage
+    shadow_lots_invalid_exact: InvalidExactCoverage
+    shadow_closed_trades_invalid_exact: InvalidExactCoverage
+
+
 def usage() -> None:
     print("usage: exact_money_coverage_report.py <sqlite.db>", file=sys.stderr)
 
@@ -619,6 +643,229 @@ def print_invalid_exact_coverage(coverage: InvalidExactCoverage) -> None:
     )
 
 
+def collect_report(
+    conn: sqlite3.Connection, cutover_override: CutoverState | None = None
+) -> ExactMoneyCoverageReport:
+    register_sqlite_functions(conn)
+    cutover = cutover_override if cutover_override is not None else load_cutover_state(conn)
+    observed_swaps = coverage_all_or_nothing(
+        conn,
+        "observed_swaps",
+        "observed_swaps",
+        ["qty_in_raw", "qty_in_decimals", "qty_out_raw", "qty_out_decimals"],
+        CoverageQuery("observed_swaps", "ts"),
+        cutover,
+        invalid_predicate=(
+            f"({invalid_exact_qty_sidecar_predicate('qty_in_raw', 'qty_in_decimals')}) "
+            "OR "
+            f"({invalid_exact_qty_sidecar_predicate('qty_out_raw', 'qty_out_decimals')})"
+        ),
+    )
+    observed_swaps_invalid_exact = invalid_observed_swaps_coverage(
+        conn,
+        "observed_swaps",
+        CoverageQuery("observed_swaps", "ts"),
+    )
+    copy_signals = coverage_custom_predicates(
+        conn,
+        "copy_signals",
+        "copy_signals",
+        ["notional_lamports", "notional_origin"],
+        "notional_lamports IS NOT NULL AND notional_origin = 'leader_exact_lamports'",
+        "((notional_origin = 'leader_exact_lamports' AND notional_lamports IS NULL) "
+        "OR (notional_origin NOT IN ('leader_exact_lamports', 'leader_approximate')))",
+        CoverageQuery("copy_signals", "ts"),
+        cutover,
+    )
+    fills = coverage_all_or_nothing(
+        conn,
+        "fills",
+        "fills",
+        ["notional_lamports", "fee_lamports"],
+        CoverageQuery(
+            "fills JOIN orders ON orders.order_id = fills.order_id",
+            "COALESCE(orders.confirm_ts, orders.submit_ts)",
+            ("fills", "orders"),
+        ),
+        cutover,
+    )
+    fills_qty = coverage_all_or_nothing(
+        conn,
+        "fills_qty",
+        "fills",
+        ["qty_raw", "qty_decimals"],
+        CoverageQuery(
+            "fills JOIN orders ON orders.order_id = fills.order_id",
+            "COALESCE(orders.confirm_ts, orders.submit_ts)",
+            ("fills", "orders"),
+        ),
+        cutover,
+        invalid_predicate=fake_exact_qty_predicate(
+            "qty_raw", "qty_decimals", "notional_lamports"
+        ),
+    )
+    positions = coverage_single_nullable(
+        conn,
+        "positions",
+        "positions",
+        "cost_lamports",
+        CoverageQuery("positions", "opened_ts"),
+        cutover,
+    )
+    positions_qty = coverage_all_or_nothing(
+        conn,
+        "positions_qty",
+        "positions",
+        ["qty_raw", "qty_decimals"],
+        CoverageQuery("positions", "opened_ts"),
+        cutover,
+        invalid_predicate=fake_exact_qty_predicate(
+            "qty_raw", "qty_decimals", "cost_lamports"
+        ),
+    )
+    positions_pnl = coverage_single_nullable(
+        conn,
+        "positions_pnl",
+        "positions",
+        "pnl_lamports",
+        CoverageQuery("positions", "COALESCE(closed_ts, opened_ts)"),
+        cutover,
+    )
+    shadow_lots = coverage_single_nullable(
+        conn,
+        "shadow_lots",
+        "shadow_lots",
+        "cost_lamports",
+        CoverageQuery("shadow_lots", "opened_ts"),
+        cutover,
+    )
+    shadow_lots_qty = coverage_all_or_nothing(
+        conn,
+        "shadow_lots_qty",
+        "shadow_lots",
+        ["qty_raw", "qty_decimals"],
+        CoverageQuery("shadow_lots", "opened_ts"),
+        cutover,
+        invalid_predicate=fake_exact_qty_predicate(
+            "qty_raw", "qty_decimals", "cost_lamports"
+        ),
+    )
+    shadow_closed_trades = coverage_all_or_nothing(
+        conn,
+        "shadow_closed_trades",
+        "shadow_closed_trades",
+        ["entry_cost_lamports", "exit_value_lamports", "pnl_lamports"],
+        CoverageQuery("shadow_closed_trades", "closed_ts"),
+        cutover,
+    )
+    shadow_closed_trades_qty = coverage_all_or_nothing(
+        conn,
+        "shadow_closed_trades_qty",
+        "shadow_closed_trades",
+        ["qty_raw", "qty_decimals"],
+        CoverageQuery("shadow_closed_trades", "closed_ts"),
+        cutover,
+        invalid_predicate=fake_exact_qty_predicate(
+            "qty_raw", "qty_decimals", "entry_cost_lamports"
+        ),
+    )
+    positions_bucket = bucket_coverage(
+        conn,
+        "positions",
+        "positions",
+        "accounting_bucket",
+        ["qty_raw", "qty_decimals"],
+        CoverageQuery("positions", "opened_ts"),
+        invalid_predicate=fake_exact_qty_predicate(
+            "qty_raw", "qty_decimals", "cost_lamports"
+        ),
+    )
+    shadow_lots_bucket = bucket_coverage(
+        conn,
+        "shadow_lots",
+        "shadow_lots",
+        "accounting_bucket",
+        ["qty_raw", "qty_decimals"],
+        CoverageQuery("shadow_lots", "opened_ts"),
+        invalid_predicate=fake_exact_qty_predicate(
+            "qty_raw", "qty_decimals", "cost_lamports"
+        ),
+    )
+    shadow_closed_trades_bucket = bucket_coverage(
+        conn,
+        "shadow_closed_trades",
+        "shadow_closed_trades",
+        "accounting_bucket",
+        ["qty_raw", "qty_decimals"],
+        CoverageQuery("shadow_closed_trades", "closed_ts"),
+        invalid_predicate=fake_exact_qty_predicate(
+            "qty_raw", "qty_decimals", "entry_cost_lamports"
+        ),
+    )
+    fills_invalid_exact = invalid_exact_coverage(
+        conn,
+        "fills",
+        "fills",
+        "qty_raw",
+        "qty_decimals",
+        "notional_lamports",
+        CoverageQuery(
+            "fills JOIN orders ON orders.order_id = fills.order_id",
+            "COALESCE(orders.confirm_ts, orders.submit_ts)",
+            ("fills", "orders"),
+        ),
+    )
+    positions_invalid_exact = invalid_exact_coverage(
+        conn,
+        "positions",
+        "positions",
+        "qty_raw",
+        "qty_decimals",
+        "cost_lamports",
+        CoverageQuery("positions", "opened_ts"),
+    )
+    shadow_lots_invalid_exact = invalid_exact_coverage(
+        conn,
+        "shadow_lots",
+        "shadow_lots",
+        "qty_raw",
+        "qty_decimals",
+        "cost_lamports",
+        CoverageQuery("shadow_lots", "opened_ts"),
+    )
+    shadow_closed_trades_invalid_exact = invalid_exact_coverage(
+        conn,
+        "shadow_closed_trades",
+        "shadow_closed_trades",
+        "qty_raw",
+        "qty_decimals",
+        "entry_cost_lamports",
+        CoverageQuery("shadow_closed_trades", "closed_ts"),
+    )
+    return ExactMoneyCoverageReport(
+        cutover=cutover,
+        observed_swaps=observed_swaps,
+        observed_swaps_invalid_exact=observed_swaps_invalid_exact,
+        copy_signals=copy_signals,
+        fills=fills,
+        fills_qty=fills_qty,
+        positions=positions,
+        positions_qty=positions_qty,
+        positions_pnl=positions_pnl,
+        shadow_lots=shadow_lots,
+        shadow_lots_qty=shadow_lots_qty,
+        shadow_closed_trades=shadow_closed_trades,
+        shadow_closed_trades_qty=shadow_closed_trades_qty,
+        positions_bucket=positions_bucket,
+        shadow_lots_bucket=shadow_lots_bucket,
+        shadow_closed_trades_bucket=shadow_closed_trades_bucket,
+        fills_invalid_exact=fills_invalid_exact,
+        positions_invalid_exact=positions_invalid_exact,
+        shadow_lots_invalid_exact=shadow_lots_invalid_exact,
+        shadow_closed_trades_invalid_exact=shadow_closed_trades_invalid_exact,
+    )
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         usage()
@@ -626,237 +873,42 @@ def main(argv: list[str]) -> int:
 
     db_path = resolve_db_path(argv[1])
     conn = sqlite3.connect(str(db_path))
-    register_sqlite_functions(conn)
     try:
-        cutover = load_cutover_state(conn)
-        observed_swaps = coverage_all_or_nothing(
-            conn,
-            "observed_swaps",
-            "observed_swaps",
-            ["qty_in_raw", "qty_in_decimals", "qty_out_raw", "qty_out_decimals"],
-            CoverageQuery("observed_swaps", "ts"),
-            cutover,
-            invalid_predicate=(
-                f"({invalid_exact_qty_sidecar_predicate('qty_in_raw', 'qty_in_decimals')}) "
-                "OR "
-                f"({invalid_exact_qty_sidecar_predicate('qty_out_raw', 'qty_out_decimals')})"
-            ),
-        )
-        observed_swaps_invalid_exact = invalid_observed_swaps_coverage(
-            conn,
-            "observed_swaps",
-            CoverageQuery("observed_swaps", "ts"),
-        )
-        copy_signals = coverage_custom_predicates(
-            conn,
-            "copy_signals",
-            "copy_signals",
-            ["notional_lamports", "notional_origin"],
-            "notional_lamports IS NOT NULL AND notional_origin = 'leader_exact_lamports'",
-            "((notional_origin = 'leader_exact_lamports' AND notional_lamports IS NULL) "
-            "OR (notional_origin NOT IN ('leader_exact_lamports', 'leader_approximate')))",
-            CoverageQuery("copy_signals", "ts"),
-            cutover,
-        )
-        fills = coverage_all_or_nothing(
-            conn,
-            "fills",
-            "fills",
-            ["notional_lamports", "fee_lamports"],
-            CoverageQuery(
-                "fills JOIN orders ON orders.order_id = fills.order_id",
-                "COALESCE(orders.confirm_ts, orders.submit_ts)",
-                ("fills", "orders"),
-            ),
-            cutover,
-        )
-        fills_qty = coverage_all_or_nothing(
-            conn,
-            "fills_qty",
-            "fills",
-            ["qty_raw", "qty_decimals"],
-            CoverageQuery(
-                "fills JOIN orders ON orders.order_id = fills.order_id",
-                "COALESCE(orders.confirm_ts, orders.submit_ts)",
-                ("fills", "orders"),
-            ),
-            cutover,
-            invalid_predicate=fake_exact_qty_predicate(
-                "qty_raw", "qty_decimals", "notional_lamports"
-            ),
-        )
-        positions = coverage_single_nullable(
-            conn,
-            "positions",
-            "positions",
-            "cost_lamports",
-            CoverageQuery("positions", "opened_ts"),
-            cutover,
-        )
-        positions_qty = coverage_all_or_nothing(
-            conn,
-            "positions_qty",
-            "positions",
-            ["qty_raw", "qty_decimals"],
-            CoverageQuery("positions", "opened_ts"),
-            cutover,
-            invalid_predicate=fake_exact_qty_predicate(
-                "qty_raw", "qty_decimals", "cost_lamports"
-            ),
-        )
-        positions_pnl = coverage_single_nullable(
-            conn,
-            "positions_pnl",
-            "positions",
-            "pnl_lamports",
-            CoverageQuery("positions", "COALESCE(closed_ts, opened_ts)"),
-            cutover,
-        )
-        shadow_lots = coverage_single_nullable(
-            conn,
-            "shadow_lots",
-            "shadow_lots",
-            "cost_lamports",
-            CoverageQuery("shadow_lots", "opened_ts"),
-            cutover,
-        )
-        shadow_lots_qty = coverage_all_or_nothing(
-            conn,
-            "shadow_lots_qty",
-            "shadow_lots",
-            ["qty_raw", "qty_decimals"],
-            CoverageQuery("shadow_lots", "opened_ts"),
-            cutover,
-            invalid_predicate=fake_exact_qty_predicate(
-                "qty_raw", "qty_decimals", "cost_lamports"
-            ),
-        )
-        shadow_closed_trades = coverage_all_or_nothing(
-            conn,
-            "shadow_closed_trades",
-            "shadow_closed_trades",
-            ["entry_cost_lamports", "exit_value_lamports", "pnl_lamports"],
-            CoverageQuery("shadow_closed_trades", "closed_ts"),
-            cutover,
-        )
-        shadow_closed_trades_qty = coverage_all_or_nothing(
-            conn,
-            "shadow_closed_trades_qty",
-            "shadow_closed_trades",
-            ["qty_raw", "qty_decimals"],
-            CoverageQuery("shadow_closed_trades", "closed_ts"),
-            cutover,
-            invalid_predicate=fake_exact_qty_predicate(
-                "qty_raw", "qty_decimals", "entry_cost_lamports"
-            ),
-        )
-        positions_bucket = bucket_coverage(
-            conn,
-            "positions",
-            "positions",
-            "accounting_bucket",
-            ["qty_raw", "qty_decimals"],
-            CoverageQuery("positions", "opened_ts"),
-            invalid_predicate=fake_exact_qty_predicate(
-                "qty_raw", "qty_decimals", "cost_lamports"
-            ),
-        )
-        shadow_lots_bucket = bucket_coverage(
-            conn,
-            "shadow_lots",
-            "shadow_lots",
-            "accounting_bucket",
-            ["qty_raw", "qty_decimals"],
-            CoverageQuery("shadow_lots", "opened_ts"),
-            invalid_predicate=fake_exact_qty_predicate(
-                "qty_raw", "qty_decimals", "cost_lamports"
-            ),
-        )
-        shadow_closed_trades_bucket = bucket_coverage(
-            conn,
-            "shadow_closed_trades",
-            "shadow_closed_trades",
-            "accounting_bucket",
-            ["qty_raw", "qty_decimals"],
-            CoverageQuery("shadow_closed_trades", "closed_ts"),
-            invalid_predicate=fake_exact_qty_predicate(
-                "qty_raw", "qty_decimals", "entry_cost_lamports"
-            ),
-        )
-        fills_invalid_exact = invalid_exact_coverage(
-            conn,
-            "fills",
-            "fills",
-            "qty_raw",
-            "qty_decimals",
-            "notional_lamports",
-            CoverageQuery(
-                "fills JOIN orders ON orders.order_id = fills.order_id",
-                "COALESCE(orders.confirm_ts, orders.submit_ts)",
-                ("fills", "orders"),
-            ),
-        )
-        positions_invalid_exact = invalid_exact_coverage(
-            conn,
-            "positions",
-            "positions",
-            "qty_raw",
-            "qty_decimals",
-            "cost_lamports",
-            CoverageQuery("positions", "opened_ts"),
-        )
-        shadow_lots_invalid_exact = invalid_exact_coverage(
-            conn,
-            "shadow_lots",
-            "shadow_lots",
-            "qty_raw",
-            "qty_decimals",
-            "cost_lamports",
-            CoverageQuery("shadow_lots", "opened_ts"),
-        )
-        shadow_closed_trades_invalid_exact = invalid_exact_coverage(
-            conn,
-            "shadow_closed_trades",
-            "shadow_closed_trades",
-            "qty_raw",
-            "qty_decimals",
-            "entry_cost_lamports",
-            CoverageQuery("shadow_closed_trades", "closed_ts"),
-        )
+        report = collect_report(conn)
     finally:
         conn.close()
 
     print("=== Exact Money Coverage Report ===")
     print(f"db: {db_path}")
-    if cutover is None:
+    if report.cutover is None:
         print("exact_money_cutover_present: no")
         print("exact_money_cutover_ts: n/a")
         print("exact_money_cutover_recorded_ts: n/a")
         print("exact_money_cutover_note: n/a")
     else:
         print("exact_money_cutover_present: yes")
-        print(f"exact_money_cutover_ts: {cutover.cutover_ts}")
-        print(f"exact_money_cutover_recorded_ts: {cutover.recorded_ts}")
-        print(f"exact_money_cutover_note: {cutover.note or 'n/a'}")
-    print_coverage(observed_swaps)
-    print_invalid_exact_coverage(observed_swaps_invalid_exact)
-    print_coverage(copy_signals)
-    print_coverage(fills)
-    print_coverage(fills_qty)
-    print_coverage(positions)
-    print_coverage(positions_qty)
-    print_coverage(positions_pnl)
-    print_coverage(shadow_lots)
-    print_coverage(shadow_lots_qty)
-    print_coverage(shadow_closed_trades)
-    print_coverage(shadow_closed_trades_qty)
-    print_bucket_coverage(positions_bucket)
-    print_bucket_coverage(shadow_lots_bucket)
-    print_bucket_coverage(shadow_closed_trades_bucket)
-    print_invalid_exact_coverage(fills_invalid_exact)
-    print_invalid_exact_coverage(positions_invalid_exact)
-    print_invalid_exact_coverage(shadow_lots_invalid_exact)
-    print_invalid_exact_coverage(shadow_closed_trades_invalid_exact)
+        print(f"exact_money_cutover_ts: {report.cutover.cutover_ts}")
+        print(f"exact_money_cutover_recorded_ts: {report.cutover.recorded_ts}")
+        print(f"exact_money_cutover_note: {report.cutover.note or 'n/a'}")
+    print_coverage(report.observed_swaps)
+    print_invalid_exact_coverage(report.observed_swaps_invalid_exact)
+    print_coverage(report.copy_signals)
+    print_coverage(report.fills)
+    print_coverage(report.fills_qty)
+    print_coverage(report.positions)
+    print_coverage(report.positions_qty)
+    print_coverage(report.positions_pnl)
+    print_coverage(report.shadow_lots)
+    print_coverage(report.shadow_lots_qty)
+    print_coverage(report.shadow_closed_trades)
+    print_coverage(report.shadow_closed_trades_qty)
+    print_bucket_coverage(report.positions_bucket)
+    print_bucket_coverage(report.shadow_lots_bucket)
+    print_bucket_coverage(report.shadow_closed_trades_bucket)
+    print_invalid_exact_coverage(report.fills_invalid_exact)
+    print_invalid_exact_coverage(report.positions_invalid_exact)
+    print_invalid_exact_coverage(report.shadow_lots_invalid_exact)
+    print_invalid_exact_coverage(report.shadow_closed_trades_invalid_exact)
 
     return 0
 
