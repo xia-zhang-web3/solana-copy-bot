@@ -33,6 +33,17 @@ parse_u64_token_strict() {
   printf '%s' "$raw"
 }
 
+parse_positive_u64_token_strict() {
+  local parsed
+  if ! parsed="$(parse_u64_token_strict "$1")"; then
+    return 1
+  fi
+  if [[ "$parsed" == "0" ]]; then
+    return 1
+  fi
+  printf '%s' "$parsed"
+}
+
 parse_timeout_sec_strict() {
   local raw min_sec max_sec parsed
   raw="$1"

@@ -36,6 +36,8 @@ GO_NOGO_REQUIRE_INGESTION_GRPC="${GO_NOGO_REQUIRE_INGESTION_GRPC:-true}"
 GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="${GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY:-false}"
 GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
+GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="${GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE:-true}"
+GO_NOGO_MIN_CONFIRMED_ORDERS="${GO_NOGO_MIN_CONFIRMED_ORDERS:-1}"
 
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-true}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
@@ -106,6 +108,18 @@ parse_bool_setting_into() {
   printf -v "$output_var" '%s' "$parsed_value"
 }
 
+parse_positive_u64_setting_into() {
+  local setting_name="$1"
+  local raw_value="$2"
+  local output_var="$3"
+  local parsed_value=""
+  if ! parsed_value="$(parse_positive_u64_token_strict "$raw_value")"; then
+    input_errors+=("${setting_name} must be an integer >= 1, got: ${raw_value}")
+    parsed_value="1"
+  fi
+  printf -v "$output_var" '%s' "$parsed_value"
+}
+
 read_env_file_key() {
   local env_path="$1"
   local key="$2"
@@ -151,6 +165,8 @@ parse_bool_setting_into "GO_NOGO_REQUIRE_INGESTION_GRPC" "$GO_NOGO_REQUIRE_INGES
 parse_bool_setting_into "GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" "$GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY" go_nogo_require_followlist_activity_norm
 parse_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" go_nogo_require_non_bootstrap_signer_norm
 parse_bool_setting_into "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" "$GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" go_nogo_require_submit_verify_strict_norm
+parse_bool_setting_into "GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE" "$GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE" go_nogo_require_confirmed_execution_sample_norm
+parse_positive_u64_setting_into "GO_NOGO_MIN_CONFIRMED_ORDERS" "$GO_NOGO_MIN_CONFIRMED_ORDERS" go_nogo_min_confirmed_orders_norm
 parse_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
@@ -219,6 +235,10 @@ go_nogo_require_followlist_activity="n/a"
 go_nogo_non_bootstrap_signer_guard_verdict="n/a"
 go_nogo_non_bootstrap_signer_guard_reason_code="n/a"
 go_nogo_require_non_bootstrap_signer="n/a"
+go_nogo_require_confirmed_execution_sample="n/a"
+go_nogo_min_confirmed_orders="n/a"
+go_nogo_confirmed_execution_sample_guard_verdict="n/a"
+go_nogo_confirmed_execution_sample_guard_reason_code="n/a"
 
 rehearsal_output=""
 rehearsal_exit_code=3
@@ -246,6 +266,8 @@ executor_final_go_nogo_require_ingestion_grpc="n/a"
 executor_final_go_nogo_require_followlist_activity="n/a"
 executor_final_go_nogo_require_non_bootstrap_signer="n/a"
 executor_final_go_nogo_require_submit_verify_strict="n/a"
+executor_final_go_nogo_require_confirmed_execution_sample="n/a"
+executor_final_go_nogo_min_confirmed_orders="n/a"
 executor_final_executor_env_path="n/a"
 executor_final_rollout_nested_go_nogo_require_executor_upstream="n/a"
 executor_final_rollout_nested_go_nogo_require_jito_rpc_policy="n/a"
@@ -258,6 +280,8 @@ executor_final_rollout_nested_go_nogo_require_ingestion_grpc="n/a"
 executor_final_rollout_nested_go_nogo_require_followlist_activity="n/a"
 executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer="n/a"
 executor_final_rollout_nested_go_nogo_require_submit_verify_strict="n/a"
+executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample="n/a"
+executor_final_rollout_nested_go_nogo_min_confirmed_orders="n/a"
 executor_final_rollout_nested_executor_env_path="n/a"
 executor_final_rollout_nested_executor_backend_mode_guard_verdict="n/a"
 executor_final_rollout_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -269,6 +293,8 @@ executor_final_rollout_nested_followlist_activity_guard_verdict="n/a"
 executor_final_rollout_nested_followlist_activity_guard_reason_code="n/a"
 executor_final_rollout_nested_non_bootstrap_signer_guard_verdict="n/a"
 executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code="n/a"
+executor_final_rollout_nested_confirmed_execution_sample_guard_verdict="n/a"
+executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code="n/a"
 executor_final_rollout_nested_preflight_executor_submit_verify_strict="n/a"
 executor_final_rollout_nested_preflight_executor_submit_verify_configured="n/a"
 executor_final_rollout_nested_preflight_executor_submit_verify_fallback_configured="n/a"
@@ -289,6 +315,8 @@ adapter_final_go_nogo_require_ingestion_grpc="n/a"
 adapter_final_go_nogo_require_followlist_activity="n/a"
 adapter_final_go_nogo_require_non_bootstrap_signer="n/a"
 adapter_final_go_nogo_require_submit_verify_strict="n/a"
+adapter_final_go_nogo_require_confirmed_execution_sample="n/a"
+adapter_final_go_nogo_min_confirmed_orders="n/a"
 adapter_final_executor_env_path="n/a"
 adapter_final_rollout_nested_go_nogo_require_executor_upstream="n/a"
 adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy="n/a"
@@ -301,6 +329,8 @@ adapter_final_rollout_nested_go_nogo_require_ingestion_grpc="n/a"
 adapter_final_rollout_nested_go_nogo_require_followlist_activity="n/a"
 adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer="n/a"
 adapter_final_rollout_nested_go_nogo_require_submit_verify_strict="n/a"
+adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample="n/a"
+adapter_final_rollout_nested_go_nogo_min_confirmed_orders="n/a"
 adapter_final_rollout_nested_executor_env_path="n/a"
 adapter_final_rollout_nested_executor_backend_mode_guard_verdict="n/a"
 adapter_final_rollout_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -314,6 +344,8 @@ adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict="n/a"
 adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code="n/a"
 adapter_final_rollout_nested_submit_verify_guard_verdict="n/a"
 adapter_final_rollout_nested_submit_verify_guard_reason_code="n/a"
+adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict="n/a"
+adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if preflight_output="$(
@@ -357,6 +389,8 @@ if ((${#input_errors[@]} == 0)); then
         GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity_norm" \
         GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer_norm" \
         GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict_norm" \
+        GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="$go_nogo_require_confirmed_execution_sample_norm" \
+        GO_NOGO_MIN_CONFIRMED_ORDERS="$go_nogo_min_confirmed_orders_norm" \
         GO_NOGO_REQUIRE_JITO_RPC_POLICY="$go_nogo_require_jito_rpc_policy_norm" \
         GO_NOGO_REQUIRE_FASTLANE_DISABLED="$go_nogo_require_fastlane_disabled_norm" \
         GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
@@ -400,6 +434,20 @@ if ((${#input_errors[@]} == 0)); then
       go_nogo_require_submit_verify_strict="unknown"
     elif [[ "$go_nogo_require_submit_verify_strict" != "$go_nogo_require_submit_verify_strict_norm" ]]; then
       input_errors+=("nested go/no-go go_nogo_require_submit_verify_strict mismatch: nested=${go_nogo_require_submit_verify_strict} expected=${go_nogo_require_submit_verify_strict_norm}")
+    fi
+    go_nogo_require_confirmed_execution_sample_raw="$(trim_string "$(extract_field "go_nogo_require_confirmed_execution_sample" "$go_nogo_output")")"
+    if ! go_nogo_require_confirmed_execution_sample="$(extract_bool_field_strict "go_nogo_require_confirmed_execution_sample" "$go_nogo_output")"; then
+      input_errors+=("nested go/no-go go_nogo_require_confirmed_execution_sample must be boolean token, got: ${go_nogo_require_confirmed_execution_sample_raw:-<empty>}")
+      go_nogo_require_confirmed_execution_sample="unknown"
+    elif [[ "$go_nogo_require_confirmed_execution_sample" != "$go_nogo_require_confirmed_execution_sample_norm" ]]; then
+      input_errors+=("nested go/no-go go_nogo_require_confirmed_execution_sample mismatch: nested=${go_nogo_require_confirmed_execution_sample} expected=${go_nogo_require_confirmed_execution_sample_norm}")
+    fi
+    go_nogo_min_confirmed_orders_raw="$(trim_string "$(extract_field "go_nogo_min_confirmed_orders" "$go_nogo_output")")"
+    if ! go_nogo_min_confirmed_orders="$(parse_positive_u64_token_strict "$go_nogo_min_confirmed_orders_raw")"; then
+      input_errors+=("nested go/no-go go_nogo_min_confirmed_orders must be an integer >= 1, got: ${go_nogo_min_confirmed_orders_raw:-<empty>}")
+      go_nogo_min_confirmed_orders="0"
+    elif [[ "$go_nogo_min_confirmed_orders" != "$go_nogo_min_confirmed_orders_norm" ]]; then
+      input_errors+=("nested go/no-go go_nogo_min_confirmed_orders mismatch: nested=${go_nogo_min_confirmed_orders} expected=${go_nogo_min_confirmed_orders_norm}")
     fi
     go_nogo_executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "executor_backend_mode_guard_verdict" "$go_nogo_output")")"
     go_nogo_executor_backend_mode_guard_verdict="$(printf '%s' "$go_nogo_executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
@@ -489,6 +537,30 @@ if ((${#input_errors[@]} == 0)); then
         input_errors+=("nested go/no-go non_bootstrap_signer_guard_verdict must be SKIP when GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER=false (got: ${go_nogo_non_bootstrap_signer_guard_verdict})")
       fi
     fi
+    go_nogo_confirmed_execution_sample_guard_verdict_raw="$(trim_string "$(extract_field "confirmed_execution_sample_guard_verdict" "$go_nogo_output")")"
+    go_nogo_confirmed_execution_sample_guard_verdict_raw_upper="$(printf '%s' "$go_nogo_confirmed_execution_sample_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    go_nogo_confirmed_execution_sample_guard_verdict="$(normalize_strict_guard_verdict "$go_nogo_confirmed_execution_sample_guard_verdict_raw")"
+    if [[ -z "$go_nogo_confirmed_execution_sample_guard_verdict_raw" ]]; then
+      input_errors+=("nested go/no-go confirmed_execution_sample_guard_verdict must be non-empty")
+      go_nogo_confirmed_execution_sample_guard_verdict="UNKNOWN"
+    elif [[ "$go_nogo_confirmed_execution_sample_guard_verdict_raw_upper" != "PASS" && "$go_nogo_confirmed_execution_sample_guard_verdict_raw_upper" != "WARN" && "$go_nogo_confirmed_execution_sample_guard_verdict_raw_upper" != "UNKNOWN" && "$go_nogo_confirmed_execution_sample_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("nested go/no-go confirmed_execution_sample_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${go_nogo_confirmed_execution_sample_guard_verdict_raw})")
+      go_nogo_confirmed_execution_sample_guard_verdict="UNKNOWN"
+    fi
+    go_nogo_confirmed_execution_sample_guard_reason_code="$(trim_string "$(extract_field "confirmed_execution_sample_guard_reason_code" "$go_nogo_output")")"
+    if [[ -z "$go_nogo_confirmed_execution_sample_guard_reason_code" ]]; then
+      input_errors+=("nested go/no-go confirmed_execution_sample_guard_reason_code must be non-empty")
+      go_nogo_confirmed_execution_sample_guard_reason_code="n/a"
+    fi
+    if [[ "$go_nogo_require_confirmed_execution_sample_norm" == "true" ]]; then
+      if [[ "$go_nogo_confirmed_execution_sample_guard_verdict" == "SKIP" ]]; then
+        input_errors+=("nested go/no-go confirmed_execution_sample_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=true")
+      fi
+    else
+      if [[ "$go_nogo_confirmed_execution_sample_guard_verdict" != "SKIP" ]]; then
+        input_errors+=("nested go/no-go confirmed_execution_sample_guard_verdict must be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=false (got: ${go_nogo_confirmed_execution_sample_guard_verdict})")
+      fi
+    fi
     go_nogo_artifacts_written_raw="$(trim_string "$(extract_field "artifacts_written" "$go_nogo_output")")"
     if ! go_nogo_artifacts_written="$(extract_bool_field_strict "artifacts_written" "$go_nogo_output")"; then
       input_errors+=("nested go/no-go artifacts_written must be boolean token, got: ${go_nogo_artifacts_written_raw:-<empty>}")
@@ -524,6 +596,10 @@ if ((${#input_errors[@]} == 0)); then
     go_nogo_non_bootstrap_signer_guard_reason_code="stage_disabled"
     go_nogo_require_non_bootstrap_signer="$go_nogo_require_non_bootstrap_signer_norm"
     go_nogo_require_submit_verify_strict="$go_nogo_require_submit_verify_strict_norm"
+    go_nogo_require_confirmed_execution_sample="$go_nogo_require_confirmed_execution_sample_norm"
+    go_nogo_min_confirmed_orders="$go_nogo_min_confirmed_orders_norm"
+    go_nogo_confirmed_execution_sample_guard_verdict="SKIP"
+    go_nogo_confirmed_execution_sample_guard_reason_code="stage_disabled"
     go_nogo_output="overall_go_nogo_verdict: SKIP
 overall_go_nogo_reason: direct go/no-go stage disabled via SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT=false
 overall_go_nogo_reason_code: stage_disabled
@@ -546,6 +622,8 @@ package_bundle_enabled: false"
         GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
         GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity_norm" \
         GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer_norm" \
+        GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="$go_nogo_require_confirmed_execution_sample_norm" \
+        GO_NOGO_MIN_CONFIRMED_ORDERS="$go_nogo_min_confirmed_orders_norm" \
         GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
         GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
         GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
@@ -615,6 +693,8 @@ package_bundle_enabled: false"
       GO_NOGO_REQUIRE_INGESTION_GRPC="$go_nogo_require_ingestion_grpc_norm" \
       GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity_norm" \
       GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer_norm" \
+      GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="$go_nogo_require_confirmed_execution_sample_norm" \
+      GO_NOGO_MIN_CONFIRMED_ORDERS="$go_nogo_min_confirmed_orders_norm" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
@@ -704,6 +784,20 @@ package_bundle_enabled: false"
   elif [[ "$executor_final_go_nogo_require_submit_verify_strict" != "$go_nogo_require_submit_verify_strict_norm" ]]; then
     input_errors+=("nested executor final go_nogo_require_submit_verify_strict mismatch: nested=${executor_final_go_nogo_require_submit_verify_strict} expected=${go_nogo_require_submit_verify_strict_norm}")
   fi
+  executor_final_go_nogo_require_confirmed_execution_sample_raw="$(trim_string "$(extract_field "go_nogo_require_confirmed_execution_sample" "$executor_final_output")")"
+  if ! executor_final_go_nogo_require_confirmed_execution_sample="$(extract_bool_field_strict "go_nogo_require_confirmed_execution_sample" "$executor_final_output")"; then
+    input_errors+=("nested executor final go_nogo_require_confirmed_execution_sample must be boolean token, got: ${executor_final_go_nogo_require_confirmed_execution_sample_raw:-<empty>}")
+    executor_final_go_nogo_require_confirmed_execution_sample="unknown"
+  elif [[ "$executor_final_go_nogo_require_confirmed_execution_sample" != "$go_nogo_require_confirmed_execution_sample_norm" ]]; then
+    input_errors+=("nested executor final go_nogo_require_confirmed_execution_sample mismatch: nested=${executor_final_go_nogo_require_confirmed_execution_sample} expected=${go_nogo_require_confirmed_execution_sample_norm}")
+  fi
+  executor_final_go_nogo_min_confirmed_orders_raw="$(trim_string "$(extract_field "go_nogo_min_confirmed_orders" "$executor_final_output")")"
+  if ! executor_final_go_nogo_min_confirmed_orders="$(parse_positive_u64_token_strict "$executor_final_go_nogo_min_confirmed_orders_raw")"; then
+    input_errors+=("nested executor final go_nogo_min_confirmed_orders must be an integer >= 1, got: ${executor_final_go_nogo_min_confirmed_orders_raw:-<empty>}")
+    executor_final_go_nogo_min_confirmed_orders="0"
+  elif [[ "$executor_final_go_nogo_min_confirmed_orders" != "$go_nogo_min_confirmed_orders_norm" ]]; then
+    input_errors+=("nested executor final go_nogo_min_confirmed_orders mismatch: nested=${executor_final_go_nogo_min_confirmed_orders} expected=${go_nogo_min_confirmed_orders_norm}")
+  fi
   executor_final_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$executor_final_output")")"
   if [[ -z "$executor_final_executor_env_path" ]]; then
     input_errors+=("nested executor final executor_env_path must be non-empty")
@@ -790,6 +884,20 @@ package_bundle_enabled: false"
   elif [[ "$executor_final_rollout_nested_go_nogo_require_submit_verify_strict" != "$go_nogo_require_submit_verify_strict_norm" ]]; then
     input_errors+=("nested executor final rollout_nested_go_nogo_require_submit_verify_strict mismatch: nested=${executor_final_rollout_nested_go_nogo_require_submit_verify_strict} expected=${go_nogo_require_submit_verify_strict_norm}")
   fi
+  executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_confirmed_execution_sample" "$executor_final_output")")"
+  if ! executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample="$(extract_bool_field_strict "rollout_nested_go_nogo_require_confirmed_execution_sample" "$executor_final_output")"; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_require_confirmed_execution_sample must be boolean token, got: ${executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample_raw:-<empty>}")
+    executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample="unknown"
+  elif [[ "$executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample" != "$go_nogo_require_confirmed_execution_sample_norm" ]]; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_require_confirmed_execution_sample mismatch: nested=${executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample} expected=${go_nogo_require_confirmed_execution_sample_norm}")
+  fi
+  executor_final_rollout_nested_go_nogo_min_confirmed_orders_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_min_confirmed_orders" "$executor_final_output")")"
+  if ! executor_final_rollout_nested_go_nogo_min_confirmed_orders="$(parse_positive_u64_token_strict "$executor_final_rollout_nested_go_nogo_min_confirmed_orders_raw")"; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_min_confirmed_orders must be an integer >= 1, got: ${executor_final_rollout_nested_go_nogo_min_confirmed_orders_raw:-<empty>}")
+    executor_final_rollout_nested_go_nogo_min_confirmed_orders="0"
+  elif [[ "$executor_final_rollout_nested_go_nogo_min_confirmed_orders" != "$go_nogo_min_confirmed_orders_norm" ]]; then
+    input_errors+=("nested executor final rollout_nested_go_nogo_min_confirmed_orders mismatch: nested=${executor_final_rollout_nested_go_nogo_min_confirmed_orders} expected=${go_nogo_min_confirmed_orders_norm}")
+  fi
   executor_final_rollout_nested_executor_env_path="$(trim_string "$(extract_field "rollout_nested_executor_env_path" "$executor_final_output")")"
   if [[ -z "$executor_final_rollout_nested_executor_env_path" ]]; then
     input_errors+=("nested executor final rollout_nested_executor_env_path must be non-empty")
@@ -872,6 +980,21 @@ package_bundle_enabled: false"
     input_errors+=("nested executor final rollout_nested_non_bootstrap_signer_guard_reason_code must be non-empty")
     executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code="n/a"
   fi
+  executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw="$(trim_string "$(extract_field "rollout_nested_confirmed_execution_sample_guard_verdict" "$executor_final_output")")"
+  executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper="$(printf '%s' "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  executor_final_rollout_nested_confirmed_execution_sample_guard_verdict="$(normalize_strict_guard_verdict "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw")"
+  if [[ -z "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw" ]]; then
+    input_errors+=("nested executor final rollout_nested_confirmed_execution_sample_guard_verdict must be non-empty")
+    executor_final_rollout_nested_confirmed_execution_sample_guard_verdict="UNKNOWN"
+  elif [[ "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "PASS" && "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "WARN" && "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "UNKNOWN" && "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested executor final rollout_nested_confirmed_execution_sample_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${executor_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw})")
+    executor_final_rollout_nested_confirmed_execution_sample_guard_verdict="UNKNOWN"
+  fi
+  executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code="$(trim_string "$(extract_field "rollout_nested_confirmed_execution_sample_guard_reason_code" "$executor_final_output")")"
+  if [[ -z "$executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code" ]]; then
+    input_errors+=("nested executor final rollout_nested_confirmed_execution_sample_guard_reason_code must be non-empty")
+    executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code="n/a"
+  fi
   executor_final_rollout_nested_preflight_executor_submit_verify_strict_raw="$(trim_string "$(extract_field "rollout_nested_preflight_executor_submit_verify_strict" "$executor_final_output")")"
   if ! executor_final_rollout_nested_preflight_executor_submit_verify_strict="$(extract_bool_field_strict "rollout_nested_preflight_executor_submit_verify_strict" "$executor_final_output")"; then
     input_errors+=("nested executor final rollout_nested_preflight_executor_submit_verify_strict must be boolean token, got: ${executor_final_rollout_nested_preflight_executor_submit_verify_strict_raw:-<empty>}")
@@ -950,6 +1073,15 @@ package_bundle_enabled: false"
       input_errors+=("nested executor final rollout_nested_followlist_activity_guard_verdict must be SKIP when GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY=false (got: ${executor_final_rollout_nested_followlist_activity_guard_verdict})")
     fi
   fi
+  if [[ "$go_nogo_require_confirmed_execution_sample_norm" == "true" ]]; then
+    if [[ "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested executor final rollout_nested_confirmed_execution_sample_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=true")
+    fi
+  else
+    if [[ "$executor_final_rollout_nested_confirmed_execution_sample_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested executor final rollout_nested_confirmed_execution_sample_guard_verdict must be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=false (got: ${executor_final_rollout_nested_confirmed_execution_sample_guard_verdict})")
+    fi
+  fi
   if [[ "$go_nogo_require_non_bootstrap_signer_norm" == "true" ]]; then
     if [[ "$executor_final_rollout_nested_non_bootstrap_signer_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested executor final rollout_nested_non_bootstrap_signer_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER=true")
@@ -976,6 +1108,8 @@ package_bundle_enabled: false"
       GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity_norm" \
       GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer_norm" \
       GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict_norm" \
+      GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="$go_nogo_require_confirmed_execution_sample_norm" \
+      GO_NOGO_MIN_CONFIRMED_ORDERS="$go_nogo_min_confirmed_orders_norm" \
       GO_NOGO_TEST_MODE="$go_nogo_test_mode_norm" \
       GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
@@ -1071,6 +1205,20 @@ package_bundle_enabled: false"
   elif [[ "$adapter_final_go_nogo_require_submit_verify_strict" != "$go_nogo_require_submit_verify_strict_norm" ]]; then
     input_errors+=("nested adapter final go_nogo_require_submit_verify_strict mismatch: nested=${adapter_final_go_nogo_require_submit_verify_strict} expected=${go_nogo_require_submit_verify_strict_norm}")
   fi
+  adapter_final_go_nogo_require_confirmed_execution_sample_raw="$(trim_string "$(extract_field "go_nogo_require_confirmed_execution_sample" "$adapter_final_output")")"
+  if ! adapter_final_go_nogo_require_confirmed_execution_sample="$(extract_bool_field_strict "go_nogo_require_confirmed_execution_sample" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final go_nogo_require_confirmed_execution_sample must be boolean token, got: ${adapter_final_go_nogo_require_confirmed_execution_sample_raw:-<empty>}")
+    adapter_final_go_nogo_require_confirmed_execution_sample="unknown"
+  elif [[ "$adapter_final_go_nogo_require_confirmed_execution_sample" != "$go_nogo_require_confirmed_execution_sample_norm" ]]; then
+    input_errors+=("nested adapter final go_nogo_require_confirmed_execution_sample mismatch: nested=${adapter_final_go_nogo_require_confirmed_execution_sample} expected=${go_nogo_require_confirmed_execution_sample_norm}")
+  fi
+  adapter_final_go_nogo_min_confirmed_orders_raw="$(trim_string "$(extract_field "go_nogo_min_confirmed_orders" "$adapter_final_output")")"
+  if ! adapter_final_go_nogo_min_confirmed_orders="$(parse_positive_u64_token_strict "$adapter_final_go_nogo_min_confirmed_orders_raw")"; then
+    input_errors+=("nested adapter final go_nogo_min_confirmed_orders must be an integer >= 1, got: ${adapter_final_go_nogo_min_confirmed_orders_raw:-<empty>}")
+    adapter_final_go_nogo_min_confirmed_orders="0"
+  elif [[ "$adapter_final_go_nogo_min_confirmed_orders" != "$go_nogo_min_confirmed_orders_norm" ]]; then
+    input_errors+=("nested adapter final go_nogo_min_confirmed_orders mismatch: nested=${adapter_final_go_nogo_min_confirmed_orders} expected=${go_nogo_min_confirmed_orders_norm}")
+  fi
   adapter_final_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$adapter_final_output")")"
   if [[ -z "$adapter_final_executor_env_path" ]]; then
     input_errors+=("nested adapter final executor_env_path must be non-empty")
@@ -1156,6 +1304,20 @@ package_bundle_enabled: false"
     adapter_final_rollout_nested_go_nogo_require_submit_verify_strict="unknown"
   elif [[ "$adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" != "$go_nogo_require_submit_verify_strict_norm" ]]; then
     input_errors+=("nested adapter final rollout_nested_go_nogo_require_submit_verify_strict mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_submit_verify_strict} expected=${go_nogo_require_submit_verify_strict_norm}")
+  fi
+  adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_require_confirmed_execution_sample" "$adapter_final_output")")"
+  if ! adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample="$(extract_bool_field_strict "rollout_nested_go_nogo_require_confirmed_execution_sample" "$adapter_final_output")"; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_confirmed_execution_sample must be boolean token, got: ${adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample_raw:-<empty>}")
+    adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample="unknown"
+  elif [[ "$adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample" != "$go_nogo_require_confirmed_execution_sample_norm" ]]; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_require_confirmed_execution_sample mismatch: nested=${adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample} expected=${go_nogo_require_confirmed_execution_sample_norm}")
+  fi
+  adapter_final_rollout_nested_go_nogo_min_confirmed_orders_raw="$(trim_string "$(extract_field "rollout_nested_go_nogo_min_confirmed_orders" "$adapter_final_output")")"
+  if ! adapter_final_rollout_nested_go_nogo_min_confirmed_orders="$(parse_positive_u64_token_strict "$adapter_final_rollout_nested_go_nogo_min_confirmed_orders_raw")"; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_min_confirmed_orders must be an integer >= 1, got: ${adapter_final_rollout_nested_go_nogo_min_confirmed_orders_raw:-<empty>}")
+    adapter_final_rollout_nested_go_nogo_min_confirmed_orders="0"
+  elif [[ "$adapter_final_rollout_nested_go_nogo_min_confirmed_orders" != "$go_nogo_min_confirmed_orders_norm" ]]; then
+    input_errors+=("nested adapter final rollout_nested_go_nogo_min_confirmed_orders mismatch: nested=${adapter_final_rollout_nested_go_nogo_min_confirmed_orders} expected=${go_nogo_min_confirmed_orders_norm}")
   fi
   adapter_final_rollout_nested_executor_env_path="$(trim_string "$(extract_field "rollout_nested_executor_env_path" "$adapter_final_output")")"
   if [[ -z "$adapter_final_rollout_nested_executor_env_path" ]]; then
@@ -1254,6 +1416,21 @@ package_bundle_enabled: false"
     input_errors+=("nested adapter final rollout_nested_submit_verify_guard_reason_code must be non-empty")
     adapter_final_rollout_nested_submit_verify_guard_reason_code="n/a"
   fi
+  adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw="$(trim_string "$(extract_field "rollout_nested_confirmed_execution_sample_guard_verdict" "$adapter_final_output")")"
+  adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper="$(printf '%s' "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict="$(normalize_strict_guard_verdict "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw")"
+  if [[ -z "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw" ]]; then
+    input_errors+=("nested adapter final rollout_nested_confirmed_execution_sample_guard_verdict must be non-empty")
+    adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict="UNKNOWN"
+  elif [[ "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "PASS" && "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "WARN" && "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "UNKNOWN" && "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested adapter final rollout_nested_confirmed_execution_sample_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict_raw})")
+    adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict="UNKNOWN"
+  fi
+  adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code="$(trim_string "$(extract_field "rollout_nested_confirmed_execution_sample_guard_reason_code" "$adapter_final_output")")"
+  if [[ -z "$adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code" ]]; then
+    input_errors+=("nested adapter final rollout_nested_confirmed_execution_sample_guard_reason_code must be non-empty")
+    adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code="n/a"
+  fi
   if [[ "$server_rollout_require_executor_upstream_norm" == "true" ]]; then
     if [[ "$adapter_final_rollout_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested adapter final rollout_nested_executor_backend_mode_guard_verdict cannot be SKIP when SERVER_ROLLOUT_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -1303,6 +1480,15 @@ package_bundle_enabled: false"
   else
     if [[ "$adapter_final_rollout_nested_followlist_activity_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested adapter final rollout_nested_followlist_activity_guard_verdict must be SKIP when GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY=false (got: ${adapter_final_rollout_nested_followlist_activity_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_confirmed_execution_sample_norm" == "true" ]]; then
+    if [[ "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_confirmed_execution_sample_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=true")
+    fi
+  else
+    if [[ "$adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested adapter final rollout_nested_confirmed_execution_sample_guard_verdict must be SKIP when GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE=false (got: ${adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict})")
     fi
   fi
   if [[ "$go_nogo_require_non_bootstrap_signer_norm" == "true" ]]; then
@@ -1424,6 +1610,8 @@ go_nogo_require_ingestion_grpc: $go_nogo_require_ingestion_grpc_norm
 go_nogo_require_followlist_activity: $go_nogo_require_followlist_activity_norm
 go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer_norm
 go_nogo_require_submit_verify_strict: $go_nogo_require_submit_verify_strict_norm
+go_nogo_require_confirmed_execution_sample: $go_nogo_require_confirmed_execution_sample_norm
+go_nogo_min_confirmed_orders: $go_nogo_min_confirmed_orders_norm
 route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 rehearsal_route_fee_signoff_required: $rehearsal_route_fee_signoff_required_norm
@@ -1461,6 +1649,8 @@ go_nogo_followlist_activity_guard_verdict: ${go_nogo_followlist_activity_guard_v
 go_nogo_followlist_activity_guard_reason_code: ${go_nogo_followlist_activity_guard_reason_code:-n/a}
 go_nogo_non_bootstrap_signer_guard_verdict: ${go_nogo_non_bootstrap_signer_guard_verdict:-n/a}
 go_nogo_non_bootstrap_signer_guard_reason_code: ${go_nogo_non_bootstrap_signer_guard_reason_code:-n/a}
+go_nogo_confirmed_execution_sample_guard_verdict: ${go_nogo_confirmed_execution_sample_guard_verdict:-n/a}
+go_nogo_confirmed_execution_sample_guard_reason_code: ${go_nogo_confirmed_execution_sample_guard_reason_code:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
 go_nogo_artifacts_written: ${go_nogo_artifacts_written:-n/a}
 go_nogo_nested_package_bundle_enabled: ${go_nogo_nested_package_bundle_enabled:-n/a}
@@ -1485,6 +1675,8 @@ executor_final_go_nogo_require_ingestion_grpc: ${executor_final_go_nogo_require_
 executor_final_go_nogo_require_followlist_activity: ${executor_final_go_nogo_require_followlist_activity:-n/a}
 executor_final_go_nogo_require_non_bootstrap_signer: ${executor_final_go_nogo_require_non_bootstrap_signer:-n/a}
 executor_final_go_nogo_require_submit_verify_strict: ${executor_final_go_nogo_require_submit_verify_strict:-n/a}
+executor_final_go_nogo_require_confirmed_execution_sample: ${executor_final_go_nogo_require_confirmed_execution_sample:-n/a}
+executor_final_go_nogo_min_confirmed_orders: ${executor_final_go_nogo_min_confirmed_orders:-n/a}
 executor_final_executor_env_path: ${executor_final_executor_env_path:-n/a}
 executor_final_rollout_nested_go_nogo_require_executor_upstream: ${executor_final_rollout_nested_go_nogo_require_executor_upstream:-n/a}
 executor_final_rollout_nested_go_nogo_require_jito_rpc_policy: ${executor_final_rollout_nested_go_nogo_require_jito_rpc_policy:-n/a}
@@ -1497,6 +1689,8 @@ executor_final_rollout_nested_go_nogo_require_ingestion_grpc: ${executor_final_r
 executor_final_rollout_nested_go_nogo_require_followlist_activity: ${executor_final_rollout_nested_go_nogo_require_followlist_activity:-n/a}
 executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer: ${executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer:-n/a}
 executor_final_rollout_nested_go_nogo_require_submit_verify_strict: ${executor_final_rollout_nested_go_nogo_require_submit_verify_strict:-n/a}
+executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample: ${executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample:-n/a}
+executor_final_rollout_nested_go_nogo_min_confirmed_orders: ${executor_final_rollout_nested_go_nogo_min_confirmed_orders:-n/a}
 executor_final_rollout_nested_executor_env_path: ${executor_final_rollout_nested_executor_env_path:-n/a}
 executor_final_rollout_nested_executor_backend_mode_guard_verdict: ${executor_final_rollout_nested_executor_backend_mode_guard_verdict:-n/a}
 executor_final_rollout_nested_executor_backend_mode_guard_reason_code: ${executor_final_rollout_nested_executor_backend_mode_guard_reason_code:-n/a}
@@ -1508,6 +1702,8 @@ executor_final_rollout_nested_followlist_activity_guard_verdict: ${executor_fina
 executor_final_rollout_nested_followlist_activity_guard_reason_code: ${executor_final_rollout_nested_followlist_activity_guard_reason_code:-n/a}
 executor_final_rollout_nested_non_bootstrap_signer_guard_verdict: ${executor_final_rollout_nested_non_bootstrap_signer_guard_verdict:-n/a}
 executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code: ${executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code:-n/a}
+executor_final_rollout_nested_confirmed_execution_sample_guard_verdict: ${executor_final_rollout_nested_confirmed_execution_sample_guard_verdict:-n/a}
+executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code: ${executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code:-n/a}
 executor_final_rollout_nested_preflight_executor_submit_verify_strict: ${executor_final_rollout_nested_preflight_executor_submit_verify_strict:-n/a}
 executor_final_rollout_nested_preflight_executor_submit_verify_configured: ${executor_final_rollout_nested_preflight_executor_submit_verify_configured:-n/a}
 executor_final_rollout_nested_preflight_executor_submit_verify_fallback_configured: ${executor_final_rollout_nested_preflight_executor_submit_verify_fallback_configured:-n/a}
@@ -1525,6 +1721,8 @@ adapter_final_go_nogo_require_ingestion_grpc: ${adapter_final_go_nogo_require_in
 adapter_final_go_nogo_require_followlist_activity: ${adapter_final_go_nogo_require_followlist_activity:-n/a}
 adapter_final_go_nogo_require_non_bootstrap_signer: ${adapter_final_go_nogo_require_non_bootstrap_signer:-n/a}
 adapter_final_go_nogo_require_submit_verify_strict: ${adapter_final_go_nogo_require_submit_verify_strict:-n/a}
+adapter_final_go_nogo_require_confirmed_execution_sample: ${adapter_final_go_nogo_require_confirmed_execution_sample:-n/a}
+adapter_final_go_nogo_min_confirmed_orders: ${adapter_final_go_nogo_min_confirmed_orders:-n/a}
 adapter_final_executor_env_path: ${adapter_final_executor_env_path:-n/a}
 adapter_final_rollout_nested_go_nogo_require_executor_upstream: ${adapter_final_rollout_nested_go_nogo_require_executor_upstream:-n/a}
 adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy: ${adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy:-n/a}
@@ -1537,6 +1735,8 @@ adapter_final_rollout_nested_go_nogo_require_ingestion_grpc: ${adapter_final_rol
 adapter_final_rollout_nested_go_nogo_require_followlist_activity: ${adapter_final_rollout_nested_go_nogo_require_followlist_activity:-n/a}
 adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer: ${adapter_final_rollout_nested_go_nogo_require_non_bootstrap_signer:-n/a}
 adapter_final_rollout_nested_go_nogo_require_submit_verify_strict: ${adapter_final_rollout_nested_go_nogo_require_submit_verify_strict:-n/a}
+adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample: ${adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample:-n/a}
+adapter_final_rollout_nested_go_nogo_min_confirmed_orders: ${adapter_final_rollout_nested_go_nogo_min_confirmed_orders:-n/a}
 adapter_final_rollout_nested_executor_env_path: ${adapter_final_rollout_nested_executor_env_path:-n/a}
 adapter_final_rollout_nested_executor_backend_mode_guard_verdict: ${adapter_final_rollout_nested_executor_backend_mode_guard_verdict:-n/a}
 adapter_final_rollout_nested_executor_backend_mode_guard_reason_code: ${adapter_final_rollout_nested_executor_backend_mode_guard_reason_code:-n/a}
@@ -1550,6 +1750,8 @@ adapter_final_rollout_nested_non_bootstrap_signer_guard_verdict: ${adapter_final
 adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code: ${adapter_final_rollout_nested_non_bootstrap_signer_guard_reason_code:-n/a}
 adapter_final_rollout_nested_submit_verify_guard_verdict: ${adapter_final_rollout_nested_submit_verify_guard_verdict:-n/a}
 adapter_final_rollout_nested_submit_verify_guard_reason_code: ${adapter_final_rollout_nested_submit_verify_guard_reason_code:-n/a}
+adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict: ${adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict:-n/a}
+adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code: ${adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code:-n/a}
 server_rollout_verdict: $overall_verdict
 server_rollout_reason: $overall_reason
 server_rollout_reason_code: $overall_reason_code

@@ -38,6 +38,8 @@ go_nogo_require_ingestion_grpc_raw="${GO_NOGO_REQUIRE_INGESTION_GRPC:-false}"
 go_nogo_require_followlist_activity_raw="${GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY:-false}"
 go_nogo_require_non_bootstrap_signer_raw="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 go_nogo_require_submit_verify_strict_raw="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
+go_nogo_require_confirmed_execution_sample_raw="${GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE:-false}"
+go_nogo_min_confirmed_orders_raw="${GO_NOGO_MIN_CONFIRMED_ORDERS:-1}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
 if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
   echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2
@@ -65,6 +67,14 @@ if ! go_nogo_require_non_bootstrap_signer="$(parse_bool_token_strict "$go_nogo_r
 fi
 if ! go_nogo_require_submit_verify_strict="$(parse_bool_token_strict "$go_nogo_require_submit_verify_strict_raw")"; then
   echo "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_submit_verify_strict_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_require_confirmed_execution_sample="$(parse_bool_token_strict "$go_nogo_require_confirmed_execution_sample_raw")"; then
+  echo "GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_confirmed_execution_sample_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_min_confirmed_orders="$(parse_positive_u64_token_strict "$go_nogo_min_confirmed_orders_raw")"; then
+  echo "GO_NOGO_MIN_CONFIRMED_ORDERS must be an integer >= 1, got: ${go_nogo_min_confirmed_orders_raw}" >&2
   exit 1
 fi
 if ! go_nogo_test_mode="$(parse_bool_token_strict "$go_nogo_test_mode_raw")"; then
@@ -898,6 +908,30 @@ if [[ "$go_nogo_require_followlist_activity" == "true" ]]; then
   fi
 fi
 
+confirmed_execution_sample_guard_verdict="SKIP"
+confirmed_execution_sample_guard_reason="strict confirmed execution sample guard disabled"
+confirmed_execution_sample_guard_reason_code="gate_disabled"
+if [[ "$go_nogo_require_confirmed_execution_sample" == "true" ]]; then
+  confirmed_orders_total_raw="$(trim_string "${confirmed_orders_total:-}")"
+  if [[ -z "$confirmed_orders_total_raw" || "$confirmed_orders_total_raw" == "n/a" ]]; then
+    confirmed_execution_sample_guard_verdict="UNKNOWN"
+    confirmed_execution_sample_guard_reason="confirmed_orders_total missing while strict confirmed execution sample guard is enabled"
+    confirmed_execution_sample_guard_reason_code="confirmed_orders_metric_missing"
+  elif ! confirmed_orders_total_normalized="$(parse_u64_token_strict "$confirmed_orders_total_raw")"; then
+    confirmed_execution_sample_guard_verdict="UNKNOWN"
+    confirmed_execution_sample_guard_reason="confirmed_orders_total must be a non-negative integer when strict confirmed execution sample guard is enabled (got: ${confirmed_orders_total_raw})"
+    confirmed_execution_sample_guard_reason_code="confirmed_orders_metric_invalid"
+  elif (( confirmed_orders_total_normalized < go_nogo_min_confirmed_orders )); then
+    confirmed_execution_sample_guard_verdict="WARN"
+    confirmed_execution_sample_guard_reason="strict confirmed execution sample guard requires confirmed_orders_total >= ${go_nogo_min_confirmed_orders} (observed ${confirmed_orders_total_normalized})"
+    confirmed_execution_sample_guard_reason_code="confirmed_orders_below_min"
+  else
+    confirmed_execution_sample_guard_verdict="PASS"
+    confirmed_execution_sample_guard_reason="strict confirmed execution sample guard confirms confirmed_orders_total=${confirmed_orders_total_normalized} >= ${go_nogo_min_confirmed_orders}"
+    confirmed_execution_sample_guard_reason_code="confirmed_orders_sufficient"
+  fi
+fi
+
 # Test-only overrides for smoke validation of verdict precedence branches.
 if [[ "$go_nogo_test_mode" == "true" ]]; then
   if [[ -n "${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}" ]]; then
@@ -967,6 +1001,14 @@ elif [[ "$go_nogo_require_followlist_activity" == "true" && "$followlist_activit
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict followlist activity guard not PASS: ${followlist_activity_guard_reason:-n/a}"
   overall_go_nogo_reason_code="followlist_activity_not_pass"
+elif [[ "$go_nogo_require_confirmed_execution_sample" == "true" && "$confirmed_execution_sample_guard_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict confirmed execution sample guard verdict: ${confirmed_execution_sample_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="confirmed_execution_sample_unknown"
+elif [[ "$go_nogo_require_confirmed_execution_sample" == "true" && "$confirmed_execution_sample_guard_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict confirmed execution sample guard not PASS: ${confirmed_execution_sample_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="confirmed_execution_sample_not_pass"
 elif [[ "$go_nogo_require_jito_rpc_policy" == "true" && "$jito_rpc_policy_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict jito->rpc policy gate verdict; fail-closed"
@@ -975,7 +1017,7 @@ elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_fla
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
   overall_go_nogo_reason_code="fastlane_policy_unknown"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_followlist_activity" != "true" || "$followlist_activity_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_submit_verify_strict" != "true" || "$submit_verify_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_followlist_activity" != "true" || "$followlist_activity_guard_verdict" == "PASS" ) && ( "$go_nogo_require_confirmed_execution_sample" != "true" || "$confirmed_execution_sample_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_submit_verify_strict" != "true" || "$submit_verify_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
   overall_go_nogo_reason_code="all_required_gates_pass"
@@ -1132,6 +1174,11 @@ go_nogo_require_followlist_activity: $go_nogo_require_followlist_activity
 followlist_activity_guard_verdict: $followlist_activity_guard_verdict
 followlist_activity_guard_reason: $followlist_activity_guard_reason
 followlist_activity_guard_reason_code: $followlist_activity_guard_reason_code
+go_nogo_require_confirmed_execution_sample: $go_nogo_require_confirmed_execution_sample
+go_nogo_min_confirmed_orders: $go_nogo_min_confirmed_orders
+confirmed_execution_sample_guard_verdict: $confirmed_execution_sample_guard_verdict
+confirmed_execution_sample_guard_reason: $confirmed_execution_sample_guard_reason
+confirmed_execution_sample_guard_reason_code: $confirmed_execution_sample_guard_reason_code
 go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer
 executor_signer_pubkey_observed: ${executor_signer_pubkey_observed:-n/a}
 non_bootstrap_signer_guard_verdict: $non_bootstrap_signer_guard_verdict
