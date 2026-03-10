@@ -40,6 +40,9 @@ go_nogo_require_non_bootstrap_signer_raw="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER
 go_nogo_require_submit_verify_strict_raw="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 go_nogo_require_confirmed_execution_sample_raw="${GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE:-false}"
 go_nogo_min_confirmed_orders_raw="${GO_NOGO_MIN_CONFIRMED_ORDERS:-1}"
+go_nogo_require_pretrade_fee_policy_raw="${GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY:-false}"
+go_nogo_min_pretrade_sol_reserve_lamports_raw="${GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS:-50000000}"
+go_nogo_max_pretrade_fee_overhead_bps_raw="${GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS:-1000}"
 go_nogo_test_mode_raw="${GO_NOGO_TEST_MODE:-false}"
 if ! go_nogo_require_jito_rpc_policy="$(parse_bool_token_strict "$go_nogo_require_jito_rpc_policy_raw")"; then
   echo "GO_NOGO_REQUIRE_JITO_RPC_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_jito_rpc_policy_raw}" >&2
@@ -75,6 +78,18 @@ if ! go_nogo_require_confirmed_execution_sample="$(parse_bool_token_strict "$go_
 fi
 if ! go_nogo_min_confirmed_orders="$(parse_positive_u64_token_strict "$go_nogo_min_confirmed_orders_raw")"; then
   echo "GO_NOGO_MIN_CONFIRMED_ORDERS must be an integer >= 1, got: ${go_nogo_min_confirmed_orders_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_require_pretrade_fee_policy="$(parse_bool_token_strict "$go_nogo_require_pretrade_fee_policy_raw")"; then
+  echo "GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY must be a boolean token (true/false/1/0/yes/no/on/off), got: ${go_nogo_require_pretrade_fee_policy_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_min_pretrade_sol_reserve_lamports="$(parse_positive_u64_token_strict "$go_nogo_min_pretrade_sol_reserve_lamports_raw")"; then
+  echo "GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS must be an integer >= 1, got: ${go_nogo_min_pretrade_sol_reserve_lamports_raw}" >&2
+  exit 1
+fi
+if ! go_nogo_max_pretrade_fee_overhead_bps="$(parse_positive_u64_token_strict "$go_nogo_max_pretrade_fee_overhead_bps_raw")"; then
+  echo "GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS must be an integer >= 1, got: ${go_nogo_max_pretrade_fee_overhead_bps_raw}" >&2
   exit 1
 fi
 if ! go_nogo_test_mode="$(parse_bool_token_strict "$go_nogo_test_mode_raw")"; then
@@ -341,6 +356,8 @@ dynamic_cu_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_cu_
 dynamic_tip_policy_config_enabled="$(cfg_or_env_bool execution submit_dynamic_tip_lamports_enabled SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED false)"
 dynamic_cu_hint_api_primary_url="$(cfg_or_env_string execution submit_dynamic_cu_price_api_primary_url SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_API_PRIMARY_URL "")"
 execution_mode_for_go_nogo="$(trim_string "$(cfg_or_env_string execution mode SOLANA_COPY_BOT_EXECUTION_MODE "paper")")"
+pretrade_min_sol_reserve_config_raw="$(trim_string "$(cfg_or_env_string execution pretrade_min_sol_reserve SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE "")")"
+pretrade_max_fee_overhead_bps_config_raw="$(trim_string "$(cfg_or_env_string execution pretrade_max_fee_overhead_bps SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS "")")"
 if [[ -z "$execution_mode_for_go_nogo" ]]; then
   execution_mode_for_go_nogo="paper"
 fi
@@ -908,6 +925,47 @@ if [[ "$go_nogo_require_followlist_activity" == "true" ]]; then
   fi
 fi
 
+pretrade_min_sol_reserve_lamports_observed="n/a"
+pretrade_max_fee_overhead_bps_observed="n/a"
+pretrade_fee_policy_guard_verdict="SKIP"
+pretrade_fee_policy_guard_reason="strict pretrade fee policy guard disabled"
+pretrade_fee_policy_guard_reason_code="gate_disabled"
+if [[ "$go_nogo_require_pretrade_fee_policy" == "true" ]]; then
+  if [[ -z "$pretrade_min_sol_reserve_config_raw" ]]; then
+    pretrade_fee_policy_guard_verdict="UNKNOWN"
+    pretrade_fee_policy_guard_reason="execution.pretrade_min_sol_reserve missing while strict pretrade fee policy guard is enabled"
+    pretrade_fee_policy_guard_reason_code="pretrade_min_sol_reserve_missing"
+  elif ! pretrade_min_sol_reserve_lamports_observed="$(sol_to_lamports_ceil_strict "$pretrade_min_sol_reserve_config_raw" 2>/dev/null)"; then
+    pretrade_fee_policy_guard_verdict="UNKNOWN"
+    pretrade_fee_policy_guard_reason="execution.pretrade_min_sol_reserve must be a non-negative decimal SOL value when strict pretrade fee policy guard is enabled (got: ${pretrade_min_sol_reserve_config_raw})"
+    pretrade_fee_policy_guard_reason_code="pretrade_min_sol_reserve_invalid"
+  elif [[ -z "$pretrade_max_fee_overhead_bps_config_raw" ]]; then
+    pretrade_fee_policy_guard_verdict="UNKNOWN"
+    pretrade_fee_policy_guard_reason="execution.pretrade_max_fee_overhead_bps missing while strict pretrade fee policy guard is enabled"
+    pretrade_fee_policy_guard_reason_code="pretrade_max_fee_overhead_missing"
+  elif ! pretrade_max_fee_overhead_bps_observed="$(parse_u64_token_strict "$pretrade_max_fee_overhead_bps_config_raw" 2>/dev/null)"; then
+    pretrade_fee_policy_guard_verdict="UNKNOWN"
+    pretrade_fee_policy_guard_reason="execution.pretrade_max_fee_overhead_bps must be an integer >= 0 when strict pretrade fee policy guard is enabled (got: ${pretrade_max_fee_overhead_bps_config_raw})"
+    pretrade_fee_policy_guard_reason_code="pretrade_max_fee_overhead_invalid"
+  elif (( pretrade_min_sol_reserve_lamports_observed < go_nogo_min_pretrade_sol_reserve_lamports )); then
+    pretrade_fee_policy_guard_verdict="WARN"
+    pretrade_fee_policy_guard_reason="strict pretrade fee policy guard requires pretrade_min_sol_reserve >= ${go_nogo_min_pretrade_sol_reserve_lamports} lamports (observed ${pretrade_min_sol_reserve_lamports_observed})"
+    pretrade_fee_policy_guard_reason_code="pretrade_min_sol_reserve_below_min"
+  elif (( pretrade_max_fee_overhead_bps_observed == 0 )); then
+    pretrade_fee_policy_guard_verdict="WARN"
+    pretrade_fee_policy_guard_reason="strict pretrade fee policy guard requires execution.pretrade_max_fee_overhead_bps > 0"
+    pretrade_fee_policy_guard_reason_code="pretrade_max_fee_overhead_disabled"
+  elif (( pretrade_max_fee_overhead_bps_observed > go_nogo_max_pretrade_fee_overhead_bps )); then
+    pretrade_fee_policy_guard_verdict="WARN"
+    pretrade_fee_policy_guard_reason="strict pretrade fee policy guard requires execution.pretrade_max_fee_overhead_bps <= ${go_nogo_max_pretrade_fee_overhead_bps} (observed ${pretrade_max_fee_overhead_bps_observed})"
+    pretrade_fee_policy_guard_reason_code="pretrade_max_fee_overhead_above_max"
+  else
+    pretrade_fee_policy_guard_verdict="PASS"
+    pretrade_fee_policy_guard_reason="strict pretrade fee policy guard confirms reserve=${pretrade_min_sol_reserve_lamports_observed} lamports and max_fee_overhead_bps=${pretrade_max_fee_overhead_bps_observed}"
+    pretrade_fee_policy_guard_reason_code="pretrade_fee_policy_configured"
+  fi
+fi
+
 confirmed_execution_sample_guard_verdict="SKIP"
 confirmed_execution_sample_guard_reason="strict confirmed execution sample guard disabled"
 confirmed_execution_sample_guard_reason_code="gate_disabled"
@@ -1001,6 +1059,14 @@ elif [[ "$go_nogo_require_followlist_activity" == "true" && "$followlist_activit
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="strict followlist activity guard not PASS: ${followlist_activity_guard_reason:-n/a}"
   overall_go_nogo_reason_code="followlist_activity_not_pass"
+elif [[ "$go_nogo_require_pretrade_fee_policy" == "true" && "$pretrade_fee_policy_guard_verdict" == "UNKNOWN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="unable to classify strict pretrade fee policy guard verdict: ${pretrade_fee_policy_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="pretrade_fee_policy_unknown"
+elif [[ "$go_nogo_require_pretrade_fee_policy" == "true" && "$pretrade_fee_policy_guard_verdict" == "WARN" ]]; then
+  overall_go_nogo_verdict="NO_GO"
+  overall_go_nogo_reason="strict pretrade fee policy guard not PASS: ${pretrade_fee_policy_guard_reason:-n/a}"
+  overall_go_nogo_reason_code="pretrade_fee_policy_not_pass"
 elif [[ "$go_nogo_require_confirmed_execution_sample" == "true" && "$confirmed_execution_sample_guard_verdict" == "UNKNOWN" ]]; then
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict confirmed execution sample guard verdict: ${confirmed_execution_sample_guard_reason:-n/a}"
@@ -1017,7 +1083,7 @@ elif [[ "$go_nogo_require_fastlane_disabled" == "true" && "$fastlane_feature_fla
   overall_go_nogo_verdict="NO_GO"
   overall_go_nogo_reason="unable to classify strict fastlane-disabled gate verdict; fail-closed"
   overall_go_nogo_reason_code="fastlane_policy_unknown"
-elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_followlist_activity" != "true" || "$followlist_activity_guard_verdict" == "PASS" ) && ( "$go_nogo_require_confirmed_execution_sample" != "true" || "$confirmed_execution_sample_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_submit_verify_strict" != "true" || "$submit_verify_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
+elif [[ "$preflight_verdict" == "PASS" && "$fee_decomposition_verdict" == "PASS" && "$route_profile_verdict" == "PASS" && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_backend_mode_guard_verdict" == "PASS" ) && ( "$go_nogo_require_executor_upstream" != "true" || "$executor_upstream_endpoint_guard_verdict" == "PASS" ) && ( "$go_nogo_require_ingestion_grpc" != "true" || "$ingestion_grpc_guard_verdict" == "PASS" ) && ( "$go_nogo_require_followlist_activity" != "true" || "$followlist_activity_guard_verdict" == "PASS" ) && ( "$go_nogo_require_pretrade_fee_policy" != "true" || "$pretrade_fee_policy_guard_verdict" == "PASS" ) && ( "$go_nogo_require_confirmed_execution_sample" != "true" || "$confirmed_execution_sample_guard_verdict" == "PASS" ) && ( "$go_nogo_require_non_bootstrap_signer" != "true" || "$non_bootstrap_signer_guard_verdict" == "PASS" ) && ( "$go_nogo_require_submit_verify_strict" != "true" || "$submit_verify_guard_verdict" == "PASS" ) && ( "$go_nogo_require_jito_rpc_policy" != "true" || "$jito_rpc_policy_verdict" == "PASS" ) && ( "$go_nogo_require_fastlane_disabled" != "true" || "$fastlane_feature_flag_verdict" == "PASS" ) ]]; then
   overall_go_nogo_verdict="GO"
   overall_go_nogo_reason="adapter preflight, fee decomposition and route profile readiness gates are PASS"
   overall_go_nogo_reason_code="all_required_gates_pass"
@@ -1174,6 +1240,14 @@ go_nogo_require_followlist_activity: $go_nogo_require_followlist_activity
 followlist_activity_guard_verdict: $followlist_activity_guard_verdict
 followlist_activity_guard_reason: $followlist_activity_guard_reason
 followlist_activity_guard_reason_code: $followlist_activity_guard_reason_code
+go_nogo_require_pretrade_fee_policy: $go_nogo_require_pretrade_fee_policy
+go_nogo_min_pretrade_sol_reserve_lamports: $go_nogo_min_pretrade_sol_reserve_lamports
+go_nogo_max_pretrade_fee_overhead_bps: $go_nogo_max_pretrade_fee_overhead_bps
+pretrade_min_sol_reserve_lamports_observed: $pretrade_min_sol_reserve_lamports_observed
+pretrade_max_fee_overhead_bps_observed: $pretrade_max_fee_overhead_bps_observed
+pretrade_fee_policy_guard_verdict: $pretrade_fee_policy_guard_verdict
+pretrade_fee_policy_guard_reason: $pretrade_fee_policy_guard_reason
+pretrade_fee_policy_guard_reason_code: $pretrade_fee_policy_guard_reason_code
 go_nogo_require_confirmed_execution_sample: $go_nogo_require_confirmed_execution_sample
 go_nogo_min_confirmed_orders: $go_nogo_min_confirmed_orders
 confirmed_execution_sample_guard_verdict: $confirmed_execution_sample_guard_verdict

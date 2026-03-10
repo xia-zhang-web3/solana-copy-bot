@@ -30,6 +30,9 @@ GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-fa
 GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="${GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE:-false}"
 GO_NOGO_MIN_CONFIRMED_ORDERS="${GO_NOGO_MIN_CONFIRMED_ORDERS:-1}"
+GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="${GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY:-false}"
+GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="${GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS:-50000000}"
+GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="${GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS:-1000}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
@@ -139,6 +142,9 @@ parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER" "$GO_NOGO
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" "$GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT" go_nogo_require_submit_verify_strict_norm
 parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE" "$GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE" go_nogo_require_confirmed_execution_sample_norm
 parse_rollout_positive_u64_setting_into "GO_NOGO_MIN_CONFIRMED_ORDERS" "$GO_NOGO_MIN_CONFIRMED_ORDERS" go_nogo_min_confirmed_orders_norm
+parse_rollout_bool_setting_into "GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY" "$GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY" go_nogo_require_pretrade_fee_policy_norm
+parse_rollout_positive_u64_setting_into "GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS" "$GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS" go_nogo_min_pretrade_sol_reserve_lamports_norm
+parse_rollout_positive_u64_setting_into "GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS" "$GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS" go_nogo_max_pretrade_fee_overhead_bps_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_rollout_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_rollout_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
@@ -293,6 +299,9 @@ rehearsal_nested_go_nogo_require_non_bootstrap_signer="n/a"
 rehearsal_nested_go_nogo_require_submit_verify_strict="n/a"
 rehearsal_nested_go_nogo_require_confirmed_execution_sample="n/a"
 rehearsal_nested_go_nogo_min_confirmed_orders="n/a"
+rehearsal_nested_go_nogo_require_pretrade_fee_policy="n/a"
+rehearsal_nested_go_nogo_min_pretrade_sol_reserve_lamports="n/a"
+rehearsal_nested_go_nogo_max_pretrade_fee_overhead_bps="n/a"
 rehearsal_nested_executor_env_path="n/a"
 rehearsal_nested_executor_backend_mode_guard_verdict="unknown"
 rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -306,6 +315,8 @@ rehearsal_nested_non_bootstrap_signer_guard_verdict="unknown"
 rehearsal_nested_non_bootstrap_signer_guard_reason_code="n/a"
 rehearsal_nested_submit_verify_guard_verdict="unknown"
 rehearsal_nested_submit_verify_guard_reason_code="n/a"
+rehearsal_nested_pretrade_fee_policy_guard_verdict="unknown"
+rehearsal_nested_pretrade_fee_policy_guard_reason_code="n/a"
 rehearsal_nested_confirmed_execution_sample_guard_verdict="unknown"
 rehearsal_nested_confirmed_execution_sample_guard_reason_code="n/a"
 windowed_signoff_artifact_manifest=""
@@ -344,6 +355,9 @@ if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_nested_go_nogo_require_submit_verify_strict="n/a"
   rehearsal_nested_go_nogo_require_confirmed_execution_sample="n/a"
   rehearsal_nested_go_nogo_min_confirmed_orders="n/a"
+  rehearsal_nested_go_nogo_require_pretrade_fee_policy="n/a"
+  rehearsal_nested_go_nogo_min_pretrade_sol_reserve_lamports="n/a"
+  rehearsal_nested_go_nogo_max_pretrade_fee_overhead_bps="n/a"
   rehearsal_nested_executor_env_path="n/a"
   rehearsal_nested_executor_backend_mode_guard_verdict="n/a"
   rehearsal_nested_executor_backend_mode_guard_reason_code="n/a"
@@ -357,6 +371,8 @@ if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
   rehearsal_nested_non_bootstrap_signer_guard_reason_code="n/a"
   rehearsal_nested_submit_verify_guard_verdict="n/a"
   rehearsal_nested_submit_verify_guard_reason_code="n/a"
+  rehearsal_nested_pretrade_fee_policy_guard_verdict="n/a"
+  rehearsal_nested_pretrade_fee_policy_guard_reason_code="n/a"
   rehearsal_nested_confirmed_execution_sample_guard_verdict="n/a"
   rehearsal_nested_confirmed_execution_sample_guard_reason_code="n/a"
   go_nogo_artifacts_written="n/a"
@@ -394,6 +410,9 @@ else
       GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="$go_nogo_require_followlist_activity_norm" \
       GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="$go_nogo_require_non_bootstrap_signer_norm" \
       GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict_norm" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="$go_nogo_require_pretrade_fee_policy_norm" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="$go_nogo_min_pretrade_sol_reserve_lamports_norm" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="$go_nogo_max_pretrade_fee_overhead_bps_norm" \
       GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="$go_nogo_require_confirmed_execution_sample_norm" \
       GO_NOGO_MIN_CONFIRMED_ORDERS="$go_nogo_min_confirmed_orders_norm" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
@@ -490,6 +509,30 @@ else
     input_errors+=("nested rehearsal go_nogo_min_confirmed_orders mismatch: nested=${go_nogo_min_confirmed_orders} expected=${go_nogo_min_confirmed_orders_norm}")
   fi
   rehearsal_nested_go_nogo_min_confirmed_orders="$go_nogo_min_confirmed_orders"
+  go_nogo_require_pretrade_fee_policy_raw="$(trim_string "$(extract_field "go_nogo_require_pretrade_fee_policy" "$rehearsal_output")")"
+  if ! go_nogo_require_pretrade_fee_policy="$(extract_bool_field_strict "go_nogo_require_pretrade_fee_policy" "$rehearsal_output")"; then
+    input_errors+=("nested rehearsal go_nogo_require_pretrade_fee_policy must be boolean token, got: ${go_nogo_require_pretrade_fee_policy_raw:-<empty>}")
+    go_nogo_require_pretrade_fee_policy="unknown"
+  elif [[ "$go_nogo_require_pretrade_fee_policy" != "$go_nogo_require_pretrade_fee_policy_norm" ]]; then
+    input_errors+=("nested rehearsal go_nogo_require_pretrade_fee_policy mismatch: nested=${go_nogo_require_pretrade_fee_policy} expected=${go_nogo_require_pretrade_fee_policy_norm}")
+  fi
+  rehearsal_nested_go_nogo_require_pretrade_fee_policy="$go_nogo_require_pretrade_fee_policy"
+  go_nogo_min_pretrade_sol_reserve_lamports_raw="$(trim_string "$(extract_field "go_nogo_min_pretrade_sol_reserve_lamports" "$rehearsal_output")")"
+  if ! go_nogo_min_pretrade_sol_reserve_lamports="$(parse_positive_u64_token_strict "$go_nogo_min_pretrade_sol_reserve_lamports_raw")"; then
+    input_errors+=("nested rehearsal go_nogo_min_pretrade_sol_reserve_lamports must be an integer >= 1, got: ${go_nogo_min_pretrade_sol_reserve_lamports_raw:-<empty>}")
+    go_nogo_min_pretrade_sol_reserve_lamports="0"
+  elif [[ "$go_nogo_min_pretrade_sol_reserve_lamports" != "$go_nogo_min_pretrade_sol_reserve_lamports_norm" ]]; then
+    input_errors+=("nested rehearsal go_nogo_min_pretrade_sol_reserve_lamports mismatch: nested=${go_nogo_min_pretrade_sol_reserve_lamports} expected=${go_nogo_min_pretrade_sol_reserve_lamports_norm}")
+  fi
+  rehearsal_nested_go_nogo_min_pretrade_sol_reserve_lamports="$go_nogo_min_pretrade_sol_reserve_lamports"
+  go_nogo_max_pretrade_fee_overhead_bps_raw="$(trim_string "$(extract_field "go_nogo_max_pretrade_fee_overhead_bps" "$rehearsal_output")")"
+  if ! go_nogo_max_pretrade_fee_overhead_bps="$(parse_positive_u64_token_strict "$go_nogo_max_pretrade_fee_overhead_bps_raw")"; then
+    input_errors+=("nested rehearsal go_nogo_max_pretrade_fee_overhead_bps must be an integer >= 1, got: ${go_nogo_max_pretrade_fee_overhead_bps_raw:-<empty>}")
+    go_nogo_max_pretrade_fee_overhead_bps="0"
+  elif [[ "$go_nogo_max_pretrade_fee_overhead_bps" != "$go_nogo_max_pretrade_fee_overhead_bps_norm" ]]; then
+    input_errors+=("nested rehearsal go_nogo_max_pretrade_fee_overhead_bps mismatch: nested=${go_nogo_max_pretrade_fee_overhead_bps} expected=${go_nogo_max_pretrade_fee_overhead_bps_norm}")
+  fi
+  rehearsal_nested_go_nogo_max_pretrade_fee_overhead_bps="$go_nogo_max_pretrade_fee_overhead_bps"
   rehearsal_nested_executor_env_path="$(trim_string "$(extract_field "executor_env_path" "$rehearsal_output")")"
   if [[ -z "$rehearsal_nested_executor_env_path" ]]; then
     input_errors+=("nested rehearsal executor_env_path must be non-empty")
@@ -602,6 +645,21 @@ else
     input_errors+=("nested rehearsal go_nogo_confirmed_execution_sample_guard_reason_code must be non-empty")
     rehearsal_nested_confirmed_execution_sample_guard_reason_code="n/a"
   fi
+  rehearsal_nested_pretrade_fee_policy_guard_verdict_raw="$(trim_string "$(extract_field "go_nogo_pretrade_fee_policy_guard_verdict" "$rehearsal_output")")"
+  rehearsal_nested_pretrade_fee_policy_guard_verdict_raw_upper="$(printf '%s' "$rehearsal_nested_pretrade_fee_policy_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+  rehearsal_nested_pretrade_fee_policy_guard_verdict="$(normalize_strict_guard_verdict "$rehearsal_nested_pretrade_fee_policy_guard_verdict_raw")"
+  if [[ -z "$rehearsal_nested_pretrade_fee_policy_guard_verdict_raw" ]]; then
+    input_errors+=("nested rehearsal go_nogo_pretrade_fee_policy_guard_verdict must be non-empty")
+    rehearsal_nested_pretrade_fee_policy_guard_verdict="UNKNOWN"
+  elif [[ "$rehearsal_nested_pretrade_fee_policy_guard_verdict_raw_upper" != "PASS" && "$rehearsal_nested_pretrade_fee_policy_guard_verdict_raw_upper" != "WARN" && "$rehearsal_nested_pretrade_fee_policy_guard_verdict_raw_upper" != "UNKNOWN" && "$rehearsal_nested_pretrade_fee_policy_guard_verdict_raw_upper" != "SKIP" ]]; then
+    input_errors+=("nested rehearsal go_nogo_pretrade_fee_policy_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${rehearsal_nested_pretrade_fee_policy_guard_verdict_raw})")
+    rehearsal_nested_pretrade_fee_policy_guard_verdict="UNKNOWN"
+  fi
+  rehearsal_nested_pretrade_fee_policy_guard_reason_code="$(trim_string "$(extract_field "go_nogo_pretrade_fee_policy_guard_reason_code" "$rehearsal_output")")"
+  if [[ -z "$rehearsal_nested_pretrade_fee_policy_guard_reason_code" ]]; then
+    input_errors+=("nested rehearsal go_nogo_pretrade_fee_policy_guard_reason_code must be non-empty")
+    rehearsal_nested_pretrade_fee_policy_guard_reason_code="n/a"
+  fi
   if [[ "$go_nogo_require_executor_upstream_norm" == "true" ]]; then
     if [[ "$rehearsal_nested_executor_backend_mode_guard_verdict" == "SKIP" ]]; then
       input_errors+=("nested rehearsal go_nogo_executor_backend_mode_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM=true")
@@ -651,6 +709,15 @@ else
   else
     if [[ "$rehearsal_nested_submit_verify_guard_verdict" != "SKIP" ]]; then
       input_errors+=("nested rehearsal go_nogo_submit_verify_guard_verdict must be SKIP when GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT=false (got: ${rehearsal_nested_submit_verify_guard_verdict})")
+    fi
+  fi
+  if [[ "$go_nogo_require_pretrade_fee_policy_norm" == "true" ]]; then
+    if [[ "$rehearsal_nested_pretrade_fee_policy_guard_verdict" == "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_pretrade_fee_policy_guard_verdict cannot be SKIP when GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY=true")
+    fi
+  else
+    if [[ "$rehearsal_nested_pretrade_fee_policy_guard_verdict" != "SKIP" ]]; then
+      input_errors+=("nested rehearsal go_nogo_pretrade_fee_policy_guard_verdict must be SKIP when GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY=false (got: ${rehearsal_nested_pretrade_fee_policy_guard_verdict})")
     fi
   fi
   if [[ "$go_nogo_require_confirmed_execution_sample_norm" == "true" ]]; then
@@ -1016,6 +1083,9 @@ go_nogo_require_non_bootstrap_signer: ${go_nogo_require_non_bootstrap_signer:-fa
 go_nogo_require_submit_verify_strict: ${go_nogo_require_submit_verify_strict:-false}
 go_nogo_require_confirmed_execution_sample: ${go_nogo_require_confirmed_execution_sample:-false}
 go_nogo_min_confirmed_orders: ${go_nogo_min_confirmed_orders:-0}
+go_nogo_require_pretrade_fee_policy: ${go_nogo_require_pretrade_fee_policy:-false}
+go_nogo_min_pretrade_sol_reserve_lamports: ${go_nogo_min_pretrade_sol_reserve_lamports:-0}
+go_nogo_max_pretrade_fee_overhead_bps: ${go_nogo_max_pretrade_fee_overhead_bps:-0}
 executor_env_path: $EXECUTOR_ENV_PATH
 rehearsal_nested_go_nogo_require_executor_upstream: ${rehearsal_nested_go_nogo_require_executor_upstream:-n/a}
 rehearsal_nested_go_nogo_require_ingestion_grpc: ${rehearsal_nested_go_nogo_require_ingestion_grpc:-n/a}
@@ -1024,6 +1094,9 @@ rehearsal_nested_go_nogo_require_non_bootstrap_signer: ${rehearsal_nested_go_nog
 rehearsal_nested_go_nogo_require_submit_verify_strict: ${rehearsal_nested_go_nogo_require_submit_verify_strict:-n/a}
 rehearsal_nested_go_nogo_require_confirmed_execution_sample: ${rehearsal_nested_go_nogo_require_confirmed_execution_sample:-n/a}
 rehearsal_nested_go_nogo_min_confirmed_orders: ${rehearsal_nested_go_nogo_min_confirmed_orders:-n/a}
+rehearsal_nested_go_nogo_require_pretrade_fee_policy: ${rehearsal_nested_go_nogo_require_pretrade_fee_policy:-n/a}
+rehearsal_nested_go_nogo_min_pretrade_sol_reserve_lamports: ${rehearsal_nested_go_nogo_min_pretrade_sol_reserve_lamports:-n/a}
+rehearsal_nested_go_nogo_max_pretrade_fee_overhead_bps: ${rehearsal_nested_go_nogo_max_pretrade_fee_overhead_bps:-n/a}
 rehearsal_nested_executor_env_path: ${rehearsal_nested_executor_env_path:-n/a}
 rehearsal_nested_executor_backend_mode_guard_verdict: ${rehearsal_nested_executor_backend_mode_guard_verdict:-unknown}
 rehearsal_nested_executor_backend_mode_guard_reason_code: ${rehearsal_nested_executor_backend_mode_guard_reason_code:-n/a}
@@ -1037,6 +1110,8 @@ rehearsal_nested_non_bootstrap_signer_guard_verdict: ${rehearsal_nested_non_boot
 rehearsal_nested_non_bootstrap_signer_guard_reason_code: ${rehearsal_nested_non_bootstrap_signer_guard_reason_code:-n/a}
 rehearsal_nested_submit_verify_guard_verdict: ${rehearsal_nested_submit_verify_guard_verdict:-unknown}
 rehearsal_nested_submit_verify_guard_reason_code: ${rehearsal_nested_submit_verify_guard_reason_code:-n/a}
+rehearsal_nested_pretrade_fee_policy_guard_verdict: ${rehearsal_nested_pretrade_fee_policy_guard_verdict:-unknown}
+rehearsal_nested_pretrade_fee_policy_guard_reason_code: ${rehearsal_nested_pretrade_fee_policy_guard_reason_code:-n/a}
 rehearsal_nested_confirmed_execution_sample_guard_verdict: ${rehearsal_nested_confirmed_execution_sample_guard_verdict:-unknown}
 rehearsal_nested_confirmed_execution_sample_guard_reason_code: ${rehearsal_nested_confirmed_execution_sample_guard_reason_code:-n/a}
 submit_fastlane_enabled: ${submit_fastlane_enabled:-false}

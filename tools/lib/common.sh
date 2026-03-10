@@ -44,6 +44,39 @@ parse_positive_u64_token_strict() {
   printf '%s' "$parsed"
 }
 
+sol_to_lamports_ceil_strict() {
+  local raw
+  raw="$(trim_string "$1")"
+  if [[ -z "$raw" ]]; then
+    return 1
+  fi
+  python3 - "$raw" <<'PY'
+import sys
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+
+LAMPORTS_PER_SOL = Decimal(1_000_000_000)
+MAX_U64 = 2**64 - 1
+
+raw = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
+if not raw:
+    raise SystemExit(1)
+
+try:
+    value = Decimal(raw)
+except InvalidOperation:
+    raise SystemExit(1)
+
+if not value.is_finite() or value < 0:
+    raise SystemExit(1)
+
+lamports = (value * LAMPORTS_PER_SOL).to_integral_value(rounding=ROUND_CEILING)
+if lamports < 0 or lamports > MAX_U64:
+    raise SystemExit(1)
+
+print(int(lamports))
+PY
+}
+
 parse_timeout_sec_strict() {
   local raw min_sec max_sec parsed
   raw="$1"
@@ -93,6 +126,24 @@ normalize_bool_token() {
   fi
   echo "invalid boolean token (expected true/false/1/0/yes/no/on/off), got: $1" >&2
   return 1
+}
+
+cfg_or_env_string() {
+  local section="$1"
+  local key="$2"
+  local env_name="$3"
+  local fallback="${4:-}"
+  local raw=""
+  if [[ -n "${!env_name+x}" ]]; then
+    raw="${!env_name}"
+  else
+    raw="$(cfg_value "$section" "$key")"
+  fi
+  raw="$(trim_string "$raw")"
+  if [[ -z "$raw" ]]; then
+    raw="$fallback"
+  fi
+  printf '%s' "$raw"
 }
 
 extract_field() {

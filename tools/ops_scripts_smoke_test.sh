@@ -1211,6 +1211,8 @@ run_ops_scripts_for_db() {
   local snapshot_output
   snapshot_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
       bash "$ROOT_DIR/tools/runtime_snapshot.sh" 24 60
   )"
   assert_contains "$snapshot_output" "=== CopyBot Runtime Snapshot ==="
@@ -1230,6 +1232,11 @@ run_ops_scripts_for_db() {
   assert_field_equals "$snapshot_output" "shadow_risk_pause_until" "2100-01-01T00:00:00Z"
   assert_contains "$snapshot_output" "shadow_risk_pause_reason: exposure_soft_cap: open_notional_sol=10.250000 >= soft_cap=10.000000"
   assert_field_non_empty "$snapshot_output" "shadow_risk_pause_last_event_ts"
+  assert_field_equals "$snapshot_output" "execution_pretrade_min_sol_reserve" "0.05"
+  assert_field_equals "$snapshot_output" "execution_pretrade_min_sol_reserve_lamports" "50000000"
+  assert_field_equals "$snapshot_output" "execution_pretrade_fee_reserve_guard_enabled" "true"
+  assert_field_equals "$snapshot_output" "execution_pretrade_max_fee_overhead_bps" "1000"
+  assert_field_equals "$snapshot_output" "execution_pretrade_fee_overhead_guard_enabled" "true"
   assert_contains "$snapshot_output" "ingestion_lag_ms_p95: 1700"
   assert_contains "$snapshot_output" "parse_rejected_total: 5"
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
@@ -2222,6 +2229,64 @@ EOF_EXECUTOR_INVALID
   assert_field_equals "$strict_followlist_missing_metric_output" "overall_go_nogo_verdict" "NO_GO"
   assert_field_equals "$strict_followlist_missing_metric_output" "overall_go_nogo_reason_code" "followlist_activity_unknown"
 
+  local strict_pretrade_fee_policy_pass_output
+  strict_pretrade_fee_policy_pass_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "pretrade_min_sol_reserve_lamports_observed" "50000000"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "pretrade_max_fee_overhead_bps_observed" "1000"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "overall_go_nogo_verdict" "GO"
+  assert_field_equals "$strict_pretrade_fee_policy_pass_output" "overall_go_nogo_reason_code" "all_required_gates_pass"
+
+  local strict_pretrade_fee_policy_disabled_output
+  strict_pretrade_fee_policy_disabled_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_upstream" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="0" \
+      GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="true" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
+  )"
+  assert_field_equals "$strict_pretrade_fee_policy_disabled_output" "go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$strict_pretrade_fee_policy_disabled_output" "pretrade_min_sol_reserve_lamports_observed" "50000000"
+  assert_field_equals "$strict_pretrade_fee_policy_disabled_output" "pretrade_max_fee_overhead_bps_observed" "0"
+  assert_field_equals "$strict_pretrade_fee_policy_disabled_output" "pretrade_fee_policy_guard_verdict" "WARN"
+  assert_field_equals "$strict_pretrade_fee_policy_disabled_output" "pretrade_fee_policy_guard_reason_code" "pretrade_max_fee_overhead_disabled"
+  assert_field_equals "$strict_pretrade_fee_policy_disabled_output" "overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$strict_pretrade_fee_policy_disabled_output" "overall_go_nogo_reason_code" "pretrade_fee_policy_not_pass"
+
   local upstream_placeholder_output
   upstream_placeholder_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" \
@@ -2872,6 +2937,14 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$hold_output" "window_24h_go_nogo_min_confirmed_orders" "1"
   assert_field_equals "$hold_output" "window_24h_confirmed_execution_sample_guard_verdict" "SKIP"
   assert_field_equals "$hold_output" "window_24h_confirmed_execution_sample_guard_reason_code" "gate_disabled"
+  assert_field_equals "$hold_output" "go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$hold_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$hold_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$hold_output" "window_24h_go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$hold_output" "window_24h_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$hold_output" "window_24h_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$hold_output" "window_24h_pretrade_fee_policy_guard_verdict" "SKIP"
+  assert_field_equals "$hold_output" "window_24h_pretrade_fee_policy_guard_reason_code" "gate_disabled"
   assert_field_equals "$hold_output" "window_24h_go_nogo_artifacts_written" "false"
   assert_field_equals "$hold_output" "window_24h_go_nogo_nested_package_bundle_enabled" "false"
   assert_contains "$hold_output" "go_nogo_require_jito_rpc_policy: false"
@@ -3217,6 +3290,14 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$final_hold_output" "signoff_nested_go_nogo_min_confirmed_orders" "1"
   assert_field_equals "$final_hold_output" "signoff_nested_confirmed_execution_sample_guard_verdict" "SKIP"
   assert_field_equals "$final_hold_output" "signoff_nested_confirmed_execution_sample_guard_reason_code" "gate_disabled"
+  assert_field_equals "$final_hold_output" "go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$final_hold_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$final_hold_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$final_hold_output" "signoff_nested_go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$final_hold_output" "signoff_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$final_hold_output" "signoff_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$final_hold_output" "signoff_nested_pretrade_fee_policy_guard_verdict" "SKIP"
+  assert_field_equals "$final_hold_output" "signoff_nested_pretrade_fee_policy_guard_reason_code" "gate_disabled"
   assert_sha256_field "$final_hold_output" "summary_sha256"
   assert_sha256_field "$final_hold_output" "signoff_capture_sha256"
   assert_sha256_field "$final_hold_output" "manifest_sha256"
@@ -3288,6 +3369,14 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$final_go_output" "signoff_nested_go_nogo_min_confirmed_orders" "1"
   assert_field_equals "$final_go_output" "signoff_nested_confirmed_execution_sample_guard_verdict" "SKIP"
   assert_field_equals "$final_go_output" "signoff_nested_confirmed_execution_sample_guard_reason_code" "gate_disabled"
+  assert_field_equals "$final_go_output" "go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$final_go_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$final_go_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$final_go_output" "signoff_nested_go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$final_go_output" "signoff_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$final_go_output" "signoff_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$final_go_output" "signoff_nested_pretrade_fee_policy_guard_verdict" "SKIP"
+  assert_field_equals "$final_go_output" "signoff_nested_pretrade_fee_policy_guard_reason_code" "gate_disabled"
   assert_contains "$final_go_output" "final_route_fee_package_verdict: GO"
   assert_field_equals "$final_go_output" "final_route_fee_package_reason_code" "test_override"
 
@@ -6060,6 +6149,11 @@ run_executor_rollout_evidence_case() {
       WINDOWED_SIGNOFF_REQUIRED="false" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="true" \
       GO_NOGO_MIN_CONFIRMED_ORDERS="1" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -6959,6 +7053,11 @@ run_execution_server_rollout_report_case() {
       WINDOWED_SIGNOFF_REQUIRED="false" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="true" \
       GO_NOGO_MIN_CONFIRMED_ORDERS="1" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -6990,6 +7089,13 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$output" "go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$output" "go_nogo_require_non_bootstrap_signer" "false"
+  assert_field_equals "$output" "go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$output" "go_nogo_pretrade_min_sol_reserve_lamports_observed" "50000000"
+  assert_field_equals "$output" "go_nogo_pretrade_max_fee_overhead_bps_observed" "1000"
+  assert_field_equals "$output" "go_nogo_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$output" "go_nogo_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$output" "go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$output" "go_nogo_min_confirmed_orders" "1"
   assert_field_equals "$output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
@@ -7012,6 +7118,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "executor_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "executor_final_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$output" "executor_final_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$output" "executor_final_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$output" "executor_final_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$output" "executor_final_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_jito_rpc_policy" "false"
@@ -7026,6 +7135,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$output" "executor_final_rollout_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$output" "executor_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$output" "executor_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -7039,6 +7151,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "executor_final_rollout_nested_confirmed_execution_sample_guard_verdict" "PASS"
   assert_field_equals "$output" "executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code" "confirmed_orders_sufficient"
+  assert_field_equals "$output" "executor_final_rollout_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$output" "executor_final_rollout_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$output" "executor_final_rollout_nested_preflight_executor_submit_verify_strict" "false"
   assert_field_equals "$output" "executor_final_rollout_nested_preflight_executor_submit_verify_configured" "false"
   assert_field_equals "$output" "executor_final_rollout_nested_preflight_executor_submit_verify_fallback_configured" "false"
@@ -7051,6 +7165,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "adapter_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "adapter_final_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$output" "adapter_final_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$output" "adapter_final_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$output" "adapter_final_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$output" "adapter_final_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$output" "adapter_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_jito_rpc_policy" "false"
@@ -7065,6 +7182,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$output" "adapter_final_rollout_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$output" "adapter_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$output" "adapter_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$output" "adapter_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -7080,6 +7200,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "adapter_final_rollout_nested_submit_verify_guard_reason_code" "gate_disabled"
   assert_field_equals "$output" "adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict" "PASS"
   assert_field_equals "$output" "adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code" "confirmed_orders_sufficient"
+  assert_field_equals "$output" "adapter_final_rollout_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$output" "adapter_final_rollout_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$output" "server_rollout_verdict" "HOLD"
   assert_field_equals "$output" "server_rollout_reason_code" "calibration_fee_not_pass"
   assert_field_equals "$output" "server_rollout_require_executor_upstream" "true"
@@ -7126,6 +7248,11 @@ run_execution_server_rollout_report_case() {
       WINDOWED_SIGNOFF_REQUIRED="false" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       SERVER_ROLLOUT_RUN_GO_NOGO_DIRECT="false" \
@@ -7165,6 +7292,13 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$skip_direct_output" "go_nogo_non_bootstrap_signer_guard_verdict" "SKIP"
   assert_field_equals "$skip_direct_output" "go_nogo_non_bootstrap_signer_guard_reason_code" "stage_disabled"
+  assert_field_equals "$skip_direct_output" "go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$skip_direct_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$skip_direct_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$skip_direct_output" "go_nogo_pretrade_min_sol_reserve_lamports_observed" "n/a"
+  assert_field_equals "$skip_direct_output" "go_nogo_pretrade_max_fee_overhead_bps_observed" "n/a"
+  assert_field_equals "$skip_direct_output" "go_nogo_pretrade_fee_policy_guard_verdict" "SKIP"
+  assert_field_equals "$skip_direct_output" "go_nogo_pretrade_fee_policy_guard_reason_code" "stage_disabled"
   assert_field_equals "$skip_direct_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$skip_direct_output" "go_nogo_min_confirmed_orders" "1"
@@ -7179,6 +7313,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$skip_direct_output" "executor_final_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$skip_direct_output" "executor_final_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$skip_direct_output" "executor_final_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$skip_direct_output" "executor_final_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$skip_direct_output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
@@ -7187,6 +7324,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -7200,6 +7340,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_confirmed_execution_sample_guard_verdict" "PASS"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code" "confirmed_orders_sufficient"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_preflight_executor_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_preflight_executor_submit_verify_configured" "false"
   assert_field_equals "$skip_direct_output" "executor_final_rollout_nested_preflight_executor_submit_verify_fallback_configured" "false"
@@ -7210,6 +7352,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$skip_direct_output" "adapter_final_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$skip_direct_output" "adapter_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
@@ -7218,6 +7363,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -7233,6 +7381,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_submit_verify_guard_reason_code" "gate_disabled"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict" "PASS"
   assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code" "confirmed_orders_sufficient"
+  assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$skip_direct_output" "adapter_final_rollout_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$skip_direct_output" "server_rollout_verdict" "HOLD"
   assert_field_equals "$skip_direct_output" "server_rollout_reason_code" "calibration_fee_not_pass"
 
@@ -7254,6 +7404,11 @@ run_execution_server_rollout_report_case() {
       WINDOWED_SIGNOFF_REQUIRED="false" \
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       SERVER_ROLLOUT_PROFILE="finals_only" \
@@ -7285,6 +7440,13 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "go_nogo_require_ingestion_grpc" "true"
   assert_field_equals "$profile_skip_output" "go_nogo_ingestion_grpc_guard_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "go_nogo_ingestion_grpc_guard_reason_code" "stage_disabled"
+  assert_field_equals "$profile_skip_output" "go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$profile_skip_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$profile_skip_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$profile_skip_output" "go_nogo_pretrade_min_sol_reserve_lamports_observed" "n/a"
+  assert_field_equals "$profile_skip_output" "go_nogo_pretrade_max_fee_overhead_bps_observed" "n/a"
+  assert_field_equals "$profile_skip_output" "go_nogo_pretrade_fee_policy_guard_verdict" "SKIP"
+  assert_field_equals "$profile_skip_output" "go_nogo_pretrade_fee_policy_guard_reason_code" "stage_disabled"
   assert_field_equals "$profile_skip_output" "go_nogo_require_followlist_activity" "false"
   assert_field_equals "$profile_skip_output" "go_nogo_followlist_activity_guard_verdict" "SKIP"
   assert_field_equals "$profile_skip_output" "go_nogo_followlist_activity_guard_reason_code" "stage_disabled"
@@ -7301,6 +7463,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$profile_skip_output" "executor_final_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$profile_skip_output" "executor_final_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$profile_skip_output" "executor_final_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$profile_skip_output" "executor_final_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$profile_skip_output" "executor_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
@@ -7308,6 +7473,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -7321,6 +7489,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_non_bootstrap_signer_guard_reason_code" "gate_disabled"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_confirmed_execution_sample_guard_verdict" "PASS"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_confirmed_execution_sample_guard_reason_code" "confirmed_orders_sufficient"
+  assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_preflight_executor_submit_verify_strict" "false"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_preflight_executor_submit_verify_configured" "false"
   assert_field_equals "$profile_skip_output" "executor_final_rollout_nested_preflight_executor_submit_verify_fallback_configured" "false"
@@ -7331,6 +7501,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$profile_skip_output" "adapter_final_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$profile_skip_output" "adapter_final_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_ingestion_grpc" "true"
@@ -7339,6 +7512,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_executor_env_path" "$executor_env_path"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -7354,6 +7530,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_submit_verify_guard_reason_code" "gate_disabled"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict" "PASS"
   assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code" "confirmed_orders_sufficient"
+  assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$profile_skip_output" "adapter_final_rollout_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
 
   local bundle_output
   local bundle_exit_code=0
@@ -9035,6 +9213,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
       EXECUTOR_ENV_PATH="$executor_env_path" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -9052,6 +9235,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$pass_output" "go_nogo_require_confirmed_execution_sample" "true"
   assert_field_equals "$pass_output" "go_nogo_min_confirmed_orders" "1"
+  assert_field_equals "$pass_output" "go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$pass_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$pass_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_jito_rpc_policy" "false"
@@ -9081,6 +9267,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_min_confirmed_orders" "1"
   assert_field_equals "$pass_output" "adapter_final_nested_confirmed_execution_sample_guard_verdict" "PASS"
   assert_field_equals "$pass_output" "adapter_final_nested_confirmed_execution_sample_guard_reason_code" "confirmed_orders_sufficient"
+  assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$pass_output" "adapter_final_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$pass_output" "adapter_final_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$pass_output" "route_fee_final_nested_jito_rpc_policy_verdict" "SKIP"
@@ -9110,6 +9301,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_min_confirmed_orders" "1"
   assert_field_equals "$pass_output" "route_fee_final_nested_confirmed_execution_sample_guard_verdict" "PASS"
   assert_field_equals "$pass_output" "route_fee_final_nested_confirmed_execution_sample_guard_reason_code" "confirmed_orders_sufficient"
+  assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$pass_output" "route_fee_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$pass_output" "route_fee_final_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$pass_output" "route_fee_final_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$pass_output" "route_fee_final_nested_signoff_guard_window_id" "24"
   assert_field_equals "$pass_output" "final_runtime_package_verdict" "GO"
   assert_field_equals "$pass_output" "final_runtime_package_reason_code" "gates_pass"
@@ -9255,6 +9451,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
       GO_NOGO_REQUIRE_EXECUTOR_UPSTREAM="false" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="false" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       EXECUTOR_ENV_PATH="$executor_env_path" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -9267,6 +9466,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "go_nogo_require_fastlane_disabled" "false"
   assert_field_equals "$strict_override_output" "go_nogo_require_followlist_activity" "false"
   assert_field_equals "$strict_override_output" "go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$strict_override_output" "go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$strict_override_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$strict_override_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
   assert_field_equals "$strict_override_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_executor_upstream" "false"
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_jito_rpc_policy" "false"
@@ -9292,6 +9494,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$strict_override_output" "adapter_final_nested_submit_verify_guard_verdict" "SKIP"
   assert_field_equals "$strict_override_output" "adapter_final_nested_submit_verify_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_pretrade_fee_policy_guard_verdict" "SKIP"
+  assert_field_equals "$strict_override_output" "adapter_final_nested_pretrade_fee_policy_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "false"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_jito_rpc_policy_verdict" "SKIP"
@@ -9317,6 +9524,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_submit_verify_guard_verdict" "SKIP"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_submit_verify_guard_reason_code" "gate_disabled"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_require_pretrade_fee_policy" "false"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_pretrade_fee_policy_guard_verdict" "SKIP"
+  assert_field_equals "$strict_override_output" "route_fee_final_nested_pretrade_fee_policy_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_override_output" "route_fee_final_nested_signoff_guard_window_id" "24"
   assert_field_equals "$strict_override_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$strict_override_output" "final_runtime_package_reason_code" "gates_pass"
@@ -9342,6 +9554,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
       EXECUTOR_ENV_PATH="$executor_env_path" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -9379,6 +9596,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_submit_verify_guard_verdict" "SKIP"
   assert_field_equals "$skip_route_fee_output" "adapter_final_nested_submit_verify_guard_reason_code" "gate_disabled"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$skip_route_fee_output" "adapter_final_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_require_jito_rpc_policy" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_jito_rpc_policy_verdict" "n/a"
@@ -9403,6 +9625,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_require_submit_verify_strict" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_submit_verify_guard_verdict" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_submit_verify_guard_reason_code" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_require_pretrade_fee_policy" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_pretrade_fee_policy_guard_verdict" "n/a"
+  assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_pretrade_fee_policy_guard_reason_code" "n/a"
   assert_field_equals "$skip_route_fee_output" "route_fee_final_nested_signoff_guard_window_id" "n/a"
   assert_field_equals "$skip_route_fee_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$skip_route_fee_output" "final_runtime_package_reason_code" "gates_pass"
@@ -9423,6 +9650,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
       EXECUTOR_ENV_PATH="$executor_env_path" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -9459,6 +9691,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_submit_verify_guard_verdict" "SKIP"
   assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_submit_verify_guard_reason_code" "gate_disabled"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$profile_adapter_only_output" "adapter_final_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_require_jito_rpc_policy" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_jito_rpc_policy_verdict" "n/a"
@@ -9483,6 +9720,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_require_submit_verify_strict" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_submit_verify_guard_verdict" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_submit_verify_guard_reason_code" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_require_pretrade_fee_policy" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_pretrade_fee_policy_guard_verdict" "n/a"
+  assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_pretrade_fee_policy_guard_reason_code" "n/a"
   assert_field_equals "$profile_adapter_only_output" "route_fee_final_nested_signoff_guard_window_id" "n/a"
   assert_field_equals "$profile_adapter_only_output" "runtime_readiness_verdict" "GO"
 
@@ -9502,6 +9744,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
       EXECUTOR_ENV_PATH="$executor_env_path" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -9538,6 +9785,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_go_nogo_require_submit_verify_strict" "n/a"
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_submit_verify_guard_verdict" "n/a"
   assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_submit_verify_guard_reason_code" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_go_nogo_require_pretrade_fee_policy" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_pretrade_fee_policy_guard_verdict" "n/a"
+  assert_field_equals "$profile_route_fee_only_output" "adapter_final_nested_pretrade_fee_policy_guard_reason_code" "n/a"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_require_jito_rpc_policy" "false"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_jito_rpc_policy_verdict" "SKIP"
@@ -9562,6 +9814,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_submit_verify_guard_verdict" "SKIP"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_submit_verify_guard_reason_code" "gate_disabled"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_require_pretrade_fee_policy" "true"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_pretrade_fee_policy_guard_verdict" "PASS"
+  assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_pretrade_fee_policy_guard_reason_code" "pretrade_fee_policy_configured"
   assert_field_equals "$profile_route_fee_only_output" "route_fee_final_nested_signoff_guard_window_id" "24"
   assert_field_equals "$profile_route_fee_only_output" "runtime_readiness_verdict" "GO"
 
@@ -9581,6 +9838,11 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV_RESET
       GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
       GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
       EXECUTOR_ENV_PATH="$executor_env_path" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \

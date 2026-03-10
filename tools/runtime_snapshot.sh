@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
 WINDOW_HOURS="${1:-24}"
 RISK_EVENTS_MINUTES="${2:-120}"
 SERVICE="${SERVICE:-solana-copy-bot}"
@@ -107,6 +111,34 @@ MAX_HOLD_HOURS="$(cfg_value risk max_hold_hours)"
 SOFT_CAP_SOL="$(cfg_value risk shadow_soft_exposure_cap_sol)"
 HARD_CAP_SOL="$(cfg_value risk shadow_hard_exposure_cap_sol)"
 KILLSWITCH_ENABLED="$(cfg_value risk shadow_killswitch_enabled)"
+PRETRADE_MIN_SOL_RESERVE="$(cfg_or_env_string execution pretrade_min_sol_reserve SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE "")"
+PRETRADE_MAX_FEE_OVERHEAD_BPS="$(cfg_or_env_string execution pretrade_max_fee_overhead_bps SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS "")"
+PRETRADE_MIN_SOL_RESERVE_LAMPORTS="n/a"
+PRETRADE_FEE_RESERVE_GUARD_ENABLED="unknown"
+PRETRADE_FEE_OVERHEAD_GUARD_ENABLED="unknown"
+
+pretrade_min_sol_reserve_trimmed="$(trim_string "${PRETRADE_MIN_SOL_RESERVE:-}")"
+if [[ -n "$pretrade_min_sol_reserve_trimmed" ]]; then
+  if pretrade_min_sol_reserve_lamports_parsed="$(sol_to_lamports_ceil_strict "$pretrade_min_sol_reserve_trimmed" 2>/dev/null)"; then
+    PRETRADE_MIN_SOL_RESERVE_LAMPORTS="$pretrade_min_sol_reserve_lamports_parsed"
+    if [[ "$pretrade_min_sol_reserve_lamports_parsed" == "0" ]]; then
+      PRETRADE_FEE_RESERVE_GUARD_ENABLED="false"
+    else
+      PRETRADE_FEE_RESERVE_GUARD_ENABLED="true"
+    fi
+  fi
+fi
+
+pretrade_max_fee_overhead_bps_trimmed="$(trim_string "${PRETRADE_MAX_FEE_OVERHEAD_BPS:-}")"
+if [[ -n "$pretrade_max_fee_overhead_bps_trimmed" ]]; then
+  if pretrade_max_fee_overhead_bps_parsed="$(parse_u64_token_strict "$pretrade_max_fee_overhead_bps_trimmed" 2>/dev/null)"; then
+    if [[ "$pretrade_max_fee_overhead_bps_parsed" == "0" ]]; then
+      PRETRADE_FEE_OVERHEAD_GUARD_ENABLED="false"
+    else
+      PRETRADE_FEE_OVERHEAD_GUARD_ENABLED="true"
+    fi
+  fi
+fi
 
 sql_row() {
   sqlite3 -noheader -separator '|' "$DB_PATH" "$1"
@@ -357,6 +389,11 @@ echo "shadow_hard_exposure_cap_sol: ${HARD_CAP_SOL:-n/a} (usage $USAGE_HARD)"
 echo "max_hold_hours: ${MAX_HOLD_HOURS:-n/a}"
 echo "stale_open_lots_now: $STALE_LOTS"
 echo "stale_open_notional_sol_now: $STALE_NOTIONAL_SOL"
+echo "execution_pretrade_min_sol_reserve: ${PRETRADE_MIN_SOL_RESERVE:-n/a}"
+echo "execution_pretrade_min_sol_reserve_lamports: ${PRETRADE_MIN_SOL_RESERVE_LAMPORTS:-n/a}"
+echo "execution_pretrade_fee_reserve_guard_enabled: ${PRETRADE_FEE_RESERVE_GUARD_ENABLED:-unknown}"
+echo "execution_pretrade_max_fee_overhead_bps: ${PRETRADE_MAX_FEE_OVERHEAD_BPS:-n/a}"
+echo "execution_pretrade_fee_overhead_guard_enabled: ${PRETRADE_FEE_OVERHEAD_GUARD_ENABLED:-unknown}"
 echo
 echo "=== Shadow Risk State ==="
 while IFS= read -r line; do
