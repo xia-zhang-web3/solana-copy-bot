@@ -916,6 +916,12 @@ VALUES
 
 INSERT INTO risk_events(ts, type, severity, details_json)
 VALUES
+  (
+    datetime('now', '-6 minutes'),
+    'shadow_risk_pause',
+    'warn',
+    '{"pause_type":"exposure_soft_cap","detail":"open_notional_sol=10.250000 >= soft_cap=10.000000","until":"2100-01-01T00:00:00Z"}'
+  ),
   (datetime('now', '-5 minutes'), 'execution_submit_failed', 'error', '{"order_id":"order-strict","route":"paper","error_code":"submit_adapter_policy_echo_missing"}'),
   (datetime('now', '-4 minutes'), 'execution_network_fee_unavailable_submit_hint_used', 'warn', '{"route":"paper"}'),
   (datetime('now', '-3 minutes'), 'execution_network_fee_unavailable_fallback_used', 'warn', '{"route":"paper"}'),
@@ -1208,8 +1214,22 @@ run_ops_scripts_for_db() {
       bash "$ROOT_DIR/tools/runtime_snapshot.sh" 24 60
   )"
   assert_contains "$snapshot_output" "=== CopyBot Runtime Snapshot ==="
+  assert_contains "$snapshot_output" "=== Storage Layout ==="
   assert_contains "$snapshot_output" "=== Execution Fee Breakdown by Route (24h) ==="
   assert_contains "$snapshot_output" "=== Recent Risk Events (60m) ==="
+  assert_contains "$snapshot_output" "=== Shadow Risk State ==="
+  assert_field_non_empty "$snapshot_output" "db_mount_source"
+  assert_field_non_empty "$snapshot_output" "db_mount_point"
+  assert_field_non_empty "$snapshot_output" "db_mount_avail_kb"
+  assert_field_non_empty "$snapshot_output" "db_file_bytes"
+  assert_field_equals "$snapshot_output" "db_wal_path" "${db_path}-wal"
+  assert_field_equals "$snapshot_output" "db_shm_path" "${db_path}-shm"
+  assert_field_non_empty "$snapshot_output" "db_wal_bytes"
+  assert_field_non_empty "$snapshot_output" "db_shm_bytes"
+  assert_field_equals "$snapshot_output" "shadow_risk_pause_state" "active"
+  assert_field_equals "$snapshot_output" "shadow_risk_pause_until" "2100-01-01T00:00:00Z"
+  assert_contains "$snapshot_output" "shadow_risk_pause_reason: exposure_soft_cap: open_notional_sol=10.250000 >= soft_cap=10.000000"
+  assert_field_non_empty "$snapshot_output" "shadow_risk_pause_last_event_ts"
   assert_contains "$snapshot_output" "ingestion_lag_ms_p95: 1700"
   assert_contains "$snapshot_output" "parse_rejected_total: 5"
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
@@ -1433,6 +1453,15 @@ run_go_nogo_artifact_export_case() {
       bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" 24 60
   )"
   assert_contains "$output" "artifacts_written: true"
+  assert_field_non_empty "$output" "db_mount_source"
+  assert_field_non_empty "$output" "db_mount_point"
+  assert_field_non_empty "$output" "db_mount_avail_kb"
+  assert_field_non_empty "$output" "db_file_bytes"
+  assert_field_non_empty "$output" "db_wal_bytes"
+  assert_field_non_empty "$output" "db_shm_bytes"
+  assert_field_equals "$output" "shadow_risk_pause_state" "active"
+  assert_field_equals "$output" "shadow_risk_pause_until" "2100-01-01T00:00:00Z"
+  assert_contains "$output" "shadow_risk_pause_reason: exposure_soft_cap: open_notional_sol=10.250000 >= soft_cap=10.000000"
   assert_contains "$output" "artifact_calibration:"
   assert_contains "$output" "artifact_snapshot:"
   assert_contains "$output" "artifact_preflight:"

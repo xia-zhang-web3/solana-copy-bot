@@ -51,6 +51,31 @@ if [[ ! -f "$DB_PATH" ]]; then
   exit 1
 fi
 
+file_size_bytes() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    wc -c <"$path" | tr -d '[:space:]'
+  else
+    printf "0"
+  fi
+}
+
+DB_WAL_PATH="${DB_PATH}-wal"
+DB_SHM_PATH="${DB_PATH}-shm"
+DB_FILE_BYTES="$(file_size_bytes "$DB_PATH")"
+DB_WAL_BYTES="$(file_size_bytes "$DB_WAL_PATH")"
+DB_SHM_BYTES="$(file_size_bytes "$DB_SHM_PATH")"
+DB_MOUNT_SOURCE="n/a"
+DB_MOUNT_TOTAL_KB="n/a"
+DB_MOUNT_USED_KB="n/a"
+DB_MOUNT_AVAIL_KB="n/a"
+DB_MOUNT_USE_PCT="n/a"
+DB_MOUNT_POINT="n/a"
+mount_row="$(df -P "$DB_PATH" 2>/dev/null | awk 'NR==2 {print $1 "|" $2 "|" $3 "|" $4 "|" $5 "|" $6}')"
+if [[ -n "$mount_row" ]]; then
+  IFS='|' read -r DB_MOUNT_SOURCE DB_MOUNT_TOTAL_KB DB_MOUNT_USED_KB DB_MOUNT_AVAIL_KB DB_MOUNT_USE_PCT DB_MOUNT_POINT <<<"$mount_row"
+fi
+
 table_exists() {
   local table="$1"
   [[ "$(sqlite3 -noheader "$DB_PATH" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '$table' LIMIT 1;")" == "1" ]]
@@ -196,10 +221,113 @@ USAGE_SOFT="$(format_pct "$OPEN_NOTIONAL_SOL" "${SOFT_CAP_SOL:-0}")"
 USAGE_HARD="$(format_pct "$OPEN_NOTIONAL_SOL" "${HARD_CAP_SOL:-0}")"
 USAGE_TOTAL="$(format_pct "$OPEN_NOTIONAL_SOL" "${MAX_TOTAL_EXPOSURE_SOL:-0}")"
 
+SHADOW_RISK_PAUSE_STATE_OUTPUT="$(
+  python3 - <<'PY' "$DB_PATH"
+import datetime
+import json
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+
+def latest(event_type: str):
+    return conn.execute(
+        """
+        SELECT rowid, ts, COALESCE(details_json, '') AS details_json
+        FROM risk_events
+        WHERE type = ?
+        ORDER BY rowid DESC
+        LIMIT 1
+        """,
+        (event_type,),
+    ).fetchone()
+
+def parse_ts(value: str):
+    if not value:
+        return None
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+pause = latest("shadow_risk_pause")
+cleared = latest("shadow_risk_pause_cleared")
+state = "none"
+until = "n/a"
+reason = "n/a"
+pause_ts = "n/a"
+clear_ts = "n/a"
+
+if cleared:
+    clear_ts = cleared["ts"] or "n/a"
+
+if pause:
+    pause_ts = pause["ts"] or "n/a"
+    details = {}
+    raw_details = pause["details_json"] or ""
+    if raw_details:
+        try:
+            details = json.loads(raw_details)
+        except json.JSONDecodeError:
+            details = {}
+    pause_type = details.get("pause_type")
+    detail = details.get("detail")
+    until = details.get("until") or "n/a"
+    if pause_type and detail:
+        reason = f"{pause_type}: {detail}"
+    elif detail:
+        reason = str(detail)
+    elif raw_details:
+        reason = raw_details
+
+    if cleared and cleared["rowid"] > pause["rowid"]:
+        cleared_details = {}
+        cleared_raw_details = cleared["details_json"] or ""
+        if cleared_raw_details:
+            try:
+                cleared_details = json.loads(cleared_raw_details)
+            except json.JSONDecodeError:
+                cleared_details = {}
+        reason = cleared_details.get("previous_reason") or reason
+        state = "cleared"
+    else:
+        until_ts = parse_ts(until)
+        if until_ts is not None and until_ts > datetime.datetime.now(datetime.timezone.utc):
+            state = "active"
+        else:
+            state = "expired"
+
+print(f"shadow_risk_pause_state: {state}")
+print(f"shadow_risk_pause_until: {until}")
+print(f"shadow_risk_pause_reason: {reason}")
+print(f"shadow_risk_pause_last_event_ts: {pause_ts}")
+print(f"shadow_risk_pause_last_clear_ts: {clear_ts}")
+PY
+)"
+
 echo "=== CopyBot Runtime Snapshot ==="
 echo "utc_now: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 echo "config: $CONFIG_PATH"
 echo "db: $DB_PATH"
+echo
+echo "=== Storage Layout ==="
+echo "db_mount_source: $DB_MOUNT_SOURCE"
+echo "db_mount_total_kb: $DB_MOUNT_TOTAL_KB"
+echo "db_mount_used_kb: $DB_MOUNT_USED_KB"
+echo "db_mount_avail_kb: $DB_MOUNT_AVAIL_KB"
+echo "db_mount_use_pct: $DB_MOUNT_USE_PCT"
+echo "db_mount_point: $DB_MOUNT_POINT"
+echo "db_file_bytes: $DB_FILE_BYTES"
+echo "db_wal_path: $DB_WAL_PATH"
+echo "db_wal_bytes: $DB_WAL_BYTES"
+echo "db_shm_path: $DB_SHM_PATH"
+echo "db_shm_bytes: $DB_SHM_BYTES"
 echo
 echo "=== Exposure ==="
 echo "open_lots: $OPEN_LOTS"
@@ -229,6 +357,11 @@ echo "shadow_hard_exposure_cap_sol: ${HARD_CAP_SOL:-n/a} (usage $USAGE_HARD)"
 echo "max_hold_hours: ${MAX_HOLD_HOURS:-n/a}"
 echo "stale_open_lots_now: $STALE_LOTS"
 echo "stale_open_notional_sol_now: $STALE_NOTIONAL_SOL"
+echo
+echo "=== Shadow Risk State ==="
+while IFS= read -r line; do
+  echo "$line"
+done <<< "$SHADOW_RISK_PAUSE_STATE_OUTPUT"
 echo
 echo "=== Signals Status (${WINDOW_HOURS}h) ==="
 sqlite3 "$DB_PATH" <<SQL

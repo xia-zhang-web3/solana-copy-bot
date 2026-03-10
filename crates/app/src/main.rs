@@ -1057,8 +1057,7 @@ impl ShadowRiskGuard {
                         .unwrap_or_else(|| format!("paused_until={}", until.to_rfc3339())),
                 };
             }
-            self.pause_until = None;
-            self.pause_reason = None;
+            self.clear_pause(store, now);
         }
 
         if self.universe_blocked {
@@ -1481,6 +1480,34 @@ impl ShadowRiskGuard {
             until.to_rfc3339()
         );
         self.record_risk_event(store, "shadow_risk_pause", "warn", now, &details_json);
+    }
+
+    fn clear_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+        let Some(previous_until) = self.pause_until.take() else {
+            self.pause_reason = None;
+            return;
+        };
+        let previous_reason = self
+            .pause_reason
+            .take()
+            .unwrap_or_else(|| format!("paused_until={}", previous_until.to_rfc3339()));
+        info!(
+            previous_reason = %previous_reason,
+            previous_until = %previous_until.to_rfc3339(),
+            "shadow risk timed pause cleared"
+        );
+        let details_json = format!(
+            "{{\"state\":\"cleared\",\"previous_reason\":\"{}\",\"previous_until\":\"{}\"}}",
+            sanitize_json_value(&previous_reason),
+            previous_until.to_rfc3339()
+        );
+        self.record_risk_event(
+            store,
+            "shadow_risk_pause_cleared",
+            "info",
+            now,
+            &details_json,
+        );
     }
 
     fn record_risk_event(
@@ -3873,6 +3900,66 @@ mod app_tests {
             } => assert!(detail.contains("drawdown_1h")),
             other => panic!("expected timed pause block, got {other:?}"),
         }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_timed_pause_auto_clears_and_records_event() -> Result<()> {
+        let (store, db_path) = make_test_store("timed-pause-autoclear")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.6, opened_ts)?;
+
+        match guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("exposure_soft_cap")),
+            other => panic!("expected timed pause block from soft exposure cap, got {other:?}"),
+        }
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+        assert!(
+            guard.pause_until.is_some(),
+            "timed pause should be active after soft exposure cap breach"
+        );
+
+        store.delete_shadow_lot(lot_id)?;
+        let decision_after_clear = guard.can_open_buy(
+            &store,
+            now + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 61).max(61)),
+            true,
+        );
+        match decision_after_clear {
+            BuyRiskDecision::Allow => {}
+            other => {
+                panic!("expected timed pause auto-clear after exposure normalized, got {other:?}")
+            }
+        }
+        assert!(
+            guard.pause_until.is_none(),
+            "timed pause should clear after pause duration elapses and exposure normalizes"
+        );
+        assert!(
+            guard.pause_reason.is_none(),
+            "timed pause reason should clear after pause duration elapses and exposure normalizes"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            1
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

@@ -648,11 +648,20 @@ ingestion_lag_ms_p99="$(extract_field "ingestion_lag_ms_p99" "$snapshot_output")
 parse_rejected_total="$(extract_field "parse_rejected_total" "$snapshot_output")"
 grpc_message_total="$(extract_field "grpc_message_total" "$snapshot_output")"
 rpc_429_total="$(extract_field "rpc_429" "$snapshot_output")"
+db_mount_source="$(extract_field "db_mount_source" "$snapshot_output")"
+db_mount_point="$(extract_field "db_mount_point" "$snapshot_output")"
+db_mount_avail_kb="$(extract_field "db_mount_avail_kb" "$snapshot_output")"
+db_file_bytes="$(extract_field "db_file_bytes" "$snapshot_output")"
+db_wal_bytes="$(extract_field "db_wal_bytes" "$snapshot_output")"
+db_shm_bytes="$(extract_field "db_shm_bytes" "$snapshot_output")"
 eligible_wallets_last="$(extract_field "eligible_wallets_last" "$snapshot_output")"
 active_follow_wallets_last="$(extract_field "active_follow_wallets_last" "$snapshot_output")"
 parse_rejected_by_reason="$(extract_field "parse_rejected_by_reason" "$snapshot_output")"
 parse_fallback_by_reason="$(extract_field "parse_fallback_by_reason" "$snapshot_output")"
 replaced_ratio_last_interval="$(extract_field "replaced_ratio_last_interval" "$snapshot_output")"
+shadow_risk_pause_state="$(extract_field "shadow_risk_pause_state" "$snapshot_output")"
+shadow_risk_pause_until="$(extract_field "shadow_risk_pause_until" "$snapshot_output")"
+shadow_risk_pause_reason="$(extract_field "shadow_risk_pause_reason" "$snapshot_output")"
 execution_batch_sample_available="$(extract_field "execution_batch_sample_available" "$snapshot_output")"
 submit_attempted_by_route="$(extract_field "submit_attempted_by_route" "$snapshot_output")"
 submit_retry_scheduled_by_route="$(extract_field "submit_retry_scheduled_by_route" "$snapshot_output")"
@@ -1059,11 +1068,20 @@ ingestion_lag_ms_p99: ${ingestion_lag_ms_p99:-n/a}
 parse_rejected_total: ${parse_rejected_total:-n/a}
 grpc_message_total: ${grpc_message_total:-n/a}
 rpc_429: ${rpc_429_total:-n/a}
+db_mount_source: ${db_mount_source:-n/a}
+db_mount_point: ${db_mount_point:-n/a}
+db_mount_avail_kb: ${db_mount_avail_kb:-n/a}
+db_file_bytes: ${db_file_bytes:-n/a}
+db_wal_bytes: ${db_wal_bytes:-n/a}
+db_shm_bytes: ${db_shm_bytes:-n/a}
 eligible_wallets_last: ${eligible_wallets_last:-n/a}
 active_follow_wallets_last: ${active_follow_wallets_last:-n/a}
 parse_rejected_by_reason: ${parse_rejected_by_reason:-{}}
 parse_fallback_by_reason: ${parse_fallback_by_reason:-{}}
 replaced_ratio_last_interval: ${replaced_ratio_last_interval:-n/a}
+shadow_risk_pause_state: ${shadow_risk_pause_state:-n/a}
+shadow_risk_pause_until: ${shadow_risk_pause_until:-n/a}
+shadow_risk_pause_reason: ${shadow_risk_pause_reason:-n/a}
 execution_batch_sample_available: ${execution_batch_sample_available_normalized:-false}
 submit_attempted_by_route: ${submit_attempted_by_route:-{}}
 submit_retry_scheduled_by_route: ${submit_retry_scheduled_by_route:-{}}
