@@ -41,6 +41,7 @@ GO_NOGO_MIN_CONFIRMED_ORDERS="${GO_NOGO_MIN_CONFIRMED_ORDERS:-1}"
 GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="${GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY:-true}"
 GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="${GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS:-50000000}"
 GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="${GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS:-1000}"
+EXACT_MONEY_CUTOVER_REQUIRED="${EXACT_MONEY_CUTOVER_REQUIRED:-true}"
 
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-true}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
@@ -123,6 +124,31 @@ parse_positive_u64_setting_into() {
   printf -v "$output_var" '%s' "$parsed_value"
 }
 
+cfg_value() {
+  local section="$1"
+  local key="$2"
+  awk -F'=' -v section="[$section]" -v key="$key" '
+    /^\s*\[/ {
+      in_section = ($0 == section)
+    }
+    in_section {
+      line = $0
+      sub(/#.*/, "", line)
+      left = line
+      sub(/=.*/, "", left)
+      gsub(/[[:space:]]/, "", left)
+      if (left == key) {
+        value = line
+        sub(/^[^=]*=/, "", value)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        gsub(/^"|"$/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$CONFIG_PATH"
+}
+
 read_env_file_key() {
   local env_path="$1"
   local key="$2"
@@ -173,6 +199,7 @@ parse_positive_u64_setting_into "GO_NOGO_MIN_CONFIRMED_ORDERS" "$GO_NOGO_MIN_CON
 parse_bool_setting_into "GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY" "$GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY" go_nogo_require_pretrade_fee_policy_norm
 parse_positive_u64_setting_into "GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS" "$GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS" go_nogo_min_pretrade_sol_reserve_lamports_norm
 parse_positive_u64_setting_into "GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS" "$GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS" go_nogo_max_pretrade_fee_overhead_bps_norm
+parse_bool_setting_into "EXACT_MONEY_CUTOVER_REQUIRED" "$EXACT_MONEY_CUTOVER_REQUIRED" exact_money_cutover_required_norm
 parse_bool_setting_into "ROUTE_FEE_SIGNOFF_REQUIRED" "$ROUTE_FEE_SIGNOFF_REQUIRED" route_fee_signoff_required_norm
 parse_bool_setting_into "ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" "$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE" route_fee_signoff_go_nogo_test_mode_norm
 parse_bool_setting_into "REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" "$REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED" rehearsal_route_fee_signoff_required_norm
@@ -375,6 +402,17 @@ adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict="n/a"
 adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code="n/a"
 adapter_final_rollout_nested_pretrade_fee_policy_guard_verdict="n/a"
 adapter_final_rollout_nested_pretrade_fee_policy_guard_reason_code="n/a"
+
+exact_money_db_path="$(first_non_empty "${DB_PATH:-}" "$(if [[ -f "$CONFIG_PATH" ]]; then cfg_value sqlite path; fi)")"
+exact_money_output=""
+exact_money_exit_code="3"
+exact_money_guard_verdict="UNKNOWN"
+exact_money_guard_reason_code="not_executed"
+exact_money_cutover_present="n/a"
+exact_money_cutover_ts="n/a"
+exact_money_post_cutover_surface_failures="n/a"
+exact_money_invalid_exact_rows_total="n/a"
+exact_money_forbidden_merge_rows_total="n/a"
 
 if ((${#input_errors[@]} == 0)); then
   if preflight_output="$(
@@ -1750,12 +1788,111 @@ package_bundle_enabled: false"
   fi
 fi
 
+if [[ "$exact_money_cutover_required_norm" == "true" ]]; then
+  if [[ -z "$exact_money_db_path" ]]; then
+    exact_money_exit_code=0
+    exact_money_guard_verdict="UNKNOWN"
+    exact_money_guard_reason_code="db_path_missing"
+    exact_money_output="exact_money_cutover_present: n/a
+exact_money_cutover_ts: n/a
+exact_money_post_cutover_surface_failures: n/a
+exact_money_invalid_exact_rows_total: n/a
+exact_money_forbidden_merge_rows_total: n/a
+exact_money_cutover_guard_verdict: UNKNOWN
+exact_money_cutover_guard_reason_code: db_path_missing"
+  elif [[ ! -f "$exact_money_db_path" ]]; then
+    exact_money_exit_code=0
+    exact_money_guard_verdict="UNKNOWN"
+    exact_money_guard_reason_code="db_missing"
+    exact_money_output="exact_money_cutover_present: n/a
+exact_money_cutover_ts: n/a
+exact_money_post_cutover_surface_failures: n/a
+exact_money_invalid_exact_rows_total: n/a
+exact_money_forbidden_merge_rows_total: n/a
+exact_money_cutover_guard_verdict: UNKNOWN
+exact_money_cutover_guard_reason_code: db_missing"
+  else
+    if exact_money_output="$(
+      bash "$ROOT_DIR/tools/exact_money_cutover_readiness_report.sh" "$exact_money_db_path" 2>&1
+    )"; then
+      exact_money_exit_code=0
+    else
+      exact_money_exit_code=$?
+    fi
+    exact_money_guard_verdict_raw="$(trim_string "$(extract_field "exact_money_cutover_guard_verdict" "$exact_money_output")")"
+    exact_money_guard_verdict_raw_upper="$(printf '%s' "$exact_money_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
+    exact_money_guard_verdict="$(normalize_strict_guard_verdict "$exact_money_guard_verdict_raw")"
+    if [[ -z "$exact_money_guard_verdict_raw" ]]; then
+      input_errors+=("exact money readiness exact_money_cutover_guard_verdict must be non-empty")
+      exact_money_guard_verdict="UNKNOWN"
+    elif [[ "$exact_money_guard_verdict_raw_upper" != "PASS" && "$exact_money_guard_verdict_raw_upper" != "WARN" && "$exact_money_guard_verdict_raw_upper" != "UNKNOWN" && "$exact_money_guard_verdict_raw_upper" != "SKIP" ]]; then
+      input_errors+=("exact money readiness exact_money_cutover_guard_verdict must be one of PASS,WARN,UNKNOWN,SKIP (got: ${exact_money_guard_verdict_raw})")
+      exact_money_guard_verdict="UNKNOWN"
+    fi
+    exact_money_guard_reason_code="$(trim_string "$(extract_field "exact_money_cutover_guard_reason_code" "$exact_money_output")")"
+    if [[ -z "$exact_money_guard_reason_code" ]]; then
+      input_errors+=("exact money readiness exact_money_cutover_guard_reason_code must be non-empty")
+      exact_money_guard_reason_code="n/a"
+    fi
+    exact_money_cutover_present="$(trim_string "$(extract_field "exact_money_cutover_present" "$exact_money_output")")"
+    exact_money_cutover_ts="$(trim_string "$(extract_field "exact_money_cutover_ts" "$exact_money_output")")"
+    if [[ "$exact_money_guard_verdict" == "PASS" || "$exact_money_guard_verdict" == "WARN" ]]; then
+      exact_money_post_cutover_surface_failures_raw="$(trim_string "$(extract_field "exact_money_post_cutover_surface_failures" "$exact_money_output")")"
+      if [[ -z "$exact_money_post_cutover_surface_failures_raw" || "$exact_money_post_cutover_surface_failures_raw" == "n/a" ]]; then
+        input_errors+=("exact money readiness exact_money_post_cutover_surface_failures must be a non-negative integer")
+        exact_money_post_cutover_surface_failures="n/a"
+      elif ! exact_money_post_cutover_surface_failures="$(parse_u64_token_strict "$exact_money_post_cutover_surface_failures_raw")"; then
+        input_errors+=("exact money readiness exact_money_post_cutover_surface_failures must be a non-negative integer (got: ${exact_money_post_cutover_surface_failures_raw})")
+        exact_money_post_cutover_surface_failures="n/a"
+      fi
+      exact_money_invalid_exact_rows_total_raw="$(trim_string "$(extract_field "exact_money_invalid_exact_rows_total" "$exact_money_output")")"
+      if [[ -z "$exact_money_invalid_exact_rows_total_raw" || "$exact_money_invalid_exact_rows_total_raw" == "n/a" ]]; then
+        input_errors+=("exact money readiness exact_money_invalid_exact_rows_total must be a non-negative integer")
+        exact_money_invalid_exact_rows_total="n/a"
+      elif ! exact_money_invalid_exact_rows_total="$(parse_u64_token_strict "$exact_money_invalid_exact_rows_total_raw")"; then
+        input_errors+=("exact money readiness exact_money_invalid_exact_rows_total must be a non-negative integer (got: ${exact_money_invalid_exact_rows_total_raw})")
+        exact_money_invalid_exact_rows_total="n/a"
+      fi
+      exact_money_forbidden_merge_rows_total_raw="$(trim_string "$(extract_field "exact_money_forbidden_merge_rows_total" "$exact_money_output")")"
+      if [[ -z "$exact_money_forbidden_merge_rows_total_raw" || "$exact_money_forbidden_merge_rows_total_raw" == "n/a" ]]; then
+        input_errors+=("exact money readiness exact_money_forbidden_merge_rows_total must be a non-negative integer")
+        exact_money_forbidden_merge_rows_total="n/a"
+      elif ! exact_money_forbidden_merge_rows_total="$(parse_u64_token_strict "$exact_money_forbidden_merge_rows_total_raw")"; then
+        input_errors+=("exact money readiness exact_money_forbidden_merge_rows_total must be a non-negative integer (got: ${exact_money_forbidden_merge_rows_total_raw})")
+        exact_money_forbidden_merge_rows_total="n/a"
+      fi
+    else
+      exact_money_post_cutover_surface_failures="n/a"
+      exact_money_invalid_exact_rows_total="n/a"
+      exact_money_forbidden_merge_rows_total="n/a"
+    fi
+  fi
+else
+  exact_money_exit_code=0
+  exact_money_guard_verdict="SKIP"
+  exact_money_guard_reason_code="gate_disabled"
+  exact_money_cutover_present="n/a"
+  exact_money_cutover_ts="n/a"
+  exact_money_post_cutover_surface_failures="n/a"
+  exact_money_invalid_exact_rows_total="n/a"
+  exact_money_forbidden_merge_rows_total="n/a"
+  exact_money_output="exact_money_cutover_present: n/a
+exact_money_cutover_ts: n/a
+exact_money_post_cutover_surface_failures: n/a
+exact_money_invalid_exact_rows_total: n/a
+exact_money_forbidden_merge_rows_total: n/a
+exact_money_cutover_guard_verdict: SKIP
+exact_money_cutover_guard_reason_code: gate_disabled"
+fi
+
 printf '%s\n' "$preflight_output" >"$preflight_capture"
 printf '%s\n' "$calibration_output" >"$calibration_capture"
 printf '%s\n' "$go_nogo_output" >"$go_nogo_capture"
 printf '%s\n' "$rehearsal_output" >"$rehearsal_capture"
 printf '%s\n' "$executor_final_output" >"$executor_final_capture"
 printf '%s\n' "$adapter_final_output" >"$adapter_final_capture"
+exact_money_capture="$step_root/exact_money_capture_${now_compact}.txt"
+printf '%s\n' "$exact_money_output" >"$exact_money_capture"
 
 preflight_capture_sha256="$(sha256_file_value "$preflight_capture")"
 calibration_capture_sha256="$(sha256_file_value "$calibration_capture")"
@@ -1763,6 +1900,7 @@ go_nogo_capture_sha256="$(sha256_file_value "$go_nogo_capture")"
 rehearsal_capture_sha256="$(sha256_file_value "$rehearsal_capture")"
 executor_final_capture_sha256="$(sha256_file_value "$executor_final_capture")"
 adapter_final_capture_sha256="$(sha256_file_value "$adapter_final_capture")"
+exact_money_capture_sha256="$(sha256_file_value "$exact_money_capture")"
 
 overall_verdict="GO"
 overall_reason="all rollout stages passed"
@@ -1827,6 +1965,13 @@ else
   elif [[ "$adapter_final_verdict" == "HOLD" ]]; then
     set_hold_if_go "adapter final package HOLD: ${adapter_final_reason:-n/a}" "adapter_final_hold"
   fi
+  if [[ "$exact_money_cutover_required_norm" == "true" ]]; then
+    if [[ "$exact_money_guard_verdict" == "UNKNOWN" ]]; then
+      set_no_go "exact money cutover readiness verdict unknown: ${exact_money_guard_reason_code:-n/a}" "exact_money_cutover_unknown"
+    elif [[ "$exact_money_guard_verdict" != "PASS" ]]; then
+      set_no_go "exact money cutover readiness not PASS (${exact_money_guard_verdict}): ${exact_money_guard_reason_code:-n/a}" "exact_money_cutover_not_pass"
+    fi
+  fi
 fi
 
 summary_output="=== Execution Server Rollout Report ===
@@ -1851,6 +1996,8 @@ go_nogo_require_non_bootstrap_signer: $go_nogo_require_non_bootstrap_signer_norm
 go_nogo_require_submit_verify_strict: $go_nogo_require_submit_verify_strict_norm
 go_nogo_require_confirmed_execution_sample: $go_nogo_require_confirmed_execution_sample_norm
 go_nogo_min_confirmed_orders: $go_nogo_min_confirmed_orders_norm
+exact_money_cutover_required: $exact_money_cutover_required_norm
+exact_money_db_path: ${exact_money_db_path:-n/a}
 route_fee_signoff_required: $route_fee_signoff_required_norm
 route_fee_signoff_windows_csv: $ROUTE_FEE_SIGNOFF_WINDOWS_CSV
 rehearsal_route_fee_signoff_required: $rehearsal_route_fee_signoff_required_norm
@@ -2014,6 +2161,14 @@ adapter_final_rollout_nested_confirmed_execution_sample_guard_verdict: ${adapter
 adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code: ${adapter_final_rollout_nested_confirmed_execution_sample_guard_reason_code:-n/a}
 adapter_final_rollout_nested_pretrade_fee_policy_guard_verdict: ${adapter_final_rollout_nested_pretrade_fee_policy_guard_verdict:-n/a}
 adapter_final_rollout_nested_pretrade_fee_policy_guard_reason_code: ${adapter_final_rollout_nested_pretrade_fee_policy_guard_reason_code:-n/a}
+exact_money_cutover_exit_code: ${exact_money_exit_code:-n/a}
+exact_money_cutover_present: ${exact_money_cutover_present:-n/a}
+exact_money_cutover_ts: ${exact_money_cutover_ts:-n/a}
+exact_money_post_cutover_surface_failures: ${exact_money_post_cutover_surface_failures:-n/a}
+exact_money_invalid_exact_rows_total: ${exact_money_invalid_exact_rows_total:-n/a}
+exact_money_forbidden_merge_rows_total: ${exact_money_forbidden_merge_rows_total:-n/a}
+exact_money_cutover_guard_verdict: ${exact_money_guard_verdict:-n/a}
+exact_money_cutover_guard_reason_code: ${exact_money_guard_reason_code:-n/a}
 server_rollout_verdict: $overall_verdict
 server_rollout_reason: $overall_reason
 server_rollout_reason_code: $overall_reason_code
@@ -2040,12 +2195,14 @@ echo "artifact_go_nogo_capture: $go_nogo_capture"
 echo "artifact_rehearsal_capture: $rehearsal_capture"
 echo "artifact_executor_final_capture: $executor_final_capture"
 echo "artifact_adapter_final_capture: $adapter_final_capture"
+echo "artifact_exact_money_capture: $exact_money_capture"
 echo "preflight_capture_sha256: $preflight_capture_sha256"
 echo "calibration_capture_sha256: $calibration_capture_sha256"
 echo "go_nogo_capture_sha256: $go_nogo_capture_sha256"
 echo "rehearsal_capture_sha256: $rehearsal_capture_sha256"
 echo "executor_final_capture_sha256: $executor_final_capture_sha256"
 echo "adapter_final_capture_sha256: $adapter_final_capture_sha256"
+echo "exact_money_capture_sha256: $exact_money_capture_sha256"
 
 package_bundle_artifacts_written="false"
 package_bundle_exit_code="n/a"
@@ -2113,6 +2270,7 @@ go_nogo_capture_sha256: $go_nogo_capture_sha256
 rehearsal_capture_sha256: $rehearsal_capture_sha256
 executor_final_capture_sha256: $executor_final_capture_sha256
 adapter_final_capture_sha256: $adapter_final_capture_sha256
+exact_money_capture_sha256: $exact_money_capture_sha256
 calibration_summary_sha256: ${calibration_summary_sha256:-n/a}
 go_nogo_summary_sha256: ${go_nogo_summary_sha256:-n/a}
 rehearsal_summary_sha256: ${rehearsal_summary_sha256:-n/a}

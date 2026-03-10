@@ -1018,6 +1018,92 @@ VALUES ('order-confirmed-rpc', 0.00204928);
 SQL
 }
 
+prepare_exact_money_ready_db() {
+  local source_db="$1"
+  local target_db="$2"
+  rm -f "$target_db"
+  cp "$source_db" "$target_db"
+  sqlite3 "$target_db" <<'SQL'
+ALTER TABLE copy_signals ADD COLUMN notional_lamports INTEGER;
+ALTER TABLE copy_signals ADD COLUMN notional_origin TEXT;
+ALTER TABLE fills ADD COLUMN qty_raw TEXT;
+ALTER TABLE fills ADD COLUMN qty_decimals INTEGER;
+ALTER TABLE fills ADD COLUMN notional_lamports INTEGER;
+ALTER TABLE fills ADD COLUMN fee_lamports INTEGER;
+ALTER TABLE shadow_lots ADD COLUMN accounting_bucket TEXT;
+ALTER TABLE shadow_lots ADD COLUMN qty_raw TEXT;
+ALTER TABLE shadow_lots ADD COLUMN qty_decimals INTEGER;
+ALTER TABLE shadow_lots ADD COLUMN cost_lamports INTEGER;
+ALTER TABLE shadow_closed_trades ADD COLUMN accounting_bucket TEXT;
+ALTER TABLE shadow_closed_trades ADD COLUMN qty_raw TEXT;
+ALTER TABLE shadow_closed_trades ADD COLUMN qty_decimals INTEGER;
+ALTER TABLE shadow_closed_trades ADD COLUMN entry_cost_lamports INTEGER;
+ALTER TABLE shadow_closed_trades ADD COLUMN exit_value_lamports INTEGER;
+ALTER TABLE shadow_closed_trades ADD COLUMN pnl_lamports INTEGER;
+
+CREATE TABLE observed_swaps(
+  signature TEXT PRIMARY KEY,
+  ts TEXT,
+  qty_in_raw TEXT,
+  qty_in_decimals INTEGER,
+  qty_out_raw TEXT,
+  qty_out_decimals INTEGER
+);
+
+CREATE TABLE positions(
+  id INTEGER PRIMARY KEY,
+  opened_ts TEXT,
+  closed_ts TEXT,
+  accounting_bucket TEXT NOT NULL,
+  qty_raw TEXT,
+  qty_decimals INTEGER,
+  cost_lamports INTEGER,
+  pnl_lamports INTEGER
+);
+
+CREATE TABLE exact_money_cutover_state(
+  id INTEGER PRIMARY KEY,
+  cutover_ts TEXT NOT NULL,
+  recorded_ts TEXT NOT NULL,
+  note TEXT
+);
+
+DELETE FROM exact_money_cutover_state;
+INSERT INTO exact_money_cutover_state(id, cutover_ts, recorded_ts, note)
+VALUES (1, datetime('now', '-30 minutes'), datetime('now', '-29 minutes'), 'ops smoke exact ready');
+
+UPDATE copy_signals
+SET notional_lamports = 1000000,
+    notional_origin = 'leader_exact_lamports';
+
+UPDATE fills
+SET qty_raw = '1000000',
+    qty_decimals = 6,
+    notional_lamports = 2000000,
+    fee_lamports = 12000;
+
+UPDATE shadow_lots
+SET accounting_bucket = 'exact_post_cutover',
+    qty_raw = '250000000',
+    qty_decimals = 9,
+    cost_lamports = 250000000;
+
+UPDATE shadow_closed_trades
+SET accounting_bucket = 'exact_post_cutover',
+    qty_raw = '50000000',
+    qty_decimals = 9,
+    entry_cost_lamports = 100000000,
+    exit_value_lamports = 120000000,
+    pnl_lamports = 20000000;
+
+INSERT OR REPLACE INTO observed_swaps(signature, ts, qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals)
+VALUES ('sig-exact-ready', datetime('now', '-5 minutes'), '100', 6, '200', 6);
+
+INSERT INTO positions(id, opened_ts, closed_ts, accounting_bucket, qty_raw, qty_decimals, cost_lamports, pnl_lamports)
+VALUES (1, datetime('now', '-4 minutes'), datetime('now', '-3 minutes'), 'exact_post_cutover', '750000', 6, 1500000, 250000);
+SQL
+}
+
 assert_contains() {
   local haystack="$1"
   local needle="$2"
@@ -7027,8 +7113,12 @@ run_execution_server_rollout_report_case() {
   local port="18093"
   local output_root="$TMP_DIR/server-rollout-output"
   local bundle_output_dir="$TMP_DIR/server-rollout-bundles"
+  local exact_ready_db="$TMP_DIR/server-rollout-exact-ready.db"
   local SOLANA_COPY_BOT_INGESTION_SOURCE="yellowstone_grpc"
   export SOLANA_COPY_BOT_INGESTION_SOURCE
+
+  prepare_exact_money_ready_db "$db_path" "$exact_ready_db"
+  db_path="$exact_ready_db"
 
   write_executor_env_preflight "$executor_env_path" "$port" "$auth_token"
   write_adapter_env_preflight "$adapter_env_path" "$port" "$auth_token"
@@ -7092,6 +7182,12 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "go_nogo_require_pretrade_fee_policy" "true"
   assert_field_equals "$output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
   assert_field_equals "$output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$output" "exact_money_cutover_required" "true"
+  assert_field_equals "$output" "exact_money_cutover_guard_verdict" "PASS"
+  assert_field_equals "$output" "exact_money_cutover_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$output" "exact_money_post_cutover_surface_failures" "0"
+  assert_field_equals "$output" "exact_money_invalid_exact_rows_total" "0"
+  assert_field_equals "$output" "exact_money_forbidden_merge_rows_total" "0"
   assert_field_equals "$output" "go_nogo_pretrade_min_sol_reserve_lamports_observed" "50000000"
   assert_field_equals "$output" "go_nogo_pretrade_max_fee_overhead_bps_observed" "1000"
   assert_field_equals "$output" "go_nogo_pretrade_fee_policy_guard_verdict" "PASS"
@@ -7207,6 +7303,7 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "server_rollout_require_executor_upstream" "true"
   assert_field_equals "$output" "executor_backend_mode" "upstream"
   assert_contains "$output" "artifacts_written: true"
+  assert_contains "$output" "artifact_exact_money_capture:"
   assert_sha256_field "$output" "summary_sha256"
   assert_sha256_field "$output" "manifest_sha256"
   assert_sha256_field "$output" "preflight_capture_sha256"
@@ -7215,6 +7312,7 @@ run_execution_server_rollout_report_case() {
   assert_sha256_field "$output" "rehearsal_capture_sha256"
   assert_sha256_field "$output" "executor_final_capture_sha256"
   assert_sha256_field "$output" "adapter_final_capture_sha256"
+  assert_sha256_field "$output" "exact_money_capture_sha256"
   assert_sha256_field_matches_file "$output" "summary_sha256" "artifact_summary"
   assert_sha256_field_matches_file "$output" "manifest_sha256" "artifact_manifest"
   if ! ls "$output_root"/execution_server_rollout_summary_*.txt >/dev/null 2>&1; then
@@ -7295,6 +7393,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$skip_direct_output" "go_nogo_require_pretrade_fee_policy" "true"
   assert_field_equals "$skip_direct_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
   assert_field_equals "$skip_direct_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$skip_direct_output" "exact_money_cutover_required" "true"
+  assert_field_equals "$skip_direct_output" "exact_money_cutover_guard_verdict" "PASS"
+  assert_field_equals "$skip_direct_output" "exact_money_cutover_guard_reason_code" "post_cutover_exact_ready"
   assert_field_equals "$skip_direct_output" "go_nogo_pretrade_min_sol_reserve_lamports_observed" "n/a"
   assert_field_equals "$skip_direct_output" "go_nogo_pretrade_max_fee_overhead_bps_observed" "n/a"
   assert_field_equals "$skip_direct_output" "go_nogo_pretrade_fee_policy_guard_verdict" "SKIP"
@@ -9168,6 +9269,7 @@ EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV
 
 run_execution_runtime_readiness_report_case() {
   local db_path="$1"
+  local original_db_path="$db_path"
   local config_path="$2"
   local case_profile="${3:-full}"
   if [[ "$case_profile" != "full" && "$case_profile" != "fast" ]]; then
@@ -9177,9 +9279,12 @@ run_execution_runtime_readiness_report_case() {
   local env_path="$TMP_DIR/runtime-readiness-adapter.env"
   local secrets_dir="$TMP_DIR/secrets"
   local artifacts_dir="$TMP_DIR/runtime-readiness-artifacts"
+  local exact_ready_db="$TMP_DIR/runtime-readiness-exact-ready.db"
   write_fake_journalctl
   mkdir -p "$secrets_dir"
   write_adapter_env_rotation_report "$env_path"
+  prepare_exact_money_ready_db "$db_path" "$exact_ready_db"
+  db_path="$exact_ready_db"
 
   printf 'bearer-pass\n' >"$secrets_dir/adapter_bearer.token"
   printf 'hmac-pass\n' >"$secrets_dir/adapter_hmac.secret"
@@ -9238,6 +9343,12 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$pass_output" "go_nogo_require_pretrade_fee_policy" "true"
   assert_field_equals "$pass_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
   assert_field_equals "$pass_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$pass_output" "exact_money_cutover_required" "true"
+  assert_field_equals "$pass_output" "exact_money_cutover_guard_verdict" "PASS"
+  assert_field_equals "$pass_output" "exact_money_cutover_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$pass_output" "exact_money_post_cutover_surface_failures" "0"
+  assert_field_equals "$pass_output" "exact_money_invalid_exact_rows_total" "0"
+  assert_field_equals "$pass_output" "exact_money_forbidden_merge_rows_total" "0"
   assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_executor_upstream" "true"
   assert_field_equals "$pass_output" "adapter_final_nested_go_nogo_require_jito_rpc_policy" "false"
@@ -9314,10 +9425,12 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_contains "$pass_output" "artifacts_written: true"
   assert_contains "$pass_output" "artifact_summary:"
   assert_contains "$pass_output" "artifact_adapter_capture:"
+  assert_contains "$pass_output" "artifact_exact_money_capture:"
   assert_contains "$pass_output" "artifact_route_fee_capture:"
   assert_contains "$pass_output" "artifact_manifest:"
   assert_sha256_field "$pass_output" "summary_sha256"
   assert_sha256_field "$pass_output" "adapter_capture_sha256"
+  assert_sha256_field "$pass_output" "exact_money_capture_sha256"
   assert_sha256_field "$pass_output" "route_fee_capture_sha256"
   assert_sha256_field "$pass_output" "manifest_sha256"
   assert_sha256_field_matches_file "$pass_output" "summary_sha256" "artifact_summary"
@@ -9332,6 +9445,10 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   fi
   if ! ls "$artifacts_dir"/adapter_rollout_final_captured_*.txt >/dev/null 2>&1; then
     echo "expected adapter final capture artifact in $artifacts_dir" >&2
+    exit 1
+  fi
+  if ! ls "$artifacts_dir"/exact_money_cutover_readiness_captured_*.txt >/dev/null 2>&1; then
+    echo "expected exact money cutover capture artifact in $artifacts_dir" >&2
     exit 1
   fi
   if ! ls "$artifacts_dir"/execution_route_fee_final_captured_*.txt >/dev/null 2>&1; then
@@ -9454,6 +9571,7 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
       GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="false" \
       GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
       GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      EXACT_MONEY_CUTOVER_REQUIRED="false" \
       EXECUTOR_ENV_PATH="$executor_env_path" \
       WINDOWED_SIGNOFF_REQUIRED="false" \
       ROUTE_FEE_SIGNOFF_REQUIRED="false" \
@@ -9469,6 +9587,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$strict_override_output" "go_nogo_require_pretrade_fee_policy" "false"
   assert_field_equals "$strict_override_output" "go_nogo_min_pretrade_sol_reserve_lamports" "50000000"
   assert_field_equals "$strict_override_output" "go_nogo_max_pretrade_fee_overhead_bps" "1000"
+  assert_field_equals "$strict_override_output" "exact_money_cutover_required" "false"
+  assert_field_equals "$strict_override_output" "exact_money_cutover_guard_verdict" "SKIP"
+  assert_field_equals "$strict_override_output" "exact_money_cutover_guard_reason_code" "gate_disabled"
   assert_field_equals "$strict_override_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_executor_upstream" "false"
   assert_field_equals "$strict_override_output" "adapter_final_nested_go_nogo_require_jito_rpc_policy" "false"
