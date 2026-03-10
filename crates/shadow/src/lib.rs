@@ -45,27 +45,47 @@ fn lamports_to_sol(lamports: Lamports) -> f64 {
     lamports.as_u64() as f64 / 1_000_000_000.0
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScaledExactShadowQty {
+    Exact(TokenQuantity),
+    Approximate,
+    InvalidZeroRaw,
+}
+
 fn scaled_exact_shadow_qty(
     exact_token_qty: Option<TokenQuantity>,
     exact_leader_notional_lamports: Option<Lamports>,
     copy_notional_lamports: Option<Lamports>,
     copy_notional_sol: f64,
-) -> Option<TokenQuantity> {
-    let exact_token_qty = exact_token_qty?;
-    let leader_notional = exact_leader_notional_lamports?;
+) -> ScaledExactShadowQty {
+    let Some(exact_token_qty) = exact_token_qty else {
+        return ScaledExactShadowQty::Approximate;
+    };
+    let Some(leader_notional) = exact_leader_notional_lamports else {
+        return ScaledExactShadowQty::Approximate;
+    };
     if leader_notional == Lamports::ZERO {
-        return None;
+        return ScaledExactShadowQty::Approximate;
     }
-    let copy_notional =
-        copy_notional_lamports.or_else(|| sol_to_lamports_floor(copy_notional_sol))?;
+    let Some(copy_notional) =
+        copy_notional_lamports.or_else(|| sol_to_lamports_floor(copy_notional_sol))
+    else {
+        return ScaledExactShadowQty::Approximate;
+    };
     if copy_notional > leader_notional {
-        return None;
+        return ScaledExactShadowQty::Approximate;
     }
-    let scaled_raw = u128::from(exact_token_qty.raw())
-        .checked_mul(u128::from(copy_notional.as_u64()))?
-        / u128::from(leader_notional.as_u64());
-    let scaled_raw = u64::try_from(scaled_raw).ok()?;
-    Some(TokenQuantity::new(scaled_raw, exact_token_qty.decimals()))
+    let Some(scaled_raw) = u128::from(exact_token_qty.raw())
+        .checked_mul(u128::from(copy_notional.as_u64()))
+        .and_then(|value| value.checked_div(u128::from(leader_notional.as_u64())))
+        .and_then(|value| u64::try_from(value).ok())
+    else {
+        return ScaledExactShadowQty::Approximate;
+    };
+    if scaled_raw == 0 && copy_notional != Lamports::ZERO {
+        return ScaledExactShadowQty::InvalidZeroRaw;
+    }
+    ScaledExactShadowQty::Exact(TokenQuantity::new(scaled_raw, exact_token_qty.decimals()))
 }
 
 #[derive(Debug, Clone)]
@@ -352,6 +372,30 @@ impl ShadowService {
                 ShadowDropReason::InvalidSizing,
             ));
         }
+        let exact_qty = match scaled_exact_shadow_qty(
+            candidate.exact_token_qty,
+            candidate.exact_leader_notional_lamports,
+            copy_notional_lamports,
+            copy_notional_sol,
+        ) {
+            ScaledExactShadowQty::Exact(value) => Some(value),
+            ScaledExactShadowQty::Approximate => None,
+            ScaledExactShadowQty::InvalidZeroRaw => {
+                log_gate_drop(
+                    "sizing",
+                    ShadowDropReason::InvalidSizing,
+                    swap,
+                    &candidate,
+                    latency_ms,
+                    runtime_followed,
+                    temporal_followed,
+                    is_unfollowed_sell_exit,
+                );
+                return Ok(ShadowProcessOutcome::Dropped(
+                    ShadowDropReason::InvalidSizing,
+                ));
+            }
+        };
         let signal_id = format!(
             "shadow:{}:{}:{}:{}",
             swap.signature, swap.wallet, candidate.side, candidate.token
@@ -385,12 +429,6 @@ impl ShadowService {
         let (close, has_open_lots_after_signal) = match candidate.side.as_str() {
             "buy" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
-                let exact_qty = scaled_exact_shadow_qty(
-                    candidate.exact_token_qty,
-                    candidate.exact_leader_notional_lamports,
-                    copy_notional_lamports,
-                    copy_notional_sol,
-                );
                 if qty > EPS {
                     let _ = store.insert_shadow_lot_exact(
                         &swap.wallet,
@@ -405,12 +443,6 @@ impl ShadowService {
             }
             "sell" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
-                let exact_qty = scaled_exact_shadow_qty(
-                    candidate.exact_token_qty,
-                    candidate.exact_leader_notional_lamports,
-                    copy_notional_lamports,
-                    copy_notional_sol,
-                );
                 let close = store.close_shadow_lots_fifo_atomic_exact(
                     &signal_id,
                     &swap.wallet,
@@ -844,6 +876,211 @@ mod tests {
         let closed_qty_exact = store
             .shadow_closed_trade_qty_exact("shadow:sig-sell-exact:leader-wallet:sell:TokenMint")?;
         assert_eq!(closed_qty_exact, Some(TokenQuantity::new(416_666_666, 6)));
+        Ok(())
+    }
+
+    #[test]
+    fn drops_buy_when_exact_shadow_qty_truncates_to_zero_raw() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-buy-zero-raw-exact.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let follow = follow_snapshot(&["leader-wallet"]);
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-03-10T09:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            buy_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
+
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMint".to_string(),
+            amount_in: 1.0,
+            amount_out: 0.000001,
+            signature: "sig-buy-zero-raw-exact".to_string(),
+            slot: 190,
+            ts_utc: buy_ts,
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "1000000000".to_string(),
+                amount_in_decimals: 9,
+                amount_out_raw: "1".to_string(),
+                amount_out_decimals: 6,
+            }),
+        };
+
+        let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
+        outcome.expect_dropped(
+            ShadowDropReason::InvalidSizing,
+            "zero-raw exact buy should fail closed",
+        );
+        assert!(
+            store
+                .list_shadow_lots("leader-wallet", "TokenMint")?
+                .is_empty(),
+            "zero-raw exact buy must not persist a shadow lot"
+        );
+        assert!(
+            store
+                .list_copy_signals_by_status("shadow_recorded", 10)?
+                .is_empty(),
+            "zero-raw exact buy must not persist a copy signal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn drops_buy_when_leader_exact_qty_zero_raw_source_side() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-buy-leader-zero-raw.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let follow = follow_snapshot(&["leader-wallet"]);
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
+        let service = ShadowService::new(cfg);
+
+        let buy_ts = DateTime::parse_from_rfc3339("2026-03-10T09:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            buy_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
+
+        let buy = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: "TokenMint".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-buy-leader-zero-raw".to_string(),
+            slot: 190,
+            ts_utc: buy_ts,
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "1000000000".to_string(),
+                amount_in_decimals: 9,
+                amount_out_raw: "0".to_string(),
+                amount_out_decimals: 6,
+            }),
+        };
+
+        let outcome = service.process_swap(&store, &buy, &follow, buy_ts + Duration::seconds(1))?;
+        outcome.expect_dropped(
+            ShadowDropReason::InvalidSizing,
+            "leader zero-raw exact buy should fail closed",
+        );
+        assert!(
+            store
+                .list_shadow_lots("leader-wallet", "TokenMint")?
+                .is_empty(),
+            "leader zero-raw exact buy must not persist a shadow lot"
+        );
+        assert!(
+            store
+                .list_copy_signals_by_status("shadow_recorded", 10)?
+                .is_empty(),
+            "leader zero-raw exact buy must not persist a copy signal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn drops_sell_when_exact_shadow_qty_truncates_to_zero_raw() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-sell-zero-raw-exact.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let follow = follow_snapshot(&["leader-wallet"]);
+
+        let mut cfg = ShadowConfig::default();
+        cfg.copy_notional_sol = 0.5;
+        cfg.min_leader_notional_sol = 0.25;
+        cfg.quality_gates_enabled = false;
+        let service = ShadowService::new(cfg);
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-10T09:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let sell_ts = opened_ts + Duration::minutes(5);
+        store.activate_follow_wallet(
+            "leader-wallet",
+            opened_ts - Duration::seconds(30),
+            "test-seed-follow",
+        )?;
+        store.insert_shadow_lot_exact(
+            "leader-wallet",
+            "TokenMint",
+            1.0,
+            Some(TokenQuantity::new(1_000_000, 6)),
+            0.50,
+            opened_ts,
+        )?;
+
+        let sell = SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "TokenMint".to_string(),
+            token_out: SOL_MINT.to_string(),
+            amount_in: 0.000001,
+            amount_out: 1.2,
+            signature: "sig-sell-zero-raw-exact".to_string(),
+            slot: 191,
+            ts_utc: sell_ts,
+            exact_amounts: Some(ExactSwapAmounts {
+                amount_in_raw: "1".to_string(),
+                amount_in_decimals: 6,
+                amount_out_raw: "1200000000".to_string(),
+                amount_out_decimals: 9,
+            }),
+        };
+
+        let outcome =
+            service.process_swap(&store, &sell, &follow, sell_ts + Duration::seconds(1))?;
+        outcome.expect_dropped(
+            ShadowDropReason::InvalidSizing,
+            "zero-raw exact sell should fail closed",
+        );
+
+        let lots = store.list_shadow_lots("leader-wallet", "TokenMint")?;
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(1_000_000, 6)));
+        assert!(
+            store
+                .shadow_closed_trade_qty_exact(
+                    "shadow:sig-sell-zero-raw-exact:leader-wallet:sell:TokenMint"
+                )?
+                .is_none(),
+            "zero-raw exact sell must not persist a closed trade"
+        );
+        assert!(
+            store
+                .list_copy_signals_by_status("shadow_recorded", 10)?
+                .is_empty(),
+            "zero-raw exact sell must not persist a copy signal"
+        );
         Ok(())
     }
 

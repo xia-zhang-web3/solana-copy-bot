@@ -1606,6 +1606,189 @@ mod tests {
     }
 
     #[test]
+    fn shadow_zero_raw_insert_shadow_lot_exact_rejects_zero_raw_exact_qty() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-zero-raw-lot-reject.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let error = store
+            .insert_shadow_lot_exact(
+                "wallet",
+                "token",
+                0.5,
+                Some(TokenQuantity::new(0, 6)),
+                0.20,
+                opened_ts,
+            )
+            .expect_err("zero-raw exact shadow lot must fail closed");
+        let error_chain = format!("{error:#}");
+        assert!(error_chain.contains("zero-raw exact quantity"));
+        assert!(store.list_shadow_lots("wallet", "token")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_zero_raw_insert_shadow_closed_trade_exact_rejects_zero_raw_exact_qty() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-zero-raw-closed-trade-reject.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = opened_ts + Duration::hours(1);
+        let error = store
+            .insert_shadow_closed_trade_exact(
+                "signal",
+                "wallet",
+                "token",
+                0.5,
+                Some(TokenQuantity::new(0, 6)),
+                0.10,
+                0.12,
+                0.02,
+                opened_ts,
+                closed_ts,
+            )
+            .expect_err("zero-raw exact shadow closed trade must fail closed");
+        let error_chain = format!("{error:#}");
+        assert!(error_chain.contains("zero-raw exact quantity"));
+        let count: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM shadow_closed_trades WHERE signal_id = ?1",
+            params!["signal"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_zero_raw_fifo_close_rejects_zero_raw_exact_segment_and_rolls_back() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-zero-raw-fifo-close-reject.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = opened_ts + Duration::hours(1);
+
+        store.insert_shadow_lot_exact(
+            "wallet",
+            "token",
+            0.5,
+            Some(TokenQuantity::new(500_000, 6)),
+            0.10,
+            opened_ts,
+        )?;
+        store.insert_shadow_lot_exact(
+            "wallet",
+            "token",
+            0.5,
+            Some(TokenQuantity::new(500_000, 6)),
+            0.10,
+            opened_ts + Duration::seconds(1),
+        )?;
+
+        let error = store
+            .close_shadow_lots_fifo_atomic_exact(
+                "signal-zero-raw-segment",
+                "wallet",
+                "token",
+                1.0,
+                Some(TokenQuantity::new(1, 6)),
+                0.25,
+                closed_ts,
+            )
+            .expect_err("zero-raw exact fifo segment must fail closed");
+        let error_chain = format!("{error:#}");
+        assert!(error_chain.contains("zero-raw exact quantity"));
+
+        let lots = store.list_shadow_lots("wallet", "token")?;
+        assert_eq!(lots.len(), 2, "failed close must roll back lot mutation");
+        assert_eq!(lots[0].qty_exact, Some(TokenQuantity::new(500_000, 6)));
+        assert_eq!(lots[1].qty_exact, Some(TokenQuantity::new(500_000, 6)));
+        let closed_count: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM shadow_closed_trades WHERE signal_id = ?1",
+            params!["signal-zero-raw-segment"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            closed_count, 0,
+            "failed close must not persist closed trades"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_zero_raw_fifo_close_allows_legitimate_exact_full_close() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-exact-full-close-ok.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = opened_ts + Duration::hours(1);
+
+        store.insert_shadow_lot_exact(
+            "wallet",
+            "token",
+            1.0,
+            Some(TokenQuantity::new(1_000_000, 6)),
+            0.10,
+            opened_ts,
+        )?;
+
+        let close = store.close_shadow_lots_fifo_atomic_exact(
+            "signal-full-close",
+            "wallet",
+            "token",
+            1.0,
+            Some(TokenQuantity::new(1_000_000, 6)),
+            0.25,
+            closed_ts,
+        )?;
+        assert!((close.closed_qty - 1.0).abs() < 1e-12);
+        assert!(!close.has_open_lots_after);
+
+        let lots = store.list_shadow_lots("wallet", "token")?;
+        assert!(
+            lots.is_empty(),
+            "exact full close should delete the open lot instead of erroring"
+        );
+        let closed_row: (String, Option<String>, Option<i64>) = store.conn.query_row(
+            "SELECT accounting_bucket, qty_raw, qty_decimals
+             FROM shadow_closed_trades
+             WHERE signal_id = ?1",
+            params!["signal-full-close"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(
+            closed_row.0,
+            POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER.to_string()
+        );
+        assert_eq!(closed_row.1.as_deref(), Some("1000000"));
+        assert_eq!(closed_row.2, Some(6));
+        Ok(())
+    }
+
+    #[test]
     fn shadow_risk_metrics_prefer_closed_trade_lamport_sidecars() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("shadow-closed-trade-lamports.db");

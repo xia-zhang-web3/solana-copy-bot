@@ -21,6 +21,18 @@ fn to_sql_conversion_error(error: anyhow::Error) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(io::Error::other(error.to_string())))
 }
 
+fn reject_zero_raw_exact_qty(
+    qty_exact: Option<TokenQuantity>,
+    context: &str,
+) -> Result<Option<TokenQuantity>> {
+    match qty_exact {
+        Some(qty_exact) if qty_exact.raw() == 0 => {
+            Err(anyhow!("zero-raw exact quantity is invalid in {}", context))
+        }
+        other => Ok(other),
+    }
+}
+
 fn shadow_accounting_bucket_for_qty_exact(qty_exact: Option<TokenQuantity>) -> &'static str {
     if qty_exact.is_some() {
         POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER
@@ -50,6 +62,7 @@ impl SqliteStore {
         cost_sol: f64,
         opened_ts: DateTime<Utc>,
     ) -> Result<i64> {
+        let qty_exact = reject_zero_raw_exact_qty(qty_exact, "insert shadow lot")?;
         self.execute_with_retry_result(|conn| {
             let cost_lamports = sol_to_lamports_ceil_storage(cost_sol, "shadow lot cost_sol")
                 .map_err(to_sql_conversion_error)?;
@@ -286,6 +299,8 @@ impl SqliteStore {
         closed_ts: DateTime<Utc>,
     ) -> Result<ShadowCloseOutcome> {
         const EPS: f64 = SHADOW_LOT_OPEN_EPS;
+        let target_qty_exact =
+            reject_zero_raw_exact_qty(target_qty_exact, "shadow fifo close target qty")?;
 
         if target_qty <= EPS {
             return Ok(ShadowCloseOutcome {
@@ -416,6 +431,9 @@ impl SqliteStore {
                     .map_err(to_sql_conversion_error)?,
                     None => (None, None),
                 };
+                let segment_qty_exact =
+                    reject_zero_raw_exact_qty(segment_qty_exact, "shadow fifo close segment qty")
+                        .map_err(to_sql_conversion_error)?;
                 let closed_qty_exact = match (current_qty_exact, segment_qty_exact) {
                     (Some(current), Some(segment)) if current.decimals() == segment.decimals() => {
                         let raw = current.raw().min(segment.raw());
@@ -468,6 +486,11 @@ impl SqliteStore {
                     self.conn
                         .execute("DELETE FROM shadow_lots WHERE id = ?1", params![lot_id])?;
                 } else {
+                    let remaining_qty_exact = reject_zero_raw_exact_qty(
+                        remaining_qty_exact,
+                        "shadow fifo close remaining qty",
+                    )
+                    .map_err(to_sql_conversion_error)?;
                     self.conn.execute(
                         "UPDATE shadow_lots SET qty = ?1, qty_raw = ?2, qty_decimals = ?3, cost_sol = ?4, cost_lamports = ?5 WHERE id = ?6",
                         params![
@@ -600,6 +623,7 @@ impl SqliteStore {
         qty_exact: Option<TokenQuantity>,
         cost_sol: f64,
     ) -> Result<()> {
+        let qty_exact = reject_zero_raw_exact_qty(qty_exact, "update shadow lot")?;
         self.execute_with_retry(|conn| {
             let cost_lamports = sol_to_lamports_ceil_storage(cost_sol, "shadow lot cost_sol")
                 .map_err(to_sql_conversion_error)?;
@@ -669,6 +693,7 @@ impl SqliteStore {
         opened_ts: DateTime<Utc>,
         closed_ts: DateTime<Utc>,
     ) -> Result<()> {
+        let qty_exact = reject_zero_raw_exact_qty(qty_exact, "insert shadow closed trade")?;
         self.execute_with_retry(|conn| {
             let entry_cost_lamports =
                 sol_to_lamports_ceil_storage(entry_cost_sol, "shadow closed trade entry_cost_sol")

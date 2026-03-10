@@ -2557,3 +2557,56 @@ Formal verdict:
    1. move `state/` to a dedicated volume,
    2. keep retention / archive discipline,
    3. avoid long-lived ad hoc sqlite diagnostics against the live DB.
+
+### 2026-03-10 — morning runtime remains stable; shadow PnL continues to accumulate
+
+Источник:
+
+1. live server snapshot collected on `2026-03-10 08:08 Europe/Kiev`
+
+Краткий статус:
+
+1. Live runtime at the morning checkpoint remains stable after the previous evening recovery:
+   1. `solana-copy-bot.service`, `copybot-adapter.service`, `copybot-executor.service` all `active`,
+   2. `solana-copy-bot.service NRestarts=0`,
+   3. `/dev/root 145G`, `111G used`, `34G avail`,
+   4. `live_copybot.db ~105G`,
+   5. `live_copybot.db-wal ~512M`.
+2. Emergency followlist/shadow profile is still active on the server:
+   1. `scoring_window_days = 5`,
+   2. `decay_window_days = 5`,
+   3. `min_active_days = 3`,
+   4. `min_score = 0.4`,
+   5. `max_rug_ratio = 1.0`,
+   6. `metric_snapshot_interval_seconds = 1800`,
+   7. `scoring_aggregates_write_enabled = false`,
+   8. `scoring_aggregates_enabled = false`.
+3. Discovery / shadow business state remains live:
+   1. `followlist.active = 256`,
+   2. `copy_signals = 25736`,
+   3. `shadow_lots = 63`,
+   4. `shadow_closed_trades = 667`,
+   5. `wallet_metrics positive rows = 479` at `window_start = 2026-03-05T06:00:00+00:00`.
+4. Shadow PnL is now materially positive:
+   1. realized shadow PnL = `+2.190049326 SOL`,
+   2. average realized PnL per closed trade = `+0.003283432 SOL`,
+   3. wins / losses = `380 / 287`,
+   4. open shadow cost basis = `10.386682153 SOL`,
+   5. open exposure spans `39` wallets and `11` tokens.
+5. Discovery remains near-head at this checkpoint:
+   1. `observed_swaps_max_ts = 2026-03-10T06:14:17.768492503+00:00`,
+   2. `discovery_runtime_state.cursor_ts = 2026-03-10T06:13:28.717135588+00:00`,
+   3. direct `cursor/head gap ~= 49s`.
+6. Live execution is still intentionally off, so real submit-path counters remain zero:
+   1. `orders = 0`,
+   2. `positions = 0`,
+   3. `fills = 0`.
+
+Операционный вывод:
+
+1. Morning runtime does not show an active stability incident; the system is currently healthy enough to keep shadow trading and discovery running.
+2. The main operational risk is no longer an immediate runtime fault but storage layout:
+   1. root remains the failure domain for `state/`,
+   2. the main DB is already `~105G`,
+   3. another pinned reader / WAL-growth incident would still be expensive.
+3. The next infra step should therefore be a dedicated EBS volume for `/var/www/solana-copy-bot/state`, followed by a controlled state migration.
