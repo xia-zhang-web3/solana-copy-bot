@@ -29,6 +29,8 @@ phase_gate_require_fastlane_disabled_raw="${REFACTOR_PHASE_GATE_REQUIRE_FASTLANE
 phase_gate_require_jito_rpc_policy_raw="${REFACTOR_PHASE_GATE_REQUIRE_JITO_RPC_POLICY:-false}"
 phase_gate_require_non_bootstrap_signer_raw="${REFACTOR_PHASE_GATE_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 phase_gate_require_submit_verify_strict_raw="${REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
+phase_gate_require_exact_money_cutover_raw="${REFACTOR_PHASE_GATE_REQUIRE_EXACT_MONEY_CUTOVER:-false}"
+phase_gate_exact_money_helper_path="${REFACTOR_PHASE_GATE_EXACT_MONEY_HELPER_PATH:-$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh}"
 phase_gate_ingestion_source="$(trim_string "${REFACTOR_PHASE_GATE_INGESTION_SOURCE:-yellowstone_grpc}")"
 phase_gate_ingestion_source="$(printf '%s' "$phase_gate_ingestion_source" | tr '[:upper:]' '[:lower:]')"
 
@@ -95,6 +97,10 @@ if ! phase_gate_require_non_bootstrap_signer="$(parse_bool_token_strict "$phase_
 fi
 if ! phase_gate_require_submit_verify_strict="$(parse_bool_token_strict "$phase_gate_require_submit_verify_strict_raw")"; then
   echo "REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT must be a boolean token (got: ${phase_gate_require_submit_verify_strict_raw:-<empty>})" >&2
+  exit 1
+fi
+if ! phase_gate_require_exact_money_cutover="$(parse_bool_token_strict "$phase_gate_require_exact_money_cutover_raw")"; then
+  echo "REFACTOR_PHASE_GATE_REQUIRE_EXACT_MONEY_CUTOVER must be a boolean token (got: ${phase_gate_require_exact_money_cutover_raw:-<empty>})" >&2
   exit 1
 fi
 
@@ -424,17 +430,84 @@ validate_strict_guard_verdict "rollout" "rehearsal_nested_submit_verify_guard_ve
 validate_strict_guard_reason_code "rollout" "rehearsal_nested_submit_verify_guard_reason_code" "$rollout_output" "$phase_gate_require_submit_verify_strict"
 fail_phase_gate_stage "rollout" "$raw_dir/rollout_stdout.txt" "adapter_rollout_evidence_report.sh"
 
+exact_money_db_path="$fixture_dir/legacy.db"
+exact_money_output=""
+exact_money_exit_code="3"
+exact_money_guard_verdict="UNKNOWN"
+exact_money_guard_reason_code="not_executed"
+exact_money_cutover_present="n/a"
+exact_money_cutover_ts="n/a"
+exact_money_readiness_guard_verdict="n/a"
+exact_money_readiness_guard_reason_code="n/a"
+exact_money_legacy_export_verdict="n/a"
+exact_money_legacy_export_reason_code="n/a"
+
+if [[ "$phase_gate_require_exact_money_cutover" == "true" ]]; then
+  if exact_money_output="$(
+    OUTPUT_DIR="$raw_dir/exact_money_artifacts" \
+      bash "$phase_gate_exact_money_helper_path" "$exact_money_db_path" 2>&1
+  )"; then
+    exact_money_exit_code=0
+  else
+    exact_money_exit_code=$?
+  fi
+else
+  exact_money_exit_code=0
+  exact_money_output="exact_money_cutover_evidence_verdict: SKIP
+exact_money_cutover_evidence_reason_code: gate_disabled
+exact_money_cutover_present: n/a
+exact_money_cutover_ts: n/a
+readiness_exit_code: 0
+readiness_guard_verdict: SKIP
+readiness_guard_reason_code: gate_disabled
+legacy_export_exit_code: 0
+legacy_export_verdict: SKIP
+legacy_export_reason_code: gate_disabled"
+fi
+
+printf '%s\n' "$exact_money_output" >"$raw_dir/exact_money_stdout.txt"
+phase_gate_errors=()
+if [[ "$phase_gate_require_exact_money_cutover" == "true" && "$exact_money_exit_code" -ne 0 ]]; then
+  phase_gate_errors+=("exact money helper exited with code ${exact_money_exit_code}")
+fi
+exact_money_guard_verdict_raw="$(extract_trimmed_field "exact_money_cutover_evidence_verdict" "$exact_money_output")"
+exact_money_guard_verdict="$(normalize_strict_guard_verdict "$exact_money_guard_verdict_raw")"
+if [[ -z "$exact_money_guard_verdict_raw" ]]; then
+  phase_gate_errors+=("missing exact_money_cutover_evidence_verdict in exact_money output")
+  exact_money_guard_verdict="UNKNOWN"
+elif [[ "$exact_money_guard_verdict_raw" != "PASS" && "$exact_money_guard_verdict_raw" != "WARN" && "$exact_money_guard_verdict_raw" != "UNKNOWN" && "$exact_money_guard_verdict_raw" != "SKIP" ]]; then
+  phase_gate_errors+=("invalid strict guard verdict for exact_money_cutover_evidence_verdict in exact_money output: $exact_money_guard_verdict_raw")
+  exact_money_guard_verdict="UNKNOWN"
+fi
+exact_money_guard_reason_code="$(extract_trimmed_field "exact_money_cutover_evidence_reason_code" "$exact_money_output")"
+if [[ -z "$exact_money_guard_reason_code" ]]; then
+  phase_gate_errors+=("missing exact_money_cutover_evidence_reason_code in exact_money output")
+  exact_money_guard_reason_code="n/a"
+fi
+exact_money_cutover_present="$(extract_trimmed_field "exact_money_cutover_present" "$exact_money_output")"
+exact_money_cutover_ts="$(extract_trimmed_field "exact_money_cutover_ts" "$exact_money_output")"
+exact_money_readiness_guard_verdict="$(extract_trimmed_field "readiness_guard_verdict" "$exact_money_output")"
+exact_money_readiness_guard_reason_code="$(extract_trimmed_field "readiness_guard_reason_code" "$exact_money_output")"
+exact_money_legacy_export_verdict="$(extract_trimmed_field "legacy_export_verdict" "$exact_money_output")"
+exact_money_legacy_export_reason_code="$(extract_trimmed_field "legacy_export_reason_code" "$exact_money_output")"
+validate_strict_guard_verdict "exact_money" "exact_money_cutover_evidence_verdict" "$exact_money_output" "$phase_gate_require_exact_money_cutover"
+validate_strict_guard_reason_code "exact_money" "exact_money_cutover_evidence_reason_code" "$exact_money_output" "$phase_gate_require_exact_money_cutover"
+fail_phase_gate_stage "exact_money" "$raw_dir/exact_money_stdout.txt" "exact_money_cutover_evidence_report.sh"
+
 bash "$ROOT_DIR/tools/refactor_normalize_output.sh" "$raw_dir/go_nogo_stdout.txt" "$norm_dir/go_nogo_normalized.txt"
 bash "$ROOT_DIR/tools/refactor_normalize_output.sh" "$raw_dir/rehearsal_stdout.txt" "$norm_dir/rehearsal_normalized.txt"
 bash "$ROOT_DIR/tools/refactor_normalize_output.sh" "$raw_dir/rollout_stdout.txt" "$norm_dir/rollout_normalized.txt"
+bash "$ROOT_DIR/tools/refactor_normalize_output.sh" "$raw_dir/exact_money_stdout.txt" "$norm_dir/exact_money_normalized.txt"
 
 "${sha256_cmd[@]}" "$raw_dir/go_nogo_stdout.txt" \
   "$raw_dir/rehearsal_stdout.txt" \
-  "$raw_dir/rollout_stdout.txt" >"$output_dir/orchestrators.raw.sha256"
+  "$raw_dir/rollout_stdout.txt" \
+  "$raw_dir/exact_money_stdout.txt" >"$output_dir/orchestrators.raw.sha256"
 
 "${sha256_cmd[@]}" "$norm_dir/go_nogo_normalized.txt" \
   "$norm_dir/rehearsal_normalized.txt" \
-  "$norm_dir/rollout_normalized.txt" >"$output_dir/orchestrators.normalized.sha256"
+  "$norm_dir/rollout_normalized.txt" \
+  "$norm_dir/exact_money_normalized.txt" >"$output_dir/orchestrators.normalized.sha256"
 awk '{print $1}' "$output_dir/orchestrators.normalized.sha256" >"$output_dir/orchestrators.normalized.hashes"
 
 cat <<EOF_SUMMARY
@@ -447,6 +520,7 @@ normalized_hashes_manifest: $output_dir/orchestrators.normalized.hashes
 normalized_go_nogo: $norm_dir/go_nogo_normalized.txt
 normalized_rehearsal: $norm_dir/rehearsal_normalized.txt
 normalized_rollout: $norm_dir/rollout_normalized.txt
+normalized_exact_money: $norm_dir/exact_money_normalized.txt
 go_nogo_require_executor_upstream: $phase_gate_require_executor_upstream
 go_nogo_require_ingestion_grpc: $phase_gate_require_ingestion_grpc
 go_nogo_require_followlist_activity: $phase_gate_require_followlist_activity
@@ -454,5 +528,15 @@ go_nogo_require_fastlane_disabled: $phase_gate_require_fastlane_disabled
 go_nogo_require_jito_rpc_policy: $phase_gate_require_jito_rpc_policy
 go_nogo_require_non_bootstrap_signer: $phase_gate_require_non_bootstrap_signer
 go_nogo_require_submit_verify_strict: $phase_gate_require_submit_verify_strict
+exact_money_cutover_required: $phase_gate_require_exact_money_cutover
+exact_money_cutover_exit_code: $exact_money_exit_code
+exact_money_cutover_guard_verdict: $exact_money_guard_verdict
+exact_money_cutover_guard_reason_code: $exact_money_guard_reason_code
+exact_money_cutover_present: $exact_money_cutover_present
+exact_money_cutover_ts: $exact_money_cutover_ts
+exact_money_readiness_guard_verdict: $exact_money_readiness_guard_verdict
+exact_money_readiness_guard_reason_code: $exact_money_readiness_guard_reason_code
+exact_money_legacy_export_verdict: $exact_money_legacy_export_verdict
+exact_money_legacy_export_reason_code: $exact_money_legacy_export_reason_code
 ingestion_source: $phase_gate_ingestion_source
 EOF_SUMMARY

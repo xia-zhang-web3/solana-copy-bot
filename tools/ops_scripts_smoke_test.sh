@@ -11895,21 +11895,32 @@ run_refactor_phase_gate_case() {
   local normalized_go_nogo=""
   local normalized_rehearsal=""
   local normalized_rollout=""
+  local normalized_exact_money=""
   raw_checksum_manifest="$(extract_field_value "$phase_output" "raw_checksum_manifest")"
   normalized_checksum_manifest="$(extract_field_value "$phase_output" "normalized_checksum_manifest")"
   normalized_hashes_manifest="$(extract_field_value "$phase_output" "normalized_hashes_manifest")"
   normalized_go_nogo="$(extract_field_value "$phase_output" "normalized_go_nogo")"
   normalized_rehearsal="$(extract_field_value "$phase_output" "normalized_rehearsal")"
   normalized_rollout="$(extract_field_value "$phase_output" "normalized_rollout")"
+  normalized_exact_money="$(extract_field_value "$phase_output" "normalized_exact_money")"
 
   if [[ ! -f "$raw_checksum_manifest" || ! -f "$normalized_checksum_manifest" || ! -f "$normalized_hashes_manifest" ]]; then
     echo "expected refactor phase gate checksum manifests to exist" >&2
     exit 1
   fi
-  if [[ ! -f "$normalized_go_nogo" || ! -f "$normalized_rehearsal" || ! -f "$normalized_rollout" ]]; then
+  if [[ ! -f "$normalized_go_nogo" || ! -f "$normalized_rehearsal" || ! -f "$normalized_rollout" || ! -f "$normalized_exact_money" ]]; then
     echo "expected refactor phase gate normalized outputs to exist" >&2
     exit 1
   fi
+
+  assert_field_equals "$phase_output" "exact_money_cutover_required" "false"
+  assert_field_equals "$phase_output" "exact_money_cutover_exit_code" "0"
+  assert_field_equals "$phase_output" "exact_money_cutover_guard_verdict" "SKIP"
+  assert_field_equals "$phase_output" "exact_money_cutover_guard_reason_code" "gate_disabled"
+  assert_field_equals "$phase_output" "exact_money_readiness_guard_verdict" "SKIP"
+  assert_field_equals "$phase_output" "exact_money_readiness_guard_reason_code" "gate_disabled"
+  assert_field_equals "$phase_output" "exact_money_legacy_export_verdict" "SKIP"
+  assert_field_equals "$phase_output" "exact_money_legacy_export_reason_code" "gate_disabled"
 
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] refactor phase gate (fast)"
@@ -11919,9 +11930,16 @@ run_refactor_phase_gate_case() {
   local normalized_go_nogo_text=""
   local normalized_rehearsal_text=""
   local normalized_rollout_text=""
+  local normalized_exact_money_text=""
   normalized_go_nogo_text="$(cat "$normalized_go_nogo")"
   normalized_rehearsal_text="$(cat "$normalized_rehearsal")"
   normalized_rollout_text="$(cat "$normalized_rollout")"
+  normalized_exact_money_text="$(cat "$normalized_exact_money")"
+
+  assert_contains "$normalized_exact_money_text" "exact_money_cutover_evidence_verdict: SKIP"
+  assert_contains "$normalized_exact_money_text" "exact_money_cutover_evidence_reason_code: gate_disabled"
+  assert_contains "$normalized_exact_money_text" "readiness_guard_verdict: SKIP"
+  assert_contains "$normalized_exact_money_text" "legacy_export_verdict: SKIP"
 
   assert_contains "$normalized_go_nogo_text" "go_nogo_require_ingestion_grpc: true"
   assert_contains "$normalized_go_nogo_text" "ingestion_grpc_guard_verdict: PASS"
@@ -12235,6 +12253,65 @@ run_refactor_phase_gate_case() {
     exit 1
   fi
   assert_contains "$phase_invalid_submit_verify_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_SUBMIT_VERIFY_STRICT must be a boolean token"
+
+  local phase_invalid_exact_money_bool_output=""
+  if phase_invalid_exact_money_bool_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_EXACT_MONEY_CUTOVER="sometimes" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.invalid-exact-money-bool" --fixture-dir "$phase_fixture_dir.invalid-exact-money-bool" 2>&1
+  )"; then
+    echo "expected refactor_phase_gate to fail-close for invalid REFACTOR_PHASE_GATE_REQUIRE_EXACT_MONEY_CUTOVER token" >&2
+    exit 1
+  fi
+  assert_contains "$phase_invalid_exact_money_bool_output" "REFACTOR_PHASE_GATE_REQUIRE_EXACT_MONEY_CUTOVER must be a boolean token"
+
+  local phase_strict_exact_money_output_path="$phase_output_dir.strict-exact-money.out"
+  local phase_strict_exact_money_output=""
+  if REFACTOR_PHASE_GATE_REQUIRE_EXACT_MONEY_CUTOVER="true" \
+    bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-exact-money" --fixture-dir "$phase_fixture_dir.strict-exact-money" >"$phase_strict_exact_money_output_path" 2>&1; then
+    echo "expected refactor_phase_gate to fail-close when strict exact-money cutover is enabled against legacy baseline fixture" >&2
+    exit 1
+  fi
+  phase_strict_exact_money_output="$(cat "$phase_strict_exact_money_output_path")"
+  assert_contains "$phase_strict_exact_money_output" "phase-gate error: exact_money_cutover_evidence_report.sh failed for stage=exact_money"
+  assert_contains "$phase_strict_exact_money_output" "exact_money_cutover_evidence_verdict: SKIP"
+  assert_contains "$phase_strict_exact_money_output" "exact_money_cutover_evidence_reason_code: cutover_not_marked"
+
+  local phase_strict_exact_money_pass_output=""
+  phase_strict_exact_money_pass_output="$(
+    REFACTOR_PHASE_GATE_REQUIRE_EXACT_MONEY_CUTOVER="true" \
+      REFACTOR_BASELINE_EXACT_MONEY_READY="true" \
+      bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-exact-money-pass" --fixture-dir "$phase_fixture_dir.strict-exact-money-pass"
+  )"
+  assert_field_equals "$phase_strict_exact_money_pass_output" "exact_money_cutover_required" "true"
+  assert_field_equals "$phase_strict_exact_money_pass_output" "exact_money_cutover_exit_code" "0"
+  assert_field_equals "$phase_strict_exact_money_pass_output" "exact_money_cutover_guard_verdict" "PASS"
+  assert_field_equals "$phase_strict_exact_money_pass_output" "exact_money_cutover_guard_reason_code" "cutover_evidence_ready"
+  assert_field_equals "$phase_strict_exact_money_pass_output" "exact_money_readiness_guard_verdict" "PASS"
+  assert_field_equals "$phase_strict_exact_money_pass_output" "exact_money_readiness_guard_reason_code" "post_cutover_exact_ready"
+  assert_field_equals "$phase_strict_exact_money_pass_output" "exact_money_legacy_export_verdict" "PASS"
+  assert_field_equals "$phase_strict_exact_money_pass_output" "exact_money_legacy_export_reason_code" "legacy_evidence_exported"
+  local phase_strict_exact_money_norm=""
+  phase_strict_exact_money_norm="$(extract_field_value "$phase_strict_exact_money_pass_output" "normalized_exact_money")"
+  assert_contains "$(cat "$phase_strict_exact_money_norm")" "exact_money_cutover_evidence_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_exact_money_norm")" "exact_money_cutover_evidence_reason_code: cutover_evidence_ready"
+  assert_contains "$(cat "$phase_strict_exact_money_norm")" "readiness_guard_verdict: PASS"
+  assert_contains "$(cat "$phase_strict_exact_money_norm")" "legacy_export_verdict: PASS"
+
+  local phase_exact_money_helper_stub="$TMP_DIR/refactor-phase-gate-exact-money-helper-stub.sh"
+  write_stub_exact_money_cutover_evidence_helper "$phase_exact_money_helper_stub"
+  local phase_strict_exact_money_helper_fail_output_path="$phase_output_dir.strict-exact-money-helper-fail.out"
+  local phase_strict_exact_money_helper_fail_output=""
+  if REFACTOR_PHASE_GATE_REQUIRE_EXACT_MONEY_CUTOVER="true" \
+    REFACTOR_PHASE_GATE_EXACT_MONEY_HELPER_PATH="$phase_exact_money_helper_stub" \
+    bash "$ROOT_DIR/tools/refactor_phase_gate.sh" baseline --output-dir "$phase_output_dir.strict-exact-money-helper-fail" --fixture-dir "$phase_fixture_dir.strict-exact-money-helper-fail" >"$phase_strict_exact_money_helper_fail_output_path" 2>&1; then
+    echo "expected refactor_phase_gate to fail-close when exact-money helper exits non-zero with parseable PASS payload" >&2
+    exit 1
+  fi
+  phase_strict_exact_money_helper_fail_output="$(cat "$phase_strict_exact_money_helper_fail_output_path")"
+  assert_contains "$phase_strict_exact_money_helper_fail_output" "phase-gate error: exact money helper exited with code 7"
+  assert_contains "$phase_strict_exact_money_helper_fail_output" "phase-gate error: exact_money_cutover_evidence_report.sh failed for stage=exact_money"
+  assert_contains "$phase_strict_exact_money_helper_fail_output" "exact_money_cutover_evidence_verdict: PASS"
+  assert_contains "$phase_strict_exact_money_helper_fail_output" "exact_money_cutover_evidence_reason_code: cutover_evidence_ready"
 
   echo "[ok] refactor phase gate"
 }

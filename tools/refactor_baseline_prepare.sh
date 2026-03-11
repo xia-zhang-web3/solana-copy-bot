@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tools/lib/common.sh
+source "$ROOT_DIR/tools/lib/common.sh"
+
 OUT_DIR="${1:-tmp/refactor-baseline}"
 SECRETS_DIR="$OUT_DIR/secrets"
 FAKE_BIN_DIR="$OUT_DIR/fake-bin"
@@ -8,6 +12,11 @@ DB_PATH="$OUT_DIR/legacy.db"
 CONFIG_PATH="$OUT_DIR/devnet_rehearsal.toml"
 ADAPTER_ENV_PATH="$OUT_DIR/adapter.env"
 EXECUTOR_ENV_PATH="$OUT_DIR/executor.env"
+refactor_baseline_exact_money_ready_raw="${REFACTOR_BASELINE_EXACT_MONEY_READY:-false}"
+if ! refactor_baseline_exact_money_ready="$(parse_bool_token_strict "$refactor_baseline_exact_money_ready_raw")"; then
+  echo "REFACTOR_BASELINE_EXACT_MONEY_READY must be a boolean token (got: ${refactor_baseline_exact_money_ready_raw:-<empty>})" >&2
+  exit 1
+fi
 
 require_bin() {
   local bin="$1"
@@ -194,9 +203,91 @@ INSERT INTO fills(order_id, fee)
 VALUES ('order-confirmed-modern', 0.00204928);
 SQL
 
+if [[ "$refactor_baseline_exact_money_ready" == "true" ]]; then
+  sqlite3 "$DB_PATH" <<'SQL'
+ALTER TABLE copy_signals ADD COLUMN notional_lamports INTEGER;
+ALTER TABLE copy_signals ADD COLUMN notional_origin TEXT;
+ALTER TABLE fills ADD COLUMN qty_raw TEXT;
+ALTER TABLE fills ADD COLUMN qty_decimals INTEGER;
+ALTER TABLE fills ADD COLUMN notional_lamports INTEGER;
+ALTER TABLE fills ADD COLUMN fee_lamports INTEGER;
+ALTER TABLE shadow_lots ADD COLUMN accounting_bucket TEXT;
+ALTER TABLE shadow_lots ADD COLUMN qty_raw TEXT;
+ALTER TABLE shadow_lots ADD COLUMN qty_decimals INTEGER;
+ALTER TABLE shadow_lots ADD COLUMN cost_lamports INTEGER;
+ALTER TABLE shadow_closed_trades ADD COLUMN accounting_bucket TEXT;
+ALTER TABLE shadow_closed_trades ADD COLUMN qty_raw TEXT;
+ALTER TABLE shadow_closed_trades ADD COLUMN qty_decimals INTEGER;
+ALTER TABLE shadow_closed_trades ADD COLUMN entry_cost_lamports INTEGER;
+ALTER TABLE shadow_closed_trades ADD COLUMN exit_value_lamports INTEGER;
+ALTER TABLE shadow_closed_trades ADD COLUMN pnl_lamports INTEGER;
+
+CREATE TABLE observed_swaps(
+  signature TEXT PRIMARY KEY,
+  ts TEXT,
+  qty_in_raw TEXT,
+  qty_in_decimals INTEGER,
+  qty_out_raw TEXT,
+  qty_out_decimals INTEGER
+);
+
+CREATE TABLE positions(
+  id INTEGER PRIMARY KEY,
+  opened_ts TEXT,
+  closed_ts TEXT,
+  accounting_bucket TEXT NOT NULL,
+  qty_raw TEXT,
+  qty_decimals INTEGER,
+  cost_lamports INTEGER,
+  pnl_lamports INTEGER
+);
+
+CREATE TABLE exact_money_cutover_state(
+  id INTEGER PRIMARY KEY,
+  cutover_ts TEXT NOT NULL,
+  recorded_ts TEXT NOT NULL,
+  note TEXT
+);
+
+INSERT INTO exact_money_cutover_state(id, cutover_ts, recorded_ts, note)
+VALUES (1, datetime('now', '-30 minutes'), datetime('now', '-29 minutes'), 'refactor baseline exact ready');
+
+UPDATE copy_signals
+SET notional_lamports = 1000000,
+    notional_origin = 'leader_exact_lamports';
+
+UPDATE fills
+SET qty_raw = '1000000',
+    qty_decimals = 6,
+    notional_lamports = 2000000,
+    fee_lamports = 12000;
+
+UPDATE shadow_lots
+SET accounting_bucket = 'exact_post_cutover',
+    qty_raw = '250000000',
+    qty_decimals = 9,
+    cost_lamports = 250000000;
+
+UPDATE shadow_closed_trades
+SET accounting_bucket = 'exact_post_cutover',
+    qty_raw = '50000000',
+    qty_decimals = 9,
+    entry_cost_lamports = 100000000,
+    exit_value_lamports = 120000000,
+    pnl_lamports = 20000000;
+
+INSERT OR REPLACE INTO observed_swaps(signature, ts, qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals)
+VALUES ('sig-exact-ready', datetime('now', '-5 minutes'), '100', 6, '200', 6);
+
+INSERT INTO positions(id, opened_ts, closed_ts, accounting_bucket, qty_raw, qty_decimals, cost_lamports, pnl_lamports)
+VALUES (1, datetime('now', '-4 minutes'), datetime('now', '-3 minutes'), 'exact_post_cutover', '750000', 6, 1500000, 250000);
+SQL
+fi
+
 echo "prepared_refactor_baseline_dir: $OUT_DIR"
 echo "config_path: $CONFIG_PATH"
 echo "adapter_env_path: $ADAPTER_ENV_PATH"
 echo "executor_env_path: $EXECUTOR_ENV_PATH"
 echo "db_path: $DB_PATH"
 echo "fake_journalctl_dir: $FAKE_BIN_DIR"
+echo "exact_money_ready: $refactor_baseline_exact_money_ready"
