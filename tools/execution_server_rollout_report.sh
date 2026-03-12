@@ -15,6 +15,8 @@ CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/live.toml}}"
 SERVICE="${SERVICE:-solana-copy-bot}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-state/server-rollout-$(date -u +"%Y%m%dT%H%M%SZ")}"
 EXACT_MONEY_CUTOVER_HELPER_PATH="${EXACT_MONEY_CUTOVER_HELPER_PATH:-$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh}"
+SERVER_ROLLOUT_EXECUTOR_FINAL_HELPER_PATH="${SERVER_ROLLOUT_EXECUTOR_FINAL_HELPER_PATH:-$ROOT_DIR/tools/executor_final_evidence_report.sh}"
+SERVER_ROLLOUT_ADAPTER_FINAL_HELPER_PATH="${SERVER_ROLLOUT_ADAPTER_FINAL_HELPER_PATH:-$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh}"
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_server_rollout}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_ROOT}"
@@ -867,7 +869,7 @@ package_bundle_enabled: false"
       ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
       PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+        bash "$SERVER_ROLLOUT_EXECUTOR_FINAL_HELPER_PATH" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     executor_final_exit_code=0
   else
@@ -1357,7 +1359,7 @@ package_bundle_enabled: false"
       REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
       PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+        bash "$SERVER_ROLLOUT_ADAPTER_FINAL_HELPER_PATH" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     adapter_final_exit_code=0
   else
@@ -2107,13 +2109,17 @@ else
     fi
   fi
 
-  if [[ "$executor_final_verdict" == "NO_GO" || "$executor_final_verdict" == "UNKNOWN" ]]; then
+  if ! go_nogo_exit_code_matches_verdict "$executor_final_exit_code" "$executor_final_verdict"; then
+    set_no_go "executor final helper exited ${executor_final_exit_code} with unexpected code for verdict ${executor_final_verdict}" "executor_final_failed"
+  elif [[ "$executor_final_verdict" == "NO_GO" || "$executor_final_verdict" == "UNKNOWN" ]]; then
     set_no_go "executor final package not GO (${executor_final_verdict}): ${executor_final_reason:-n/a}" "executor_final_not_go"
   elif [[ "$executor_final_verdict" == "HOLD" ]]; then
     set_hold_if_go "executor final package HOLD: ${executor_final_reason:-n/a}" "executor_final_hold"
   fi
 
-  if [[ "$adapter_final_verdict" == "NO_GO" || "$adapter_final_verdict" == "UNKNOWN" ]]; then
+  if ! go_nogo_exit_code_matches_verdict "$adapter_final_exit_code" "$adapter_final_verdict"; then
+    set_no_go "adapter final helper exited ${adapter_final_exit_code} with unexpected code for verdict ${adapter_final_verdict}" "adapter_final_failed"
+  elif [[ "$adapter_final_verdict" == "NO_GO" || "$adapter_final_verdict" == "UNKNOWN" ]]; then
     set_no_go "adapter final package not GO (${adapter_final_verdict}): ${adapter_final_reason:-n/a}" "adapter_final_not_go"
   elif [[ "$adapter_final_verdict" == "HOLD" ]]; then
     set_hold_if_go "adapter final package HOLD: ${adapter_final_reason:-n/a}" "adapter_final_hold"

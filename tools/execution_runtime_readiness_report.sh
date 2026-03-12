@@ -15,6 +15,8 @@ CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-configs/live.toml}}"
 ADAPTER_ENV_PATH="${ADAPTER_ENV_PATH:-adapter.env}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-state/runtime-readiness-$(date -u +"%Y%m%dT%H%M%SZ")}"
 EXACT_MONEY_CUTOVER_HELPER_PATH="${EXACT_MONEY_CUTOVER_HELPER_PATH:-$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh}"
+RUNTIME_READINESS_ADAPTER_FINAL_HELPER_PATH="${RUNTIME_READINESS_ADAPTER_FINAL_HELPER_PATH:-$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh}"
+RUNTIME_READINESS_ROUTE_FEE_FINAL_HELPER_PATH="${RUNTIME_READINESS_ROUTE_FEE_FINAL_HELPER_PATH:-$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh}"
 
 RUN_TESTS="${RUN_TESTS:-false}"
 DEVNET_REHEARSAL_TEST_MODE="${DEVNET_REHEARSAL_TEST_MODE:-false}"
@@ -333,7 +335,7 @@ if ((${#input_errors[@]} == 0)); then
         ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
         REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
         PACKAGE_BUNDLE_ENABLED="false" \
-        bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" "$ADAPTER_WINDOWS_CSV" "$risk_events_minutes" 2>&1
+        bash "$RUNTIME_READINESS_ADAPTER_FINAL_HELPER_PATH" "$ADAPTER_WINDOWS_CSV" "$risk_events_minutes" 2>&1
     } )"; then
       adapter_exit_code=0
     else
@@ -770,7 +772,7 @@ package_bundle_enabled: false"
         GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
         ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
         PACKAGE_BUNDLE_ENABLED="false" \
-        bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "$ROUTE_FEE_WINDOWS_CSV" "$risk_events_minutes" 2>&1
+        bash "$RUNTIME_READINESS_ROUTE_FEE_FINAL_HELPER_PATH" "$ROUTE_FEE_WINDOWS_CSV" "$risk_events_minutes" 2>&1
     } )"; then
       route_fee_exit_code=0
     else
@@ -1473,10 +1475,18 @@ if ((${#input_errors[@]} > 0)); then
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="${input_errors[0]}"
   runtime_readiness_reason_code="input_error"
+elif [[ "$runtime_readiness_run_adapter_final_norm" == "true" ]] && ! go_nogo_exit_code_matches_verdict "$adapter_exit_code" "$adapter_verdict"; then
+  runtime_readiness_verdict="NO_GO"
+  runtime_readiness_reason="adapter final helper exited ${adapter_exit_code} with unexpected code for verdict ${adapter_verdict}"
+  runtime_readiness_reason_code="adapter_final_failed"
 elif [[ "$runtime_readiness_run_adapter_final_norm" == "true" && "$adapter_verdict" == "UNKNOWN" ]]; then
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="adapter final verdict unknown: ${adapter_reason:-n/a}"
   runtime_readiness_reason_code="adapter_unknown_verdict"
+elif [[ "$runtime_readiness_run_route_fee_final_norm" == "true" ]] && ! go_nogo_exit_code_matches_verdict "$route_fee_exit_code" "$route_fee_verdict"; then
+  runtime_readiness_verdict="NO_GO"
+  runtime_readiness_reason="route/fee final helper exited ${route_fee_exit_code} with unexpected code for verdict ${route_fee_verdict}"
+  runtime_readiness_reason_code="route_fee_final_failed"
 elif [[ "$runtime_readiness_run_route_fee_final_norm" == "true" && "$route_fee_verdict" == "UNKNOWN" ]]; then
   runtime_readiness_verdict="NO_GO"
   runtime_readiness_reason="route/fee final verdict unknown: ${route_fee_reason:-n/a}"

@@ -221,6 +221,35 @@ normalize_go_nogo_verdict() {
   esac
 }
 
+go_nogo_expected_exit_code() {
+  local verdict
+  verdict="$(normalize_go_nogo_verdict "$1")"
+  case "$verdict" in
+    GO)
+      printf '0'
+      ;;
+    HOLD)
+      printf '2'
+      ;;
+    NO_GO|UNKNOWN)
+      printf '3'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+go_nogo_exit_code_matches_verdict() {
+  local exit_code="$1"
+  local verdict="$2"
+  local expected_exit_code=""
+  if ! expected_exit_code="$(go_nogo_expected_exit_code "$verdict")"; then
+    return 1
+  fi
+  [[ "$exit_code" == "$expected_exit_code" ]]
+}
+
 normalize_strict_guard_verdict() {
   local raw
   raw="$(trim_string "$1")"

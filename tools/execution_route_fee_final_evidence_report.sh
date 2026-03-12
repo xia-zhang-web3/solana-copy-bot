@@ -26,6 +26,7 @@ GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="${GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LA
 GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="${GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS:-1000}"
 GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
+ROUTE_FEE_FINAL_SIGNOFF_HELPER_PATH="${ROUTE_FEE_FINAL_SIGNOFF_HELPER_PATH:-$ROOT_DIR/tools/execution_route_fee_signoff_report.sh}"
 GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${GO_NOGO_TEST_FEE_VERDICT_OVERRIDE:-}"
 GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}"
 ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
@@ -154,7 +155,7 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
       PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+      bash "$ROUTE_FEE_FINAL_SIGNOFF_HELPER_PATH" "$WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     signoff_exit_code=0
   else
@@ -558,7 +559,12 @@ if ((${#input_errors[@]} == 0)); then
     fi
   fi
 
-  if [[ "$signoff_verdict" == "UNKNOWN" ]]; then
+  if ! go_nogo_exit_code_matches_verdict "$signoff_exit_code" "$signoff_verdict"; then
+    signoff_reported_verdict="$signoff_verdict"
+    signoff_verdict="NO_GO"
+    signoff_reason="route/fee signoff helper exited ${signoff_exit_code} with unexpected code for verdict ${signoff_reported_verdict}"
+    signoff_reason_code="signoff_failed"
+  elif [[ "$signoff_verdict" == "UNKNOWN" ]]; then
     signoff_reason="unable to classify route/fee signoff verdict (exit=$signoff_exit_code)"
     signoff_reason_code="unknown_verdict"
   elif [[ -z "$signoff_reason" ]]; then

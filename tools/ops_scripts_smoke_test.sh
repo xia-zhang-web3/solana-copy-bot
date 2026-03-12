@@ -1150,6 +1150,31 @@ EOF_STUB
   chmod +x "$target_path"
 }
 
+write_passthrough_exit7_helper() {
+  local target_path="$1"
+  local real_helper_path="$2"
+  cat >"$target_path" <<'EOF_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+
+set +e
+helper_output="$(bash "__REAL_HELPER_PATH__" "$@" 2>&1)"
+helper_exit_code=$?
+set -e
+printf '%s\n' "$helper_output"
+exit 7
+EOF_STUB
+  python3 - "$target_path" "$real_helper_path" <<'PY'
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1])
+real_helper_path = sys.argv[2]
+target.write_text(target.read_text().replace("__REAL_HELPER_PATH__", real_helper_path))
+PY
+  chmod +x "$target_path"
+}
+
 assert_contains() {
   local haystack="$1"
   local needle="$2"
@@ -3475,6 +3500,7 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
       bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24" "60"
   )"
+  assert_field_equals "$final_go_output" "signoff_exit_code" "0"
   assert_contains "$final_go_output" "signoff_verdict: GO"
   assert_field_equals "$final_go_output" "signoff_reason_code" "test_override"
   assert_field_equals "$final_go_output" "signoff_guard_window_id" "24"
@@ -3511,6 +3537,40 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_field_equals "$final_go_output" "signoff_nested_pretrade_fee_policy_guard_reason_code" "gate_disabled"
   assert_contains "$final_go_output" "final_route_fee_package_verdict: GO"
   assert_field_equals "$final_go_output" "final_route_fee_package_reason_code" "test_override"
+
+  local final_signoff_helper_stub="$TMP_DIR/route-fee-final-signoff-helper-exit7.sh"
+  write_passthrough_exit7_helper "$final_signoff_helper_stub" "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh"
+  local final_signoff_helper_fail_output=""
+  if final_signoff_helper_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/route-fee-final-signoff-helper-fail" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      ROUTE_FEE_FINAL_SIGNOFF_HELPER_PATH="$final_signoff_helper_stub" \
+      bash "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for final route/fee package helper when nested signoff exits 7 with parseable GO output" >&2
+    exit 1
+  else
+    local final_signoff_helper_fail_status=$?
+    if [[ "$final_signoff_helper_fail_status" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 from final route/fee package helper nested signoff exit7 case, got $final_signoff_helper_fail_status" >&2
+      echo "$final_signoff_helper_fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$final_signoff_helper_fail_output" "signoff_exit_code" "7"
+  assert_field_equals "$final_signoff_helper_fail_output" "signoff_verdict" "NO_GO"
+  assert_field_equals "$final_signoff_helper_fail_output" "signoff_reason_code" "signoff_failed"
+  assert_field_equals "$final_signoff_helper_fail_output" "final_route_fee_package_verdict" "NO_GO"
+  assert_field_equals "$final_signoff_helper_fail_output" "final_route_fee_package_reason_code" "signoff_failed"
 
   local final_go_windows_1_6_output
   final_go_windows_1_6_output="$(
@@ -6818,6 +6878,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$final_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$final_output" "go_nogo_require_submit_verify_strict" "false"
   assert_field_equals "$final_output" "executor_env_path" "$executor_env_path"
+  assert_field_equals "$final_output" "rollout_exit_code" "0"
   assert_field_equals "$final_output" "rollout_verdict" "GO"
   assert_field_equals "$final_output" "rollout_reason_code" "gates_pass"
   assert_field_equals "$final_output" "rollout_nested_package_bundle_enabled" "false"
@@ -6868,6 +6929,45 @@ run_executor_rollout_evidence_case() {
     echo "expected nested executor rollout summary artifact in $final_artifacts_dir/rollout" >&2
     exit 1
   fi
+
+  local executor_final_rollout_helper_stub="$TMP_DIR/executor-final-rollout-helper-exit7.sh"
+  write_passthrough_exit7_helper "$executor_final_rollout_helper_stub" "$ROOT_DIR/tools/executor_rollout_evidence_report.sh"
+  local final_rollout_helper_fail_output=""
+  if final_rollout_helper_fail_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/executor-final-package-rollout-helper-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      EXECUTOR_FINAL_ROLLOUT_HELPER_PATH="$executor_final_rollout_helper_stub" \
+      bash "$ROOT_DIR/tools/executor_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for executor final package helper when nested rollout exits 7 with parseable GO output" >&2
+    exit 1
+  else
+    local final_rollout_helper_fail_exit_code=$?
+    if [[ "$final_rollout_helper_fail_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for executor final nested rollout exit7 case, got $final_rollout_helper_fail_exit_code" >&2
+      echo "$final_rollout_helper_fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$final_rollout_helper_fail_output" "rollout_exit_code" "7"
+  assert_field_equals "$final_rollout_helper_fail_output" "rollout_verdict" "NO_GO"
+  assert_field_equals "$final_rollout_helper_fail_output" "rollout_reason_code" "rollout_failed"
+  assert_field_equals "$final_rollout_helper_fail_output" "final_executor_package_verdict" "NO_GO"
+  assert_field_equals "$final_rollout_helper_fail_output" "final_executor_package_reason_code" "rollout_failed"
 
   local final_bundle_output_dir="$TMP_DIR/executor-final-package-with-bundle"
   local final_bundle_archive_dir="$TMP_DIR/executor-final-package-bundles"
@@ -7216,7 +7316,9 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "route_profile_verdict" "WARN"
   assert_field_equals "$output" "go_nogo_verdict" "GO"
   assert_field_equals "$output" "rehearsal_verdict" "GO"
+  assert_field_equals "$output" "executor_final_exit_code" "0"
   assert_field_equals "$output" "executor_final_verdict" "GO"
+  assert_field_equals "$output" "adapter_final_exit_code" "0"
   assert_field_equals "$output" "adapter_final_verdict" "GO"
   assert_field_equals "$output" "go_nogo_executor_backend_mode_guard_verdict" "PASS"
   assert_field_equals "$output" "go_nogo_executor_backend_mode_guard_reason_code" "backend_mode_upstream"
@@ -7393,6 +7495,57 @@ run_execution_server_rollout_report_case() {
     echo "expected server rollout manifest artifact in $output_root" >&2
     exit 1
   fi
+  local server_rollout_executor_final_helper_stub="$TMP_DIR/server-rollout-executor-final-helper-exit7.sh"
+  write_passthrough_exit7_helper "$server_rollout_executor_final_helper_stub" "$ROOT_DIR/tools/executor_final_evidence_report.sh"
+  local executor_final_fail_output=""
+  local executor_final_fail_exit_code=0
+  if executor_final_fail_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-executor-final-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="true" \
+      GO_NOGO_MIN_CONFIRMED_ORDERS="1" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      SERVER_ROLLOUT_EXECUTOR_FINAL_HELPER_PATH="$server_rollout_executor_final_helper_stub" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60
+  )"; then
+    executor_final_fail_exit_code=0
+  else
+    executor_final_fail_exit_code=$?
+  fi
+  if [[ "$executor_final_fail_exit_code" -ne 3 ]]; then
+    echo "expected server rollout executor-final helper failure exit code 3, got $executor_final_fail_exit_code" >&2
+    echo "$executor_final_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$executor_final_fail_output" "executor_final_exit_code" "7"
+  assert_field_equals "$executor_final_fail_output" "executor_final_verdict" "GO"
+  assert_field_equals "$executor_final_fail_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$executor_final_fail_output" "server_rollout_reason_code" "executor_final_failed"
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] execution server rollout report (fast)"
+    return
+  fi
+
   local exact_money_helper_stub="$TMP_DIR/server-rollout-exact-money-helper-stub.sh"
   write_stub_exact_money_cutover_evidence_helper "$exact_money_helper_stub"
   local exact_money_fail_output=""
@@ -7441,10 +7594,6 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$exact_money_fail_output" "exact_money_legacy_export_verdict" "PASS"
   assert_field_equals "$exact_money_fail_output" "server_rollout_verdict" "NO_GO"
   assert_field_equals "$exact_money_fail_output" "server_rollout_reason_code" "exact_money_cutover_failed"
-  if [[ "$case_profile" == "fast" ]]; then
-    echo "[ok] execution server rollout report (fast)"
-    return
-  fi
 
   local skip_direct_output=""
   local skip_direct_exit_code=0
@@ -8813,6 +8962,7 @@ EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV
   assert_field_equals "$final_output" "go_nogo_require_ingestion_grpc" "false"
   assert_field_equals "$final_output" "go_nogo_require_non_bootstrap_signer" "false"
   assert_field_equals "$final_output" "go_nogo_require_submit_verify_strict" "false"
+  assert_field_equals "$final_output" "rollout_exit_code" "0"
   assert_field_equals "$final_output" "rollout_verdict" "GO"
   assert_field_equals "$final_output" "rollout_reason_code" "gates_pass"
   assert_field_equals "$final_output" "rollout_nested_package_bundle_enabled" "false"
@@ -8864,6 +9014,45 @@ EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV
     echo "expected nested rollout summary artifact in $final_artifacts_dir/rollout" >&2
     exit 1
   fi
+
+  local adapter_final_rollout_helper_stub="$TMP_DIR/adapter-final-rollout-helper-exit7.sh"
+  write_passthrough_exit7_helper "$adapter_final_rollout_helper_stub" "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh"
+  local final_rollout_helper_fail_output=""
+  if final_rollout_helper_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/adapter-rollout-final-package-rollout-helper-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ADAPTER_FINAL_ROLLOUT_HELPER_PATH="$adapter_final_rollout_helper_stub" \
+      bash "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for adapter final package helper when nested rollout exits 7 with parseable GO output" >&2
+    exit 1
+  else
+    local final_rollout_helper_fail_exit_code=$?
+    if [[ "$final_rollout_helper_fail_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for adapter final nested rollout exit7 case, got $final_rollout_helper_fail_exit_code" >&2
+      echo "$final_rollout_helper_fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$final_rollout_helper_fail_output" "rollout_exit_code" "7"
+  assert_field_equals "$final_rollout_helper_fail_output" "rollout_verdict" "NO_GO"
+  assert_field_equals "$final_rollout_helper_fail_output" "rollout_reason_code" "rollout_failed"
+  assert_field_equals "$final_rollout_helper_fail_output" "final_rollout_package_verdict" "NO_GO"
+  assert_field_equals "$final_rollout_helper_fail_output" "final_rollout_package_reason_code" "rollout_failed"
 
   local final_bundle_output_dir="$TMP_DIR/adapter-rollout-final-package-with-bundle"
   local final_bundle_archive_dir="$TMP_DIR/adapter-rollout-final-package-bundles"
@@ -9453,7 +9642,9 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
       bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
   )"
   assert_contains "$pass_output" "=== Execution Runtime Readiness Report ==="
+  assert_field_equals "$pass_output" "adapter_final_exit_code" "0"
   assert_field_equals "$pass_output" "adapter_final_verdict" "GO"
+  assert_field_equals "$pass_output" "route_fee_final_exit_code" "0"
   assert_field_equals "$pass_output" "route_fee_final_verdict" "GO"
   assert_field_equals "$pass_output" "runtime_readiness_verdict" "GO"
   assert_field_equals "$pass_output" "go_nogo_require_executor_upstream" "true"
@@ -9648,6 +9839,94 @@ EOF_RUNTIME_READINESS_EXECUTOR_ENV
   assert_field_equals "$exact_money_fail_output" "exact_money_legacy_export_verdict" "PASS"
   assert_field_equals "$exact_money_fail_output" "runtime_readiness_verdict" "NO_GO"
   assert_field_equals "$exact_money_fail_output" "runtime_readiness_reason_code" "exact_money_cutover_failed"
+  local runtime_adapter_final_helper_stub="$TMP_DIR/runtime-readiness-adapter-final-helper-exit7.sh"
+  write_passthrough_exit7_helper "$runtime_adapter_final_helper_stub" "$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh"
+  local adapter_final_fail_output=""
+  local adapter_final_fail_exit_code=0
+  if adapter_final_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-adapter-final-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      RUNTIME_READINESS_ADAPTER_FINAL_HELPER_PATH="$runtime_adapter_final_helper_stub" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"; then
+    adapter_final_fail_exit_code=0
+  else
+    adapter_final_fail_exit_code=$?
+  fi
+  if [[ "$adapter_final_fail_exit_code" -ne 3 ]]; then
+    echo "expected runtime readiness adapter-final helper failure exit code 3, got $adapter_final_fail_exit_code" >&2
+    echo "$adapter_final_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$adapter_final_fail_output" "adapter_final_exit_code" "7"
+  assert_field_equals "$adapter_final_fail_output" "adapter_final_verdict" "GO"
+  assert_field_equals "$adapter_final_fail_output" "runtime_readiness_verdict" "NO_GO"
+  assert_field_equals "$adapter_final_fail_output" "runtime_readiness_reason_code" "adapter_final_failed"
+  local runtime_route_fee_final_helper_stub="$TMP_DIR/runtime-readiness-route-fee-final-helper-exit7.sh"
+  write_passthrough_exit7_helper "$runtime_route_fee_final_helper_stub" "$ROOT_DIR/tools/execution_route_fee_final_evidence_report.sh"
+  local route_fee_final_fail_output=""
+  local route_fee_final_fail_exit_code=0
+  if route_fee_final_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/runtime-readiness-artifacts-route-fee-final-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      RUNTIME_READINESS_ROUTE_FEE_FINAL_HELPER_PATH="$runtime_route_fee_final_helper_stub" \
+      bash "$ROOT_DIR/tools/execution_runtime_readiness_report.sh" "24" "60" "24"
+  )"; then
+    route_fee_final_fail_exit_code=0
+  else
+    route_fee_final_fail_exit_code=$?
+  fi
+  if [[ "$route_fee_final_fail_exit_code" -ne 3 ]]; then
+    echo "expected runtime readiness route-fee-final helper failure exit code 3, got $route_fee_final_fail_exit_code" >&2
+    echo "$route_fee_final_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$route_fee_final_fail_output" "route_fee_final_exit_code" "7"
+  assert_field_equals "$route_fee_final_fail_output" "route_fee_final_verdict" "GO"
+  assert_field_equals "$route_fee_final_fail_output" "runtime_readiness_verdict" "NO_GO"
+  assert_field_equals "$route_fee_final_fail_output" "runtime_readiness_reason_code" "route_fee_final_failed"
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] execution runtime readiness report (fast)"
     return

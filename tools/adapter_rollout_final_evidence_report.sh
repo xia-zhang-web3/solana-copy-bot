@@ -54,6 +54,7 @@ REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="${REHEARSAL_ROUTE
 REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE}"
 # Keep nested rehearsal override isolated from top-level route/fee override by default.
 REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
+ADAPTER_FINAL_ROLLOUT_HELPER_PATH="${ADAPTER_FINAL_ROLLOUT_HELPER_PATH:-$ROOT_DIR/tools/adapter_rollout_evidence_report.sh}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -208,7 +209,7 @@ if ((${#input_errors[@]} == 0)); then
       REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
       PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+      bash "$ADAPTER_FINAL_ROLLOUT_HELPER_PATH" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     rollout_exit_code=0
   else
@@ -564,7 +565,12 @@ if ((${#input_errors[@]} == 0)); then
     fi
   fi
 
-  if [[ "$rollout_verdict" == "UNKNOWN" ]]; then
+  if ! go_nogo_exit_code_matches_verdict "$rollout_exit_code" "$rollout_verdict"; then
+    rollout_reported_verdict="$rollout_verdict"
+    rollout_verdict="NO_GO"
+    rollout_reason="rollout helper exited ${rollout_exit_code} with unexpected code for verdict ${rollout_reported_verdict}"
+    rollout_reason_code="rollout_failed"
+  elif [[ "$rollout_verdict" == "UNKNOWN" ]]; then
     rollout_reason="unable to classify rollout verdict (exit=$rollout_exit_code)"
     rollout_reason_code="unknown_verdict"
   elif [[ -z "$rollout_reason" ]]; then
