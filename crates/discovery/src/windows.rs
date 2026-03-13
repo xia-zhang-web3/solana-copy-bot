@@ -68,6 +68,10 @@ impl DiscoveryWindowState {
         self.enforce_max_swaps(max_swaps)
     }
 
+    pub(super) fn mark_warm_load_truncated(&mut self) {
+        self.cap_truncation_floor = self.swaps.front().map(DiscoveryCursor::from_swap);
+    }
+
     pub(super) fn enforce_max_swaps(&mut self, max_swaps: usize) -> usize {
         let max_swaps = max_swaps.max(1);
         let mut evicted = 0usize;

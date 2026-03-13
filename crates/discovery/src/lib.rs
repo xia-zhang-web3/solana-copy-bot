@@ -278,7 +278,7 @@ impl DiscoveryService {
                 match store
                     .load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
                 {
-                    Ok(swaps) => {
+                    Ok((swaps, truncated_by_limit)) => {
                         for swap in swaps {
                             if let Some(back) = state.swaps.back() {
                                 if cmp_swap_order(&swap, back) == Ordering::Less {
@@ -291,6 +291,9 @@ impl DiscoveryService {
                                 );
                                 swaps_warm_loaded = swaps_warm_loaded.saturating_add(1);
                             }
+                        }
+                        if truncated_by_limit {
+                            state.mark_warm_load_truncated();
                         }
                     }
                     Err(error) => {
@@ -2598,7 +2601,10 @@ mod tests {
             now,
         );
 
-        assert!(snapshot.eligible, "rug gate must be bypassed at max_rug_ratio=1.0");
+        assert!(
+            snapshot.eligible,
+            "rug gate must be bypassed at max_rug_ratio=1.0"
+        );
         assert!(
             snapshot.score > 0.4,
             "rug penalty must no longer zero the score when emergency rug disable is active"
@@ -2966,6 +2972,116 @@ mod tests {
         assert!(
             state.cap_truncation_floor.is_some(),
             "cap eviction should leave a truncation marker until the time window catches up"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn warm_restore_marks_truncated_capped_tail_and_suppresses_false_followlist_demotions(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-warm-restore-capped-tail-demotion-guard.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-13T08:21:30Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        for idx in 0..4 {
+            let buy_ts = now - Duration::minutes(40) + Duration::minutes((idx * 4) as i64);
+            let sell_ts = buy_ts + Duration::minutes(2);
+            store.insert_observed_swap(&swap(
+                "wallet_leader",
+                &format!("restart-leader-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenRestartLeader111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_leader",
+                &format!("restart-leader-sell-{idx}"),
+                sell_ts,
+                "TokenRestartLeader111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.3,
+            ))?;
+        }
+
+        let mut latest_noise_cursor: Option<DiscoveryRuntimeCursor> = None;
+        for idx in 0..9 {
+            let ts = now - Duration::minutes(9) + Duration::minutes(idx as i64);
+            let signature = format!("restart-noise-buy-{idx}");
+            let swap = swap(
+                "wallet_noise",
+                signature.as_str(),
+                ts,
+                SOL_MINT,
+                "TokenRestartNoise1111111111111111111111111",
+                0.2,
+                20.0,
+            );
+            latest_noise_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: swap.ts_utc,
+                slot: swap.slot,
+                signature: swap.signature.clone(),
+            });
+            store.insert_observed_swap(&swap)?;
+        }
+
+        store.activate_follow_wallet("wallet_leader", now - Duration::minutes(1), "seed-follow")?;
+        store.upsert_discovery_runtime_cursor(
+            &latest_noise_cursor.expect("latest noise cursor should be present"),
+        )?;
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_window_swaps_in_memory = 8;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.thin_market_min_unique_traders = 1;
+
+        let discovery_after_restart = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery_after_restart.run_cycle(&store, now)?;
+        assert_eq!(
+            summary.follow_demoted, 0,
+            "warm-restore on an already capped recent tail must suppress false followlist demotions"
+        );
+        let active_after = store.list_active_follow_wallets()?;
+        assert!(
+            active_after.contains("wallet_leader"),
+            "existing followed wallet must remain active on first post-restart recompute when warm slice is already truncated"
+        );
+        let state = discovery_after_restart
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert_eq!(state.swaps.len(), 8);
+        assert!(
+            state.cap_truncation_floor.is_some(),
+            "warm-restore capped tail must immediately latch truncation marker"
+        );
+        assert_eq!(
+            state
+                .cap_truncation_floor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
+            Some("restart-noise-buy-1"),
+            "warm-restore truncation floor should point at the oldest retained row"
         );
         Ok(())
     }

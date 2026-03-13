@@ -413,11 +413,12 @@ impl SqliteStore {
         &self,
         since: DateTime<Utc>,
         limit: usize,
-    ) -> Result<Vec<SwapEvent>> {
+    ) -> Result<(Vec<SwapEvent>, bool)> {
         if limit == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
-        let limit = (limit.min(i64::MAX as usize)) as i64;
+        let retained_limit = limit.min(i64::MAX as usize);
+        let query_limit = retained_limit.saturating_add(1).min(i64::MAX as usize) as i64;
         let mut stmt = self
             .conn
             .prepare(
@@ -430,7 +431,7 @@ impl SqliteStore {
             )
             .context("failed to prepare recent observed_swaps query")?;
         let mut rows = stmt
-            .query(params![since.to_rfc3339(), limit])
+            .query(params![since.to_rfc3339(), query_limit])
             .context("failed to query recent observed_swaps")?;
 
         let mut swaps = Vec::new();
@@ -440,8 +441,12 @@ impl SqliteStore {
         {
             swaps.push(Self::row_to_swap_event(row)?);
         }
+        let truncated_by_limit = swaps.len() > retained_limit;
+        if truncated_by_limit {
+            swaps.truncate(retained_limit);
+        }
         swaps.reverse();
-        Ok(swaps)
+        Ok((swaps, truncated_by_limit))
     }
 
     pub fn load_discovery_runtime_cursor(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
