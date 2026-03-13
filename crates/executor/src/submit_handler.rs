@@ -209,6 +209,14 @@ pub(crate) async fn handle_submit(
             .await;
         }
     };
+    // Any present tx_signature field means upstream may already have submitted
+    // the transaction, even if the surrounding envelope is malformed or reject-
+    // shaped. Keep the idempotency claim in-flight before parsing the outcome so
+    // later local rejects cannot open a duplicate-submit window.
+    if backend_response.get("tx_signature").is_some() {
+        submit_claim_guard.retain_claim_on_drop();
+    }
+
     match parse_upstream_outcome(&backend_response, "submit_adapter_rejected") {
         UpstreamOutcome::Reject(reject) => {
             return reject_after_claimed_submit_error(
@@ -221,12 +229,6 @@ pub(crate) async fn handle_submit(
             .await;
         }
         UpstreamOutcome::Success => {}
-    }
-
-    // If upstream success already claims a submitted signature, keep the
-    // idempotency claim in-flight even if later transport-field parsing fails.
-    if backend_response.get("tx_signature").is_some() {
-        submit_claim_guard.retain_claim_on_drop();
     }
 
     let submit_transport_artifact = match extract_submit_transport_artifact(&backend_response) {
