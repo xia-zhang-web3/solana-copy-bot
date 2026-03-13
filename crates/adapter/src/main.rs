@@ -655,6 +655,20 @@ struct Reject {
     detail: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SubmitTransportArtifact {
+    UpstreamSignature(String),
+    SignedTransactionBase64(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SubmitTransportArtifactError {
+    InvalidSubmitArtifactType { field_name: String },
+    InvalidUpstreamSignature { error: String },
+    ConflictingSubmitArtifacts,
+    MissingSubmitArtifact,
+}
+
 impl Reject {
     fn terminal(code: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
@@ -1103,35 +1117,40 @@ async fn handle_submit(
         }
     }
 
-    let upstream_tx_signature = backend_response
-        .get("tx_signature")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let signed_tx_base64 = backend_response
-        .get("signed_tx_base64")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let (tx_signature, submit_transport) = if let Some(value) = upstream_tx_signature {
-        validate_signature_like(value).map_err(|error| {
-            Reject::retryable(
+    let submit_transport_artifact =
+        extract_submit_transport_artifact(&backend_response).map_err(|error| match error {
+            SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name } => {
+                Reject::retryable(
+                    "submit_adapter_invalid_response",
+                    format!(
+                        "upstream {} must be a non-empty string when present",
+                        field_name
+                    ),
+                )
+            }
+            SubmitTransportArtifactError::InvalidUpstreamSignature { error } => Reject::retryable(
                 "submit_adapter_invalid_response",
                 format!(
                     "upstream tx_signature is not valid base58 signature: {}",
                     error
                 ),
-            )
+            ),
+            SubmitTransportArtifactError::ConflictingSubmitArtifacts => Reject::retryable(
+                "submit_adapter_invalid_response",
+                "upstream response must not include both tx_signature and signed_tx_base64",
+            ),
+            SubmitTransportArtifactError::MissingSubmitArtifact => Reject::retryable(
+                "submit_adapter_invalid_response",
+                "upstream response missing tx_signature and signed_tx_base64",
+            ),
         })?;
-        (value.to_string(), "upstream_signature")
-    } else if let Some(value) = signed_tx_base64 {
-        let signature = send_signed_transaction_via_rpc(state, route.as_str(), value).await?;
-        (signature, "adapter_send_rpc")
-    } else {
-        return Err(Reject::retryable(
-            "submit_adapter_invalid_response",
-            "upstream response missing tx_signature and signed_tx_base64",
-        ));
+    let (tx_signature, submit_transport) = match submit_transport_artifact {
+        SubmitTransportArtifact::UpstreamSignature(value) => (value, "upstream_signature"),
+        SubmitTransportArtifact::SignedTransactionBase64(value) => {
+            let signature =
+                send_signed_transaction_via_rpc(state, route.as_str(), value.as_str()).await?;
+            (signature, "adapter_send_rpc")
+        }
     };
 
     let submit_signature_verify =
@@ -1914,6 +1933,54 @@ fn validate_signature_like(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn extract_submit_transport_artifact(
+    backend_response: &Value,
+) -> Result<SubmitTransportArtifact, SubmitTransportArtifactError> {
+    let upstream_tx_signature =
+        parse_optional_non_empty_submit_transport_field(backend_response, "tx_signature")?;
+    let signed_tx_base64 =
+        parse_optional_non_empty_submit_transport_field(backend_response, "signed_tx_base64")?;
+
+    if upstream_tx_signature.is_some() && signed_tx_base64.is_some() {
+        return Err(SubmitTransportArtifactError::ConflictingSubmitArtifacts);
+    }
+
+    if let Some(value) = upstream_tx_signature {
+        validate_signature_like(value.as_str()).map_err(|error| {
+            SubmitTransportArtifactError::InvalidUpstreamSignature {
+                error: error.to_string(),
+            }
+        })?;
+        return Ok(SubmitTransportArtifact::UpstreamSignature(value));
+    }
+    if let Some(value) = signed_tx_base64 {
+        return Ok(SubmitTransportArtifact::SignedTransactionBase64(value));
+    }
+
+    Err(SubmitTransportArtifactError::MissingSubmitArtifact)
+}
+
+fn parse_optional_non_empty_submit_transport_field(
+    backend_response: &Value,
+    field_name: &str,
+) -> Result<Option<String>, SubmitTransportArtifactError> {
+    let Some(field_value) = backend_response.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(raw_value) = field_value.as_str() else {
+        return Err(SubmitTransportArtifactError::InvalidSubmitArtifactType {
+            field_name: field_name.to_string(),
+        });
+    };
+    let normalized = raw_value.trim();
+    if normalized.is_empty() {
+        return Err(SubmitTransportArtifactError::InvalidSubmitArtifactType {
+            field_name: field_name.to_string(),
+        });
+    }
+    Ok(Some(normalized.to_string()))
+}
+
 fn require_authenticated_mode(
     bearer_token: Option<&str>,
     hmac_key_id: Option<&str>,
@@ -2020,6 +2087,35 @@ mod tests {
         assert!(validate_signature_like("not-base58").is_err());
         let short = bs58::encode([7u8; 32]).into_string();
         assert!(validate_signature_like(short.as_str()).is_err());
+    }
+
+    #[test]
+    fn extract_submit_transport_artifact_rejects_conflicting_fields() {
+        let signature = bs58::encode([9u8; 64]).into_string();
+        let backend = json!({
+            "tx_signature": signature,
+            "signed_tx_base64": "AQID"
+        });
+        let error = extract_submit_transport_artifact(&backend)
+            .expect_err("conflicting artifacts must reject");
+        assert_eq!(
+            error,
+            SubmitTransportArtifactError::ConflictingSubmitArtifacts
+        );
+    }
+
+    #[test]
+    fn extract_submit_transport_artifact_rejects_non_string_signed_tx_type() {
+        let backend = json!({
+            "signed_tx_base64": 123
+        });
+        let error = extract_submit_transport_artifact(&backend)
+            .expect_err("non-string signed_tx_base64 must reject");
+        assert!(matches!(
+            error,
+            SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name }
+            if field_name == "signed_tx_base64"
+        ));
     }
 
     #[test]
@@ -2919,8 +3015,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage()
-    {
+    async fn send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage() {
         let (signed_tx_base64, _expected_signature) =
             test_signed_tx_base64_with_signature([37u8; 64]);
         let mut tx_bytes = BASE64_STANDARD
@@ -2947,9 +3042,7 @@ mod tests {
         assert!(reject.retryable);
         assert_eq!(reject.code, "submit_adapter_invalid_response");
         assert!(
-            reject
-                .detail
-                .contains("transaction bincode decode failed"),
+            reject.detail.contains("transaction bincode decode failed"),
             "detail={}",
             reject.detail
         );
@@ -2966,9 +3059,8 @@ mod tests {
         let mut transaction: VersionedTransaction =
             bincode::deserialize(tx_bytes.as_slice()).expect("decode valid canonical tx");
         transaction.signatures[0] = Signature::from([99u8; 64]);
-        let tampered_base64 = BASE64_STANDARD.encode(
-            bincode::serialize(&transaction).expect("serialize tampered canonical tx"),
-        );
+        let tampered_base64 = BASE64_STANDARD
+            .encode(bincode::serialize(&transaction).expect("serialize tampered canonical tx"));
 
         let mut state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
@@ -3090,6 +3182,106 @@ mod tests {
         );
         let _ = upstream_handle.join();
         let _ = send_rpc_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_conflicting_submit_transport_artifacts() {
+        let signature = bs58::encode([41u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","signed_tx_base64":"AQID"}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("conflicting submit artifacts must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("must not include both tx_signature and signed_tx_base64"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_non_string_signed_tx_base64_field() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":123}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("invalid signed_tx_base64 type must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("upstream signed_tx_base64 must be a non-empty string when present"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
     }
 
     #[tokio::test]
