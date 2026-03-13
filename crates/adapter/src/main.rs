@@ -1029,7 +1029,10 @@ async fn handle_simulate(
         "accepted": true,
         "route": route,
         "contract_version": state.config.contract_version,
-        "request_id": request.request_id.clone().unwrap_or_default(),
+        "request_id": request.request_id.as_deref().map(str::trim).unwrap_or_default(),
+        "signal_id": request.signal_id.trim(),
+        "side": request.side.trim().to_ascii_lowercase(),
+        "token": request.token.trim(),
         "detail": detail
     }))
 }
@@ -3623,6 +3626,53 @@ mod tests {
             "detail={}",
             reject.detail
         );
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_returns_canonical_identity_echoes_on_success() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"request_id":" request-1 ","signal_id":" signal-1 ","side":"BUY","token":" 11111111111111111111111111111111 "}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "action": "simulate",
+            "dry_run": true,
+            "contract_version": "v1",
+            "request_id": " request-1 ",
+            "signal_id": " signal-1 ",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc"
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize simulate request");
+        let request: SimulateRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize simulate request");
+
+        let response = handle_simulate(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("simulate success should preserve canonical identity echoes");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(
+            response.get("request_id").and_then(Value::as_str),
+            Some("request-1")
+        );
+        assert_eq!(
+            response.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+        assert_eq!(response.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            response.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
+        );
+        let _ = upstream_handle.join();
     }
 
     #[tokio::test]
