@@ -6078,7 +6078,7 @@ EOF_DEVNET_EXECUTOR_ENV
         bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
     )"
     assert_field_equals "$tests_enabled_output" "tests_run" "true"
-    assert_field_equals "$tests_enabled_output" "tests_total" "14"
+    assert_field_equals "$tests_enabled_output" "tests_total" "19"
     assert_field_equals "$tests_enabled_output" "tests_failed" "0"
     local tests_enabled_artifact_path=""
     tests_enabled_artifact_path="$(extract_field_value "$tests_enabled_output" "artifact_tests")"
@@ -6093,6 +6093,11 @@ EOF_DEVNET_EXECUTOR_ENV
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_invalid_signature_bytes"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_signed_transaction_without_configured_signer"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q simulate_response_validation_rejects_signal_id_mismatch"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q simulate_response_validation_accepts_case_insensitive_side_and_trimmed_strings"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q handle_submit_rejects_signed_tx_base64_signal_id_mismatch_before_send_rpc"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q handle_submit_accepts_case_insensitive_upstream_side_echo"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q handle_submit_rejects_non_string_request_id_field"
   fi
 
   local required_windowed_disabled_output=""
