@@ -1156,45 +1156,6 @@ async fn handle_submit(
     let submitted_at = resolve_submit_response_submitted_at(&backend_response, Utc::now())
         .map_err(map_submit_response_validation_error_to_reject)?;
 
-    let submit_transport_artifact =
-        extract_submit_transport_artifact(&backend_response).map_err(|error| match error {
-            SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name } => {
-                Reject::retryable(
-                    "submit_adapter_invalid_response",
-                    format!(
-                        "upstream {} must be a non-empty string when present",
-                        field_name
-                    ),
-                )
-            }
-            SubmitTransportArtifactError::InvalidUpstreamSignature { error } => Reject::retryable(
-                "submit_adapter_invalid_response",
-                format!(
-                    "upstream tx_signature is not valid base58 signature: {}",
-                    error
-                ),
-            ),
-            SubmitTransportArtifactError::ConflictingSubmitArtifacts => Reject::retryable(
-                "submit_adapter_invalid_response",
-                "upstream response must not include both tx_signature and signed_tx_base64",
-            ),
-            SubmitTransportArtifactError::MissingSubmitArtifact => Reject::retryable(
-                "submit_adapter_invalid_response",
-                "upstream response missing tx_signature and signed_tx_base64",
-            ),
-        })?;
-    let (tx_signature, submit_transport) = match submit_transport_artifact {
-        SubmitTransportArtifact::UpstreamSignature(value) => (value, "upstream_signature"),
-        SubmitTransportArtifact::SignedTransactionBase64(value) => {
-            let signature =
-                send_signed_transaction_via_rpc(state, route.as_str(), value.as_str()).await?;
-            (signature, "adapter_send_rpc")
-        }
-    };
-
-    let submit_signature_verify =
-        verify_submitted_signature_visibility(state, route.as_str(), tx_signature.as_str()).await?;
-
     let ata_create_rent_lamports =
         parse_optional_non_negative_u64_field(&backend_response, "ata_create_rent_lamports")?;
     let response_network_fee =
@@ -1244,6 +1205,45 @@ async fn handle_submit(
             ));
         }
     }
+
+    let submit_transport_artifact =
+        extract_submit_transport_artifact(&backend_response).map_err(|error| match error {
+            SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name } => {
+                Reject::retryable(
+                    "submit_adapter_invalid_response",
+                    format!(
+                        "upstream {} must be a non-empty string when present",
+                        field_name
+                    ),
+                )
+            }
+            SubmitTransportArtifactError::InvalidUpstreamSignature { error } => Reject::retryable(
+                "submit_adapter_invalid_response",
+                format!(
+                    "upstream tx_signature is not valid base58 signature: {}",
+                    error
+                ),
+            ),
+            SubmitTransportArtifactError::ConflictingSubmitArtifacts => Reject::retryable(
+                "submit_adapter_invalid_response",
+                "upstream response must not include both tx_signature and signed_tx_base64",
+            ),
+            SubmitTransportArtifactError::MissingSubmitArtifact => Reject::retryable(
+                "submit_adapter_invalid_response",
+                "upstream response missing tx_signature and signed_tx_base64",
+            ),
+        })?;
+    let (tx_signature, submit_transport) = match submit_transport_artifact {
+        SubmitTransportArtifact::UpstreamSignature(value) => (value, "upstream_signature"),
+        SubmitTransportArtifact::SignedTransactionBase64(value) => {
+            let signature =
+                send_signed_transaction_via_rpc(state, route.as_str(), value.as_str()).await?;
+            (signature, "adapter_send_rpc")
+        }
+    };
+
+    let submit_signature_verify =
+        verify_submitted_signature_visibility(state, route.as_str(), tx_signature.as_str()).await?;
 
     let mut response = json!({
         "status": "ok",
@@ -2086,9 +2086,6 @@ fn parse_optional_non_negative_u64_field(
     let Some(value) = body.get(field) else {
         return Ok(None);
     };
-    if value.is_null() {
-        return Ok(None);
-    }
     if let Some(parsed) = value.as_u64() {
         return Ok(Some(parsed));
     }
@@ -4048,6 +4045,122 @@ mod tests {
             reject
                 .detail
                 .contains("upstream request_id must be non-empty string when present"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_network_fee_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([46u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","base_fee_lamports":5000,"priority_fee_lamports":300,"network_fee_lamports":9999}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc-should-not-run".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("network_fee mismatch must reject before send_rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("network_fee_lamports=9999 does not match base+priority=5300"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_null_network_fee_before_send_rpc() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([47u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","network_fee_lamports":null}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc-should-not-run".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("null fee field must reject before send_rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("network_fee_lamports must be non-negative integer when present"),
             "detail={}",
             reject.detail
         );
