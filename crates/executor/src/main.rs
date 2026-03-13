@@ -10637,6 +10637,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_keeps_claim_in_flight_when_conflicting_transport_artifacts_include_upstream_signature(
+    ) {
+        let tx_signature = bs58::encode([21u8; 64]).into_string();
+        let (signed_tx_base64, _) = test_signed_tx_base64_with_signature([22u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","signed_tx_base64":"{}"}}"#,
+            tx_signature, signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-conflicting-transport-inflight-1",
+            "client_order_id": "client-order-conflicting-transport-inflight-1",
+            "request_id": "request-conflicting-transport-inflight-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let first_reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("conflicting transport artifacts should reject");
+        assert!(first_reject.retryable);
+        assert_eq!(first_reject.code, "submit_adapter_invalid_response");
+
+        let second_reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("claimed upstream submit must remain in-flight");
+        assert!(second_reject.retryable);
+        assert_eq!(second_reject.code, "submit_in_flight");
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_when_upstream_tx_signature_type_is_invalid() {
         let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"tx_signature":123}"#;
         let Some((upstream_url, upstream_handle)) =
@@ -10681,6 +10734,53 @@ mod tests {
             "unexpected detail: {}",
             reject.detail
         );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_keeps_claim_in_flight_when_upstream_tx_signature_type_is_invalid() {
+        let upstream_body = r#"{"status":"ok","ok":true,"accepted":true,"tx_signature":123}"#;
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body)
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-invalid-tx-signature-type-inflight-1",
+            "client_order_id": "client-order-invalid-tx-signature-type-inflight-1",
+            "request_id": "request-invalid-tx-signature-type-inflight-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let first_reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("invalid tx_signature type should reject");
+        assert!(first_reject.retryable);
+        assert_eq!(first_reject.code, "submit_adapter_invalid_response");
+
+        let second_reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("claimed upstream submit must remain in-flight");
+        assert!(second_reject.retryable);
+        assert_eq!(second_reject.code, "submit_in_flight");
         let _ = upstream_handle.join();
     }
 

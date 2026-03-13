@@ -223,6 +223,12 @@ pub(crate) async fn handle_submit(
         UpstreamOutcome::Success => {}
     }
 
+    // If upstream success already claims a submitted signature, keep the
+    // idempotency claim in-flight even if later transport-field parsing fails.
+    if backend_response.get("tx_signature").is_some() {
+        submit_claim_guard.retain_claim_on_drop();
+    }
+
     let submit_transport_artifact = match extract_submit_transport_artifact(&backend_response) {
         Ok(artifact) => artifact,
         Err(error) => {
