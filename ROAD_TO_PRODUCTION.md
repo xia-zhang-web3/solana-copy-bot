@@ -2762,3 +2762,46 @@ Formal verdict:
 1. The storage migration track is now operationally complete.
 2. `state/` is isolated on dedicated EBS, protected by snapshot, and no longer duplicated on root.
 3. Root filesystem headroom is restored and the immediate disk-pressure risk from the old state tree is removed.
+
+### 2026-03-13 — stale-close rollout cleared the pinned shadow backlog, then tripped hard-stop on one-time drawdown
+
+Источник:
+
+1. `ops/server_reports/2026-03-13_morning_stale_close_rollout_report.md`
+
+Краткий статус:
+
+1. Deployed commit `d06da0a48c7c52ed469961d8dc5193dc1358f93e` (`Bound terminal stale close zero pricing`) to live.
+2. Updated live config together with the rollout:
+   1. `risk.max_hold_hours = 6`,
+   2. `risk.shadow_stale_close_terminal_zero_price_hours = 12`.
+3. The new process came up cleanly:
+   1. `solana-copy-bot.service active`,
+   2. `ActiveEnterTimestamp = 2026-03-13 07:50:42 UTC`,
+   3. `NRestarts = 0`.
+4. Startup cleanup immediately flushed the pinned stale backlog:
+   1. `closed_priced = 0`,
+   2. `skipped_unpriced = 0`,
+   3. `terminal_zero_closed = 63`.
+5. Post-rollout state moved exactly as expected:
+   1. `shadow_lots_open = 63 -> 0`,
+   2. `shadow_closed_trades = 667 -> 730`,
+   3. `shadow_realized_pnl_sol = +2.190049326 -> -8.196632827`,
+   4. delta realized PnL `= -10.386682153 SOL`,
+   5. `shadow_open_cost_basis_sol = 10.386682153 -> 0`.
+6. Runtime itself stayed healthy after rollout:
+   1. `observed_swaps_max_ts = 2026-03-13T07:53:42.767187177+00:00`,
+   2. `discovery_runtime.cursor_ts = 2026-03-13T07:53:41.286310356+00:00`,
+   3. direct `cursor/head gap ~= 1.5s`,
+   4. `/dev/root ~137G free`,
+   5. state volume `~354G free`,
+   6. `live_copybot.db ~113G`, `WAL ~844M`.
+7. The stale-close bug is fixed, but the one-time accounting flush triggered a new shadow risk gate:
+   1. `shadow_risk_hard_stop` activated at `2026-03-13T07:50:43.022284751+00:00`,
+   2. reason: `drawdown_24h: pnl_24h=-10.386682 <= stop=-5.000000`.
+
+Операционный вывод:
+
+1. The stale-close deadlock that kept old shadow lots open forever is now closed in live.
+2. The old exposure-soft-cap pause should no longer be pinned by immortal stale lots, because open shadow exposure was fully cleared.
+3. The immediate follow-up blocker is now the shadow hard-stop caused by the forced one-time zero-price realization of the stale backlog.
