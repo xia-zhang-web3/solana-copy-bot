@@ -967,6 +967,11 @@ if [[ "$run_tests_norm" == "true" ]]; then
     "cargo test -p copybot-storage -q live_unrealized_pnl_sol_counts_missing_when_only_micro_quotes_exist"
     "cargo test -p copybot-execution -q adapter_intent_simulator_does_not_fallback_on_invalid_json_terminal_reject"
     "cargo test -p copybot-execution -q adapter_intent_simulator_redacts_endpoint_on_retryable_send_error"
+    "cargo test -p copybot-executor -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage"
+    "cargo test -p copybot-executor -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_invalid_signature_bytes"
+    "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage"
+    "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_invalid_signature_bytes"
+    "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_signed_transaction_without_configured_signer"
   )
   for test_cmd in "${test_commands[@]}"; do
     tests_total=$((tests_total + 1))

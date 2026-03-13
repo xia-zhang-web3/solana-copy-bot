@@ -6049,6 +6049,34 @@ EOF_DEVNET_EXECUTOR_ENV
   fi
   assert_contains "$invalid_profile_output" "DEVNET_REHEARSAL_PROFILE must be one of: full,core_only"
 
+  if [[ "$case_profile" != "fast" ]]; then
+    local tests_enabled_artifacts_dir="$TMP_DIR/devnet-rehearsal-artifacts-tests-enabled"
+    local tests_enabled_output=""
+    tests_enabled_output="$(
+      PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
+        OUTPUT_DIR="$tests_enabled_artifacts_dir" \
+        RUN_TESTS="true" DEVNET_REHEARSAL_TEST_MODE="true" \
+        GO_NOGO_TEST_MODE="true" GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+        bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
+    )"
+    assert_field_equals "$tests_enabled_output" "tests_run" "true"
+    assert_field_equals "$tests_enabled_output" "tests_total" "14"
+    assert_field_equals "$tests_enabled_output" "tests_failed" "0"
+    local tests_enabled_artifact_path=""
+    tests_enabled_artifact_path="$(extract_field_value "$tests_enabled_output" "artifact_tests")"
+    if [[ -z "$tests_enabled_artifact_path" || ! -f "$tests_enabled_artifact_path" ]]; then
+      echo "expected devnet rehearsal tests artifact at $tests_enabled_artifact_path" >&2
+      exit 1
+    fi
+    local tests_enabled_artifact_text=""
+    tests_enabled_artifact_text="$(cat "$tests_enabled_artifact_path")"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_invalid_signature_bytes"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_invalid_signature_bytes"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_signed_transaction_without_configured_signer"
+  fi
+
   local required_windowed_disabled_output=""
   if required_windowed_disabled_output="$(
     PATH="$FAKE_BIN_DIR:$PATH" DB_PATH="$db_path" CONFIG_PATH="$config_path" SERVICE="copybot-smoke-service" \
