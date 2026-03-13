@@ -669,9 +669,18 @@ enum SubmitTransportArtifactError {
     MissingSubmitArtifact,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 enum SubmitResponseValidationError {
     FieldMustBeNonEmptyStringWhenPresent {
+        field_name: String,
+    },
+    FieldMustBeFiniteNumberWhenPresent {
+        field_name: String,
+    },
+    FieldMustBeNonNegativeIntegerWhenPresent {
+        field_name: String,
+    },
+    FieldMustBeObjectWhenPresent {
         field_name: String,
     },
     RouteMismatch {
@@ -705,6 +714,22 @@ enum SubmitResponseValidationError {
     SubmittedAtMustBeNonEmptyRfc3339,
     SubmittedAtInvalidRfc3339 {
         raw: String,
+    },
+    SlippageBpsMismatch {
+        response_slippage_bps: f64,
+        expected_slippage_bps: f64,
+    },
+    TipLamportsMismatch {
+        response_tip_lamports: u64,
+        expected_tip_lamports: u64,
+    },
+    ComputeBudgetCuLimitMismatch {
+        response_cu_limit: u64,
+        expected_cu_limit: u64,
+    },
+    ComputeBudgetCuPriceMicroLamportsMismatch {
+        response_cu_price_micro_lamports: u64,
+        expected_cu_price_micro_lamports: u64,
     },
 }
 
@@ -1150,6 +1175,14 @@ async fn handle_submit(
         request.signal_id.as_str(),
         request.side.as_str(),
         request.token.as_str(),
+    )
+    .map_err(map_submit_response_validation_error_to_reject)?;
+    validate_submit_response_policy_echoes(
+        &backend_response,
+        request.slippage_bps,
+        request.tip_lamports,
+        request.compute_budget.cu_limit,
+        request.compute_budget.cu_price_micro_lamports,
     )
     .map_err(map_submit_response_validation_error_to_reject)?;
 
@@ -1780,6 +1813,30 @@ fn map_submit_response_validation_error_to_reject(error: SubmitResponseValidatio
                 ),
             )
         }
+        SubmitResponseValidationError::FieldMustBeFiniteNumberWhenPresent { field_name } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!(
+                    "upstream {} must be finite number when present",
+                    field_name
+                ),
+            )
+        }
+        SubmitResponseValidationError::FieldMustBeNonNegativeIntegerWhenPresent { field_name } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!(
+                    "upstream {} must be non-negative integer when present",
+                    field_name
+                ),
+            )
+        }
+        SubmitResponseValidationError::FieldMustBeObjectWhenPresent { field_name } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!("upstream {} must be object when present", field_name),
+            )
+        }
         SubmitResponseValidationError::RouteMismatch {
             response_route,
             expected_route,
@@ -1857,6 +1914,46 @@ fn map_submit_response_validation_error_to_reject(error: SubmitResponseValidatio
         SubmitResponseValidationError::SubmittedAtInvalidRfc3339 { raw } => Reject::terminal(
             "submit_adapter_invalid_response",
             format!("submitted_at is not valid RFC3339: {}", raw),
+        ),
+        SubmitResponseValidationError::SlippageBpsMismatch {
+            response_slippage_bps,
+            expected_slippage_bps,
+        } => Reject::terminal(
+            "submit_adapter_slippage_bps_mismatch",
+            format!(
+                "upstream slippage_bps={} does not match expected slippage_bps={}",
+                response_slippage_bps, expected_slippage_bps
+            ),
+        ),
+        SubmitResponseValidationError::TipLamportsMismatch {
+            response_tip_lamports,
+            expected_tip_lamports,
+        } => Reject::terminal(
+            "submit_adapter_tip_lamports_mismatch",
+            format!(
+                "upstream tip_lamports={} does not match expected tip_lamports={}",
+                response_tip_lamports, expected_tip_lamports
+            ),
+        ),
+        SubmitResponseValidationError::ComputeBudgetCuLimitMismatch {
+            response_cu_limit,
+            expected_cu_limit,
+        } => Reject::terminal(
+            "submit_adapter_compute_budget_mismatch",
+            format!(
+                "upstream compute_budget.cu_limit={} does not match expected compute_budget.cu_limit={}",
+                response_cu_limit, expected_cu_limit
+            ),
+        ),
+        SubmitResponseValidationError::ComputeBudgetCuPriceMicroLamportsMismatch {
+            response_cu_price_micro_lamports,
+            expected_cu_price_micro_lamports,
+        } => Reject::terminal(
+            "submit_adapter_compute_budget_mismatch",
+            format!(
+                "upstream compute_budget.cu_price_micro_lamports={} does not match expected compute_budget.cu_price_micro_lamports={}",
+                response_cu_price_micro_lamports, expected_cu_price_micro_lamports
+            ),
         ),
     }
 }
@@ -1972,6 +2069,71 @@ fn validate_submit_response_extended_identity(
     Ok(())
 }
 
+fn validate_submit_response_policy_echoes(
+    backend_response: &Value,
+    expected_slippage_bps: f64,
+    expected_tip_lamports: u64,
+    expected_cu_limit: u32,
+    expected_cu_price_micro_lamports: u64,
+) -> Result<(), SubmitResponseValidationError> {
+    if let Some(response_slippage_bps) =
+        parse_optional_finite_submit_response_f64_field(backend_response, "slippage_bps")?
+    {
+        if (response_slippage_bps - expected_slippage_bps).abs() > POLICY_FLOAT_EPSILON {
+            return Err(SubmitResponseValidationError::SlippageBpsMismatch {
+                response_slippage_bps,
+                expected_slippage_bps,
+            });
+        }
+    }
+
+    if let Some(response_tip_lamports) =
+        parse_optional_non_negative_submit_response_u64_field(backend_response, "tip_lamports")?
+    {
+        if response_tip_lamports != expected_tip_lamports {
+            return Err(SubmitResponseValidationError::TipLamportsMismatch {
+                response_tip_lamports,
+                expected_tip_lamports,
+            });
+        }
+    }
+
+    if let Some(compute_budget) = backend_response.get("compute_budget") {
+        let Some(compute_budget) = compute_budget.as_object() else {
+            return Err(SubmitResponseValidationError::FieldMustBeObjectWhenPresent {
+                field_name: "compute_budget".to_string(),
+            });
+        };
+        let response_cu_limit = parse_required_non_negative_submit_response_u64_field(
+            compute_budget.get("cu_limit"),
+            "compute_budget.cu_limit",
+        )?;
+        let expected_cu_limit = u64::from(expected_cu_limit);
+        if response_cu_limit != expected_cu_limit {
+            return Err(SubmitResponseValidationError::ComputeBudgetCuLimitMismatch {
+                response_cu_limit,
+                expected_cu_limit,
+            });
+        }
+
+        let response_cu_price_micro_lamports =
+            parse_required_non_negative_submit_response_u64_field(
+                compute_budget.get("cu_price_micro_lamports"),
+                "compute_budget.cu_price_micro_lamports",
+            )?;
+        if response_cu_price_micro_lamports != expected_cu_price_micro_lamports {
+            return Err(
+                SubmitResponseValidationError::ComputeBudgetCuPriceMicroLamportsMismatch {
+                    response_cu_price_micro_lamports,
+                    expected_cu_price_micro_lamports,
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn parse_optional_non_empty_submit_response_field(
     backend_response: &Value,
     field_name: &str,
@@ -1995,6 +2157,68 @@ fn parse_optional_non_empty_submit_response_field(
         );
     }
     Ok(Some(normalized.to_string()))
+}
+
+fn parse_optional_finite_submit_response_f64_field(
+    backend_response: &Value,
+    field_name: &str,
+) -> Result<Option<f64>, SubmitResponseValidationError> {
+    let Some(field_value) = backend_response.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(parsed) = field_value.as_f64() else {
+        return Err(
+            SubmitResponseValidationError::FieldMustBeFiniteNumberWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    };
+    if !parsed.is_finite() {
+        return Err(
+            SubmitResponseValidationError::FieldMustBeFiniteNumberWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    }
+    Ok(Some(parsed))
+}
+
+fn parse_optional_non_negative_submit_response_u64_field(
+    backend_response: &Value,
+    field_name: &str,
+) -> Result<Option<u64>, SubmitResponseValidationError> {
+    let Some(field_value) = backend_response.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(parsed) = field_value.as_u64() else {
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonNegativeIntegerWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    };
+    Ok(Some(parsed))
+}
+
+fn parse_required_non_negative_submit_response_u64_field(
+    field_value: Option<&Value>,
+    field_name: &str,
+) -> Result<u64, SubmitResponseValidationError> {
+    let Some(field_value) = field_value else {
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonNegativeIntegerWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    };
+    let Some(parsed) = field_value.as_u64() else {
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonNegativeIntegerWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    };
+    Ok(parsed)
 }
 
 fn resolve_submit_response_submitted_at(
@@ -4163,6 +4387,246 @@ mod tests {
                 .contains("network_fee_lamports must be non-negative integer when present"),
             "detail={}",
             reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_slippage_bps_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([48u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","slippage_bps":12.0}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc-should-not-run".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("slippage mismatch must reject before send_rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_slippage_bps_mismatch");
+        assert!(
+            reject
+                .detail
+                .contains("upstream slippage_bps=12 does not match expected slippage_bps=10"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_compute_budget_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([49u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","compute_budget":{{"cu_limit":350000,"cu_price_micro_lamports":1000}}}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc-should-not-run".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("compute_budget mismatch must reject before send_rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_compute_budget_mismatch");
+        assert!(
+            reject
+                .detail
+                .contains("upstream compute_budget.cu_limit=350000 does not match expected compute_budget.cu_limit=300000"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_tip_lamports_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([50u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","tip_lamports":1}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc-should-not-run".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("tip_lamports mismatch must reject before send_rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_tip_lamports_mismatch");
+        assert!(
+            reject
+                .detail
+                .contains("upstream tip_lamports=1 does not match expected tip_lamports=0"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_accepts_matching_upstream_policy_echoes() {
+        let signature = bs58::encode([51u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","slippage_bps":10.0,"tip_lamports":0,"compute_budget":{{"cu_limit":300000,"cu_price_micro_lamports":1000}}}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("matching policy echoes should pass");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(
+            response.get("slippage_bps").and_then(Value::as_f64),
+            Some(10.0)
+        );
+        assert_eq!(
+            response.get("tip_lamports").and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            response
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_limit"))
+                .and_then(Value::as_u64),
+            Some(300_000)
+        );
+        assert_eq!(
+            response
+                .get("compute_budget")
+                .and_then(|value| value.get("cu_price_micro_lamports"))
+                .and_then(Value::as_u64),
+            Some(1_000)
         );
         let _ = upstream_handle.join();
     }
