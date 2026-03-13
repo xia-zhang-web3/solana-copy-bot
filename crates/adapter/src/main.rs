@@ -670,9 +670,53 @@ enum SubmitTransportArtifactError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+enum SubmitResponseValidationError {
+    FieldMustBeNonEmptyStringWhenPresent {
+        field_name: String,
+    },
+    RouteMismatch {
+        response_route: String,
+        expected_route: String,
+    },
+    ContractVersionMismatch {
+        response_contract_version: String,
+        expected_contract_version: String,
+    },
+    ClientOrderIdMismatch {
+        response_client_order_id: String,
+        expected_client_order_id: String,
+    },
+    RequestIdMismatch {
+        response_request_id: String,
+        expected_request_id: String,
+    },
+    SignalIdMismatch {
+        response_signal_id: String,
+        expected_signal_id: String,
+    },
+    SideMismatch {
+        response_side: String,
+        expected_side: String,
+    },
+    TokenMismatch {
+        response_token: String,
+        expected_token: String,
+    },
+    SubmittedAtMustBeNonEmptyRfc3339,
+    SubmittedAtInvalidRfc3339 {
+        raw: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SimulateResponseValidationError {
-    FieldMustBeNonEmptyStringWhenPresent { field_name: String },
-    RouteMismatch { response_route: String, expected_route: String },
+    FieldMustBeNonEmptyStringWhenPresent {
+        field_name: String,
+    },
+    RouteMismatch {
+        response_route: String,
+        expected_route: String,
+    },
     ContractVersionMismatch {
         response_contract_version: String,
         expected_contract_version: String,
@@ -1086,38 +1130,28 @@ async fn handle_submit(
         UpstreamOutcome::Success => {}
     }
 
-    if let Some(response_route) = backend_response
-        .get("route")
-        .and_then(Value::as_str)
-        .map(normalize_route)
-    {
-        if response_route != route {
-            return Err(Reject::terminal(
-                "submit_adapter_route_mismatch",
-                format!(
-                    "upstream route={} does not match requested route={}",
-                    response_route, route
-                ),
-            ));
-        }
-    }
+    validate_submit_response_route_and_contract(
+        &backend_response,
+        route.as_str(),
+        state.config.contract_version.as_str(),
+    )
+    .map_err(map_submit_response_validation_error_to_reject)?;
+    validate_submit_response_request_identity(
+        &backend_response,
+        request.client_order_id.as_str(),
+        request.request_id.as_str(),
+    )
+    .map_err(map_submit_response_validation_error_to_reject)?;
+    validate_submit_response_extended_identity(
+        &backend_response,
+        request.signal_id.as_str(),
+        request.side.as_str(),
+        request.token.as_str(),
+    )
+    .map_err(map_submit_response_validation_error_to_reject)?;
 
-    if let Some(version) = backend_response
-        .get("contract_version")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if version != state.config.contract_version {
-            return Err(Reject::terminal(
-                "submit_adapter_contract_version_mismatch",
-                format!(
-                    "upstream contract_version={} does not match expected={}",
-                    version, state.config.contract_version
-                ),
-            ));
-        }
-    }
+    let submitted_at = resolve_submit_response_submitted_at(&backend_response, Utc::now())
+        .map_err(map_submit_response_validation_error_to_reject)?;
 
     let submit_transport_artifact =
         extract_submit_transport_artifact(&backend_response).map_err(|error| match error {
@@ -1157,62 +1191,6 @@ async fn handle_submit(
 
     let submit_signature_verify =
         verify_submitted_signature_visibility(state, route.as_str(), tx_signature.as_str()).await?;
-
-    if let Some(response_client_order_id) = backend_response
-        .get("client_order_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if response_client_order_id != request.client_order_id {
-            return Err(Reject::terminal(
-                "submit_adapter_client_order_id_mismatch",
-                format!(
-                    "upstream client_order_id={} does not match expected client_order_id={}",
-                    response_client_order_id, request.client_order_id
-                ),
-            ));
-        }
-    }
-
-    if let Some(response_request_id) = backend_response
-        .get("request_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if response_request_id != request.request_id {
-            return Err(Reject::terminal(
-                "submit_adapter_request_id_mismatch",
-                format!(
-                    "upstream request_id={} does not match expected request_id={}",
-                    response_request_id, request.request_id
-                ),
-            ));
-        }
-    }
-
-    let submitted_at = match backend_response.get("submitted_at") {
-        Some(value) => {
-            let raw = value
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    Reject::terminal(
-                        "submit_adapter_invalid_response",
-                        "submitted_at must be non-empty RFC3339 string",
-                    )
-                })?;
-            parse_rfc3339_utc(raw).ok_or_else(|| {
-                Reject::terminal(
-                    "submit_adapter_invalid_response",
-                    format!("submitted_at is not valid RFC3339: {}", raw),
-                )
-            })?
-        }
-        None => Utc::now(),
-    };
 
     let ata_create_rent_lamports =
         parse_optional_non_negative_u64_field(&backend_response, "ata_create_rent_lamports")?;
@@ -1270,8 +1248,11 @@ async fn handle_submit(
         "accepted": true,
         "route": route,
         "contract_version": state.config.contract_version,
-        "client_order_id": request.client_order_id,
-        "request_id": request.request_id,
+        "signal_id": request.signal_id.trim(),
+        "client_order_id": request.client_order_id.trim(),
+        "request_id": request.request_id.trim(),
+        "side": request.side.trim().to_ascii_lowercase(),
+        "token": request.token.trim(),
         "tx_signature": tx_signature,
         "submit_transport": submit_transport,
         "submitted_at": submitted_at.to_rfc3339(),
@@ -1754,8 +1735,10 @@ fn resolve_simulate_response_detail(
     backend_response: &Value,
     default_detail: &str,
 ) -> Result<String, SimulateResponseValidationError> {
-    Ok(parse_optional_non_empty_simulate_response_field(backend_response, "detail")?
-        .unwrap_or_else(|| default_detail.to_string()))
+    Ok(
+        parse_optional_non_empty_simulate_response_field(backend_response, "detail")?
+            .unwrap_or_else(|| default_detail.to_string()),
+    )
 }
 
 fn parse_optional_non_empty_simulate_response_field(
@@ -1781,6 +1764,253 @@ fn parse_optional_non_empty_simulate_response_field(
         );
     }
     Ok(Some(normalized.to_string()))
+}
+
+fn map_submit_response_validation_error_to_reject(error: SubmitResponseValidationError) -> Reject {
+    match error {
+        SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!(
+                    "upstream {} must be non-empty string when present",
+                    field_name
+                ),
+            )
+        }
+        SubmitResponseValidationError::RouteMismatch {
+            response_route,
+            expected_route,
+        } => Reject::terminal(
+            "submit_adapter_route_mismatch",
+            format!(
+                "upstream route={} does not match requested route={}",
+                response_route, expected_route
+            ),
+        ),
+        SubmitResponseValidationError::ContractVersionMismatch {
+            response_contract_version,
+            expected_contract_version,
+        } => Reject::terminal(
+            "submit_adapter_contract_version_mismatch",
+            format!(
+                "upstream contract_version={} does not match expected={}",
+                response_contract_version, expected_contract_version
+            ),
+        ),
+        SubmitResponseValidationError::ClientOrderIdMismatch {
+            response_client_order_id,
+            expected_client_order_id,
+        } => Reject::terminal(
+            "submit_adapter_client_order_id_mismatch",
+            format!(
+                "upstream client_order_id={} does not match expected client_order_id={}",
+                response_client_order_id, expected_client_order_id
+            ),
+        ),
+        SubmitResponseValidationError::RequestIdMismatch {
+            response_request_id,
+            expected_request_id,
+        } => Reject::terminal(
+            "submit_adapter_request_id_mismatch",
+            format!(
+                "upstream request_id={} does not match expected request_id={}",
+                response_request_id, expected_request_id
+            ),
+        ),
+        SubmitResponseValidationError::SignalIdMismatch {
+            response_signal_id,
+            expected_signal_id,
+        } => Reject::terminal(
+            "submit_adapter_signal_id_mismatch",
+            format!(
+                "upstream signal_id={} does not match expected signal_id={}",
+                response_signal_id, expected_signal_id
+            ),
+        ),
+        SubmitResponseValidationError::SideMismatch {
+            response_side,
+            expected_side,
+        } => Reject::terminal(
+            "submit_adapter_side_mismatch",
+            format!(
+                "upstream side={} does not match expected side={}",
+                response_side, expected_side
+            ),
+        ),
+        SubmitResponseValidationError::TokenMismatch {
+            response_token,
+            expected_token,
+        } => Reject::terminal(
+            "submit_adapter_token_mismatch",
+            format!(
+                "upstream token={} does not match expected token={}",
+                response_token, expected_token
+            ),
+        ),
+        SubmitResponseValidationError::SubmittedAtMustBeNonEmptyRfc3339 => Reject::terminal(
+            "submit_adapter_invalid_response",
+            "submitted_at must be non-empty RFC3339 string",
+        ),
+        SubmitResponseValidationError::SubmittedAtInvalidRfc3339 { raw } => Reject::terminal(
+            "submit_adapter_invalid_response",
+            format!("submitted_at is not valid RFC3339: {}", raw),
+        ),
+    }
+}
+
+fn validate_submit_response_route_and_contract(
+    backend_response: &Value,
+    expected_route: &str,
+    expected_contract_version: &str,
+) -> Result<(), SubmitResponseValidationError> {
+    if let Some(response_route_raw) =
+        parse_optional_non_empty_submit_response_field(backend_response, "route")?
+    {
+        let response_route = normalize_route(response_route_raw.as_str());
+        if response_route != expected_route {
+            return Err(SubmitResponseValidationError::RouteMismatch {
+                response_route,
+                expected_route: expected_route.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_contract_version) =
+        parse_optional_non_empty_submit_response_field(backend_response, "contract_version")?
+    {
+        if response_contract_version.as_str() != expected_contract_version {
+            return Err(SubmitResponseValidationError::ContractVersionMismatch {
+                response_contract_version,
+                expected_contract_version: expected_contract_version.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_submit_response_request_identity(
+    backend_response: &Value,
+    expected_client_order_id: &str,
+    expected_request_id: &str,
+) -> Result<(), SubmitResponseValidationError> {
+    let normalized_expected_client_order_id = expected_client_order_id.trim();
+    let normalized_expected_request_id = expected_request_id.trim();
+
+    if let Some(response_client_order_id) =
+        parse_optional_non_empty_submit_response_field(backend_response, "client_order_id")?
+    {
+        if response_client_order_id.as_str() != normalized_expected_client_order_id {
+            return Err(SubmitResponseValidationError::ClientOrderIdMismatch {
+                response_client_order_id,
+                expected_client_order_id: normalized_expected_client_order_id.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_request_id) =
+        parse_optional_non_empty_submit_response_field(backend_response, "request_id")?
+    {
+        if response_request_id.as_str() != normalized_expected_request_id {
+            return Err(SubmitResponseValidationError::RequestIdMismatch {
+                response_request_id,
+                expected_request_id: normalized_expected_request_id.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_submit_response_extended_identity(
+    backend_response: &Value,
+    expected_signal_id: &str,
+    expected_side: &str,
+    expected_token: &str,
+) -> Result<(), SubmitResponseValidationError> {
+    let normalized_expected_signal_id = expected_signal_id.trim();
+    let normalized_expected_side = expected_side.trim().to_ascii_lowercase();
+    let normalized_expected_token = expected_token.trim();
+
+    if let Some(response_signal_id) =
+        parse_optional_non_empty_submit_response_field(backend_response, "signal_id")?
+    {
+        if response_signal_id.as_str() != normalized_expected_signal_id {
+            return Err(SubmitResponseValidationError::SignalIdMismatch {
+                response_signal_id,
+                expected_signal_id: normalized_expected_signal_id.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_side) =
+        parse_optional_non_empty_submit_response_field(backend_response, "side")?
+    {
+        let normalized_response_side = response_side.to_ascii_lowercase();
+        if normalized_response_side != normalized_expected_side {
+            return Err(SubmitResponseValidationError::SideMismatch {
+                response_side,
+                expected_side: normalized_expected_side,
+            });
+        }
+    }
+
+    if let Some(response_token) =
+        parse_optional_non_empty_submit_response_field(backend_response, "token")?
+    {
+        if response_token.as_str() != normalized_expected_token {
+            return Err(SubmitResponseValidationError::TokenMismatch {
+                response_token,
+                expected_token: normalized_expected_token.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_optional_non_empty_submit_response_field(
+    backend_response: &Value,
+    field_name: &str,
+) -> Result<Option<String>, SubmitResponseValidationError> {
+    let Some(field_value) = backend_response.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(raw_value) = field_value.as_str() else {
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    };
+    let normalized = raw_value.trim();
+    if normalized.is_empty() {
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    }
+    Ok(Some(normalized.to_string()))
+}
+
+fn resolve_submit_response_submitted_at(
+    backend_response: &Value,
+    now: DateTime<Utc>,
+) -> Result<DateTime<Utc>, SubmitResponseValidationError> {
+    let Some(value) = backend_response.get("submitted_at") else {
+        return Ok(now);
+    };
+    let raw = value
+        .as_str()
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty())
+        .ok_or(SubmitResponseValidationError::SubmittedAtMustBeNonEmptyRfc3339)?;
+    parse_rfc3339_utc(raw).ok_or_else(
+        || SubmitResponseValidationError::SubmittedAtInvalidRfc3339 {
+            raw: raw.to_string(),
+        },
+    )
 }
 
 fn validate_common_contract(
@@ -2349,6 +2579,48 @@ mod tests {
         });
         validate_simulate_response_identity(&backend, "request-1", "signal-1", "buy", "Token111")
             .expect("canonical identity should pass");
+    }
+
+    #[test]
+    fn submit_response_validation_rejects_signal_id_mismatch() {
+        let backend = json!({
+            "signal_id": "signal-2"
+        });
+        let error =
+            validate_submit_response_extended_identity(&backend, "signal-1", "buy", "Token111")
+                .expect_err("signal mismatch must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::SignalIdMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn submit_response_validation_rejects_non_string_request_id() {
+        let backend = json!({
+            "request_id": 123
+        });
+        let error = validate_submit_response_request_identity(&backend, "client-1", "request-1")
+            .expect_err("non-string request id must reject");
+        assert!(matches!(
+            error,
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { .. }
+        ));
+    }
+
+    #[test]
+    fn submit_response_validation_accepts_case_insensitive_side_and_trimmed_strings() {
+        let backend = json!({
+            "client_order_id": " client-1 ",
+            "request_id": " request-1 ",
+            "signal_id": " signal-1 ",
+            "side": "BUY",
+            "token": " Token111 "
+        });
+        validate_submit_response_request_identity(&backend, "client-1", "request-1")
+            .expect("trimmed request identity should pass");
+        validate_submit_response_extended_identity(&backend, "signal-1", "buy", "Token111")
+            .expect("canonical extended identity should pass");
     }
 
     #[test]
@@ -3511,6 +3783,221 @@ mod tests {
             reject
                 .detail
                 .contains("upstream signed_tx_base64 must be a non-empty string when present"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_upstream_signal_id_mismatch() {
+        let signature = bs58::encode([42u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","signal_id":"signal-2"}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("mismatched upstream signal_id should reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_signal_id_mismatch");
+        assert!(
+            reject
+                .detail
+                .contains("signal_id=signal-2 does not match expected signal_id=signal-1"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_signed_tx_base64_signal_id_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([45u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","signal_id":"signal-2"}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc-should-not-run".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("mismatched upstream signal_id should reject before send_rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_signal_id_mismatch");
+        assert!(
+            reject
+                .detail
+                .contains("signal_id=signal-2 does not match expected signal_id=signal-1"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_accepts_case_insensitive_upstream_side_echo() {
+        let signature = bs58::encode([43u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","request_id":" request-1 ","client_order_id":" client-order-1 ","signal_id":" signal-1 ","side":"BUY","token":" 11111111111111111111111111111111 "}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("case-insensitive side echo should pass");
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(
+            response.get("signal_id").and_then(Value::as_str),
+            Some("signal-1")
+        );
+        assert_eq!(response.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            response.get("token").and_then(Value::as_str),
+            Some("11111111111111111111111111111111")
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_non_string_request_id_field() {
+        let signature = bs58::encode([44u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","request_id":123}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("non-string request_id should reject");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("upstream request_id must be non-empty string when present"),
             "detail={}",
             reject.detail
         );
