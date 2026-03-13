@@ -669,6 +669,32 @@ enum SubmitTransportArtifactError {
     MissingSubmitArtifact,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SimulateResponseValidationError {
+    FieldMustBeNonEmptyStringWhenPresent { field_name: String },
+    RouteMismatch { response_route: String, expected_route: String },
+    ContractVersionMismatch {
+        response_contract_version: String,
+        expected_contract_version: String,
+    },
+    RequestIdMismatch {
+        response_request_id: String,
+        expected_request_id: String,
+    },
+    SignalIdMismatch {
+        response_signal_id: String,
+        expected_signal_id: String,
+    },
+    SideMismatch {
+        response_side: String,
+        expected_side: String,
+    },
+    TokenMismatch {
+        response_token: String,
+        expected_token: String,
+    },
+}
+
 impl Reject {
     fn terminal(code: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
@@ -935,47 +961,23 @@ async fn handle_simulate(
         UpstreamOutcome::Success => {}
     }
 
-    // route echo can come from upstream; mismatch remains fail-closed.
-    if let Some(response_route) = backend_response
-        .get("route")
-        .and_then(Value::as_str)
-        .map(normalize_route)
-    {
-        if response_route != route {
-            return Err(Reject::terminal(
-                "simulation_route_mismatch",
-                format!(
-                    "upstream route={} does not match requested route={}",
-                    response_route, route
-                ),
-            ));
-        }
-    }
+    validate_simulate_response_route_and_contract(
+        &backend_response,
+        route.as_str(),
+        state.config.contract_version.as_str(),
+    )
+    .map_err(map_simulate_response_validation_error_to_reject)?;
+    validate_simulate_response_identity(
+        &backend_response,
+        request.request_id.as_deref().unwrap_or_default(),
+        request.signal_id.as_str(),
+        request.side.as_str(),
+        request.token.as_str(),
+    )
+    .map_err(map_simulate_response_validation_error_to_reject)?;
 
-    if let Some(version) = backend_response
-        .get("contract_version")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if version != state.config.contract_version {
-            return Err(Reject::terminal(
-                "simulation_contract_version_mismatch",
-                format!(
-                    "upstream contract_version={} does not match expected={}",
-                    version, state.config.contract_version
-                ),
-            ));
-        }
-    }
-
-    let detail = backend_response
-        .get("detail")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("adapter_simulation_ok")
-        .to_string();
+    let detail = resolve_simulate_response_detail(&backend_response, "adapter_simulation_ok")
+        .map_err(map_simulate_response_validation_error_to_reject)?;
 
     Ok(json!({
         "status": "ok",
@@ -1581,6 +1583,206 @@ fn parse_upstream_outcome(body: &Value, default_reject_code: &str) -> UpstreamOu
     UpstreamOutcome::Success
 }
 
+fn map_simulate_response_validation_error_to_reject(
+    error: SimulateResponseValidationError,
+) -> Reject {
+    match error {
+        SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent { field_name } => {
+            Reject::terminal(
+                "simulation_invalid_response",
+                format!(
+                    "upstream simulate field {} must be a non-empty string when present",
+                    field_name
+                ),
+            )
+        }
+        SimulateResponseValidationError::RouteMismatch {
+            response_route,
+            expected_route,
+        } => Reject::terminal(
+            "simulation_route_mismatch",
+            format!(
+                "upstream route={} does not match requested route={}",
+                response_route, expected_route
+            ),
+        ),
+        SimulateResponseValidationError::ContractVersionMismatch {
+            response_contract_version,
+            expected_contract_version,
+        } => Reject::terminal(
+            "simulation_contract_version_mismatch",
+            format!(
+                "upstream contract_version={} does not match expected={}",
+                response_contract_version, expected_contract_version
+            ),
+        ),
+        SimulateResponseValidationError::RequestIdMismatch {
+            response_request_id,
+            expected_request_id,
+        } => Reject::terminal(
+            "simulation_request_id_mismatch",
+            format!(
+                "upstream request_id={} does not match expected request_id={}",
+                response_request_id, expected_request_id
+            ),
+        ),
+        SimulateResponseValidationError::SignalIdMismatch {
+            response_signal_id,
+            expected_signal_id,
+        } => Reject::terminal(
+            "simulation_signal_id_mismatch",
+            format!(
+                "upstream signal_id={} does not match expected signal_id={}",
+                response_signal_id, expected_signal_id
+            ),
+        ),
+        SimulateResponseValidationError::SideMismatch {
+            response_side,
+            expected_side,
+        } => Reject::terminal(
+            "simulation_side_mismatch",
+            format!(
+                "upstream side={} does not match expected side={}",
+                response_side, expected_side
+            ),
+        ),
+        SimulateResponseValidationError::TokenMismatch {
+            response_token,
+            expected_token,
+        } => Reject::terminal(
+            "simulation_token_mismatch",
+            format!(
+                "upstream token={} does not match expected token={}",
+                response_token, expected_token
+            ),
+        ),
+    }
+}
+
+fn validate_simulate_response_route_and_contract(
+    backend_response: &Value,
+    expected_route: &str,
+    expected_contract_version: &str,
+) -> Result<(), SimulateResponseValidationError> {
+    if let Some(response_route_raw) =
+        parse_optional_non_empty_simulate_response_field(backend_response, "route")?
+    {
+        let response_route = normalize_route(response_route_raw.as_str());
+        if response_route != expected_route {
+            return Err(SimulateResponseValidationError::RouteMismatch {
+                response_route,
+                expected_route: expected_route.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_contract_version) =
+        parse_optional_non_empty_simulate_response_field(backend_response, "contract_version")?
+    {
+        if response_contract_version.as_str() != expected_contract_version {
+            return Err(SimulateResponseValidationError::ContractVersionMismatch {
+                response_contract_version,
+                expected_contract_version: expected_contract_version.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_simulate_response_identity(
+    backend_response: &Value,
+    expected_request_id: &str,
+    expected_signal_id: &str,
+    expected_side: &str,
+    expected_token: &str,
+) -> Result<(), SimulateResponseValidationError> {
+    let normalized_expected_request_id = expected_request_id.trim();
+    let normalized_expected_signal_id = expected_signal_id.trim();
+    let normalized_expected_side = expected_side.trim().to_ascii_lowercase();
+    let normalized_expected_token = expected_token.trim();
+
+    if let Some(response_request_id) =
+        parse_optional_non_empty_simulate_response_field(backend_response, "request_id")?
+    {
+        if response_request_id.as_str() != normalized_expected_request_id {
+            return Err(SimulateResponseValidationError::RequestIdMismatch {
+                response_request_id,
+                expected_request_id: normalized_expected_request_id.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_signal_id) =
+        parse_optional_non_empty_simulate_response_field(backend_response, "signal_id")?
+    {
+        if response_signal_id.as_str() != normalized_expected_signal_id {
+            return Err(SimulateResponseValidationError::SignalIdMismatch {
+                response_signal_id,
+                expected_signal_id: normalized_expected_signal_id.to_string(),
+            });
+        }
+    }
+
+    if let Some(response_side) =
+        parse_optional_non_empty_simulate_response_field(backend_response, "side")?
+    {
+        let normalized_response_side = response_side.to_ascii_lowercase();
+        if normalized_response_side != normalized_expected_side {
+            return Err(SimulateResponseValidationError::SideMismatch {
+                response_side,
+                expected_side: normalized_expected_side,
+            });
+        }
+    }
+
+    if let Some(response_token) =
+        parse_optional_non_empty_simulate_response_field(backend_response, "token")?
+    {
+        if response_token.as_str() != normalized_expected_token {
+            return Err(SimulateResponseValidationError::TokenMismatch {
+                response_token,
+                expected_token: normalized_expected_token.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_simulate_response_detail(
+    backend_response: &Value,
+    default_detail: &str,
+) -> Result<String, SimulateResponseValidationError> {
+    Ok(parse_optional_non_empty_simulate_response_field(backend_response, "detail")?
+        .unwrap_or_else(|| default_detail.to_string()))
+}
+
+fn parse_optional_non_empty_simulate_response_field(
+    backend_response: &Value,
+    field_name: &str,
+) -> Result<Option<String>, SimulateResponseValidationError> {
+    let Some(field_value) = backend_response.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(raw_value) = field_value.as_str() else {
+        return Err(
+            SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    };
+    let normalized = raw_value.trim();
+    if normalized.is_empty() {
+        return Err(
+            SimulateResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
+    }
+    Ok(Some(normalized.to_string()))
+}
+
 fn validate_common_contract(
     state: &AppState,
     request_contract_version: Option<&str>,
@@ -2116,6 +2318,37 @@ mod tests {
             SubmitTransportArtifactError::InvalidSubmitArtifactType { field_name }
             if field_name == "signed_tx_base64"
         ));
+    }
+
+    #[test]
+    fn simulate_response_validation_rejects_signal_id_mismatch() {
+        let backend = json!({
+            "signal_id": "signal-2"
+        });
+        let error = validate_simulate_response_identity(
+            &backend,
+            "request-1",
+            "signal-1",
+            "buy",
+            "Token111",
+        )
+        .expect_err("signal mismatch must reject");
+        assert!(matches!(
+            error,
+            SimulateResponseValidationError::SignalIdMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn simulate_response_validation_accepts_case_insensitive_side_and_trimmed_strings() {
+        let backend = json!({
+            "request_id": " request-1 ",
+            "signal_id": " signal-1 ",
+            "side": "BUY",
+            "token": " Token111 "
+        });
+        validate_simulate_response_identity(&backend, "request-1", "signal-1", "buy", "Token111")
+            .expect("canonical identity should pass");
     }
 
     #[test]
