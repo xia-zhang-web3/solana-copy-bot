@@ -985,6 +985,11 @@ if [[ "$run_tests_norm" == "true" ]]; then
     "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_tx_signature_type_is_invalid"
     "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_reject_includes_tx_signature"
     "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_invalid_upstream_status_includes_tx_signature"
+    "cargo test -p copybot-executor -q submit_response_policy_echoes_"
+    "cargo test -p copybot-executor -q handle_submit_rejects_slippage_bps_mismatch_before_send_rpc"
+    "cargo test -p copybot-executor -q handle_submit_rejects_compute_budget_mismatch_before_send_rpc"
+    "cargo test -p copybot-executor -q handle_submit_rejects_tip_policy_mismatch_before_send_rpc"
+    "cargo test -p copybot-executor -q handle_submit_accepts_matching_upstream_policy_echoes"
   )
   for test_cmd in "${test_commands[@]}"; do
     tests_total=$((tests_total + 1))
