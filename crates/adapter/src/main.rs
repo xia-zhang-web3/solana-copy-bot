@@ -1535,18 +1535,100 @@ async fn forward_to_upstream(
 }
 
 fn parse_upstream_outcome(body: &Value, default_reject_code: &str) -> UpstreamOutcome {
-    let status = body
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let ok_flag = body.get("ok").and_then(Value::as_bool);
-    let accepted_flag = body.get("accepted").and_then(Value::as_bool);
-    let retryable = body
-        .get("retryable")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let status = match parse_optional_upstream_status_field(body) {
+        Ok(Some(value)) => value,
+        Ok(None) => String::new(),
+        Err(detail) => {
+            return UpstreamOutcome::Reject(Reject::terminal("upstream_invalid_response", detail))
+        }
+    };
+
+    let ok_flag = match parse_optional_upstream_bool_field(
+        body,
+        "ok",
+        "upstream ok must be boolean when present",
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(Reject::terminal("upstream_invalid_response", detail))
+        }
+    };
+    let accepted_flag = match parse_optional_upstream_bool_field(
+        body,
+        "accepted",
+        "upstream accepted must be boolean when present",
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(Reject::terminal("upstream_invalid_response", detail))
+        }
+    };
+
+    let is_known_success_status = matches!(status.as_str(), "ok" | "accepted" | "success");
+    let is_known_reject_status = matches!(
+        status.as_str(),
+        "reject" | "rejected" | "error" | "failed" | "failure"
+    );
+    let is_known_status = is_known_success_status || is_known_reject_status;
+
+    if !status.is_empty() && !is_known_status {
+        return UpstreamOutcome::Reject(Reject::terminal(
+            "upstream_invalid_status",
+            format!("unknown upstream status={}", status),
+        ));
+    }
+
+    if is_known_success_status && (ok_flag == Some(false) || accepted_flag == Some(false)) {
+        return UpstreamOutcome::Reject(Reject::terminal(
+            "upstream_invalid_response",
+            "upstream status=ok conflicts with reject flags",
+        ));
+    }
+    if is_known_reject_status && (ok_flag == Some(true) || accepted_flag == Some(true)) {
+        return UpstreamOutcome::Reject(Reject::terminal(
+            "upstream_invalid_response",
+            "upstream status=reject conflicts with success flags",
+        ));
+    }
+    if status.is_empty() && ok_flag.is_some() && accepted_flag.is_some() && ok_flag != accepted_flag
+    {
+        return UpstreamOutcome::Reject(Reject::terminal(
+            "upstream_invalid_response",
+            "upstream ok/accepted flags conflict when status is missing",
+        ));
+    }
+
+    let retryable = match parse_optional_upstream_bool_field(
+        body,
+        "retryable",
+        "upstream retryable must be boolean when present",
+    ) {
+        Ok(Some(value)) => value,
+        Ok(None) => false,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(Reject::terminal("upstream_invalid_response", detail))
+        }
+    };
+    let response_code = match parse_optional_non_empty_upstream_string_field(
+        body,
+        "code",
+        "upstream code must be non-empty string when present",
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(Reject::terminal("upstream_invalid_response", detail))
+        }
+    };
+    let response_detail = match parse_optional_non_empty_upstream_string_field(
+        body,
+        "detail",
+        "upstream detail must be non-empty string when present",
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(Reject::terminal("upstream_invalid_response", detail))
+        }
+    };
 
     let is_reject = matches!(
         status.as_str(),
@@ -1554,39 +1636,13 @@ fn parse_upstream_outcome(body: &Value, default_reject_code: &str) -> UpstreamOu
     ) || ok_flag == Some(false)
         || accepted_flag == Some(false);
     if is_reject {
-        let code = body
-            .get("code")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(default_reject_code)
-            .to_string();
-        let detail = body
-            .get("detail")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("upstream rejected request")
-            .to_string();
+        let code = response_code.unwrap_or_else(|| default_reject_code.to_string());
+        let detail = response_detail.unwrap_or_else(|| "upstream rejected request".to_string());
         return UpstreamOutcome::Reject(if retryable {
             Reject::retryable(code, detail)
         } else {
             Reject::terminal(code, detail)
         });
-    }
-
-    let is_known_success_status = matches!(status.as_str(), "ok" | "accepted" | "success");
-    let is_known_status = is_known_success_status
-        || matches!(
-            status.as_str(),
-            "reject" | "rejected" | "error" | "failed" | "failure"
-        );
-
-    if !status.is_empty() && !is_known_status {
-        return UpstreamOutcome::Reject(Reject::terminal(
-            "upstream_invalid_status",
-            format!("unknown upstream status={}", status),
-        ));
     }
 
     let success = accepted_flag.or(ok_flag).unwrap_or(is_known_success_status);
@@ -1598,6 +1654,52 @@ fn parse_upstream_outcome(body: &Value, default_reject_code: &str) -> UpstreamOu
     }
 
     UpstreamOutcome::Success
+}
+
+fn parse_optional_non_empty_upstream_string_field(
+    payload: &Value,
+    field_name: &str,
+    invalid_detail: &str,
+) -> Result<Option<String>, String> {
+    let Some(field_value) = payload.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(raw_value) = field_value.as_str() else {
+        return Err(invalid_detail.to_string());
+    };
+    let normalized = raw_value.trim();
+    if normalized.is_empty() {
+        return Err(invalid_detail.to_string());
+    }
+    Ok(Some(normalized.to_string()))
+}
+
+fn parse_optional_upstream_bool_field(
+    payload: &Value,
+    field_name: &str,
+    invalid_detail: &str,
+) -> Result<Option<bool>, String> {
+    let Some(field_value) = payload.get(field_name) else {
+        return Ok(None);
+    };
+    let Some(normalized) = field_value.as_bool() else {
+        return Err(invalid_detail.to_string());
+    };
+    Ok(Some(normalized))
+}
+
+fn parse_optional_upstream_status_field(payload: &Value) -> Result<Option<String>, String> {
+    let Some(field_value) = payload.get("status") else {
+        return Ok(None);
+    };
+    let Some(raw_status) = field_value.as_str() else {
+        return Err("upstream status must be non-empty string when present".to_string());
+    };
+    let normalized = raw_status.trim();
+    if normalized.is_empty() {
+        return Err("upstream status must be non-empty string when present".to_string());
+    }
+    Ok(Some(normalized.to_ascii_lowercase()))
 }
 
 fn map_simulate_response_validation_error_to_reject(
@@ -2724,6 +2826,57 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(reject.retryable);
                 assert_eq!(reject.code, "busy");
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn parse_upstream_outcome_rejects_non_boolean_ok_flag() {
+        let payload = json!({
+            "status": "ok",
+            "ok": "yes",
+            "accepted": true
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(reject.detail.contains("upstream ok must be boolean when present"));
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn parse_upstream_outcome_rejects_conflicting_success_and_reject_flags() {
+        let payload = json!({
+            "status": "ok",
+            "accepted": false
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(reject.detail.contains("status=ok conflicts with reject flags"));
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn parse_upstream_outcome_rejects_non_string_code_in_success_envelope() {
+        let payload = json!({
+            "status": "ok",
+            "ok": true,
+            "accepted": true,
+            "code": 123
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(reject.detail.contains("upstream code must be non-empty string when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -4269,6 +4422,122 @@ mod tests {
             reject
                 .detail
                 .contains("upstream request_id must be non-empty string when present"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_non_boolean_upstream_ok_before_send_rpc() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([45u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":"yes","accepted":true,"signed_tx_base64":"{}"}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc-should-not-run".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("non-boolean upstream ok must reject before send_rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("upstream ok must be boolean when present"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_non_boolean_upstream_retryable_before_send_rpc() {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([58u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"retryable":"yes","signed_tx_base64":"{}"}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc-should-not-run".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-1",
+            "client_order_id": "client-order-1",
+            "request_id": "request-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("non-boolean upstream retryable must reject before send_rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("upstream retryable must be boolean when present"),
             "detail={}",
             reject.detail
         );
