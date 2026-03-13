@@ -24,6 +24,7 @@ pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES: usize = 3;
 pub const STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
 pub const SHADOW_CLOSE_CONTEXT_MARKET: &str = "market";
 pub const SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE: &str = "stale_terminal_zero_price";
+pub const SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
 pub const SHADOW_RISK_CONTEXT_MARKET: &str = "market";
 pub const SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
 const LIVE_UNREALIZED_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
@@ -1580,6 +1581,44 @@ mod tests {
     }
 
     #[test]
+    fn shadow_lot_risk_context_rejects_unknown_value() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-risk-context-validation.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let error = store
+            .insert_shadow_lot_exact_with_risk_context(
+                "wallet",
+                "token",
+                1.0,
+                None,
+                0.10,
+                "typo_quarantine",
+                opened_ts,
+            )
+            .expect_err("unknown risk_context must reject");
+        assert!(error.to_string().contains("unsupported shadow risk_context"));
+
+        let lot_id = store.insert_shadow_lot("wallet", "token", 1.0, 0.10, opened_ts)?;
+        let error = store
+            .update_shadow_lot_risk_context(lot_id, "typo_quarantine")
+            .expect_err("updating to unknown risk_context must reject");
+        assert!(error.to_string().contains("unsupported shadow risk_context"));
+        assert_eq!(
+            store.list_shadow_lots("wallet", "token")?[0].risk_context,
+            SHADOW_RISK_CONTEXT_MARKET
+        );
+        Ok(())
+    }
+
+    #[test]
     fn shadow_lot_and_closed_trade_persist_exact_qty_sidecars() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("shadow-exact-qty-sidecars.db");
@@ -2029,6 +2068,61 @@ mod tests {
         assert_eq!(risk_trades, 0);
         assert_eq!(risk_pnl, SignedLamports::ZERO);
 
+        assert_eq!(
+            store.shadow_rug_loss_count_since(opened_ts - Duration::minutes(1), -0.70)?,
+            0
+        );
+        let (recent_rug_count, total_count, rug_rate) =
+            store.shadow_rug_loss_rate_recent(opened_ts - Duration::minutes(1), 10, -0.70)?;
+        assert_eq!(recent_rug_count, 0);
+        assert_eq!(total_count, 0);
+        assert_eq!(rug_rate, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_risk_metrics_ignore_quarantined_legacy_close_context_after_market_close() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-risk-ignore-quarantined-close.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let lot_id = store.insert_shadow_lot("wallet", "token", 10.0, 0.10, opened_ts)?;
+        store.update_shadow_lot_risk_context(lot_id, SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY)?;
+
+        let close = store.close_shadow_lots_fifo_atomic(
+            "sig-quarantined-close",
+            "wallet",
+            "token",
+            10.0,
+            0.0,
+            closed_ts,
+        )?;
+        assert!((close.closed_qty - 10.0).abs() < 1e-12);
+        assert_eq!(
+            store.shadow_closed_trade_close_context("sig-quarantined-close")?,
+            Some(SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY.to_string())
+        );
+
+        let (all_trades, all_pnl) =
+            store.shadow_realized_pnl_lamports_since(opened_ts - Duration::minutes(1))?;
+        assert_eq!(all_trades, 1);
+        assert_eq!(all_pnl, SignedLamports::new(-100_000_000));
+
+        let (risk_trades, risk_pnl) =
+            store.shadow_risk_realized_pnl_lamports_since(opened_ts - Duration::minutes(1))?;
+        assert_eq!(risk_trades, 0);
+        assert_eq!(risk_pnl, SignedLamports::ZERO);
         assert_eq!(
             store.shadow_rug_loss_count_since(opened_ts - Duration::minutes(1), -0.70)?,
             0

@@ -1394,6 +1394,12 @@ run_ops_scripts_for_db() {
   assert_field_equals "$snapshot_output" "execution_pretrade_fee_reserve_guard_enabled" "true"
   assert_field_equals "$snapshot_output" "execution_pretrade_max_fee_overhead_bps" "1000"
   assert_field_equals "$snapshot_output" "execution_pretrade_fee_overhead_guard_enabled" "true"
+  assert_field_equals "$snapshot_output" "open_accounting_notional_sol" "0.25"
+  assert_field_equals "$snapshot_output" "open_risk_notional_sol" "0.25"
+  assert_field_equals "$snapshot_output" "open_market_lots" "1"
+  assert_field_equals "$snapshot_output" "open_market_notional_sol" "0.25"
+  assert_field_equals "$snapshot_output" "open_quarantined_legacy_lots" "0"
+  assert_field_equals "$snapshot_output" "open_quarantined_legacy_notional_sol" "0.0"
   assert_contains "$snapshot_output" "ingestion_lag_ms_p95: 1700"
   assert_contains "$snapshot_output" "parse_rejected_total: 5"
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
@@ -1604,6 +1610,10 @@ run_runtime_snapshot_no_ingestion_case() {
   assert_contains "$snapshot_output" "observed_swaps_head_ts: n/a"
   assert_contains "$snapshot_output" "discovery_cursor_head_gap_seconds: n/a"
   assert_contains "$snapshot_output" "execution_batch_sample_available: false"
+  assert_field_equals "$snapshot_output" "open_accounting_notional_sol" "0.25"
+  assert_field_equals "$snapshot_output" "open_risk_notional_sol" "0.25"
+  assert_field_equals "$snapshot_output" "open_market_lots" "1"
+  assert_field_equals "$snapshot_output" "open_quarantined_legacy_lots" "0"
   echo "[ok] runtime snapshot no-ingestion branch"
 }
 

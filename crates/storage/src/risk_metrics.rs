@@ -1,5 +1,6 @@
 use super::{
-    LIVE_POSITION_OPEN_EPS, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+    LIVE_POSITION_OPEN_EPS, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
+    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
     SHADOW_RISK_CONTEXT_MARKET, SqliteStore, lamports_to_sol, position_pnl_lamports,
     shadow::SHADOW_LOT_OPEN_EPS, shadow_closed_trade_entry_cost_lamports,
     shadow_closed_trade_pnl_lamports, shadow_lot_cost_lamports, signed_lamports_to_sol,
@@ -20,7 +21,7 @@ impl SqliteStore {
             "SELECT pnl_sol, pnl_lamports
              FROM shadow_closed_trades
              WHERE closed_ts >= ?1
-               AND COALESCE(close_context, 'market') != ?2"
+               AND COALESCE(close_context, 'market') NOT IN (?2, ?3)"
         } else {
             "SELECT pnl_sol, pnl_lamports
              FROM shadow_closed_trades
@@ -33,7 +34,8 @@ impl SqliteStore {
         let mut rows = if exclude_stale_terminal_zero {
             stmt.query(params![
                 since.to_rfc3339(),
-                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE
+                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+                SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY
             ])
             .context("failed querying shadow pnl rows")?
         } else {
@@ -605,13 +607,14 @@ impl SqliteStore {
                 "SELECT entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports
                  FROM shadow_closed_trades
                  WHERE closed_ts >= ?1
-                   AND COALESCE(close_context, 'market') != ?2",
+                   AND COALESCE(close_context, 'market') NOT IN (?2, ?3)",
             )
             .context("failed to prepare shadow rug-loss count query")?;
         let mut rows = stmt
             .query(params![
                 since.to_rfc3339(),
-                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE
+                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+                SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY
             ])
             .context("failed querying shadow rug-loss count rows")?;
         let mut count = 0_u64;
@@ -664,15 +667,16 @@ impl SqliteStore {
                 "SELECT entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports
                  FROM shadow_closed_trades
                  WHERE closed_ts >= ?1
-                   AND COALESCE(close_context, 'market') != ?2
+                   AND COALESCE(close_context, 'market') NOT IN (?2, ?3)
                  ORDER BY closed_ts DESC, id DESC
-                 LIMIT ?3",
+                 LIMIT ?4",
             )
             .context("failed to prepare shadow rug-loss recent sample query")?;
         let mut rows = stmt
             .query(params![
                 since.to_rfc3339(),
                 SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+                SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
                 limit
             ])
             .context("failed querying shadow rug-loss recent sample rows")?;

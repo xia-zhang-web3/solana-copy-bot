@@ -87,7 +87,12 @@ table_exists() {
 
 order_column_exists() {
   local column="$1"
-  [[ "$(sqlite3 -noheader "$DB_PATH" "SELECT 1 FROM pragma_table_info('orders') WHERE name = '$column' LIMIT 1;")" == "1" ]]
+  [[ "$(sqlite3 -noheader "$DB_PATH" "PRAGMA table_info('orders');" | awk -F'|' -v column="$column" '$2 == column { print 1; exit }')" == "1" ]]
+}
+
+shadow_lot_column_exists() {
+  local column="$1"
+  [[ "$(sqlite3 -noheader "$DB_PATH" "PRAGMA table_info('shadow_lots');" | awk -F'|' -v column="$column" '$2 == column { print 1; exit }')" == "1" ]]
 }
 
 order_column_expr_or_zero() {
@@ -104,6 +109,16 @@ ATA_RENT_EXPR="$(order_column_expr_or_zero ata_create_rent_lamports)"
 NETWORK_FEE_HINT_EXPR="$(order_column_expr_or_zero network_fee_lamports_hint)"
 BASE_FEE_HINT_EXPR="$(order_column_expr_or_zero base_fee_lamports_hint)"
 PRIORITY_FEE_HINT_EXPR="$(order_column_expr_or_zero priority_fee_lamports_hint)"
+
+SHADOW_LOT_RISK_CONTEXT_EXPR="'market'"
+if shadow_lot_column_exists risk_context; then
+  SHADOW_LOT_RISK_CONTEXT_EXPR="COALESCE(risk_context, 'market')"
+fi
+
+SHADOW_LOT_OPEN_FILTER_EXPR="1"
+if shadow_lot_column_exists qty; then
+  SHADOW_LOT_OPEN_FILTER_EXPR="qty > 0.000000000001"
+fi
 
 MAX_POSITION_SOL="$(cfg_value risk max_position_sol)"
 MAX_TOTAL_EXPOSURE_SOL="$(cfg_value risk max_total_exposure_sol)"
@@ -175,12 +190,25 @@ fi
 open_row="$(sql_row "
 SELECT
   COUNT(*) AS open_lots,
-  COALESCE(SUM(cost_sol), 0.0) AS open_notional_sol,
+  COALESCE(SUM(cost_sol), 0.0) AS open_accounting_notional_sol,
+  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'market' THEN cost_sol ELSE 0.0 END), 0.0) AS open_risk_notional_sol,
   COUNT(DISTINCT wallet_id) AS open_wallets,
   COUNT(DISTINCT token) AS open_tokens
-FROM shadow_lots;
+FROM shadow_lots
+WHERE ${SHADOW_LOT_OPEN_FILTER_EXPR};
 ")"
-IFS='|' read -r OPEN_LOTS OPEN_NOTIONAL_SOL OPEN_WALLETS OPEN_TOKENS <<< "$open_row"
+IFS='|' read -r OPEN_LOTS OPEN_ACCOUNTING_NOTIONAL_SOL OPEN_RISK_NOTIONAL_SOL OPEN_WALLETS OPEN_TOKENS <<< "$open_row"
+
+risk_context_breakdown_row="$(sql_row "
+SELECT
+  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'market' THEN 1 ELSE 0 END), 0) AS market_lots,
+  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'market' THEN cost_sol ELSE 0.0 END), 0.0) AS market_notional_sol,
+  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'quarantined_legacy' THEN 1 ELSE 0 END), 0) AS quarantined_legacy_lots,
+  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'quarantined_legacy' THEN cost_sol ELSE 0.0 END), 0.0) AS quarantined_legacy_notional_sol
+FROM shadow_lots
+WHERE ${SHADOW_LOT_OPEN_FILTER_EXPR};
+")"
+IFS='|' read -r OPEN_MARKET_LOTS OPEN_MARKET_NOTIONAL_SOL OPEN_QUARANTINED_LEGACY_LOTS OPEN_QUARANTINED_LEGACY_NOTIONAL_SOL <<< "$risk_context_breakdown_row"
 
 closed_24h_row="$(sql_row "
 SELECT
@@ -249,9 +277,9 @@ format_pct() {
 }
 
 WIN_RATE_24H="$(format_pct "$WINS_24H" "$CLOSED_24H")"
-USAGE_SOFT="$(format_pct "$OPEN_NOTIONAL_SOL" "${SOFT_CAP_SOL:-0}")"
-USAGE_HARD="$(format_pct "$OPEN_NOTIONAL_SOL" "${HARD_CAP_SOL:-0}")"
-USAGE_TOTAL="$(format_pct "$OPEN_NOTIONAL_SOL" "${MAX_TOTAL_EXPOSURE_SOL:-0}")"
+USAGE_SOFT="$(format_pct "$OPEN_RISK_NOTIONAL_SOL" "${SOFT_CAP_SOL:-0}")"
+USAGE_HARD="$(format_pct "$OPEN_RISK_NOTIONAL_SOL" "${HARD_CAP_SOL:-0}")"
+USAGE_TOTAL="$(format_pct "$OPEN_ACCOUNTING_NOTIONAL_SOL" "${MAX_TOTAL_EXPOSURE_SOL:-0}")"
 
 SHADOW_RISK_PAUSE_STATE_OUTPUT="$(
   python3 - <<'PY' "$DB_PATH"
@@ -363,9 +391,15 @@ echo "db_shm_bytes: $DB_SHM_BYTES"
 echo
 echo "=== Exposure ==="
 echo "open_lots: $OPEN_LOTS"
-echo "open_notional_sol: $OPEN_NOTIONAL_SOL"
+echo "open_notional_sol: $OPEN_ACCOUNTING_NOTIONAL_SOL"
+echo "open_accounting_notional_sol: $OPEN_ACCOUNTING_NOTIONAL_SOL"
+echo "open_risk_notional_sol: $OPEN_RISK_NOTIONAL_SOL"
 echo "open_wallets: $OPEN_WALLETS"
 echo "open_tokens: $OPEN_TOKENS"
+echo "open_market_lots: $OPEN_MARKET_LOTS"
+echo "open_market_notional_sol: $OPEN_MARKET_NOTIONAL_SOL"
+echo "open_quarantined_legacy_lots: $OPEN_QUARANTINED_LEGACY_LOTS"
+echo "open_quarantined_legacy_notional_sol: $OPEN_QUARANTINED_LEGACY_NOTIONAL_SOL"
 echo "oldest_open_lot_hours: $(printf "%.2f" "$oldest_open_hours")"
 echo
 echo "=== Trade Activity ==="

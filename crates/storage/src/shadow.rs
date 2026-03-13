@@ -1,7 +1,8 @@
 use crate::sqlite_retry::is_retryable_sqlite_error;
 use crate::{
     POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
-    SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_RISK_CONTEXT_MARKET, SQLITE_WRITE_MAX_RETRIES,
+    SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
+    SHADOW_RISK_CONTEXT_MARKET, SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY, SQLITE_WRITE_MAX_RETRIES,
     SQLITE_WRITE_RETRY_BACKOFF_MS, ShadowCloseOutcome, ShadowLotRow, SqliteStore,
     merge_position_qty_exact_on_sell, note_sqlite_busy_error, note_sqlite_write_retry,
     shadow_lot_cost_lamports, signed_lamports_to_sol, signed_lamports_to_sql_i64,
@@ -39,6 +40,13 @@ fn shadow_accounting_bucket_for_qty_exact(qty_exact: Option<TokenQuantity>) -> &
         POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER
     } else {
         POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER
+    }
+}
+
+fn validate_shadow_risk_context(risk_context: &str) -> Result<()> {
+    match risk_context {
+        SHADOW_RISK_CONTEXT_MARKET | SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY => Ok(()),
+        other => Err(anyhow!("unsupported shadow risk_context: {other}")),
     }
 }
 
@@ -93,6 +101,7 @@ impl SqliteStore {
         opened_ts: DateTime<Utc>,
     ) -> Result<i64> {
         let qty_exact = reject_zero_raw_exact_qty(qty_exact, "insert shadow lot")?;
+        validate_shadow_risk_context(risk_context)?;
         self.execute_with_retry_result(|conn| {
             let cost_lamports = sol_to_lamports_ceil_storage(cost_sol, "shadow lot cost_sol")
                 .map_err(to_sql_conversion_error)?;
@@ -267,6 +276,7 @@ impl SqliteStore {
     }
 
     pub fn update_shadow_lot_risk_context(&self, id: i64, risk_context: &str) -> Result<()> {
+        validate_shadow_risk_context(risk_context)?;
         self.execute_with_retry(|conn| {
             conn.execute(
                 "UPDATE shadow_lots SET risk_context = ?1 WHERE id = ?2",
@@ -460,7 +470,7 @@ impl SqliteStore {
             let mut realized_pnl_sol = 0.0;
 
             let mut stmt = self.conn.prepare(
-                "SELECT id, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts, accounting_bucket
+                "SELECT id, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts, accounting_bucket, risk_context
                  FROM shadow_lots
                  WHERE wallet_id = ?1 AND token = ?2
                  ORDER BY id ASC",
@@ -475,6 +485,7 @@ impl SqliteStore {
                 Option<i64>,
                 String,
                 String,
+                String,
             )> = Vec::new();
             while let Some(row) = rows.next()? {
                 lots.push((
@@ -486,6 +497,7 @@ impl SqliteStore {
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
                 ));
             }
             drop(rows);
@@ -500,6 +512,7 @@ impl SqliteStore {
                 lot_cost_lamports_raw,
                 lot_opened_ts,
                 lot_accounting_bucket,
+                lot_risk_context,
             ) in lots
             {
                 if qty_remaining <= EPS {
@@ -618,6 +631,14 @@ impl SqliteStore {
                     "shadow closed trade exit_value_sol",
                 )
                 .map_err(to_sql_conversion_error)?;
+                let effective_close_context =
+                    if close_context == SHADOW_CLOSE_CONTEXT_MARKET
+                        && lot_risk_context == SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY
+                    {
+                        SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY
+                    } else {
+                        close_context
+                    };
                 let pnl_lamports = crate::SignedLamports::new(
                     i128::from(exit_value_lamports.as_u64())
                         - i128::from(entry_cost_lamports.as_u64()),
@@ -646,7 +667,7 @@ impl SqliteStore {
                         signal_id,
                         wallet_id,
                         token,
-                        close_context,
+                        effective_close_context,
                         lot_accounting_bucket,
                         take_qty,
                         closed_qty_exact
