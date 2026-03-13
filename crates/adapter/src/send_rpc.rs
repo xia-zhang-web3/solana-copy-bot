@@ -1,6 +1,8 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
+use bincode::Options;
 use serde_json::{json, Value};
+use solana_transaction::versioned::VersionedTransaction;
 use tracing::warn;
 
 use crate::{
@@ -38,6 +40,7 @@ pub(crate) async fn send_signed_transaction_via_rpc(
     })?;
     let expected_signature = extract_expected_signature_from_signed_tx_bytes(
         signed_tx_bytes.as_slice(),
+        state.config.signer_pubkey.as_str(),
     )
     .map_err(|error| {
         Reject::retryable(
@@ -295,48 +298,212 @@ fn classify_send_rpc_error_payload(error_payload: &Value) -> SendRpcErrorPayload
     SendRpcErrorPayloadDisposition::Terminal
 }
 
-fn extract_expected_signature_from_signed_tx_bytes(bytes: &[u8]) -> Result<String> {
-    let (signature_count, prefix_len) = parse_shortvec_len(bytes)?;
-    if signature_count == 0 {
-        return Err(anyhow!("transaction contains zero signatures"));
+fn extract_expected_signature_from_signed_tx_bytes(
+    bytes: &[u8],
+    adapter_signer_pubkey: &str,
+) -> Result<String> {
+    let transaction: VersionedTransaction = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .deserialize(bytes)
+        .context("transaction bincode decode failed")?;
+    transaction
+        .sanitize()
+        .map_err(|error| anyhow!("transaction failed sanitize checks: {}", error))?;
+
+    let required_signatures = usize::from(transaction.message.header().num_required_signatures);
+    let expected_signature = transaction
+        .signatures
+        .first()
+        .ok_or_else(|| anyhow!("transaction contains zero signatures"))?
+        .to_string();
+
+    let adapter_signer_pubkey = decode_adapter_signer_pubkey_bytes(adapter_signer_pubkey)?;
+    let signer_required = transaction
+        .message
+        .static_account_keys()
+        .iter()
+        .take(required_signatures)
+        .any(|pubkey| pubkey.as_ref() == adapter_signer_pubkey.as_slice());
+    if !signer_required {
+        return Err(anyhow!(
+            "transaction does not require configured adapter signer pubkey"
+        ));
     }
-    let signatures_len = signature_count
-        .checked_mul(64)
-        .ok_or_else(|| anyhow!("signature count overflow"))?;
-    let required_len = prefix_len
-        .checked_add(signatures_len)
-        .ok_or_else(|| anyhow!("signature section length overflow"))?;
-    if bytes.len() < required_len {
-        return Err(anyhow!("transaction signature section is truncated"));
+
+    if !transaction
+        .verify_with_results()
+        .into_iter()
+        .all(|verified| verified)
+    {
+        return Err(anyhow!(
+            "transaction contains invalid required signature bytes"
+        ));
     }
-    let first_signature = &bytes[prefix_len..prefix_len + 64];
-    Ok(bs58::encode(first_signature).into_string())
+
+    Ok(expected_signature)
 }
 
-fn parse_shortvec_len(bytes: &[u8]) -> Result<(usize, usize)> {
-    if bytes.is_empty() {
-        return Err(anyhow!("shortvec is empty"));
+fn decode_adapter_signer_pubkey_bytes(signer_pubkey: &str) -> Result<[u8; 32]> {
+    let decoded = bs58::decode(signer_pubkey.trim())
+        .into_vec()
+        .context("configured adapter signer pubkey must be valid base58")?;
+    let signer_bytes: [u8; 32] = decoded
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow!("configured adapter signer pubkey must decode to 32 bytes"))?;
+    Ok(signer_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        classify_send_rpc_error_payload, decode_adapter_signer_pubkey_bytes,
+        extract_expected_signature_from_signed_tx_bytes, SendRpcErrorPayloadDisposition,
+    };
+    use serde_json::json;
+    use solana_keypair::{Keypair, Signature, Signer};
+    use solana_message::{
+        compiled_instruction::CompiledInstruction, legacy::Message as LegacyMessage, Address, Hash,
+        MessageHeader, VersionedMessage,
+    };
+    use solana_transaction::versioned::VersionedTransaction;
+
+    const TEST_ADAPTER_SIGNER_SECRET: [u8; 32] = [11u8; 32];
+
+    fn test_signed_tx_bytes_with_signature_and_signer(
+        signature_seed: [u8; 64],
+        signer_secret: [u8; 32],
+    ) -> (Vec<u8>, String) {
+        let signer = Keypair::new_from_array(signer_secret);
+        let message = LegacyMessage {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: 1,
+            },
+            account_keys: vec![signer.pubkey(), Address::from([9u8; 32])],
+            recent_blockhash: Hash::new_from_array(
+                signature_seed[32..64]
+                    .try_into()
+                    .expect("recent blockhash seed slice"),
+            ),
+            instructions: vec![CompiledInstruction::new_from_raw_parts(
+                1,
+                signature_seed[0..8].to_vec(),
+                vec![0],
+            )],
+        };
+        let versioned_message = VersionedMessage::Legacy(message);
+        let signature: Signature = signer.sign_message(&versioned_message.serialize());
+        let tx_bytes = bincode::serialize(&VersionedTransaction {
+            signatures: vec![signature],
+            message: versioned_message,
+        })
+        .expect("serialize test transaction");
+        (tx_bytes, signature.to_string())
     }
-    let mut value: u64 = 0;
-    let mut shift: u32 = 0;
-    for (index, byte) in bytes.iter().copied().enumerate() {
-        let part = u64::from(byte & 0x7f);
-        let shifted = part
-            .checked_shl(shift)
-            .ok_or_else(|| anyhow!("shortvec shift overflow"))?;
-        value = value
-            .checked_add(shifted)
-            .ok_or_else(|| anyhow!("shortvec value overflow"))?;
-        if byte & 0x80 == 0 {
-            let parsed = usize::try_from(value).map_err(|_| anyhow!("shortvec exceeds usize"))?;
-            return Ok((parsed, index + 1));
-        }
-        shift = shift
-            .checked_add(7)
-            .ok_or_else(|| anyhow!("shortvec shift overflow"))?;
-        if shift >= 64 {
-            return Err(anyhow!("shortvec uses too many bytes"));
-        }
+
+    #[test]
+    fn classify_send_rpc_error_payload_keeps_blockhash_not_found_terminal() {
+        let payload = json!({
+            "code": -32002,
+            "message": "Blockhash not found"
+        });
+        assert_eq!(
+            classify_send_rpc_error_payload(&payload),
+            SendRpcErrorPayloadDisposition::Terminal
+        );
     }
-    Err(anyhow!("shortvec is truncated"))
+
+    #[test]
+    fn extract_expected_signature_from_signed_tx_bytes_reads_canonical_versioned_transaction() {
+        let (bytes, expected_signature) =
+            test_signed_tx_bytes_with_signature_and_signer([5u8; 64], TEST_ADAPTER_SIGNER_SECRET);
+        let signature = extract_expected_signature_from_signed_tx_bytes(
+            bytes.as_slice(),
+            Keypair::new_from_array(TEST_ADAPTER_SIGNER_SECRET)
+                .pubkey()
+                .to_string()
+                .as_str(),
+        )
+        .expect("canonical transaction should decode");
+        assert_eq!(signature, expected_signature);
+    }
+
+    #[test]
+    fn extract_expected_signature_from_signed_tx_bytes_rejects_when_adapter_signer_missing() {
+        let (bytes, _expected_signature) =
+            test_signed_tx_bytes_with_signature_and_signer([6u8; 64], [8u8; 32]);
+        let error = extract_expected_signature_from_signed_tx_bytes(
+            bytes.as_slice(),
+            Keypair::new_from_array(TEST_ADAPTER_SIGNER_SECRET)
+                .pubkey()
+                .to_string()
+                .as_str(),
+        )
+        .expect_err("mismatched signer should reject");
+        assert!(
+            error
+                .to_string()
+                .contains("does not require configured adapter signer"),
+            "error={}",
+            error
+        );
+    }
+
+    #[test]
+    fn extract_expected_signature_from_signed_tx_bytes_rejects_trailing_garbage() {
+        let (mut bytes, _expected_signature) =
+            test_signed_tx_bytes_with_signature_and_signer([7u8; 64], TEST_ADAPTER_SIGNER_SECRET);
+        bytes.extend_from_slice(b"TRAILING_GARBAGE");
+        let error = extract_expected_signature_from_signed_tx_bytes(
+            bytes.as_slice(),
+            Keypair::new_from_array(TEST_ADAPTER_SIGNER_SECRET)
+                .pubkey()
+                .to_string()
+                .as_str(),
+        )
+        .expect_err("trailing garbage must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("transaction bincode decode failed"),
+            "error={}",
+            error
+        );
+    }
+
+    #[test]
+    fn extract_expected_signature_from_signed_tx_bytes_rejects_invalid_signature_bytes() {
+        let (bytes, _expected_signature) =
+            test_signed_tx_bytes_with_signature_and_signer([8u8; 64], TEST_ADAPTER_SIGNER_SECRET);
+        let mut transaction: VersionedTransaction =
+            bincode::deserialize(bytes.as_slice()).expect("decode valid test transaction");
+        transaction.signatures[0] = Signature::from([99u8; 64]);
+        let tampered_bytes =
+            bincode::serialize(&transaction).expect("serialize tampered test transaction");
+        let error = extract_expected_signature_from_signed_tx_bytes(
+            tampered_bytes.as_slice(),
+            Keypair::new_from_array(TEST_ADAPTER_SIGNER_SECRET)
+                .pubkey()
+                .to_string()
+                .as_str(),
+        )
+        .expect_err("invalid signature bytes must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("contains invalid required signature bytes"),
+            "error={}",
+            error
+        );
+    }
+
+    #[test]
+    fn decode_adapter_signer_pubkey_bytes_rejects_wrong_length_pubkey() {
+        let error = decode_adapter_signer_pubkey_bytes("111111111111111111111111111111111")
+            .expect_err("wrong-length base58 must reject");
+        assert!(error.to_string().contains("32 bytes"), "error={}", error);
+    }
 }

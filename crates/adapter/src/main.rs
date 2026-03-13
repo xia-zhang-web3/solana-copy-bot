@@ -44,6 +44,15 @@ use crate::submit_verify::{
 };
 #[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
+#[cfg(test)]
+use solana_keypair::{Keypair, Signature, Signer};
+#[cfg(test)]
+use solana_message::{
+    compiled_instruction::CompiledInstruction, legacy::Message as LegacyMessage, Address, Hash,
+    MessageHeader, VersionedMessage,
+};
+#[cfg(test)]
+use solana_transaction::versioned::VersionedTransaction;
 
 const TIP_MAX_LAMPORTS: u64 = 100_000_000;
 const CU_LIMIT_MIN: u32 = 1;
@@ -60,6 +69,8 @@ const DEFAULT_BASE_FEE_LAMPORTS: u64 = 5_000;
 const DEFAULT_SUBMIT_VERIFY_ATTEMPTS: u64 = 3;
 const DEFAULT_SUBMIT_VERIFY_INTERVAL_MS: u64 = 250;
 static UPSTREAM_HMAC_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+const TEST_ADAPTER_SIGNER_SECRET: [u8; 32] = [11u8; 32];
 
 #[derive(Clone)]
 struct AppState {
@@ -2908,6 +2919,116 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage()
+    {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([37u8; 64]);
+        let mut tx_bytes = BASE64_STANDARD
+            .decode(signed_tx_base64.as_bytes())
+            .expect("decode valid canonical signed tx");
+        tx_bytes.extend_from_slice(b"TRAILING_GARBAGE");
+        let tampered_base64 = BASE64_STANDARD.encode(tx_bytes);
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", tampered_base64.as_str())
+            .await
+            .expect_err("trailing garbage must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("transaction bincode decode failed"),
+            "detail={}",
+            reject.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_canonical_transaction_with_invalid_signature_bytes(
+    ) {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature([38u8; 64]);
+        let tx_bytes = BASE64_STANDARD
+            .decode(signed_tx_base64.as_bytes())
+            .expect("decode valid canonical signed tx");
+        let mut transaction: VersionedTransaction =
+            bincode::deserialize(tx_bytes.as_slice()).expect("decode valid canonical tx");
+        transaction.signatures[0] = Signature::from([99u8; 64]);
+        let tampered_base64 = BASE64_STANDARD.encode(
+            bincode::serialize(&transaction).expect("serialize tampered canonical tx"),
+        );
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", tampered_base64.as_str())
+            .await
+            .expect_err("invalid signature bytes must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("contains invalid required signature bytes"),
+            "detail={}",
+            reject.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_via_rpc_rejects_signed_transaction_without_configured_signer()
+    {
+        let (signed_tx_base64, _expected_signature) =
+            test_signed_tx_base64_with_signature_and_signer([39u8; 64], [8u8; 32]);
+
+        let mut state = test_state_with_backends(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+        );
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let reject = send_signed_transaction_via_rpc(&state, "rpc", signed_tx_base64.as_str())
+            .await
+            .expect_err("missing configured signer must reject");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("does not require configured adapter signer"),
+            "detail={}",
+            reject.detail
+        );
+    }
+
+    #[tokio::test]
     async fn handle_submit_uses_send_rpc_when_upstream_returns_signed_tx_base64() {
         let (signed_tx_base64, rpc_signature) = test_signed_tx_base64_with_signature([14u8; 64]);
         let upstream_body = format!(
@@ -3168,7 +3289,7 @@ mod tests {
         let config = AdapterConfig {
             bind_addr: "127.0.0.1:8080".parse().expect("valid bind"),
             contract_version: "v1".to_string(),
-            signer_pubkey: "11111111111111111111111111111111".to_string(),
+            signer_pubkey: test_adapter_signer_keypair().pubkey().to_string(),
             route_allowlist,
             route_backends,
             bearer_token: None,
@@ -3488,14 +3609,44 @@ mod tests {
     }
 
     fn test_signed_tx_base64_with_signature(signature: [u8; 64]) -> (String, String) {
-        let mut tx_bytes = Vec::with_capacity(1 + signature.len() + 1);
-        tx_bytes.push(1u8);
-        tx_bytes.extend_from_slice(&signature);
-        tx_bytes.push(0u8);
-        (
-            BASE64_STANDARD.encode(tx_bytes),
-            bs58::encode(signature).into_string(),
-        )
+        test_signed_tx_base64_with_signature_and_signer(signature, TEST_ADAPTER_SIGNER_SECRET)
+    }
+
+    fn test_signed_tx_base64_with_signature_and_signer(
+        signature_seed: [u8; 64],
+        signer_secret: [u8; 32],
+    ) -> (String, String) {
+        let signer = Keypair::new_from_array(signer_secret);
+        let message = LegacyMessage {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: 1,
+            },
+            account_keys: vec![signer.pubkey(), Address::from([9u8; 32])],
+            recent_blockhash: Hash::new_from_array(
+                signature_seed[32..64]
+                    .try_into()
+                    .expect("recent blockhash seed slice"),
+            ),
+            instructions: vec![CompiledInstruction::new_from_raw_parts(
+                1,
+                signature_seed[0..8].to_vec(),
+                vec![0],
+            )],
+        };
+        let versioned_message = VersionedMessage::Legacy(message);
+        let signature: Signature = signer.sign_message(&versioned_message.serialize());
+        let tx_bytes = bincode::serialize(&VersionedTransaction {
+            signatures: vec![signature],
+            message: versioned_message,
+        })
+        .expect("serialize test signed transaction");
+        (BASE64_STANDARD.encode(tx_bytes), signature.to_string())
+    }
+
+    fn test_adapter_signer_keypair() -> Keypair {
+        Keypair::new_from_array(TEST_ADAPTER_SIGNER_SECRET)
     }
 
     fn temp_secret_path(prefix: &str) -> PathBuf {
