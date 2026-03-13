@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_storage::{
-    SqliteStore, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES,
+    SqliteStore, SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+    STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES,
     STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL, STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
 };
 use std::collections::HashSet;
@@ -50,7 +51,8 @@ pub(crate) fn close_stale_shadow_lots(
         }
 
         let mut terminal_zero_close = false;
-        let exit_price_sol = match store.reliable_token_sol_price_for_stale_close(&lot.token, now)?
+        let exit_price_sol = match store
+            .reliable_token_sol_price_for_stale_close(&lot.token, now)?
         {
             Some(price) if price > EPS => price,
             _ => {
@@ -126,13 +128,18 @@ pub(crate) fn close_stale_shadow_lots(
 
         let signal_id = format!("stale-close-{}-{}", lot.id, now.timestamp_millis());
         let close = store
-            .close_shadow_lots_fifo_atomic_exact(
+            .close_shadow_lots_fifo_atomic_exact_with_context(
                 &signal_id,
                 &lot.wallet_id,
                 &lot.token,
                 lot.qty,
                 lot.qty_exact,
                 exit_price_sol,
+                if terminal_zero_close {
+                    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE
+                } else {
+                    SHADOW_CLOSE_CONTEXT_MARKET
+                },
                 now,
             )
             .with_context(|| {

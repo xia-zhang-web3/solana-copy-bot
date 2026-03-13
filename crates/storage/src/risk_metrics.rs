@@ -3,6 +3,7 @@ use super::{
     shadow_closed_trade_entry_cost_lamports, shadow_closed_trade_pnl_lamports,
     shadow_lot_cost_lamports, signed_lamports_to_sol, sol_to_signed_lamports_conservative_storage,
     token_quantity_from_sql, SqliteStore, LIVE_POSITION_OPEN_EPS,
+    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -10,6 +11,54 @@ use copybot_core_types::{Lamports, SignedLamports};
 use rusqlite::params;
 
 impl SqliteStore {
+    fn shadow_realized_pnl_lamports_since_internal(
+        &self,
+        since: DateTime<Utc>,
+        exclude_stale_terminal_zero: bool,
+    ) -> Result<(u64, copybot_core_types::SignedLamports)> {
+        let query = if exclude_stale_terminal_zero {
+            "SELECT pnl_sol, pnl_lamports
+             FROM shadow_closed_trades
+             WHERE closed_ts >= ?1
+               AND COALESCE(close_context, 'market') != ?2"
+        } else {
+            "SELECT pnl_sol, pnl_lamports
+             FROM shadow_closed_trades
+             WHERE closed_ts >= ?1"
+        };
+        let mut stmt = self
+            .conn
+            .prepare(query)
+            .context("failed to prepare shadow pnl query")?;
+        let mut rows = if exclude_stale_terminal_zero {
+            stmt.query(params![
+                since.to_rfc3339(),
+                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE
+            ])
+            .context("failed querying shadow pnl rows")?
+        } else {
+            stmt.query(params![since.to_rfc3339()])
+                .context("failed querying shadow pnl rows")?
+        };
+        let mut trades = 0_u64;
+        let mut pnl = copybot_core_types::SignedLamports::new(0);
+        while let Some(row) = rows.next().context("failed iterating shadow pnl rows")? {
+            let pnl_sol: f64 = row
+                .get(0)
+                .context("failed reading shadow_closed_trades.pnl_sol")?;
+            let pnl_lamports_raw: Option<i64> = row
+                .get(1)
+                .context("failed reading shadow_closed_trades.pnl_lamports")?;
+            let pnl_lamports =
+                shadow_closed_trade_pnl_lamports(pnl_sol, pnl_lamports_raw, "shadow realized pnl")?;
+            trades = trades.saturating_add(1);
+            pnl = pnl.checked_add(pnl_lamports).ok_or_else(|| {
+                anyhow!("shadow realized pnl lamports overflow while summing closed trades")
+            })?;
+        }
+        Ok((trades, pnl))
+    }
+
     pub fn shadow_open_lots_count(&self) -> Result<u64> {
         let value: i64 = self
             .conn
@@ -62,39 +111,19 @@ impl SqliteStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<(u64, copybot_core_types::SignedLamports)> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT pnl_sol, pnl_lamports
-                 FROM shadow_closed_trades
-                 WHERE closed_ts >= ?1",
-            )
-            .context("failed to prepare shadow pnl query")?;
-        let mut rows = stmt
-            .query(params![since.to_rfc3339()])
-            .context("failed querying shadow pnl rows")?;
-        let mut trades = 0_u64;
-        let mut pnl = copybot_core_types::SignedLamports::new(0);
-        while let Some(row) = rows.next().context("failed iterating shadow pnl rows")? {
-            let pnl_sol: f64 = row
-                .get(0)
-                .context("failed reading shadow_closed_trades.pnl_sol")?;
-            let pnl_lamports_raw: Option<i64> = row
-                .get(1)
-                .context("failed reading shadow_closed_trades.pnl_lamports")?;
-            let pnl_lamports =
-                shadow_closed_trade_pnl_lamports(pnl_sol, pnl_lamports_raw, "shadow realized pnl")?;
-            trades = trades.saturating_add(1);
-            pnl = pnl.checked_add(pnl_lamports).ok_or_else(|| {
-                anyhow!("shadow realized pnl lamports overflow while summing closed trades")
-            })?;
-        }
-        Ok((trades, pnl))
+        self.shadow_realized_pnl_lamports_since_internal(since, false)
     }
 
     pub fn shadow_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
         let (trades, pnl_lamports) = self.shadow_realized_pnl_lamports_since(since)?;
         Ok((trades, signed_lamports_to_sol(pnl_lamports)))
+    }
+
+    pub fn shadow_risk_realized_pnl_lamports_since(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<(u64, copybot_core_types::SignedLamports)> {
+        self.shadow_realized_pnl_lamports_since_internal(since, true)
     }
 
     pub fn live_realized_pnl_since(&self, since: DateTime<Utc>) -> Result<(u64, f64)> {
@@ -550,11 +579,15 @@ impl SqliteStore {
             .prepare(
                 "SELECT entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports
                  FROM shadow_closed_trades
-                 WHERE closed_ts >= ?1",
+                 WHERE closed_ts >= ?1
+                   AND COALESCE(close_context, 'market') != ?2",
             )
             .context("failed to prepare shadow rug-loss count query")?;
         let mut rows = stmt
-            .query(params![since.to_rfc3339()])
+            .query(params![
+                since.to_rfc3339(),
+                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE
+            ])
             .context("failed querying shadow rug-loss count rows")?;
         let mut count = 0_u64;
         while let Some(row) = rows
@@ -606,12 +639,17 @@ impl SqliteStore {
                 "SELECT entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports
                  FROM shadow_closed_trades
                  WHERE closed_ts >= ?1
+                   AND COALESCE(close_context, 'market') != ?2
                  ORDER BY closed_ts DESC, id DESC
-                 LIMIT ?2",
+                 LIMIT ?3",
             )
             .context("failed to prepare shadow rug-loss recent sample query")?;
         let mut rows = stmt
-            .query(params![since.to_rfc3339(), limit])
+            .query(params![
+                since.to_rfc3339(),
+                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+                limit
+            ])
             .context("failed querying shadow rug-loss recent sample rows")?;
         let mut rug_count = 0_u64;
         let mut total_count = 0_u64;

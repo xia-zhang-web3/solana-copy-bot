@@ -5,7 +5,7 @@ use crate::{
     sol_to_lamports_ceil_storage, sol_to_lamports_floor_storage, split_token_quantity_pro_rata,
     token_quantity_from_sql, u64_to_sql_i64, ShadowCloseOutcome, ShadowLotRow, SqliteStore,
     POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
-    SQLITE_WRITE_MAX_RETRIES, SQLITE_WRITE_RETRY_BACKOFF_MS,
+    SHADOW_CLOSE_CONTEXT_MARKET, SQLITE_WRITE_MAX_RETRIES, SQLITE_WRITE_RETRY_BACKOFF_MS,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -277,13 +277,35 @@ impl SqliteStore {
         exit_price_sol: f64,
         closed_ts: DateTime<Utc>,
     ) -> Result<ShadowCloseOutcome> {
-        self.close_shadow_lots_fifo_atomic_exact(
+        self.close_shadow_lots_fifo_atomic_with_context(
+            signal_id,
+            wallet_id,
+            token,
+            target_qty,
+            exit_price_sol,
+            SHADOW_CLOSE_CONTEXT_MARKET,
+            closed_ts,
+        )
+    }
+
+    pub fn close_shadow_lots_fifo_atomic_with_context(
+        &self,
+        signal_id: &str,
+        wallet_id: &str,
+        token: &str,
+        target_qty: f64,
+        exit_price_sol: f64,
+        close_context: &str,
+        closed_ts: DateTime<Utc>,
+    ) -> Result<ShadowCloseOutcome> {
+        self.close_shadow_lots_fifo_atomic_exact_with_context(
             signal_id,
             wallet_id,
             token,
             target_qty,
             None,
             exit_price_sol,
+            close_context,
             closed_ts,
         )
     }
@@ -296,6 +318,29 @@ impl SqliteStore {
         target_qty: f64,
         target_qty_exact: Option<TokenQuantity>,
         exit_price_sol: f64,
+        closed_ts: DateTime<Utc>,
+    ) -> Result<ShadowCloseOutcome> {
+        self.close_shadow_lots_fifo_atomic_exact_with_context(
+            signal_id,
+            wallet_id,
+            token,
+            target_qty,
+            target_qty_exact,
+            exit_price_sol,
+            SHADOW_CLOSE_CONTEXT_MARKET,
+            closed_ts,
+        )
+    }
+
+    pub fn close_shadow_lots_fifo_atomic_exact_with_context(
+        &self,
+        signal_id: &str,
+        wallet_id: &str,
+        token: &str,
+        target_qty: f64,
+        target_qty_exact: Option<TokenQuantity>,
+        exit_price_sol: f64,
+        close_context: &str,
         closed_ts: DateTime<Utc>,
     ) -> Result<ShadowCloseOutcome> {
         const EPS: f64 = SHADOW_LOT_OPEN_EPS;
@@ -317,6 +362,7 @@ impl SqliteStore {
                 target_qty,
                 target_qty_exact,
                 exit_price_sol,
+                close_context,
                 closed_ts,
             ) {
                 Ok(outcome) => return Ok(outcome),
@@ -348,6 +394,7 @@ impl SqliteStore {
         target_qty: f64,
         target_qty_exact: Option<TokenQuantity>,
         exit_price_sol: f64,
+        close_context: &str,
         closed_ts: DateTime<Utc>,
     ) -> rusqlite::Result<ShadowCloseOutcome> {
         const EPS: f64 = SHADOW_LOT_OPEN_EPS;
@@ -528,6 +575,7 @@ impl SqliteStore {
                         signal_id,
                         wallet_id,
                         token,
+                        close_context,
                         accounting_bucket,
                         qty,
                         qty_raw,
@@ -540,11 +588,12 @@ impl SqliteStore {
                         pnl_lamports,
                         opened_ts,
                         closed_ts
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                     params![
                         signal_id,
                         wallet_id,
                         token,
+                        close_context,
                         lot_accounting_bucket,
                         take_qty,
                         closed_qty_exact
@@ -693,6 +742,36 @@ impl SqliteStore {
         opened_ts: DateTime<Utc>,
         closed_ts: DateTime<Utc>,
     ) -> Result<()> {
+        self.insert_shadow_closed_trade_exact_with_context(
+            signal_id,
+            wallet_id,
+            token,
+            qty,
+            qty_exact,
+            entry_cost_sol,
+            exit_value_sol,
+            pnl_sol,
+            SHADOW_CLOSE_CONTEXT_MARKET,
+            opened_ts,
+            closed_ts,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_shadow_closed_trade_exact_with_context(
+        &self,
+        signal_id: &str,
+        wallet_id: &str,
+        token: &str,
+        qty: f64,
+        qty_exact: Option<TokenQuantity>,
+        entry_cost_sol: f64,
+        exit_value_sol: f64,
+        pnl_sol: f64,
+        close_context: &str,
+        opened_ts: DateTime<Utc>,
+        closed_ts: DateTime<Utc>,
+    ) -> Result<()> {
         let qty_exact = reject_zero_raw_exact_qty(qty_exact, "insert shadow closed trade")?;
         self.execute_with_retry(|conn| {
             let entry_cost_lamports =
@@ -710,6 +789,7 @@ impl SqliteStore {
                     signal_id,
                     wallet_id,
                     token,
+                    close_context,
                     accounting_bucket,
                     qty,
                     qty_raw,
@@ -722,11 +802,12 @@ impl SqliteStore {
                     pnl_lamports,
                     opened_ts,
                     closed_ts
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     signal_id,
                     wallet_id,
                     token,
+                    close_context,
                     accounting_bucket,
                     qty,
                     qty_exact.as_ref().map(|value| value.raw().to_string()),
@@ -795,5 +876,19 @@ impl SqliteStore {
             )
             .optional()
             .context("failed reading shadow closed trade accounting bucket")
+    }
+
+    pub fn shadow_closed_trade_close_context(&self, signal_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT close_context
+                 FROM shadow_closed_trades
+                 WHERE signal_id = ?1
+                 LIMIT 1",
+                params![signal_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed reading shadow closed trade close context")
     }
 }

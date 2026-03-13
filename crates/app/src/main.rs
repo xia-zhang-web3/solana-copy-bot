@@ -1247,11 +1247,11 @@ impl ShadowRiskGuard {
 
         let refresh_result = (|| -> Result<()> {
             let (_, pnl_1h_lamports) =
-                store.shadow_realized_pnl_lamports_since(now - chrono::Duration::hours(1))?;
+                store.shadow_risk_realized_pnl_lamports_since(now - chrono::Duration::hours(1))?;
             let (_, pnl_6h_lamports) =
-                store.shadow_realized_pnl_lamports_since(now - chrono::Duration::hours(6))?;
+                store.shadow_risk_realized_pnl_lamports_since(now - chrono::Duration::hours(6))?;
             let (_, pnl_24h_lamports) =
-                store.shadow_realized_pnl_lamports_since(now - chrono::Duration::hours(24))?;
+                store.shadow_risk_realized_pnl_lamports_since(now - chrono::Duration::hours(24))?;
             let drawdown_1h_stop_lamports = self.shadow_drawdown_stop_lamports(
                 self.config.shadow_drawdown_1h_stop_sol,
                 "risk.shadow_drawdown_1h_stop_sol",
@@ -4088,7 +4088,10 @@ mod app_tests {
         );
         let (trades, pnl) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
         assert_eq!(trades, 1);
-        assert!(pnl < 0.0, "terminal zero-price stale close must realize a loss");
+        assert!(
+            pnl < 0.0,
+            "terminal zero-price stale close must realize a loss"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -4141,6 +4144,61 @@ mod app_tests {
             store.shadow_closed_trade_accounting_bucket(&signal_id)?,
             Some("exact_post_cutover".to_string())
         );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_ignores_terminal_zero_price_stale_close_losses_for_hard_stop() -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-terminal-risk-ignore")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let opened_ts = now - chrono::Duration::hours(14);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample-risk-ignore".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+            exact_amounts: None,
+        })?;
+        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, now)?;
+        assert_eq!(stats.terminal_zero_closed, 1);
+
+        let (all_trades, all_pnl) =
+            store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
+        assert_eq!(all_trades, 1);
+        assert!(
+            all_pnl < 0.0,
+            "accounting pnl must keep terminal-zero loss visible"
+        );
+
+        let (risk_trades, risk_pnl) =
+            store.shadow_risk_realized_pnl_lamports_since(now - chrono::Duration::days(1))?;
+        assert_eq!(risk_trades, 0);
+        assert_eq!(risk_pnl, SignedLamports::ZERO);
+
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_24h_stop_sol = -0.5;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        match guard.can_open_buy(&store, now + chrono::Duration::seconds(1), true) {
+            BuyRiskDecision::Allow => {}
+            other => panic!("terminal-zero stale close should not trip hard stop, got {other:?}"),
+        }
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
