@@ -11498,6 +11498,226 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_rejects_slippage_bps_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _) = test_signed_tx_base64_with_signature([85u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","slippage_bps":12.0}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        state.config.route_backends.get_mut("rpc").expect("rpc backend").send_rpc_url =
+            Some("http://127.0.0.1:1/send-rpc".to_string());
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-slippage-mismatch-before-send-rpc-1",
+            "client_order_id": "client-order-slippage-mismatch-before-send-rpc-1",
+            "request_id": "request-slippage-mismatch-before-send-rpc-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("slippage mismatch must reject before send-rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_slippage_bps_mismatch");
+        assert!(
+            reject
+                .detail
+                .contains("upstream slippage_bps=12 does not match expected slippage_bps=10"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_compute_budget_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _) = test_signed_tx_base64_with_signature([86u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","compute_budget":{{"cu_limit":350000,"cu_price_micro_lamports":1000}}}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        state.config.route_backends.get_mut("rpc").expect("rpc backend").send_rpc_url =
+            Some("http://127.0.0.1:1/send-rpc".to_string());
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-compute-budget-mismatch-before-send-rpc-1",
+            "client_order_id": "client-order-compute-budget-mismatch-before-send-rpc-1",
+            "request_id": "request-compute-budget-mismatch-before-send-rpc-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("compute_budget mismatch must reject before send-rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_compute_budget_mismatch");
+        assert!(
+            reject.detail.contains(
+                "upstream compute_budget.cu_limit=350000 does not match expected compute_budget.cu_limit=300000"
+            ),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_rejects_tip_policy_mismatch_before_send_rpc() {
+        let (signed_tx_base64, _) = test_signed_tx_base64_with_signature([87u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"signed_tx_base64":"{}","tip_lamports":0,"tip_policy":{{"policy_code":"rpc_tip_forced_zero","requested_tip_lamports":2500,"effective_tip_lamports":1}}}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        state.config.route_backends.get_mut("rpc").expect("rpc backend").send_rpc_url =
+            Some("http://127.0.0.1:1/send-rpc".to_string());
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-tip-policy-mismatch-before-send-rpc-1",
+            "client_order_id": "client-order-tip-policy-mismatch-before-send-rpc-1",
+            "request_id": "request-tip-policy-mismatch-before-send-rpc-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 15.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 2500,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("tip policy mismatch must reject before send-rpc");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "submit_adapter_tip_policy_mismatch");
+        assert!(
+            reject.detail.contains(
+                "upstream tip_policy.effective_tip_lamports=1 does not match expected tip_policy.effective_tip_lamports=0"
+            ),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
+    async fn handle_submit_accepts_matching_upstream_policy_echoes() {
+        let signature = bs58::encode([88u8; 64]).into_string();
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","slippage_bps":15.0,"tip_lamports":0,"compute_budget":{{"cu_limit":300000,"cu_price_micro_lamports":1500}},"tip_policy":{{"policy_code":"rpc_tip_forced_zero","requested_tip_lamports":2500,"effective_tip_lamports":0}}}}"#,
+            signature
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-matching-policy-echoes-1",
+            "client_order_id": "client-order-matching-policy-echoes-1",
+            "request_id": "request-matching-policy-echoes-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.2,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 15.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 2500,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1500
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let response = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect("matching upstream policy echoes should succeed");
+        assert_eq!(
+            response.get("tx_signature").and_then(Value::as_str),
+            Some(signature.as_str())
+        );
+        assert_eq!(
+            response.get("tip_lamports").and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            response
+                .get("tip_policy")
+                .and_then(|value| value.get("policy_code"))
+                .and_then(Value::as_str),
+            Some("rpc_tip_forced_zero")
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_returns_cached_response_for_duplicate_client_order_id() {
         let signature = bs58::encode([17u8; 64]).into_string();
         let upstream_body = format!(

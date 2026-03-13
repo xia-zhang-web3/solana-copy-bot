@@ -320,6 +320,27 @@ pub(crate) fn map_submit_response_validation_error_to_reject(
                 ),
             )
         }
+        SubmitResponseValidationError::FieldMustBeFiniteNumberWhenPresent { field_name } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!("upstream {} must be finite number when present", field_name),
+            )
+        }
+        SubmitResponseValidationError::FieldMustBeNonNegativeIntegerWhenPresent { field_name } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!(
+                    "upstream {} must be non-negative integer when present",
+                    field_name
+                ),
+            )
+        }
+        SubmitResponseValidationError::FieldMustBeObjectWhenPresent { field_name } => {
+            Reject::terminal(
+                "submit_adapter_invalid_response",
+                format!("upstream {} must be object when present", field_name),
+            )
+        }
         SubmitResponseValidationError::RouteMismatch {
             response_route,
             expected_route,
@@ -397,6 +418,85 @@ pub(crate) fn map_submit_response_validation_error_to_reject(
         SubmitResponseValidationError::SubmittedAtInvalidRfc3339 { raw } => Reject::terminal(
             "submit_adapter_invalid_response",
             format!("submitted_at is not valid RFC3339: {}", raw),
+        ),
+        SubmitResponseValidationError::SlippageBpsMismatch {
+            response_slippage_bps,
+            expected_slippage_bps,
+        } => Reject::terminal(
+            "submit_adapter_slippage_bps_mismatch",
+            format!(
+                "upstream slippage_bps={} does not match expected slippage_bps={}",
+                response_slippage_bps, expected_slippage_bps
+            ),
+        ),
+        SubmitResponseValidationError::ComputeBudgetCuLimitMismatch {
+            response_cu_limit,
+            expected_cu_limit,
+        } => Reject::terminal(
+            "submit_adapter_compute_budget_mismatch",
+            format!(
+                "upstream compute_budget.cu_limit={} does not match expected compute_budget.cu_limit={}",
+                response_cu_limit, expected_cu_limit
+            ),
+        ),
+        SubmitResponseValidationError::ComputeBudgetCuPriceMicroLamportsMismatch {
+            response_cu_price_micro_lamports,
+            expected_cu_price_micro_lamports,
+        } => Reject::terminal(
+            "submit_adapter_compute_budget_mismatch",
+            format!(
+                "upstream compute_budget.cu_price_micro_lamports={} does not match expected compute_budget.cu_price_micro_lamports={}",
+                response_cu_price_micro_lamports, expected_cu_price_micro_lamports
+            ),
+        ),
+        SubmitResponseValidationError::TipLamportsMismatch {
+            response_tip_lamports,
+            expected_tip_lamports,
+        } => Reject::terminal(
+            "submit_adapter_tip_lamports_mismatch",
+            format!(
+                "upstream tip_lamports={} does not match expected tip_lamports={}",
+                response_tip_lamports, expected_tip_lamports
+            ),
+        ),
+        SubmitResponseValidationError::TipPolicyUnexpected {
+            response_policy_code,
+        } => Reject::terminal(
+            "submit_adapter_tip_policy_mismatch",
+            format!(
+                "upstream tip_policy.policy_code={} is unexpected for this request",
+                response_policy_code
+            ),
+        ),
+        SubmitResponseValidationError::TipPolicyCodeMismatch {
+            response_policy_code,
+            expected_policy_code,
+        } => Reject::terminal(
+            "submit_adapter_tip_policy_mismatch",
+            format!(
+                "upstream tip_policy.policy_code={} does not match expected tip_policy.policy_code={}",
+                response_policy_code, expected_policy_code
+            ),
+        ),
+        SubmitResponseValidationError::TipPolicyRequestedTipMismatch {
+            response_requested_tip_lamports,
+            expected_requested_tip_lamports,
+        } => Reject::terminal(
+            "submit_adapter_tip_policy_mismatch",
+            format!(
+                "upstream tip_policy.requested_tip_lamports={} does not match expected tip_policy.requested_tip_lamports={}",
+                response_requested_tip_lamports, expected_requested_tip_lamports
+            ),
+        ),
+        SubmitResponseValidationError::TipPolicyEffectiveTipMismatch {
+            response_effective_tip_lamports,
+            expected_effective_tip_lamports,
+        } => Reject::terminal(
+            "submit_adapter_tip_policy_mismatch",
+            format!(
+                "upstream tip_policy.effective_tip_lamports={} does not match expected tip_policy.effective_tip_lamports={}",
+                response_effective_tip_lamports, expected_effective_tip_lamports
+            ),
         ),
     }
 }

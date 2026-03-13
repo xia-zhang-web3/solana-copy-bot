@@ -28,7 +28,8 @@ use crate::submit_deadline::SubmitDeadline;
 use crate::submit_payload::{build_submit_success_payload, SubmitSuccessPayloadInputs};
 use crate::submit_response::{
     resolve_submit_response_submitted_at, validate_submit_response_extended_identity,
-    validate_submit_response_request_identity, validate_submit_response_route_and_contract,
+    validate_submit_response_policy_echoes, validate_submit_response_request_identity,
+    validate_submit_response_route_and_contract, SubmitResponsePolicyEchoInputs,
 };
 use crate::submit_transport::{extract_submit_transport_artifact, SubmitTransportArtifact};
 use crate::submit_verify::{verify_submitted_signature_visibility, SubmitSignatureVerification};
@@ -295,6 +296,27 @@ pub(crate) async fn handle_submit(
             route.as_str(),
             request,
             "validate_submit_response_extended_identity",
+            map_submit_response_validation_error_to_reject(error),
+        )
+        .await;
+    }
+
+    if let Err(error) = validate_submit_response_policy_echoes(
+        &backend_response,
+        SubmitResponsePolicyEchoInputs {
+            expected_slippage_bps: request.slippage_bps,
+            expected_cu_limit: request.compute_budget.cu_limit,
+            expected_cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
+            expected_effective_tip_lamports: effective_tip_lamports,
+            expected_requested_tip_lamports: request.tip_lamports,
+            expected_tip_policy_code: tip_policy_code,
+        },
+    ) {
+        return reject_after_claimed_submit_error(
+            &mut submit_claim_guard,
+            route.as_str(),
+            request,
+            "validate_submit_response_policy_echoes",
             map_submit_response_validation_error_to_reject(error),
         )
         .await;
