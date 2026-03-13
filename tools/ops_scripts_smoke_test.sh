@@ -6078,7 +6078,7 @@ EOF_DEVNET_EXECUTOR_ENV
         bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
     )"
     assert_field_equals "$tests_enabled_output" "tests_run" "true"
-    assert_field_equals "$tests_enabled_output" "tests_total" "25"
+    assert_field_equals "$tests_enabled_output" "tests_total" "27"
     assert_field_equals "$tests_enabled_output" "tests_failed" "0"
     local tests_enabled_artifact_path=""
     tests_enabled_artifact_path="$(extract_field_value "$tests_enabled_output" "artifact_tests")"
@@ -6104,6 +6104,8 @@ EOF_DEVNET_EXECUTOR_ENV
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_signature_response_fails_late_validation"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_conflicting_transport_artifacts_include_upstream_signature"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_tx_signature_type_is_invalid"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_reject_includes_tx_signature"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_invalid_upstream_status_includes_tx_signature"
   fi
 
   local required_windowed_disabled_output=""
@@ -12973,11 +12975,11 @@ run_targeted_smoke_cases() {
   fi
   case_timeout_sec="$(trim_string "$case_timeout_sec_raw")"
   if ! [[ "$case_timeout_sec" =~ ^[0-9]+$ ]]; then
-    echo "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..120 (got: ${case_timeout_sec_raw:-<empty>})" >&2
+    echo "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..600 (got: ${case_timeout_sec_raw:-<empty>})" >&2
     exit 1
   fi
-  if ((case_timeout_sec < 1 || case_timeout_sec > 120)); then
-    echo "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..120 (got: $case_timeout_sec)" >&2
+  if ((case_timeout_sec < 1 || case_timeout_sec > 600)); then
+    echo "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..600 (got: $case_timeout_sec)" >&2
     exit 1
   fi
   local -a raw_target_tokens=()
@@ -13292,16 +13294,16 @@ run_ops_smoke_targeted_dispatch_case() {
   fi
   local invalid_timeout_token_output=""
   invalid_timeout_token_output="$(cat "$invalid_timeout_token_output_path")"
-  assert_contains "$invalid_timeout_token_output" "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..120"
+  assert_contains "$invalid_timeout_token_output" "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..600"
 
   local invalid_timeout_range_output_path="$TMP_DIR/ops-smoke-target-invalid-timeout-range.out"
-  if OPS_SMOKE_CASE_TIMEOUT_SEC="121" OPS_SMOKE_TARGET_CASES="common_timeout_parser" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_timeout_range_output_path" 2>&1; then
+  if OPS_SMOKE_CASE_TIMEOUT_SEC="601" OPS_SMOKE_TARGET_CASES="common_timeout_parser" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$invalid_timeout_range_output_path" 2>&1; then
     echo "expected targeted smoke mode to fail on out-of-range OPS_SMOKE_CASE_TIMEOUT_SEC value" >&2
     exit 1
   fi
   local invalid_timeout_range_output=""
   invalid_timeout_range_output="$(cat "$invalid_timeout_range_output_path")"
-  assert_contains "$invalid_timeout_range_output" "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..120"
+  assert_contains "$invalid_timeout_range_output" "OPS_SMOKE_CASE_TIMEOUT_SEC must be an integer in range 1..600"
 
   local timeout_enforced_output_path="$TMP_DIR/ops-smoke-target-timeout-enforced.out"
   if OPS_SMOKE_PROFILE="fast" OPS_SMOKE_CASE_TIMEOUT_SEC="1" OPS_SMOKE_TARGET_CASES="executor_preflight_fast" bash "$ROOT_DIR/tools/ops_scripts_smoke_test.sh" >"$timeout_enforced_output_path" 2>&1; then

@@ -983,6 +983,8 @@ if [[ "$run_tests_norm" == "true" ]]; then
     "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_signature_response_fails_late_validation"
     "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_conflicting_transport_artifacts_include_upstream_signature"
     "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_tx_signature_type_is_invalid"
+    "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_reject_includes_tx_signature"
+    "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_invalid_upstream_status_includes_tx_signature"
   )
   for test_cmd in "${test_commands[@]}"; do
     tests_total=$((tests_total + 1))
