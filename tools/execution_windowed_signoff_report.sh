@@ -19,6 +19,7 @@ GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY="${GO_NOGO_REQUIRE_FOLLOWLIST_ACTIVITY:-fals
 GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER="${GO_NOGO_REQUIRE_NON_BOOTSTRAP_SIGNER:-false}"
 GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="${GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT:-false}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
+WINDOWED_SIGNOFF_GO_NOGO_HELPER_PATH="${WINDOWED_SIGNOFF_GO_NOGO_HELPER_PATH:-$ROOT_DIR/tools/execution_go_nogo_report.sh}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_HINT_SOURCE_PASS:-false}"
 WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="${WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS:-false}"
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
@@ -207,7 +208,7 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
       PACKAGE_BUNDLE_ENABLED="false" \
       OUTPUT_DIR="$go_nogo_output_dir" \
-      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" "$window_hours" "$RISK_EVENTS_MINUTES" 2>&1
+      bash "$WINDOWED_SIGNOFF_GO_NOGO_HELPER_PATH" "$window_hours" "$RISK_EVENTS_MINUTES" 2>&1
     )"; then
       go_nogo_exit_code=0
     else
@@ -264,6 +265,10 @@ if ((${#input_errors[@]} == 0)); then
     fastlane_feature_flag_verdict="$(normalize_gate_verdict "$(extract_field "fastlane_feature_flag_verdict" "$go_nogo_output")")"
     fastlane_feature_flag_reason="$(trim_string "$(extract_field "fastlane_feature_flag_reason" "$go_nogo_output")")"
     fastlane_feature_flag_reason_code="$(trim_string "$(extract_field "fastlane_feature_flag_reason_code" "$go_nogo_output")")"
+    if (( go_nogo_exit_code != 0 )) && [[ "$overall_verdict" == "GO" ]]; then
+      overall_verdict="NO_GO"
+      overall_reason_code="go_nogo_failed"
+    fi
     executor_backend_mode_guard_verdict_raw="$(trim_string "$(extract_field "executor_backend_mode_guard_verdict" "$go_nogo_output")")"
     executor_backend_mode_guard_verdict_raw_upper="$(printf '%s' "$executor_backend_mode_guard_verdict_raw" | tr '[:lower:]' '[:upper:]')"
     executor_backend_mode_guard_verdict="$(normalize_strict_guard_verdict "$executor_backend_mode_guard_verdict_raw")"

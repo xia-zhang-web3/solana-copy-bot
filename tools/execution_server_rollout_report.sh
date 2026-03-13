@@ -17,6 +17,8 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-state/server-rollout-$(date -u +"%Y%m%dT%H%M%SZ")}"
 EXACT_MONEY_CUTOVER_HELPER_PATH="${EXACT_MONEY_CUTOVER_HELPER_PATH:-$ROOT_DIR/tools/exact_money_cutover_evidence_report.sh}"
 SERVER_ROLLOUT_EXECUTOR_FINAL_HELPER_PATH="${SERVER_ROLLOUT_EXECUTOR_FINAL_HELPER_PATH:-$ROOT_DIR/tools/executor_final_evidence_report.sh}"
 SERVER_ROLLOUT_ADAPTER_FINAL_HELPER_PATH="${SERVER_ROLLOUT_ADAPTER_FINAL_HELPER_PATH:-$ROOT_DIR/tools/adapter_rollout_final_evidence_report.sh}"
+SERVER_ROLLOUT_GO_NOGO_HELPER_PATH="${SERVER_ROLLOUT_GO_NOGO_HELPER_PATH:-$ROOT_DIR/tools/execution_go_nogo_report.sh}"
+SERVER_ROLLOUT_REHEARSAL_HELPER_PATH="${SERVER_ROLLOUT_REHEARSAL_HELPER_PATH:-$ROOT_DIR/tools/execution_devnet_rehearsal.sh}"
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-execution_server_rollout}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_ROOT}"
@@ -483,7 +485,7 @@ if ((${#input_errors[@]} == 0)); then
         GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="$GO_NOGO_TEST_FEE_VERDICT_OVERRIDE" \
         GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
         PACKAGE_BUNDLE_ENABLED="false" \
-        bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+        bash "$SERVER_ROLLOUT_GO_NOGO_HELPER_PATH" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
     )"; then
       go_nogo_exit_code=0
     else
@@ -795,7 +797,7 @@ package_bundle_enabled: false"
         ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
         ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
         PACKAGE_BUNDLE_ENABLED="false" \
-        bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+        bash "$SERVER_ROLLOUT_REHEARSAL_HELPER_PATH" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
     )"; then
       rehearsal_exit_code=0
     else
@@ -2094,7 +2096,9 @@ else
   fi
 
   if [[ "$server_rollout_run_go_nogo_direct_norm" == "true" ]]; then
-    if [[ "$overall_go_nogo_verdict" == "NO_GO" || "$overall_go_nogo_verdict" == "UNKNOWN" ]]; then
+    if (( go_nogo_exit_code != 0 )) && [[ "$overall_go_nogo_verdict" == "GO" ]]; then
+      set_no_go "go/no-go helper exited ${go_nogo_exit_code} with unexpected code for verdict ${overall_go_nogo_verdict}" "go_nogo_failed"
+    elif [[ "$overall_go_nogo_verdict" == "NO_GO" || "$overall_go_nogo_verdict" == "UNKNOWN" ]]; then
       set_no_go "go/no-go stage not GO (${overall_go_nogo_verdict}): ${overall_go_nogo_reason:-n/a}" "go_nogo_not_go"
     elif [[ "$overall_go_nogo_verdict" == "HOLD" ]]; then
       set_hold_if_go "go/no-go stage HOLD: ${overall_go_nogo_reason:-n/a}" "go_nogo_hold"
@@ -2102,7 +2106,9 @@ else
   fi
 
   if [[ "$server_rollout_run_rehearsal_direct_norm" == "true" ]]; then
-    if [[ "$rehearsal_verdict" == "NO_GO" || "$rehearsal_verdict" == "UNKNOWN" ]]; then
+    if ! go_nogo_exit_code_matches_verdict "$rehearsal_exit_code" "$rehearsal_verdict"; then
+      set_no_go "devnet rehearsal helper exited ${rehearsal_exit_code} with unexpected code for verdict ${rehearsal_verdict}" "rehearsal_failed"
+    elif [[ "$rehearsal_verdict" == "NO_GO" || "$rehearsal_verdict" == "UNKNOWN" ]]; then
       set_no_go "devnet rehearsal not GO (${rehearsal_verdict}): ${rehearsal_reason:-n/a}" "rehearsal_not_go"
     elif [[ "$rehearsal_verdict" == "HOLD" ]]; then
       set_hold_if_go "devnet rehearsal HOLD: ${rehearsal_reason:-n/a}" "rehearsal_hold"

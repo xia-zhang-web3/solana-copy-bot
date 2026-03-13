@@ -33,6 +33,9 @@ GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="${GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LA
 GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="${GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS:-1000}"
 GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
+DEVNET_REHEARSAL_GO_NOGO_HELPER_PATH="${DEVNET_REHEARSAL_GO_NOGO_HELPER_PATH:-$ROOT_DIR/tools/execution_go_nogo_report.sh}"
+DEVNET_REHEARSAL_WINDOWED_SIGNOFF_HELPER_PATH="${DEVNET_REHEARSAL_WINDOWED_SIGNOFF_HELPER_PATH:-$ROOT_DIR/tools/execution_windowed_signoff_report.sh}"
+DEVNET_REHEARSAL_ROUTE_FEE_SIGNOFF_HELPER_PATH="${DEVNET_REHEARSAL_ROUTE_FEE_SIGNOFF_HELPER_PATH:-$ROOT_DIR/tools/execution_route_fee_signoff_report.sh}"
 ROUTE_FEE_SIGNOFF_WINDOWS_CSV="${ROUTE_FEE_SIGNOFF_WINDOWS_CSV:-1,6,24}"
 ROUTE_FEE_SIGNOFF_REQUIRED="${ROUTE_FEE_SIGNOFF_REQUIRED:-false}"
 ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE="${ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_MODE:-${GO_NOGO_TEST_MODE:-false}}"
@@ -311,7 +314,7 @@ if go_nogo_output="$(
   GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
   PACKAGE_BUNDLE_ENABLED="false" \
   OUTPUT_DIR="$go_nogo_output_dir" \
-  bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+  bash "$DEVNET_REHEARSAL_GO_NOGO_HELPER_PATH" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
 )"; then
   go_nogo_exit_code=0
 else
@@ -355,7 +358,7 @@ if [[ "$devnet_rehearsal_run_windowed_signoff_norm" == "true" ]]; then
     WINDOWED_SIGNOFF_REQUIRE_DYNAMIC_TIP_POLICY_PASS="$windowed_signoff_require_dynamic_tip_policy_pass_norm" \
     PACKAGE_BUNDLE_ENABLED="false" \
     OUTPUT_DIR="$windowed_signoff_output_dir" \
-    bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" "$WINDOWED_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+    bash "$DEVNET_REHEARSAL_WINDOWED_SIGNOFF_HELPER_PATH" "$WINDOWED_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     windowed_signoff_exit_code=0
   else
@@ -412,7 +415,7 @@ if [[ "$devnet_rehearsal_run_route_fee_signoff_norm" == "true" ]]; then
     GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$route_fee_signoff_go_nogo_test_route_override" \
     PACKAGE_BUNDLE_ENABLED="false" \
     OUTPUT_DIR="$route_fee_signoff_output_dir" \
-    bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+    bash "$DEVNET_REHEARSAL_ROUTE_FEE_SIGNOFF_HELPER_PATH" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     route_fee_signoff_exit_code=0
   else
@@ -493,6 +496,9 @@ go_nogo_pretrade_fee_policy_guard_verdict="unknown"
 go_nogo_pretrade_fee_policy_guard_reason_code="n/a"
 go_nogo_confirmed_execution_sample_guard_verdict="unknown"
 go_nogo_confirmed_execution_sample_guard_reason_code="n/a"
+go_nogo_exit_failed="false"
+windowed_signoff_exit_parity_failed="false"
+route_fee_signoff_exit_parity_failed="false"
 
 overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
 overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
@@ -842,6 +848,15 @@ route_fee_signoff_verdict="$(normalize_go_nogo_verdict "$(extract_field "signoff
 route_fee_signoff_reason="$(trim_string "$(extract_field "signoff_reason" "$route_fee_signoff_output")")"
 route_fee_signoff_reason_code="$(trim_string "$(extract_field "signoff_reason_code" "$route_fee_signoff_output")")"
 route_fee_signoff_windows_csv="$(trim_string "$(extract_field "windows_csv" "$route_fee_signoff_output")")"
+if (( go_nogo_exit_code != 0 )) && [[ "$overall_go_nogo_verdict" == "GO" ]]; then
+  go_nogo_exit_failed="true"
+fi
+if [[ "$devnet_rehearsal_run_windowed_signoff_norm" == "true" ]] && ! go_nogo_exit_code_matches_verdict "$windowed_signoff_exit_code" "$windowed_signoff_verdict"; then
+  windowed_signoff_exit_parity_failed="true"
+fi
+if [[ "$devnet_rehearsal_run_route_fee_signoff_norm" == "true" ]] && ! go_nogo_exit_code_matches_verdict "$route_fee_signoff_exit_code" "$route_fee_signoff_verdict"; then
+  route_fee_signoff_exit_parity_failed="true"
+fi
 if [[ "$devnet_rehearsal_run_route_fee_signoff_norm" == "true" ]]; then
   route_fee_signoff_artifact_manifest="$(trim_string "$(extract_field "artifact_manifest" "$route_fee_signoff_output")")"
   route_fee_signoff_summary_sha256="$(trim_string "$(extract_field "summary_sha256" "$route_fee_signoff_output")")"
@@ -978,6 +993,18 @@ elif [[ "$preflight_verdict" != "PASS" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="adapter preflight not PASS (${preflight_verdict}): ${preflight_reason:-n/a}"
   devnet_rehearsal_reason_code="preflight_not_pass"
+elif [[ "$go_nogo_exit_failed" == "true" ]]; then
+  devnet_rehearsal_verdict="NO_GO"
+  devnet_rehearsal_reason="go/no-go helper exited ${go_nogo_exit_code} with unexpected code for verdict ${overall_go_nogo_verdict}"
+  devnet_rehearsal_reason_code="go_nogo_failed"
+elif [[ "$windowed_signoff_exit_parity_failed" == "true" ]]; then
+  devnet_rehearsal_verdict="NO_GO"
+  devnet_rehearsal_reason="windowed signoff helper exited ${windowed_signoff_exit_code} with unexpected code for verdict ${windowed_signoff_verdict}"
+  devnet_rehearsal_reason_code="windowed_signoff_failed"
+elif [[ "$route_fee_signoff_exit_parity_failed" == "true" ]]; then
+  devnet_rehearsal_verdict="NO_GO"
+  devnet_rehearsal_reason="route/fee signoff helper exited ${route_fee_signoff_exit_code} with unexpected code for verdict ${route_fee_signoff_verdict}"
+  devnet_rehearsal_reason_code="route_fee_signoff_failed"
 elif [[ "$overall_go_nogo_verdict" == "UNKNOWN" ]]; then
   devnet_rehearsal_verdict="NO_GO"
   devnet_rehearsal_reason="go/no-go verdict unknown: ${overall_go_nogo_reason:-n/a}"

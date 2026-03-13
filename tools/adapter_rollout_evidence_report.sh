@@ -50,6 +50,8 @@ PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-adapter_rollout_evidence}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_DIR}"
 ADAPTER_ROLLOUT_PROFILE="${ADAPTER_ROLLOUT_PROFILE:-full}"
+ADAPTER_ROLLOUT_REHEARSAL_HELPER_PATH="${ADAPTER_ROLLOUT_REHEARSAL_HELPER_PATH:-$ROOT_DIR/tools/execution_devnet_rehearsal.sh}"
+ADAPTER_ROLLOUT_ROUTE_FEE_SIGNOFF_HELPER_PATH="${ADAPTER_ROLLOUT_ROUTE_FEE_SIGNOFF_HELPER_PATH:-$ROOT_DIR/tools/execution_route_fee_signoff_report.sh}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -338,6 +340,8 @@ rehearsal_route_fee_stable_fallback_route=""
 rehearsal_route_fee_route_profile_pass_count=""
 rehearsal_route_fee_fee_decomposition_pass_count=""
 rehearsal_route_fee_window_count=""
+rehearsal_exit_parity_failed="false"
+route_fee_signoff_exit_parity_failed="false"
 tests_run=""
 tests_failed=""
 if [[ "$adapter_rollout_run_rehearsal_norm" != "true" ]]; then
@@ -427,7 +431,7 @@ else
       ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE" \
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$REHEARSAL_ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
       PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+      bash "$ADAPTER_ROLLOUT_REHEARSAL_HELPER_PATH" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     rehearsal_exit_code=0
   else
@@ -847,6 +851,9 @@ else
   elif [[ -z "$rehearsal_reason" ]]; then
     rehearsal_reason="execution devnet rehearsal reported $rehearsal_verdict"
   fi
+  if ! go_nogo_exit_code_matches_verdict "$rehearsal_exit_code" "$rehearsal_verdict"; then
+    rehearsal_exit_parity_failed="true"
+  fi
 fi
 
 route_fee_signoff_required="$route_fee_signoff_required_norm"
@@ -913,7 +920,7 @@ else
       GO_NOGO_REQUIRE_SUBMIT_VERIFY_STRICT="$go_nogo_require_submit_verify_strict_norm" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
+      bash "$ADAPTER_ROLLOUT_ROUTE_FEE_SIGNOFF_HELPER_PATH" "$ROUTE_FEE_SIGNOFF_WINDOWS_CSV" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     route_fee_signoff_exit_code=0
   else
@@ -962,6 +969,9 @@ else
     route_fee_signoff_reason="execution route/fee signoff helper reported $route_fee_signoff_verdict"
     route_fee_signoff_reason_code="missing_reason"
   fi
+  if ! go_nogo_exit_code_matches_verdict "$route_fee_signoff_exit_code" "$route_fee_signoff_verdict"; then
+    route_fee_signoff_exit_parity_failed="true"
+  fi
 fi
 
 if [[ -n "$route_fee_signoff_test_verdict_override_raw" ]]; then
@@ -991,6 +1001,14 @@ elif [[ "$adapter_rollout_run_rotation_norm" == "true" && "$rotation_verdict" ==
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="rotation readiness verdict unknown; fail-closed"
   adapter_rollout_reason_code="rotation_unknown"
+elif [[ "$adapter_rollout_run_rehearsal_norm" == "true" && "$rehearsal_exit_parity_failed" == "true" ]]; then
+  adapter_rollout_verdict="NO_GO"
+  adapter_rollout_reason="devnet rehearsal helper exited ${rehearsal_exit_code} with unexpected code for verdict ${rehearsal_verdict}"
+  adapter_rollout_reason_code="rehearsal_failed"
+elif [[ "$adapter_rollout_run_route_fee_signoff_norm" == "true" && "$route_fee_signoff_exit_parity_failed" == "true" ]]; then
+  adapter_rollout_verdict="NO_GO"
+  adapter_rollout_reason="route/fee signoff helper exited ${route_fee_signoff_exit_code} with unexpected code for verdict ${route_fee_signoff_verdict}"
+  adapter_rollout_reason_code="route_fee_signoff_failed"
 elif [[ "$adapter_rollout_run_rehearsal_norm" == "true" && "$rehearsal_verdict" == "NO_GO" ]]; then
   adapter_rollout_verdict="NO_GO"
   adapter_rollout_reason="devnet rehearsal returned NO_GO: ${rehearsal_reason:-n/a}"

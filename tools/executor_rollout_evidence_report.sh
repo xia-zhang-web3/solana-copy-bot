@@ -44,6 +44,7 @@ PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
 PACKAGE_BUNDLE_LABEL="${PACKAGE_BUNDLE_LABEL:-executor_rollout_evidence}"
 PACKAGE_BUNDLE_OUTPUT_DIR="${PACKAGE_BUNDLE_OUTPUT_DIR:-$OUTPUT_DIR}"
 EXECUTOR_ROLLOUT_PROFILE="${EXECUTOR_ROLLOUT_PROFILE:-full}"
+EXECUTOR_ROLLOUT_REHEARSAL_HELPER_PATH="${EXECUTOR_ROLLOUT_REHEARSAL_HELPER_PATH:-$ROOT_DIR/tools/execution_devnet_rehearsal.sh}"
 
 timestamp_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 timestamp_compact="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -360,6 +361,7 @@ rehearsal_nested_pretrade_fee_policy_guard_verdict="unknown"
 rehearsal_nested_pretrade_fee_policy_guard_reason_code="n/a"
 rehearsal_nested_confirmed_execution_sample_guard_verdict="unknown"
 rehearsal_nested_confirmed_execution_sample_guard_reason_code="n/a"
+rehearsal_exit_parity_failed="false"
 tests_run=""
 tests_failed=""
 if [[ "$executor_rollout_run_rehearsal_norm" != "true" ]]; then
@@ -450,7 +452,7 @@ else
       ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="$ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE" \
       EXECUTOR_ENV_PATH="$EXECUTOR_ENV_PATH" \
       PACKAGE_BUNDLE_ENABLED="false" \
-      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
+      bash "$EXECUTOR_ROLLOUT_REHEARSAL_HELPER_PATH" "$WINDOW_HOURS" "$RISK_EVENTS_MINUTES" 2>&1
   )"; then
     rehearsal_exit_code=0
   else
@@ -796,6 +798,9 @@ else
   elif [[ -z "$rehearsal_reason_code" ]]; then
     rehearsal_reason_code="missing_reason"
   fi
+  if ! go_nogo_exit_code_matches_verdict "$rehearsal_exit_code" "$rehearsal_verdict"; then
+    rehearsal_exit_parity_failed="true"
+  fi
 fi
 
 executor_rollout_verdict="NO_GO"
@@ -821,6 +826,10 @@ elif [[ "$executor_rollout_run_preflight_norm" == "true" && "$preflight_verdict"
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="executor preflight verdict unknown; fail-closed"
   executor_rollout_reason_code="preflight_unknown"
+elif [[ "$executor_rollout_run_rehearsal_norm" == "true" && "$rehearsal_exit_parity_failed" == "true" ]]; then
+  executor_rollout_verdict="NO_GO"
+  executor_rollout_reason="devnet rehearsal helper exited ${rehearsal_exit_code} with unexpected code for verdict ${rehearsal_verdict}"
+  executor_rollout_reason_code="rehearsal_failed"
 elif [[ "$executor_rollout_run_rehearsal_norm" == "true" && "$rehearsal_verdict" == "NO_GO" ]]; then
   executor_rollout_verdict="NO_GO"
   executor_rollout_reason="devnet rehearsal returned NO_GO: ${rehearsal_reason:-n/a}"

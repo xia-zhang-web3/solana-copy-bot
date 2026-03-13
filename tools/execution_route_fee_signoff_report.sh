@@ -24,6 +24,7 @@ GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="${GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY:-fals
 GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="${GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS:-50000000}"
 GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="${GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS:-1000}"
 EXECUTOR_ENV_PATH="${EXECUTOR_ENV_PATH:-/etc/solana-copy-bot/executor.env}"
+ROUTE_FEE_SIGNOFF_GO_NOGO_HELPER_PATH="${ROUTE_FEE_SIGNOFF_GO_NOGO_HELPER_PATH:-$ROOT_DIR/tools/execution_go_nogo_report.sh}"
 GO_NOGO_TEST_MODE="${GO_NOGO_TEST_MODE:-false}"
 ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="${ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE:-}"
 PACKAGE_BUNDLE_ENABLED="${PACKAGE_BUNDLE_ENABLED:-false}"
@@ -271,7 +272,7 @@ if ((${#input_errors[@]} == 0)); then
       GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="${GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE:-}" \
       PACKAGE_BUNDLE_ENABLED="false" \
       OUTPUT_DIR="$go_nogo_output_dir" \
-      bash "$ROOT_DIR/tools/execution_go_nogo_report.sh" "$window_hours" "$RISK_EVENTS_MINUTES" 2>&1
+      bash "$ROUTE_FEE_SIGNOFF_GO_NOGO_HELPER_PATH" "$window_hours" "$RISK_EVENTS_MINUTES" 2>&1
     )"; then
       go_nogo_exit_code=0
     else
@@ -294,6 +295,11 @@ if ((${#input_errors[@]} == 0)); then
     overall_go_nogo_verdict="$(normalize_go_nogo_verdict "$(extract_field "overall_go_nogo_verdict" "$go_nogo_output")")"
     overall_go_nogo_reason="$(trim_string "$(extract_field "overall_go_nogo_reason" "$go_nogo_output")")"
     overall_go_nogo_reason_code="$(trim_string "$(extract_field "overall_go_nogo_reason_code" "$go_nogo_output")")"
+    if (( go_nogo_exit_code != 0 )) && [[ "$overall_go_nogo_verdict" == "GO" ]]; then
+      overall_go_nogo_reason="execution_go_nogo_report helper exited ${go_nogo_exit_code} with unexpected code for verdict ${overall_go_nogo_verdict}"
+      overall_go_nogo_reason_code="go_nogo_failed"
+      overall_go_nogo_verdict="NO_GO"
+    fi
     route_profile_verdict="$(normalize_gate_verdict "$(extract_field "route_profile_verdict" "$go_nogo_output")")"
     route_profile_reason="$(trim_string "$(extract_field "route_profile_reason" "$go_nogo_output")")"
     fee_decomposition_verdict="$(normalize_gate_verdict "$(extract_field "fee_decomposition_verdict" "$go_nogo_output")")"

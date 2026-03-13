@@ -2861,6 +2861,35 @@ EOF_WINDOWED_EXECUTOR_ENV
     echo "expected captured go/no-go artifact for 24h window in $artifacts_dir/window_24h" >&2
     exit 1
   fi
+  local windowed_go_nogo_helper_stub="$TMP_DIR/windowed-signoff-go-nogo-helper-exit7.sh"
+  write_passthrough_exit7_helper "$windowed_go_nogo_helper_stub" "$ROOT_DIR/tools/execution_go_nogo_report.sh"
+  local go_nogo_helper_fail_output=""
+  if go_nogo_helper_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$adapter_cfg" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$TMP_DIR/windowed-signoff-go-nogo-helper-fail" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_GO_NOGO_HELPER_PATH="$windowed_go_nogo_helper_stub" \
+      bash "$ROOT_DIR/tools/execution_windowed_signoff_report.sh" 24 60 2>&1
+  )"; then
+    echo "expected NO_GO exit for windowed signoff helper when nested go/no-go exits 7 with parseable GO output" >&2
+    exit 1
+  else
+    local go_nogo_helper_fail_exit_code=$?
+    if [[ "$go_nogo_helper_fail_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for windowed signoff nested go/no-go exit7 case, got $go_nogo_helper_fail_exit_code" >&2
+      echo "$go_nogo_helper_fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$go_nogo_helper_fail_output" "window_24h_go_nogo_exit_code" "7"
+  assert_field_equals "$go_nogo_helper_fail_output" "window_24h_overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$go_nogo_helper_fail_output" "window_24h_overall_go_nogo_reason_code" "go_nogo_failed"
+  assert_field_equals "$go_nogo_helper_fail_output" "signoff_verdict" "NO_GO"
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] execution windowed signoff helper (fast)"
     return
@@ -3145,6 +3174,8 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
   assert_sha256_field "$export_output" "window_1h_calibration_capture_sha256"
   assert_sha256_field "$export_output" "window_24h_go_nogo_capture_sha256"
   assert_sha256_field "$export_output" "window_24h_calibration_capture_sha256"
+  assert_field_equals "$export_output" "window_1h_go_nogo_exit_code" "0"
+  assert_field_equals "$export_output" "window_24h_go_nogo_exit_code" "0"
   if ! ls "$artifacts_dir"/execution_route_fee_signoff_summary_*.txt >/dev/null 2>&1; then
     echo "expected route/fee signoff summary artifact in $artifacts_dir" >&2
     exit 1
@@ -3190,6 +3221,36 @@ EOF_ROUTE_FEE_EXECUTOR_ENV
     echo "expected window-qualified 24h calibration capture entry in manifest $manifest_path" >&2
     exit 1
   fi
+  local route_fee_go_nogo_helper_stub="$TMP_DIR/route-fee-signoff-go-nogo-helper-exit7.sh"
+  write_passthrough_exit7_helper "$route_fee_go_nogo_helper_stub" "$ROOT_DIR/tools/execution_go_nogo_report.sh"
+  local go_nogo_helper_fail_output=""
+  if go_nogo_helper_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$strict_config_path" \
+      SERVICE="copybot-smoke-service" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      OUTPUT_DIR="$TMP_DIR/route-fee-signoff-go-nogo-helper-fail" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_GO_NOGO_HELPER_PATH="$route_fee_go_nogo_helper_stub" \
+      bash "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh" "24" "60" 2>&1
+  )"; then
+    echo "expected NO_GO exit for route/fee signoff helper when nested go/no-go exits 7 with parseable GO output" >&2
+    exit 1
+  else
+    local go_nogo_helper_fail_exit_code=$?
+    if [[ "$go_nogo_helper_fail_exit_code" -ne 3 ]]; then
+      echo "expected NO_GO exit code 3 for route/fee signoff nested go/no-go exit7 case, got $go_nogo_helper_fail_exit_code" >&2
+      echo "$go_nogo_helper_fail_output" >&2
+      exit 1
+    fi
+  fi
+  assert_field_equals "$go_nogo_helper_fail_output" "window_24h_go_nogo_exit_code" "7"
+  assert_field_equals "$go_nogo_helper_fail_output" "window_24h_overall_go_nogo_verdict" "NO_GO"
+  assert_field_equals "$go_nogo_helper_fail_output" "window_24h_overall_go_nogo_reason_code" "go_nogo_failed"
+  assert_field_equals "$go_nogo_helper_fail_output" "signoff_verdict" "NO_GO"
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] execution route/fee signoff helper (fast)"
     return
@@ -5811,6 +5872,36 @@ EOF_DEVNET_EXECUTOR_ENV
     echo "expected nested route/fee signoff capture artifact in $artifacts_dir/route_fee_signoff" >&2
     exit 1
   fi
+  local rehearsal_go_nogo_helper_stub="$TMP_DIR/devnet-rehearsal-go-nogo-helper-exit7.sh"
+  write_passthrough_exit7_helper "$rehearsal_go_nogo_helper_stub" "$ROOT_DIR/tools/execution_go_nogo_report.sh"
+  local go_nogo_fail_output=""
+  local go_nogo_fail_exit_code=0
+  if go_nogo_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$TMP_DIR/devnet-rehearsal-go-nogo-helper-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      DEVNET_REHEARSAL_GO_NOGO_HELPER_PATH="$rehearsal_go_nogo_helper_stub" \
+      bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
+  )"; then
+    go_nogo_fail_exit_code=0
+  else
+    go_nogo_fail_exit_code=$?
+  fi
+  if [[ "$go_nogo_fail_exit_code" -ne 3 ]]; then
+    echo "expected devnet rehearsal go/no-go helper failure exit code 3, got $go_nogo_fail_exit_code" >&2
+    echo "$go_nogo_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$go_nogo_fail_output" "overall_go_nogo_verdict" "GO"
+  assert_field_equals "$go_nogo_fail_output" "devnet_rehearsal_verdict" "NO_GO"
+  assert_field_equals "$go_nogo_fail_output" "devnet_rehearsal_reason_code" "go_nogo_failed"
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] execution devnet rehearsal helper (fast)"
     return
@@ -6365,6 +6456,7 @@ run_executor_rollout_evidence_case() {
   assert_field_equals "$pass_output" "executor_env_path" "$executor_env_path"
   assert_field_equals "$pass_output" "rotation_readiness_verdict" "PASS"
   assert_field_equals "$pass_output" "preflight_verdict" "PASS"
+  assert_field_equals "$pass_output" "devnet_rehearsal_exit_code" "0"
   assert_field_equals "$pass_output" "devnet_rehearsal_verdict" "GO"
   assert_field_equals "$pass_output" "rotation_artifacts_written" "true"
   assert_field_equals "$pass_output" "preflight_artifacts_written" "true"
@@ -6425,6 +6517,50 @@ run_executor_rollout_evidence_case() {
     echo "expected executor rollout manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
+  local executor_rollout_rehearsal_helper_stub="$TMP_DIR/executor-rollout-rehearsal-helper-exit7.sh"
+  write_passthrough_exit7_helper "$executor_rollout_rehearsal_helper_stub" "$ROOT_DIR/tools/execution_devnet_rehearsal.sh"
+  local rehearsal_fail_output=""
+  local rehearsal_fail_exit_code=0
+  if rehearsal_fail_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$TMP_DIR/executor-rollout-rehearsal-helper-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="true" \
+      GO_NOGO_MIN_CONFIRMED_ORDERS="1" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      EXECUTOR_ROLLOUT_REHEARSAL_HELPER_PATH="$executor_rollout_rehearsal_helper_stub" \
+      bash "$ROOT_DIR/tools/executor_rollout_evidence_report.sh" 24 60
+  )"; then
+    rehearsal_fail_exit_code=0
+  else
+    rehearsal_fail_exit_code=$?
+  fi
+  if [[ "$rehearsal_fail_exit_code" -ne 3 ]]; then
+    echo "expected executor rollout rehearsal helper failure exit code 3, got $rehearsal_fail_exit_code" >&2
+    echo "$rehearsal_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$rehearsal_fail_output" "devnet_rehearsal_exit_code" "7"
+  assert_field_equals "$rehearsal_fail_output" "devnet_rehearsal_verdict" "GO"
+  assert_field_equals "$rehearsal_fail_output" "executor_rollout_verdict" "NO_GO"
+  assert_field_equals "$rehearsal_fail_output" "executor_rollout_reason_code" "rehearsal_failed"
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] executor rollout/final evidence helpers (fast)"
     return
@@ -7316,6 +7452,8 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$output" "route_profile_verdict" "WARN"
   assert_field_equals "$output" "go_nogo_verdict" "GO"
   assert_field_equals "$output" "rehearsal_verdict" "GO"
+  assert_field_equals "$output" "go_nogo_exit_code" "0"
+  assert_field_equals "$output" "rehearsal_exit_code" "0"
   assert_field_equals "$output" "executor_final_exit_code" "0"
   assert_field_equals "$output" "executor_final_verdict" "GO"
   assert_field_equals "$output" "adapter_final_exit_code" "0"
@@ -7495,6 +7633,57 @@ run_execution_server_rollout_report_case() {
     echo "expected server rollout manifest artifact in $output_root" >&2
     exit 1
   fi
+  local server_rollout_go_nogo_helper_stub="$TMP_DIR/server-rollout-go-nogo-helper-exit7.sh"
+  write_passthrough_exit7_helper "$server_rollout_go_nogo_helper_stub" "$ROOT_DIR/tools/execution_go_nogo_report.sh"
+  local go_nogo_fail_output=""
+  local go_nogo_fail_exit_code=0
+  if go_nogo_fail_output="$(
+    PATH="$fake_curl_bin:$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      EXECUTOR_ENV_PATH="$executor_env_path" \
+      ADAPTER_ENV_PATH="$adapter_env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_ROOT="$TMP_DIR/server-rollout-output-go-nogo-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      WINDOWED_SIGNOFF_REQUIRED="false" \
+      GO_NOGO_REQUIRE_JITO_RPC_POLICY="false" \
+      GO_NOGO_REQUIRE_FASTLANE_DISABLED="false" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE="0.05" \
+      SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_PRETRADE_FEE_POLICY="true" \
+      GO_NOGO_MIN_PRETRADE_SOL_RESERVE_LAMPORTS="50000000" \
+      GO_NOGO_MAX_PRETRADE_FEE_OVERHEAD_BPS="1000" \
+      GO_NOGO_REQUIRE_CONFIRMED_EXECUTION_SAMPLE="true" \
+      GO_NOGO_MIN_CONFIRMED_ORDERS="1" \
+      ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      REHEARSAL_ROUTE_FEE_SIGNOFF_REQUIRED="false" \
+      SERVER_ROLLOUT_GO_NOGO_HELPER_PATH="$server_rollout_go_nogo_helper_stub" \
+      PACKAGE_BUNDLE_ENABLED="false" \
+      bash "$ROOT_DIR/tools/execution_server_rollout_report.sh" 24 60
+  )"; then
+    go_nogo_fail_exit_code=0
+  else
+    go_nogo_fail_exit_code=$?
+  fi
+  if [[ "$go_nogo_fail_exit_code" -ne 3 ]]; then
+    echo "expected server rollout go/no-go helper failure exit code 3, got $go_nogo_fail_exit_code" >&2
+    echo "$go_nogo_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$go_nogo_fail_output" "go_nogo_exit_code" "7"
+  assert_field_equals "$go_nogo_fail_output" "go_nogo_verdict" "GO"
+  assert_field_equals "$go_nogo_fail_output" "server_rollout_verdict" "NO_GO"
+  assert_field_equals "$go_nogo_fail_output" "server_rollout_reason_code" "go_nogo_failed"
+  if [[ "$case_profile" == "fast" ]]; then
+    echo "[ok] execution server rollout report (fast)"
+    return
+  fi
+
   local server_rollout_executor_final_helper_stub="$TMP_DIR/server-rollout-executor-final-helper-exit7.sh"
   write_passthrough_exit7_helper "$server_rollout_executor_final_helper_stub" "$ROOT_DIR/tools/executor_final_evidence_report.sh"
   local executor_final_fail_output=""
@@ -7541,10 +7730,6 @@ run_execution_server_rollout_report_case() {
   assert_field_equals "$executor_final_fail_output" "executor_final_verdict" "GO"
   assert_field_equals "$executor_final_fail_output" "server_rollout_verdict" "NO_GO"
   assert_field_equals "$executor_final_fail_output" "server_rollout_reason_code" "executor_final_failed"
-  if [[ "$case_profile" == "fast" ]]; then
-    echo "[ok] execution server rollout report (fast)"
-    return
-  fi
 
   local exact_money_helper_stub="$TMP_DIR/server-rollout-exact-money-helper-stub.sh"
   write_stub_exact_money_cutover_evidence_helper "$exact_money_helper_stub"
@@ -8525,6 +8710,7 @@ EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV
   assert_contains "$pass_output" "rotation_artifact_manifest:"
   assert_contains "$pass_output" "rotation_report_sha256:"
   assert_field_equals "$pass_output" "rotation_artifacts_written" "true"
+  assert_field_equals "$pass_output" "devnet_rehearsal_exit_code" "0"
   assert_contains "$pass_output" "devnet_rehearsal_verdict: GO"
   assert_contains "$pass_output" "dynamic_cu_policy_verdict: SKIP"
   assert_contains "$pass_output" "dynamic_tip_policy_verdict: SKIP"
@@ -8641,6 +8827,39 @@ EOF_ADAPTER_ROLLOUT_EXECUTOR_ENV
     echo "expected adapter rollout manifest artifact in $artifacts_dir" >&2
     exit 1
   fi
+  local adapter_rollout_route_fee_signoff_helper_stub="$TMP_DIR/adapter-rollout-route-fee-signoff-helper-exit7.sh"
+  write_passthrough_exit7_helper "$adapter_rollout_route_fee_signoff_helper_stub" "$ROOT_DIR/tools/execution_route_fee_signoff_report.sh"
+  local route_fee_signoff_fail_output=""
+  local route_fee_signoff_fail_exit_code=0
+  if route_fee_signoff_fail_output="$(
+    PATH="$FAKE_BIN_DIR:$PATH" \
+      DB_PATH="$db_path" \
+      ADAPTER_ENV_PATH="$env_path" \
+      CONFIG_PATH="$config_path" \
+      SERVICE="copybot-smoke-service" \
+      OUTPUT_DIR="$TMP_DIR/adapter-rollout-route-fee-signoff-helper-fail" \
+      RUN_TESTS="false" \
+      DEVNET_REHEARSAL_TEST_MODE="true" \
+      GO_NOGO_TEST_MODE="true" \
+      GO_NOGO_TEST_FEE_VERDICT_OVERRIDE="PASS" \
+      GO_NOGO_TEST_ROUTE_VERDICT_OVERRIDE="PASS" \
+      ROUTE_FEE_SIGNOFF_TEST_VERDICT_OVERRIDE="GO" \
+      ADAPTER_ROLLOUT_ROUTE_FEE_SIGNOFF_HELPER_PATH="$adapter_rollout_route_fee_signoff_helper_stub" \
+      bash "$ROOT_DIR/tools/adapter_rollout_evidence_report.sh" 24 60
+  )"; then
+    route_fee_signoff_fail_exit_code=0
+  else
+    route_fee_signoff_fail_exit_code=$?
+  fi
+  if [[ "$route_fee_signoff_fail_exit_code" -ne 3 ]]; then
+    echo "expected adapter rollout route/fee signoff helper failure exit code 3, got $route_fee_signoff_fail_exit_code" >&2
+    echo "$route_fee_signoff_fail_output" >&2
+    exit 1
+  fi
+  assert_field_equals "$route_fee_signoff_fail_output" "route_fee_signoff_exit_code" "7"
+  assert_field_equals "$route_fee_signoff_fail_output" "route_fee_signoff_verdict" "GO"
+  assert_field_equals "$route_fee_signoff_fail_output" "adapter_rollout_verdict" "NO_GO"
+  assert_field_equals "$route_fee_signoff_fail_output" "adapter_rollout_reason_code" "route_fee_signoff_failed"
   if [[ "$case_profile" == "fast" ]]; then
     echo "[ok] adapter rollout evidence helper (fast)"
     return
