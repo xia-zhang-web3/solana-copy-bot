@@ -36,6 +36,7 @@ pub(super) struct DiscoveryWindowState {
     pub(super) cursor: Option<DiscoveryCursor>,
     pub(super) cap_truncation_floor: Option<DiscoveryCursor>,
     pub(super) bootstrap_from_persisted_metrics: bool,
+    pub(super) truncated_warm_restore_bootstrap: bool,
     pub(super) aggregate_transition_cycles_remaining: u32,
     pub(super) last_snapshot_bucket: Option<DateTime<Utc>>,
     pub(super) last_summary: Option<DiscoverySummary>,
@@ -60,6 +61,7 @@ impl DiscoveryWindowState {
         };
         if DiscoveryCursor::bootstrap(window_start) > floor.clone() {
             self.cap_truncation_floor = None;
+            self.truncated_warm_restore_bootstrap = false;
         }
     }
 
@@ -70,6 +72,7 @@ impl DiscoveryWindowState {
 
     pub(super) fn mark_warm_load_truncated(&mut self) {
         self.cap_truncation_floor = self.swaps.front().map(DiscoveryCursor::from_swap);
+        self.truncated_warm_restore_bootstrap = self.cap_truncation_floor.is_some();
     }
 
     pub(super) fn enforce_max_swaps(&mut self, max_swaps: usize) -> usize {

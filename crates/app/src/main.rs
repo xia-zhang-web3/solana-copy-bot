@@ -175,6 +175,60 @@ async fn main() -> Result<()> {
         .run_migrations(&migrations_dir)
         .with_context(|| format!("failed to apply migrations in {}", migrations_dir.display()))?;
     info!(applied, "sqlite migrations applied");
+    match store.checkpoint_wal_truncate() {
+        Ok((busy, log_frames, checkpointed_frames)) if busy == 0 => {
+            info!(
+                wal_checkpoint_mode = "truncate",
+                wal_checkpoint_busy = busy,
+                wal_log_frames = log_frames,
+                wal_checkpointed_frames = checkpointed_frames,
+                "startup sqlite wal checkpoint completed"
+            );
+        }
+        Ok((busy, log_frames, checkpointed_frames)) => match store.checkpoint_wal_passive() {
+            Ok((passive_busy, passive_log_frames, passive_checkpointed_frames)) => {
+                warn!(
+                    wal_checkpoint_mode = "truncate_then_passive",
+                    wal_checkpoint_busy = busy,
+                    wal_log_frames = log_frames,
+                    wal_checkpointed_frames = checkpointed_frames,
+                    wal_passive_checkpoint_busy = passive_busy,
+                    wal_passive_log_frames = passive_log_frames,
+                    wal_passive_checkpointed_frames = passive_checkpointed_frames,
+                    "startup sqlite wal truncate checkpoint was blocked; passive checkpoint attempted"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    wal_checkpoint_mode = "truncate_then_passive",
+                    wal_checkpoint_busy = busy,
+                    wal_log_frames = log_frames,
+                    wal_checkpointed_frames = checkpointed_frames,
+                    "startup sqlite wal truncate checkpoint was blocked and passive fallback failed"
+                );
+            }
+        },
+        Err(error) => match store.checkpoint_wal_passive() {
+            Ok((passive_busy, passive_log_frames, passive_checkpointed_frames)) => {
+                warn!(
+                    error = %error,
+                    wal_checkpoint_mode = "passive_fallback",
+                    wal_passive_checkpoint_busy = passive_busy,
+                    wal_passive_log_frames = passive_log_frames,
+                    wal_passive_checkpointed_frames = passive_checkpointed_frames,
+                    "startup sqlite wal truncate checkpoint failed; passive checkpoint attempted"
+                );
+            }
+            Err(passive_error) => {
+                warn!(
+                    error = %error,
+                    fallback_error = %passive_error,
+                    "startup sqlite wal checkpoints failed (non-fatal, continuing)"
+                );
+            }
+        },
+    }
 
     store
         .record_heartbeat("copybot-app", "startup")
@@ -1940,9 +1994,13 @@ async fn run_app_loop(
                     last_history_retention_sweep = StdInstant::now();
                 }
                 let sqlite_contention = sqlite_contention_snapshot();
+                let wal_size_bytes = std::fs::metadata(format!("{sqlite_path}-wal"))
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0);
                 info!(
                     sqlite_write_retry_total = sqlite_contention.write_retry_total,
                     sqlite_busy_error_total = sqlite_contention.busy_error_total,
+                    sqlite_wal_size_bytes = wal_size_bytes,
                     "sqlite contention counters"
                 );
             }
