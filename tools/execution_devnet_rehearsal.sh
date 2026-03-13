@@ -974,6 +974,7 @@ if [[ "$run_tests_norm" == "true" ]]; then
     "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_signed_transaction_without_configured_signer"
     "cargo test -p copybot-adapter -q simulate_response_validation_rejects_signal_id_mismatch"
     "cargo test -p copybot-adapter -q simulate_response_validation_accepts_case_insensitive_side_and_trimmed_strings"
+    "cargo test -p copybot-adapter -q handle_simulate_returns_canonical_identity_echoes_on_success"
     "cargo test -p copybot-adapter -q handle_submit_rejects_signed_tx_base64_signal_id_mismatch_before_send_rpc"
     "cargo test -p copybot-adapter -q handle_submit_accepts_case_insensitive_upstream_side_echo"
     "cargo test -p copybot-adapter -q handle_submit_rejects_non_string_request_id_field"
