@@ -981,6 +981,8 @@ if [[ "$run_tests_norm" == "true" ]]; then
     "cargo test -p copybot-executor -q handle_submit_rejects_invalid_submitted_at_before_send_rpc"
     "cargo test -p copybot-executor -q handle_submit_rejects_invalid_fee_hint_before_send_rpc"
     "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_signature_response_fails_late_validation"
+    "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_conflicting_transport_artifacts_include_upstream_signature"
+    "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_tx_signature_type_is_invalid"
   )
   for test_cmd in "${test_commands[@]}"; do
     tests_total=$((tests_total + 1))

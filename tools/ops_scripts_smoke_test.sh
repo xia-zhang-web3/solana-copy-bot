@@ -6078,7 +6078,7 @@ EOF_DEVNET_EXECUTOR_ENV
         bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
     )"
     assert_field_equals "$tests_enabled_output" "tests_run" "true"
-    assert_field_equals "$tests_enabled_output" "tests_total" "23"
+    assert_field_equals "$tests_enabled_output" "tests_total" "25"
     assert_field_equals "$tests_enabled_output" "tests_failed" "0"
     local tests_enabled_artifact_path=""
     tests_enabled_artifact_path="$(extract_field_value "$tests_enabled_output" "artifact_tests")"
@@ -6102,6 +6102,8 @@ EOF_DEVNET_EXECUTOR_ENV
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_rejects_invalid_submitted_at_before_send_rpc"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_rejects_invalid_fee_hint_before_send_rpc"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_signature_response_fails_late_validation"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_conflicting_transport_artifacts_include_upstream_signature"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_tx_signature_type_is_invalid"
   fi
 
   local required_windowed_disabled_output=""
