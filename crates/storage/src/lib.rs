@@ -1,17 +1,18 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
-    CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
-    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, Lamports, SignedLamports,
-    TokenQualityCacheRow, TokenQualityRpcRow, TokenQuantity, WalletMetricRow, WalletUpsertRow,
     COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
-    EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+    CopySignalRow, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS, ExactSwapAmounts, ExecutionConfirmStateSnapshot,
+    ExecutionOrderRow, FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome,
+    Lamports, SignedLamports, TokenQualityCacheRow, TokenQualityRpcRow, TokenQuantity,
+    WalletMetricRow, WalletUpsertRow,
 };
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
@@ -23,6 +24,8 @@ pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES: usize = 3;
 pub const STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
 pub const SHADOW_CLOSE_CONTEXT_MARKET: &str = "market";
 pub const SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE: &str = "stale_terminal_zero_price";
+pub const SHADOW_RISK_CONTEXT_MARKET: &str = "market";
+pub const SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
 const LIVE_UNREALIZED_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
 const LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SOL_NOTIONAL: f64 = 0.05;
 const LIVE_UNREALIZED_RELIABLE_PRICE_MIN_SAMPLES: usize = 1;
@@ -176,6 +179,7 @@ pub struct ShadowLotRow {
     pub wallet_id: String,
     pub token: String,
     pub accounting_bucket: String,
+    pub risk_context: String,
     pub qty: f64,
     pub qty_exact: Option<TokenQuantity>,
     pub cost_sol: f64,
@@ -1517,6 +1521,7 @@ mod tests {
 
         let lots = store.list_shadow_lots("wallet", "token")?;
         assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].risk_context, SHADOW_RISK_CONTEXT_MARKET);
         assert_eq!(lots[0].cost_lamports, Some(Lamports::new(100_000_123)));
 
         let open_notional_lamports = store.shadow_open_notional_lamports()?;
@@ -1527,6 +1532,50 @@ mod tests {
             (open_notional - 0.100000123).abs() < 1e-12,
             "expected shadow open notional to prefer lamport sidecar, got {open_notional}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_risk_open_notional_sol_excludes_quarantined_legacy_context() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-risk-open-notional-context.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let market_lot_id =
+            store.insert_shadow_lot("wallet", "token-market", 10.0, 0.20, opened_ts)?;
+        let quarantined_lot_id =
+            store.insert_shadow_lot("wallet", "token-quarantine", 10.0, 0.30, opened_ts)?;
+        store.update_shadow_lot_risk_context(
+            quarantined_lot_id,
+            SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY,
+        )?;
+
+        let lots = store.list_shadow_lots("wallet", "token-quarantine")?;
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].risk_context, SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY);
+
+        assert_eq!(
+            store.shadow_open_notional_lamports()?,
+            Lamports::new(500_000_000)
+        );
+        assert_eq!(
+            store.shadow_risk_open_notional_lamports()?,
+            Lamports::new(200_000_000)
+        );
+        assert!((store.shadow_open_notional_sol()? - 0.50).abs() < 1e-12);
+        assert!((store.shadow_risk_open_notional_sol()? - 0.20).abs() < 1e-12);
+
+        store.update_shadow_lot_risk_context(
+            market_lot_id,
+            SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY,
+        )?;
+        assert_eq!(store.shadow_risk_open_notional_lamports()?, Lamports::ZERO);
         Ok(())
     }
 
@@ -2321,8 +2370,8 @@ mod tests {
     }
 
     #[test]
-    fn latest_active_buy_order_prefers_buy_side_active_statuses_and_respects_exclusion(
-    ) -> Result<()> {
+    fn latest_active_buy_order_prefers_buy_side_active_statuses_and_respects_exclusion()
+    -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("latest-active-buy-order.db");
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
@@ -2567,8 +2616,8 @@ mod tests {
     }
 
     #[test]
-    fn apply_execution_fill_to_positions_exact_preserves_and_drops_qty_sidecars_conservatively(
-    ) -> Result<()> {
+    fn apply_execution_fill_to_positions_exact_preserves_and_drops_qty_sidecars_conservatively()
+    -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("execution-exact-qty-sidecars.db");
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
@@ -3579,8 +3628,8 @@ mod tests {
     }
 
     #[test]
-    fn mark_order_reconcile_pending_rejects_downgrade_from_confirmed_reconcile_pending(
-    ) -> Result<()> {
+    fn mark_order_reconcile_pending_rejects_downgrade_from_confirmed_reconcile_pending()
+    -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
             .path()
@@ -3970,9 +4019,11 @@ mod tests {
         let error = store
             .mark_order_simulated("ord-sim-regress-1", "ok", Some("late simulation"))
             .expect_err("submitted order must not regress to execution_simulated");
-        assert!(error
-            .to_string()
-            .contains("unexpected status=execution_submitted"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected status=execution_submitted")
+        );
         let order = store
             .execution_order_by_client_order_id("cb_sim_regress_a1")?
             .context("expected order row after rejected regression")?;
@@ -4052,9 +4103,11 @@ mod tests {
                 None,
             )
             .expect_err("confirmed order must not regress to execution_submitted");
-        assert!(error
-            .to_string()
-            .contains("unexpected status=execution_confirmed"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected status=execution_confirmed")
+        );
         let order = store
             .execution_order_by_client_order_id("cb_submit_regress_a1")?
             .context("expected order row after rejected regression")?;
@@ -4268,9 +4321,11 @@ mod tests {
                 Some("should not overwrite confirmed"),
             )
             .expect_err("confirmed order must not regress to execution_failed");
-        assert!(error
-            .to_string()
-            .contains("unexpected status=execution_confirmed"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected status=execution_confirmed")
+        );
         let order = store
             .execution_order_by_client_order_id("cb_failed_regress_a1")?
             .context("expected order row after rejected failed regression")?;
@@ -7165,7 +7220,10 @@ pub(crate) fn token_quantity_from_sql(
                 )
             })?;
             let raw_value = raw.parse::<u64>().with_context(|| {
-                format!("invalid qty_raw={:?} in {} (must parse as u64)", raw, context)
+                format!(
+                    "invalid qty_raw={:?} in {} (must parse as u64)",
+                    raw, context
+                )
             })?;
             Ok(Some(TokenQuantity::new(raw_value, decimals)))
         }

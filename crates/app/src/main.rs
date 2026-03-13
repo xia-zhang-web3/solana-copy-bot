@@ -1422,10 +1422,10 @@ impl ShadowRiskGuard {
                 self.hard_stop_clear_healthy_streak = 0;
             }
 
-            let exposure_lamports = store.shadow_open_notional_lamports()?;
+            let exposure_lamports = store.shadow_risk_open_notional_lamports()?;
             let exposure_blocked_now = exposure_lamports >= shadow_hard_exposure_cap_lamports;
             let exposure_detail = format!(
-                "open_notional_sol={:.6} hard_cap={:.6}",
+                "risk_open_notional_sol={:.6} hard_cap={:.6}",
                 lamports_to_sol(exposure_lamports),
                 lamports_to_sol(shadow_hard_exposure_cap_lamports)
             );
@@ -1736,7 +1736,7 @@ impl ShadowRiskGuard {
         self.soft_exposure_pause_latched = true;
         self.soft_exposure_pause_until = Some(until);
         let detail = format!(
-            "open_notional_sol={:.6} >= soft_cap={:.6}; resume_below={:.6}",
+            "risk_open_notional_sol={:.6} >= soft_cap={:.6}; resume_below={:.6}",
             lamports_to_sol(exposure_lamports),
             lamports_to_sol(soft_cap_lamports),
             lamports_to_sol(resume_below_lamports)
@@ -4509,6 +4509,45 @@ mod app_tests {
             store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
             1
         );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_ignores_quarantined_legacy_shadow_open_notional_for_exposure_gates() -> Result<()>
+    {
+        let (store, db_path) = make_test_store("risk-guard-ignores-quarantined-open-notional")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 1.0;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+
+        store.insert_shadow_lot("wallet-a", "token-risk", 10.0, 0.45, opened_ts)?;
+        let quarantined_lot_id =
+            store.insert_shadow_lot("wallet-a", "token-quarantine", 10.0, 0.30, opened_ts)?;
+        store.update_shadow_lot_risk_context(
+            quarantined_lot_id,
+            copybot_storage::SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY,
+        )?;
+
+        assert!((store.shadow_open_notional_sol()? - 0.75).abs() < 1e-12);
+        assert!((store.shadow_risk_open_notional_sol()? - 0.45).abs() < 1e-12);
+
+        let mut guard = ShadowRiskGuard::new(cfg);
+        match guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Allow => {}
+            other => panic!(
+                "expected quarantined legacy exposure to stay out of live risk gating, got {other:?}"
+            ),
+        }
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

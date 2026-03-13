@@ -1,16 +1,17 @@
 use crate::sqlite_retry::is_retryable_sqlite_error;
 use crate::{
+    POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
+    SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_RISK_CONTEXT_MARKET, SQLITE_WRITE_MAX_RETRIES,
+    SQLITE_WRITE_RETRY_BACKOFF_MS, ShadowCloseOutcome, ShadowLotRow, SqliteStore,
     merge_position_qty_exact_on_sell, note_sqlite_busy_error, note_sqlite_write_retry,
     shadow_lot_cost_lamports, signed_lamports_to_sol, signed_lamports_to_sql_i64,
     sol_to_lamports_ceil_storage, sol_to_lamports_floor_storage, split_token_quantity_pro_rata,
-    token_quantity_from_sql, u64_to_sql_i64, ShadowCloseOutcome, ShadowLotRow, SqliteStore,
-    POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
-    SHADOW_CLOSE_CONTEXT_MARKET, SQLITE_WRITE_MAX_RETRIES, SQLITE_WRITE_RETRY_BACKOFF_MS,
+    token_quantity_from_sql, u64_to_sql_i64,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use copybot_core_types::TokenQuantity;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use std::collections::HashSet;
 use std::io;
 use std::time::Duration as StdDuration;
@@ -50,7 +51,15 @@ impl SqliteStore {
         cost_sol: f64,
         opened_ts: DateTime<Utc>,
     ) -> Result<i64> {
-        self.insert_shadow_lot_exact(wallet_id, token, qty, None, cost_sol, opened_ts)
+        self.insert_shadow_lot_exact_with_risk_context(
+            wallet_id,
+            token,
+            qty,
+            None,
+            cost_sol,
+            SHADOW_RISK_CONTEXT_MARKET,
+            opened_ts,
+        )
     }
 
     pub fn insert_shadow_lot_exact(
@@ -60,6 +69,27 @@ impl SqliteStore {
         qty: f64,
         qty_exact: Option<TokenQuantity>,
         cost_sol: f64,
+        opened_ts: DateTime<Utc>,
+    ) -> Result<i64> {
+        self.insert_shadow_lot_exact_with_risk_context(
+            wallet_id,
+            token,
+            qty,
+            qty_exact,
+            cost_sol,
+            SHADOW_RISK_CONTEXT_MARKET,
+            opened_ts,
+        )
+    }
+
+    pub fn insert_shadow_lot_exact_with_risk_context(
+        &self,
+        wallet_id: &str,
+        token: &str,
+        qty: f64,
+        qty_exact: Option<TokenQuantity>,
+        cost_sol: f64,
+        risk_context: &str,
         opened_ts: DateTime<Utc>,
     ) -> Result<i64> {
         let qty_exact = reject_zero_raw_exact_qty(qty_exact, "insert shadow lot")?;
@@ -72,17 +102,19 @@ impl SqliteStore {
                     wallet_id,
                     token,
                     accounting_bucket,
+                    risk_context,
                     qty,
                     qty_raw,
                     qty_decimals,
                     cost_sol,
                     cost_lamports,
                     opened_ts
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     wallet_id,
                     token,
                     accounting_bucket,
+                    risk_context,
                     qty,
                     qty_exact.as_ref().map(|value| value.raw().to_string()),
                     qty_exact.as_ref().map(|value| i64::from(value.decimals())),
@@ -101,7 +133,7 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, wallet_id, token, accounting_bucket, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
+                "SELECT id, wallet_id, token, accounting_bucket, risk_context, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
                  FROM shadow_lots
                  WHERE wallet_id = ?1 AND token = ?2
                  ORDER BY id ASC",
@@ -113,20 +145,22 @@ impl SqliteStore {
 
         let mut lots = Vec::new();
         while let Some(row) = rows.next().context("failed iterating shadow lots")? {
-            let opened_raw: String = row.get(9).context("failed reading shadow_lots.opened_ts")?;
+            let opened_raw: String = row
+                .get(10)
+                .context("failed reading shadow_lots.opened_ts")?;
             let opened_ts = DateTime::parse_from_rfc3339(&opened_raw)
                 .map(|dt| dt.with_timezone(&Utc))
                 .with_context(|| {
                     format!("invalid shadow_lots.opened_ts rfc3339 value: {opened_raw}")
                 })?;
             let qty_exact = token_quantity_from_sql(
-                row.get(5).context("failed reading shadow_lots.qty_raw")?,
-                row.get(6)
+                row.get(6).context("failed reading shadow_lots.qty_raw")?,
+                row.get(7)
                     .context("failed reading shadow_lots.qty_decimals")?,
                 "listing shadow lots",
             )?;
             let cost_lamports_raw: Option<i64> = row
-                .get(8)
+                .get(9)
                 .context("failed reading shadow_lots.cost_lamports")?;
             let cost_lamports = match cost_lamports_raw {
                 Some(raw) if raw < 0 => {
@@ -145,9 +179,12 @@ impl SqliteStore {
                 accounting_bucket: row
                     .get(3)
                     .context("failed reading shadow_lots.accounting_bucket")?,
-                qty: row.get(4).context("failed reading shadow_lots.qty")?,
+                risk_context: row
+                    .get(4)
+                    .context("failed reading shadow_lots.risk_context")?,
+                qty: row.get(5).context("failed reading shadow_lots.qty")?,
                 qty_exact,
-                cost_sol: row.get(7).context("failed reading shadow_lots.cost_sol")?,
+                cost_sol: row.get(8).context("failed reading shadow_lots.cost_sol")?,
                 cost_lamports,
                 opened_ts,
             });
@@ -163,7 +200,7 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, wallet_id, token, accounting_bucket, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
+                "SELECT id, wallet_id, token, accounting_bucket, risk_context, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
                  FROM shadow_lots
                  WHERE qty > ?1
                    AND opened_ts <= ?2
@@ -181,20 +218,22 @@ impl SqliteStore {
 
         let mut lots = Vec::new();
         while let Some(row) = rows.next().context("failed iterating stale shadow lots")? {
-            let opened_raw: String = row.get(9).context("failed reading shadow_lots.opened_ts")?;
+            let opened_raw: String = row
+                .get(10)
+                .context("failed reading shadow_lots.opened_ts")?;
             let opened_ts = DateTime::parse_from_rfc3339(&opened_raw)
                 .map(|dt| dt.with_timezone(&Utc))
                 .with_context(|| {
                     format!("invalid shadow_lots.opened_ts rfc3339 value: {opened_raw}")
                 })?;
             let qty_exact = token_quantity_from_sql(
-                row.get(5).context("failed reading shadow_lots.qty_raw")?,
-                row.get(6)
+                row.get(6).context("failed reading shadow_lots.qty_raw")?,
+                row.get(7)
                     .context("failed reading shadow_lots.qty_decimals")?,
                 "listing stale shadow lots",
             )?;
             let cost_lamports_raw: Option<i64> = row
-                .get(8)
+                .get(9)
                 .context("failed reading shadow_lots.cost_lamports")?;
             let cost_lamports = match cost_lamports_raw {
                 Some(raw) if raw < 0 => {
@@ -213,15 +252,29 @@ impl SqliteStore {
                 accounting_bucket: row
                     .get(3)
                     .context("failed reading shadow_lots.accounting_bucket")?,
-                qty: row.get(4).context("failed reading shadow_lots.qty")?,
+                risk_context: row
+                    .get(4)
+                    .context("failed reading shadow_lots.risk_context")?,
+                qty: row.get(5).context("failed reading shadow_lots.qty")?,
                 qty_exact,
-                cost_sol: row.get(7).context("failed reading shadow_lots.cost_sol")?,
+                cost_sol: row.get(8).context("failed reading shadow_lots.cost_sol")?,
                 cost_lamports,
                 opened_ts,
             });
         }
 
         Ok(lots)
+    }
+
+    pub fn update_shadow_lot_risk_context(&self, id: i64, risk_context: &str) -> Result<()> {
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "UPDATE shadow_lots SET risk_context = ?1 WHERE id = ?2",
+                params![risk_context, id],
+            )
+        })
+        .context("failed to update shadow lot risk context")?;
+        Ok(())
     }
 
     pub fn has_shadow_lots(&self, wallet_id: &str, token: &str) -> Result<bool> {

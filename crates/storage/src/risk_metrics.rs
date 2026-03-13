@@ -1,11 +1,11 @@
 use super::{
-    lamports_to_sol, position_pnl_lamports, shadow::SHADOW_LOT_OPEN_EPS,
-    shadow_closed_trade_entry_cost_lamports, shadow_closed_trade_pnl_lamports,
-    shadow_lot_cost_lamports, signed_lamports_to_sol, sol_to_signed_lamports_conservative_storage,
-    token_quantity_from_sql, SqliteStore, LIVE_POSITION_OPEN_EPS,
-    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+    LIVE_POSITION_OPEN_EPS, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+    SHADOW_RISK_CONTEXT_MARKET, SqliteStore, lamports_to_sol, position_pnl_lamports,
+    shadow::SHADOW_LOT_OPEN_EPS, shadow_closed_trade_entry_cost_lamports,
+    shadow_closed_trade_pnl_lamports, shadow_lot_cost_lamports, signed_lamports_to_sol,
+    sol_to_signed_lamports_conservative_storage, token_quantity_from_sql,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use copybot_core_types::{Lamports, SignedLamports};
 use rusqlite::params;
@@ -71,18 +71,31 @@ impl SqliteStore {
         Ok(value.max(0) as u64)
     }
 
-    pub fn shadow_open_notional_lamports(&self) -> Result<copybot_core_types::Lamports> {
+    fn shadow_open_notional_lamports_internal(
+        &self,
+        risk_only: bool,
+    ) -> Result<copybot_core_types::Lamports> {
+        let query = if risk_only {
+            "SELECT cost_sol, cost_lamports
+             FROM shadow_lots
+             WHERE qty > ?1
+               AND risk_context = ?2"
+        } else {
+            "SELECT cost_sol, cost_lamports
+             FROM shadow_lots
+             WHERE qty > ?1"
+        };
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT cost_sol, cost_lamports
-                 FROM shadow_lots
-                 WHERE qty > ?1",
-            )
+            .prepare(query)
             .context("failed to prepare shadow open notional query")?;
-        let mut rows = stmt
-            .query(params![SHADOW_LOT_OPEN_EPS])
-            .context("failed querying shadow open notional rows")?;
+        let mut rows = if risk_only {
+            stmt.query(params![SHADOW_LOT_OPEN_EPS, SHADOW_RISK_CONTEXT_MARKET])
+                .context("failed querying shadow risk open notional rows")?
+        } else {
+            stmt.query(params![SHADOW_LOT_OPEN_EPS])
+                .context("failed querying shadow open notional rows")?
+        };
 
         let mut total = copybot_core_types::Lamports::ZERO;
         while let Some(row) = rows
@@ -103,8 +116,20 @@ impl SqliteStore {
         Ok(total)
     }
 
+    pub fn shadow_open_notional_lamports(&self) -> Result<copybot_core_types::Lamports> {
+        self.shadow_open_notional_lamports_internal(false)
+    }
+
     pub fn shadow_open_notional_sol(&self) -> Result<f64> {
         Ok(lamports_to_sol(self.shadow_open_notional_lamports()?))
+    }
+
+    pub fn shadow_risk_open_notional_lamports(&self) -> Result<copybot_core_types::Lamports> {
+        self.shadow_open_notional_lamports_internal(true)
+    }
+
+    pub fn shadow_risk_open_notional_sol(&self) -> Result<f64> {
+        Ok(lamports_to_sol(self.shadow_risk_open_notional_lamports()?))
     }
 
     pub fn shadow_realized_pnl_lamports_since(
