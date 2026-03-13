@@ -584,6 +584,11 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.risk.max_concurrent_positions = max_concurrent_positions;
     }
+    if let Some(execution_buy_cooldown_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_EXECUTION_BUY_COOLDOWN_SECONDS", "u64")?
+    {
+        config.risk.execution_buy_cooldown_seconds = execution_buy_cooldown_seconds;
+    }
     if let Some(daily_loss_limit_pct) =
         parse_env_number::<f64>("SOLANA_COPY_BOT_RISK_DAILY_LOSS_LIMIT_PCT", "f64")?
     {

@@ -597,6 +597,26 @@ impl ExecutionRuntime {
                 return Ok(SignalResult::Dropped);
             }
 
+            if order.is_none() {
+                if let Some(reason) = self.buy_cooldown_block_reason(store, &intent, now)? {
+                    store.update_copy_signal_status(&intent.signal_id, "execution_dropped")?;
+                    let details = json!({
+                        "signal_id": intent.signal_id,
+                        "reason": reason,
+                        "token": intent.token,
+                        "notional_sol": intent.notional_sol,
+                    })
+                    .to_string();
+                    let _ = store.insert_risk_event(
+                        "execution_risk_block",
+                        "warn",
+                        now,
+                        Some(&details),
+                    );
+                    return Ok(SignalResult::Dropped);
+                }
+            }
+
             if let Some(reason) = self.execution_risk_block_reason(store, &intent, now)? {
                 if let Some(existing) = order.as_ref() {
                     match self.drop_pre_submit_order_or_sync_signal(
@@ -712,7 +732,7 @@ pub(crate) fn fallback_price_and_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use copybot_core_types::{ExactSwapAmounts, SwapEvent, TokenQuantity};
+    use copybot_core_types::{ExactSwapAmounts, Lamports, SwapEvent, TokenQuantity};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
@@ -2750,6 +2770,201 @@ mod tests {
         assert_eq!(order.err_code.as_deref(), Some("pretrade_rejected"));
         let dropped = store.list_copy_signals_by_status("execution_dropped", 10)?;
         assert_eq!(dropped.len(), 1);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_drops_fresh_buy_when_recent_active_buy_order_is_within_cooldown() -> Result<()>
+    {
+        let (store, db_path) = make_test_store("batch-buy-cooldown-drops-fresh-buy")?;
+        let now = Utc::now();
+        let recent_submit_ts = now - Duration::seconds(30);
+        let recent_signal = CopySignalRow {
+            signal_id: "shadow:cooldown:recent:w:buy:seed".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-cooldown-seed".to_string(),
+            notional_sol: 0.2,
+            notional_lamports: Some(Lamports::new(200_000_000)),
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: recent_submit_ts,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&recent_signal)?;
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-cooldown-recent-buy",
+                &recent_signal.signal_id,
+                "cb_cooldown_recent_buy_a1",
+                "paper",
+                recent_submit_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-cooldown-recent-buy",
+            "paper",
+            "sig-cooldown-recent-buy",
+            recent_submit_ts,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.mark_order_confirmed(
+            "ord-cooldown-recent-buy",
+            recent_submit_ts + Duration::seconds(1),
+        )?;
+        assert!(store.update_copy_signal_status(&recent_signal.signal_id, "execution_confirmed")?);
+
+        let fresh_signal = CopySignalRow {
+            signal_id: "shadow:cooldown:fresh:w:buy:blocked".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-cooldown-blocked".to_string(),
+            notional_sol: 0.1,
+            notional_lamports: Some(Lamports::new(100_000_000)),
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        };
+        store.insert_copy_signal(&fresh_signal)?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        risk.execution_buy_cooldown_seconds = 60;
+        let runtime = make_paper_runtime(risk);
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.dropped, 1);
+        assert_eq!(report.failed, 0);
+
+        let dropped = store.list_copy_signals_by_status("execution_dropped", 10)?;
+        let blocked_client_order_id = idempotency::client_order_id(&fresh_signal.signal_id, 1);
+        assert!(
+            dropped
+                .iter()
+                .any(|signal| signal.signal_id == fresh_signal.signal_id),
+            "fresh buy should be dropped by cooldown"
+        );
+        assert_eq!(store.risk_event_count_by_type("execution_risk_block")?, 1);
+        assert!(
+            store
+                .execution_order_by_client_order_id(&blocked_client_order_id)?
+                .is_none(),
+            "cooldown drop must happen before order creation"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn process_batch_keeps_existing_submitted_buy_order_pollable_when_buy_cooldown_is_active(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("batch-buy-cooldown-existing-submitted-order")?;
+        let now = Utc::now();
+        let recent_submit_ts = now - Duration::seconds(20);
+        let recent_signal = CopySignalRow {
+            signal_id: "shadow:cooldown:other:w:buy:recent".to_string(),
+            wallet_id: "wallet-a".to_string(),
+            side: "buy".to_string(),
+            token: "token-cooldown-other".to_string(),
+            notional_sol: 0.2,
+            notional_lamports: Some(Lamports::new(200_000_000)),
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: recent_submit_ts,
+            status: "execution_submitted".to_string(),
+        };
+        store.insert_copy_signal(&recent_signal)?;
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-cooldown-other-buy",
+                &recent_signal.signal_id,
+                "cb_cooldown_other_buy_a1",
+                "paper",
+                recent_submit_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-cooldown-other-buy",
+            "paper",
+            "sig-cooldown-other-buy",
+            recent_submit_ts,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.mark_order_confirmed(
+            "ord-cooldown-other-buy",
+            recent_submit_ts + Duration::seconds(1),
+        )?;
+        assert!(store.update_copy_signal_status(&recent_signal.signal_id, "execution_confirmed")?);
+
+        let target_submit_ts = now - Duration::seconds(10);
+        let client_order_id = seed_submitted_buy_signal(
+            &store,
+            "shadow:cooldown:target:w:buy:pollable",
+            "token-cooldown-target",
+            0.1,
+            target_submit_ts,
+            "sig-cooldown-target-buy",
+        )?;
+
+        let mut risk = RiskConfig::default();
+        risk.max_position_sol = 10.0;
+        risk.max_total_exposure_sol = 100.0;
+        risk.max_exposure_per_token_sol = 10.0;
+        risk.max_concurrent_positions = 100;
+        risk.execution_buy_cooldown_seconds = 60;
+        let runtime = ExecutionRuntime {
+            enabled: true,
+            mode: "adapter_submit_confirm".to_string(),
+            poll_interval_ms: 100,
+            batch_size: 10,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 2,
+            max_copy_delay_sec: risk.max_copy_delay_sec.max(1),
+            default_route: "paper".to_string(),
+            submit_route_order: vec!["paper".to_string()],
+            route_tip_lamports: BTreeMap::new(),
+            slippage_bps: 50.0,
+            simulate_before_submit: true,
+            manual_reconcile_required_on_confirm_failure: true,
+            risk,
+            pretrade: Box::new(PaperPreTradeChecker),
+            simulator: Box::new(PaperIntentSimulator),
+            submitter: Box::new(PaperOrderSubmitter),
+            confirmer: Box::new(ErrorConfirmer),
+        };
+
+        let report = runtime.process_batch(&store, now, None)?;
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(store.risk_event_count_by_type("execution_risk_block")?, 0);
+
+        let order = store
+            .execution_order_by_client_order_id(&client_order_id)?
+            .context("existing submitted order should still be pollable")?;
+        assert_eq!(order.status, "execution_submitted");
+        assert_eq!(
+            store
+                .list_copy_signals_by_status("execution_dropped", 10)?
+                .len(),
+            0,
+            "cooldown must not drop already-submitted orders"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

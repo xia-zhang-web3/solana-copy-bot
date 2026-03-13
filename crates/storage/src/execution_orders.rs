@@ -1,7 +1,7 @@
 use super::{
     parse_non_negative_i64, u64_to_sql_i64, CopySignalRow, ExecutionOrderRow,
-    InsertExecutionOrderPendingOutcome, SqliteStore, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
-    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+    InsertExecutionOrderPendingOutcome, RecentActiveBuyOrderRow, SqliteStore,
+    EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -367,6 +367,56 @@ impl SqliteStore {
             },
         )
         .transpose()
+    }
+
+    pub fn latest_active_buy_order(
+        &self,
+        exclude_signal_id: Option<&str>,
+    ) -> Result<Option<RecentActiveBuyOrderRow>> {
+        self.conn
+            .query_row(
+                "SELECT orders.signal_id, orders.submit_ts, orders.status
+                 FROM orders
+                 INNER JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
+                 WHERE lower(copy_signals.side) = 'buy'
+                   AND orders.status IN (
+                        'execution_pending',
+                        'execution_simulated',
+                        'execution_submitted',
+                        'execution_confirmed',
+                        ?1,
+                        ?2
+                   )
+                   AND (?3 IS NULL OR orders.signal_id != ?3)
+                 ORDER BY orders.submit_ts DESC, orders.order_id DESC
+                 LIMIT 1",
+                params![
+                    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
+                    EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
+                    exclude_signal_id
+                ],
+                |row| {
+                    let signal_id: String = row.get(0)?;
+                    let submit_ts_raw: String = row.get(1)?;
+                    let submit_ts = DateTime::parse_from_rfc3339(&submit_ts_raw)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                1,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    let status: String = row.get(2)?;
+                    Ok(RecentActiveBuyOrderRow {
+                        signal_id,
+                        submit_ts,
+                        status,
+                    })
+                },
+            )
+            .optional()
+            .context("failed querying latest active buy order")
     }
 
     pub fn insert_execution_order_pending(

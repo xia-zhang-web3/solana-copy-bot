@@ -212,74 +212,81 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
         with_clean_copybot_env(|| {
             with_env_var("SOLANA_COPY_BOT_RISK_MAX_POSITION_SOL", "0.99", || {
                 with_env_var(
-                    "SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED",
-                    "false",
+                    "SOLANA_COPY_BOT_RISK_EXECUTION_BUY_COOLDOWN_SECONDS",
+                    "60",
                     || {
-                        with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "42", || {
-                            with_env_var(
-                                "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS",
-                                "12345",
-                                || {
+                        with_env_var(
+                            "SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED",
+                            "false",
+                            || {
+                                with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "42", || {
                                     with_env_var(
-                                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED",
-                                        "true",
-                                        || {
-                                            with_env_var(
-                                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_PERCENTILE",
-                                                "90",
-                                                || {
-                                                    with_env_var(
-                                                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED",
-                                                        "true",
-                                                        || {
-                                                            with_env_var(
-                                                                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_MULTIPLIER_BPS",
-                                                                "15000",
-                                                                || {
-                                                                    with_env_var(
-                                                                        "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS",
-                                                                        "750",
-                                                                        || {
-                                                                            let (cfg, _) = load_from_env_or_default(config_path)
-                                                                                .expect("load config with env overrides");
-                                                                            assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
-                                                                            assert!(!cfg.risk.shadow_killswitch_enabled);
-                                                                            assert_eq!(cfg.shadow.min_holders, 42);
-                                                                            assert_eq!(
-                                                                                cfg.execution.pretrade_max_priority_fee_lamports,
-                                                                                12_345
-                                                                            );
-                                                                            assert_eq!(
-                                                                                cfg.execution.pretrade_max_fee_overhead_bps,
-                                                                                750
-                                                                            );
-                                                                            assert!(cfg.execution.submit_dynamic_cu_price_enabled);
-                                                                            assert_eq!(
-                                                                                cfg.execution.submit_dynamic_cu_price_percentile,
-                                                                                90
-                                                                            );
-                                                                            assert!(
-                                                                                cfg.execution
-                                                                                    .submit_dynamic_tip_lamports_enabled
-                                                                            );
-                                                                            assert_eq!(
-                                                                                cfg.execution
-                                                                                    .submit_dynamic_tip_lamports_multiplier_bps,
-                                                                                15_000
-                                                                            );
-                                                                        },
-                                                                    );
-                                                                },
-                                                            );
-                                                        },
-                                                    );
-                                                },
-                                            );
-                                        },
-                                    );
-                                },
-                            );
-                        });
+                                    "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS",
+                                    "12345",
+                                    || {
+                                        with_env_var(
+                                            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_ENABLED",
+                                            "true",
+                                            || {
+                                                with_env_var(
+                                                    "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_CU_PRICE_PERCENTILE",
+                                                    "90",
+                                                    || {
+                                                        with_env_var(
+                                                            "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_ENABLED",
+                                                            "true",
+                                                            || {
+                                                                with_env_var(
+                                                                    "SOLANA_COPY_BOT_EXECUTION_SUBMIT_DYNAMIC_TIP_LAMPORTS_MULTIPLIER_BPS",
+                                                                    "15000",
+                                                                    || {
+                                                                        with_env_var(
+                                                                            "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS",
+                                                                            "750",
+                                                                            || {
+                                                                                let (cfg, _) = load_from_env_or_default(config_path)
+                                                                                    .expect("load config with env overrides");
+                                                                                assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
+                                                                                assert_eq!(cfg.risk.execution_buy_cooldown_seconds, 60);
+                                                                                assert!(!cfg.risk.shadow_killswitch_enabled);
+                                                                                assert_eq!(cfg.shadow.min_holders, 42);
+                                                                                assert_eq!(
+                                                                                    cfg.execution.pretrade_max_priority_fee_lamports,
+                                                                                    12_345
+                                                                                );
+                                                                                assert_eq!(
+                                                                                    cfg.execution.pretrade_max_fee_overhead_bps,
+                                                                                    750
+                                                                                );
+                                                                                assert!(cfg.execution.submit_dynamic_cu_price_enabled);
+                                                                                assert_eq!(
+                                                                                    cfg.execution.submit_dynamic_cu_price_percentile,
+                                                                                    90
+                                                                                );
+                                                                                assert!(
+                                                                                    cfg.execution
+                                                                                        .submit_dynamic_tip_lamports_enabled
+                                                                                );
+                                                                                assert_eq!(
+                                                                                    cfg.execution
+                                                                                        .submit_dynamic_tip_lamports_multiplier_bps,
+                                                                                    15_000
+                                                                                );
+                                                                            },
+                                                                        );
+                                                                    },
+                                                                );
+                                                            },
+                                                        );
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    },
+                                );
+                                });
+                            },
+                        );
                     },
                 );
             });
@@ -1018,6 +1025,29 @@ fn load_from_env_rejects_invalid_risk_max_concurrent_positions_override() {
                         .to_string();
                     assert!(
                         err.contains("SOLANA_COPY_BOT_RISK_MAX_CONCURRENT_POSITIONS"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_risk_execution_buy_cooldown_seconds_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_RISK_EXECUTION_BUY_COOLDOWN_SECONDS",
+                "cooldown",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid risk execution buy cooldown override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_RISK_EXECUTION_BUY_COOLDOWN_SECONDS"),
                         "unexpected error: {err}"
                     );
                 },

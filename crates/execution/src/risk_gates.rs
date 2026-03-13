@@ -20,6 +20,41 @@ pub(crate) struct ConfirmedBuyRiskBreach {
 }
 
 impl ExecutionRuntime {
+    pub(crate) fn buy_cooldown_block_reason(
+        &self,
+        store: &SqliteStore,
+        intent: &ExecutionIntent,
+        now: DateTime<Utc>,
+    ) -> Result<Option<String>> {
+        if !matches!(intent.side, ExecutionSide::Buy) {
+            return Ok(None);
+        }
+        let cooldown_seconds = self.risk.execution_buy_cooldown_seconds;
+        if cooldown_seconds == 0 {
+            return Ok(None);
+        }
+        let Some(recent_buy) = store.latest_active_buy_order(Some(intent.signal_id.as_str()))?
+        else {
+            return Ok(None);
+        };
+        let elapsed_seconds = now
+            .signed_duration_since(recent_buy.submit_ts)
+            .num_seconds()
+            .max(0) as u64;
+        if elapsed_seconds >= cooldown_seconds {
+            return Ok(None);
+        }
+        let remaining_seconds = cooldown_seconds.saturating_sub(elapsed_seconds);
+        Ok(Some(format!(
+            "buy_cooldown_active recent_signal_id={} recent_status={} recent_submit_ts={} cooldown_seconds={} remaining_seconds={}",
+            recent_buy.signal_id,
+            recent_buy.status,
+            recent_buy.submit_ts.to_rfc3339(),
+            cooldown_seconds,
+            remaining_seconds
+        )))
+    }
+
     fn max_position_lamports(&self) -> Result<Lamports> {
         sol_to_lamports_floor(self.risk.max_position_sol, "risk.max_position_sol")
     }

@@ -142,6 +142,7 @@ max_position_sol = 0.4
 max_total_exposure_sol = 2.5
 max_exposure_per_token_sol = 0.4
 max_concurrent_positions = 4
+execution_buy_cooldown_seconds = 60
 daily_loss_limit_pct = 1.0
 max_drawdown_pct = 5.0
 max_hold_hours = 6

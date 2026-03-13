@@ -188,6 +188,13 @@ pub struct ShadowCloseOutcome {
     pub has_open_lots_after: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentActiveBuyOrderRow {
+    pub signal_id: String,
+    pub submit_ts: DateTime<Utc>,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TokenMarketStats {
     pub first_seen: Option<DateTime<Utc>>,
@@ -2256,6 +2263,155 @@ mod tests {
             err.to_string().contains("zero notional_lamports"),
             "unexpected error: {err}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn latest_active_buy_order_prefers_buy_side_active_statuses_and_respects_exclusion(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("latest-active-buy-order.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-08T13:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let older_buy = CopySignalRow {
+            signal_id: "shadow:cooldown:older:wallet:buy:token-a".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-a".to_string(),
+            notional_sol: 0.10,
+            notional_lamports: Some(Lamports::new(100_000_000)),
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: now,
+            status: "execution_pending".to_string(),
+        };
+        assert!(store.insert_copy_signal(&older_buy)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-cooldown-older-buy",
+                &older_buy.signal_id,
+                "cb_cooldown_older_buy_a1",
+                "paper",
+                now,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let failed_buy_ts = now + Duration::seconds(10);
+        let failed_buy = CopySignalRow {
+            signal_id: "shadow:cooldown:failed:wallet:buy:token-b".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-b".to_string(),
+            notional_sol: 0.20,
+            notional_lamports: Some(Lamports::new(200_000_000)),
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: failed_buy_ts,
+            status: "execution_pending".to_string(),
+        };
+        assert!(store.insert_copy_signal(&failed_buy)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-cooldown-failed-buy",
+                &failed_buy.signal_id,
+                "cb_cooldown_failed_buy_a1",
+                "paper",
+                failed_buy_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_failed(
+            "ord-cooldown-failed-buy",
+            "test_failed_order",
+            Some("ignore in latest active buy query"),
+        )?;
+        assert!(store.update_copy_signal_status(&failed_buy.signal_id, "execution_failed")?);
+
+        let sell_ts = now + Duration::seconds(20);
+        let sell_signal = CopySignalRow {
+            signal_id: "shadow:cooldown:sell:wallet:sell:token-c".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "sell".to_string(),
+            token: "token-c".to_string(),
+            notional_sol: 0.15,
+            notional_lamports: Some(Lamports::new(150_000_000)),
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: sell_ts,
+            status: "execution_pending".to_string(),
+        };
+        assert!(store.insert_copy_signal(&sell_signal)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-cooldown-sell",
+                &sell_signal.signal_id,
+                "cb_cooldown_sell_a1",
+                "paper",
+                sell_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+
+        let latest_buy_ts = now + Duration::seconds(30);
+        let latest_buy = CopySignalRow {
+            signal_id: "shadow:cooldown:latest:wallet:buy:token-d".to_string(),
+            wallet_id: "wallet-1".to_string(),
+            side: "buy".to_string(),
+            token: "token-d".to_string(),
+            notional_sol: 0.25,
+            notional_lamports: Some(Lamports::new(250_000_000)),
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: latest_buy_ts,
+            status: "execution_submitted".to_string(),
+        };
+        assert!(store.insert_copy_signal(&latest_buy)?);
+        assert_eq!(
+            store.insert_execution_order_pending(
+                "ord-cooldown-latest-buy",
+                &latest_buy.signal_id,
+                "cb_cooldown_latest_buy_a1",
+                "paper",
+                latest_buy_ts,
+                1
+            )?,
+            InsertExecutionOrderPendingOutcome::Inserted
+        );
+        store.mark_order_submitted(
+            "ord-cooldown-latest-buy",
+            "paper",
+            "sig-cooldown-latest-buy",
+            latest_buy_ts,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        store.mark_order_confirmed(
+            "ord-cooldown-latest-buy",
+            latest_buy_ts + Duration::seconds(1),
+        )?;
+        assert!(store.update_copy_signal_status(&latest_buy.signal_id, "execution_confirmed")?);
+
+        let latest = store
+            .latest_active_buy_order(None)?
+            .context("latest active buy order should exist")?;
+        assert_eq!(latest.signal_id, latest_buy.signal_id);
+        assert_eq!(latest.status, "execution_confirmed");
+
+        let previous = store
+            .latest_active_buy_order(Some(latest_buy.signal_id.as_str()))?
+            .context("excluding latest active buy should return older active buy")?;
+        assert_eq!(previous.signal_id, older_buy.signal_id);
+        assert_eq!(previous.status, "execution_pending");
+
         Ok(())
     }
 
