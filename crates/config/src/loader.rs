@@ -626,6 +626,12 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.risk.shadow_soft_exposure_cap_sol = shadow_soft_exposure_cap_sol;
     }
+    if let Some(shadow_soft_exposure_resume_below_sol) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_RESUME_BELOW_SOL",
+        "f64",
+    )? {
+        config.risk.shadow_soft_exposure_resume_below_sol = shadow_soft_exposure_resume_below_sol;
+    }
     if let Some(shadow_soft_pause_minutes) =
         parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_PAUSE_MINUTES", "u64")?
     {

@@ -216,11 +216,18 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
                     "60",
                     || {
                         with_env_var(
-                            "SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED",
-                            "false",
+                            "SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_RESUME_BELOW_SOL",
+                            "9.5",
                             || {
-                                with_env_var("SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS", "42", || {
-                                    with_env_var(
+                                with_env_var(
+                                    "SOLANA_COPY_BOT_RISK_SHADOW_KILLSWITCH_ENABLED",
+                                    "false",
+                                    || {
+                                        with_env_var(
+                                            "SOLANA_COPY_BOT_SHADOW_MIN_HOLDERS",
+                                            "42",
+                                            || {
+                                                with_env_var(
                                     "SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_PRIORITY_FEE_MICRO_LAMPORTS",
                                     "12345",
                                     || {
@@ -248,6 +255,10 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
                                                                                     .expect("load config with env overrides");
                                                                                 assert!((cfg.risk.max_position_sol - 0.99).abs() <= f64::EPSILON);
                                                                                 assert_eq!(cfg.risk.execution_buy_cooldown_seconds, 60);
+                                                                                assert!(
+                                                                                    (cfg.risk.shadow_soft_exposure_resume_below_sol - 9.5).abs()
+                                                                                        <= f64::EPSILON
+                                                                                );
                                                                                 assert!(!cfg.risk.shadow_killswitch_enabled);
                                                                                 assert_eq!(cfg.shadow.min_holders, 42);
                                                                                 assert_eq!(
@@ -280,11 +291,14 @@ fn load_from_env_applies_risk_and_shadow_quality_overrides() {
                                                         );
                                                     },
                                                 );
+                                                    },
+                                                );
+                                            },
+                                        );
                                             },
                                         );
                                     },
                                 );
-                                });
                             },
                         );
                     },
@@ -1071,6 +1085,29 @@ fn load_from_env_rejects_invalid_risk_shadow_soft_exposure_cap_sol_override() {
                         .to_string();
                     assert!(
                         err.contains("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_CAP_SOL"),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_risk_shadow_soft_exposure_resume_below_sol_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_RESUME_BELOW_SOL",
+                "resume",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid risk shadow soft exposure resume threshold override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains("SOLANA_COPY_BOT_RISK_SHADOW_SOFT_EXPOSURE_RESUME_BELOW_SOL"),
                         "unexpected error: {err}"
                     );
                 },

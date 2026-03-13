@@ -85,6 +85,36 @@ impl SqliteStore {
             .context("failed to load latest risk event by type")
     }
 
+    pub fn list_risk_events_by_type_desc(&self, event_type: &str) -> Result<Vec<RiskEventRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT rowid, event_id, type, severity, ts, details_json
+                 FROM risk_events
+                 WHERE type = ?1
+                 ORDER BY rowid DESC",
+            )
+            .context("failed to prepare risk events by type query")?;
+        let mut rows = stmt
+            .query(params![event_type])
+            .context("failed to query risk events by type")?;
+        let mut events = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating risk events by type")?
+        {
+            events.push(RiskEventRow {
+                rowid: row.get(0)?,
+                event_id: row.get(1)?,
+                event_type: row.get(2)?,
+                severity: row.get(3)?,
+                ts: row.get(4)?,
+                details_json: row.get(5)?,
+            });
+        }
+        Ok(events)
+    }
+
     pub fn list_risk_events_after_cursor(
         &self,
         cursor: Option<i64>,

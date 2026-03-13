@@ -146,6 +146,7 @@ max_hold_hours = 8
 max_copy_delay_sec = 5
 shadow_killswitch_enabled = true
 shadow_soft_exposure_cap_sol = 10.0
+shadow_soft_exposure_resume_below_sol = 9.5
 shadow_soft_pause_minutes = 15
 shadow_hard_exposure_cap_sol = 12.0
 shadow_drawdown_1h_stop_sol = -0.7

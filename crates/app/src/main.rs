@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use copybot_config::ExecutionConfig;
 use copybot_config::{
-    load_from_env_or_default, normalize_ingestion_source, RiskConfig, ShadowConfig,
+    RiskConfig, ShadowConfig, load_from_env_or_default, normalize_ingestion_source,
 };
 #[cfg(test)]
 use copybot_core_types::{SwapEvent, TokenQuantity};
@@ -12,8 +12,8 @@ use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
 use copybot_storage::{
-    sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, Lamports, SignedLamports,
-    SqliteStore,
+    DiscoveryAggregateWriteConfig, Lamports, SignedLamports, SqliteStore,
+    sqlite_contention_snapshot,
 };
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
@@ -668,6 +668,21 @@ fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
             config.shadow_soft_exposure_cap_sol
         ));
     }
+    if !config.shadow_soft_exposure_resume_below_sol.is_finite()
+        || config.shadow_soft_exposure_resume_below_sol <= 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_soft_exposure_resume_below_sol must be finite and > 0, got {}",
+            config.shadow_soft_exposure_resume_below_sol
+        ));
+    }
+    if config.shadow_soft_exposure_resume_below_sol > config.shadow_soft_exposure_cap_sol {
+        return Err(anyhow!(
+            "risk.shadow_soft_exposure_resume_below_sol ({}) must be <= risk.shadow_soft_exposure_cap_sol ({})",
+            config.shadow_soft_exposure_resume_below_sol,
+            config.shadow_soft_exposure_cap_sol
+        ));
+    }
     if !config.shadow_hard_exposure_cap_sol.is_finite()
         || config.shadow_hard_exposure_cap_sol <= 0.0
     {
@@ -890,6 +905,9 @@ struct ShadowRiskGuard {
     exposure_hard_detail: Option<String>,
     pause_until: Option<DateTime<Utc>>,
     pause_reason: Option<String>,
+    soft_exposure_pause_latched: bool,
+    soft_exposure_pause_until: Option<DateTime<Utc>>,
+    soft_exposure_pause_reason: Option<String>,
     universe_breach_streak: u64,
     universe_blocked: bool,
     infra_samples: VecDeque<IngestionRuntimeSnapshot>,
@@ -912,58 +930,111 @@ impl ShadowRiskGuard {
         if !self.config.shadow_killswitch_enabled {
             return;
         }
-        let restore_result = (|| -> Result<Option<(DateTime<Utc>, String)>> {
-            let Some(pause_event) = store.latest_risk_event_by_type("shadow_risk_pause")? else {
-                return Ok(None);
-            };
-            if let Some(cleared_event) =
-                store.latest_risk_event_by_type("shadow_risk_pause_cleared")?
-            {
-                if cleared_event.rowid > pause_event.rowid {
-                    return Ok(None);
+        let restore_result = (|| -> Result<Vec<(String, DateTime<Utc>, String)>> {
+            let pause_events = store.list_risk_events_by_type_desc("shadow_risk_pause")?;
+            if pause_events.is_empty() {
+                return Ok(Vec::new());
+            }
+            let cleared_events =
+                store.list_risk_events_by_type_desc("shadow_risk_pause_cleared")?;
+
+            let mut latest_clear_by_type: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            let mut wildcard_clear_rowid: Option<i64> = None;
+            for cleared_event in cleared_events {
+                let cleared_pause_type = cleared_event
+                    .details_json
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                    .and_then(|value| {
+                        value
+                            .get("pause_type")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    });
+                match cleared_pause_type {
+                    Some(pause_type) => {
+                        latest_clear_by_type
+                            .entry(pause_type)
+                            .or_insert(cleared_event.rowid);
+                    }
+                    None => {
+                        wildcard_clear_rowid.get_or_insert(cleared_event.rowid);
+                    }
                 }
             }
-            let details_json = pause_event
-                .details_json
-                .as_deref()
-                .ok_or_else(|| anyhow!("shadow_risk_pause missing details_json"))?;
-            let details: serde_json::Value = serde_json::from_str(details_json)
-                .context("failed to parse shadow_risk_pause details_json")?;
-            let until_raw = details
-                .get("until")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| anyhow!("shadow_risk_pause missing until"))?;
-            let until = DateTime::parse_from_rfc3339(until_raw)
-                .context("failed to parse shadow_risk_pause until")?
-                .with_timezone(&Utc);
-            if until <= now {
-                return Ok(None);
+
+            let mut restored_pause_types = std::collections::HashSet::new();
+            let mut restored_pauses = Vec::new();
+            for pause_event in pause_events {
+                let pause_details_json = pause_event
+                    .details_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("shadow_risk_pause missing details_json"))?;
+                let pause_details: serde_json::Value = serde_json::from_str(pause_details_json)
+                    .context("failed to parse shadow_risk_pause details_json")?;
+                let pause_type = pause_details
+                    .get("pause_type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("timed_pause")
+                    .to_string();
+                if !restored_pause_types.insert(pause_type.clone()) {
+                    continue;
+                }
+                if wildcard_clear_rowid.is_some_and(|rowid| rowid > pause_event.rowid) {
+                    continue;
+                }
+                if latest_clear_by_type
+                    .get(pause_type.as_str())
+                    .copied()
+                    .is_some_and(|rowid| rowid > pause_event.rowid)
+                {
+                    continue;
+                }
+                let until_raw = pause_details
+                    .get("until")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| anyhow!("shadow_risk_pause missing until"))?;
+                let until = DateTime::parse_from_rfc3339(until_raw)
+                    .context("failed to parse shadow_risk_pause until")?
+                    .with_timezone(&Utc);
+                if pause_type != "exposure_soft_cap" && until <= now {
+                    continue;
+                }
+                let detail = pause_details
+                    .get("detail")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        format!("restored_from_risk_event_rowid={}", pause_event.rowid)
+                    });
+                restored_pauses.push((
+                    pause_type.clone(),
+                    until,
+                    format!("{pause_type}: {detail}; until={}", until.to_rfc3339()),
+                ));
             }
-            let pause_type = details
-                .get("pause_type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("timed_pause");
-            let detail = details
-                .get("detail")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("restored_from_risk_event_rowid={}", pause_event.rowid));
-            Ok(Some((
-                until,
-                format!("{pause_type}: {detail}; until={}", until.to_rfc3339()),
-            )))
+
+            Ok(restored_pauses)
         })();
         match restore_result {
-            Ok(Some((until, reason))) => {
-                self.pause_until = Some(until);
-                self.pause_reason = Some(reason.clone());
-                info!(
-                    reason = %reason,
-                    until = %until.to_rfc3339(),
-                    "restored shadow risk timed pause from durable state"
-                );
+            Ok(restored_pauses) => {
+                for (pause_type, until, reason) in restored_pauses {
+                    if pause_type == "exposure_soft_cap" {
+                        self.soft_exposure_pause_latched = true;
+                        self.soft_exposure_pause_until = Some(until);
+                        self.soft_exposure_pause_reason = Some(reason.clone());
+                    } else if self.pause_until.map(|value| until > value).unwrap_or(true) {
+                        self.pause_until = Some(until);
+                        self.pause_reason = Some(reason.clone());
+                    }
+                    info!(
+                        reason = %reason,
+                        until = %until.to_rfc3339(),
+                        "restored shadow risk timed pause from durable state"
+                    );
+                }
             }
-            Ok(None) => {}
             Err(error) => {
                 warn!(error = %error, "failed to restore shadow risk timed pause");
             }
@@ -974,6 +1045,13 @@ impl ShadowRiskGuard {
         sol_to_lamports_floor(
             self.config.shadow_soft_exposure_cap_sol,
             "risk.shadow_soft_exposure_cap_sol",
+        )
+    }
+
+    fn shadow_soft_exposure_resume_below_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.config.shadow_soft_exposure_resume_below_sol,
+            "risk.shadow_soft_exposure_resume_below_sol",
         )
     }
 
@@ -1192,6 +1270,25 @@ impl ShadowRiskGuard {
             self.clear_pause(store, now);
         }
 
+        if self.soft_exposure_pause_latched {
+            return BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail: self.soft_exposure_pause_reason.clone().unwrap_or_else(|| {
+                    self.soft_exposure_pause_until
+                        .map(|until| {
+                            format!(
+                                "exposure_soft_cap: latched_until_recovery_below_resume_threshold; initial_until={}",
+                                until.to_rfc3339()
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            "exposure_soft_cap: latched_until_recovery_below_resume_threshold"
+                                .to_string()
+                        })
+                }),
+            };
+        }
+
         if self.universe_blocked {
             return BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::Universe,
@@ -1265,6 +1362,8 @@ impl ShadowRiskGuard {
                 "risk.shadow_drawdown_24h_stop_sol",
             )?;
             let shadow_soft_exposure_cap_lamports = self.shadow_soft_exposure_cap_lamports()?;
+            let shadow_soft_exposure_resume_below_lamports =
+                self.shadow_soft_exposure_resume_below_lamports()?;
             let shadow_hard_exposure_cap_lamports = self.shadow_hard_exposure_cap_lamports()?;
 
             let rug_window_start = now
@@ -1367,17 +1466,22 @@ impl ShadowRiskGuard {
             if exposure_lamports >= shadow_hard_exposure_cap_lamports {
                 return Ok(());
             }
-            if exposure_lamports >= shadow_soft_exposure_cap_lamports {
-                self.activate_pause(
+            if self.soft_exposure_pause_latched
+                && self.pause_until.is_none()
+                && exposure_lamports < shadow_soft_exposure_resume_below_lamports
+            {
+                self.clear_soft_exposure_pause(store, now);
+            } else if !self.soft_exposure_pause_latched
+                && self.pause_until.is_none()
+                && exposure_lamports >= shadow_soft_exposure_cap_lamports
+            {
+                self.activate_soft_exposure_pause(
                     store,
                     now,
                     chrono::Duration::minutes(self.config.shadow_soft_pause_minutes.max(1) as i64),
-                    "exposure_soft_cap",
-                    format!(
-                        "open_notional_sol={:.6} >= soft_cap={:.6}",
-                        lamports_to_sol(exposure_lamports),
-                        lamports_to_sol(shadow_soft_exposure_cap_lamports)
-                    ),
+                    exposure_lamports,
+                    shadow_soft_exposure_cap_lamports,
+                    shadow_soft_exposure_resume_below_lamports,
                 );
             }
             if pnl_6h_lamports <= drawdown_6h_stop_lamports {
@@ -1614,6 +1718,41 @@ impl ShadowRiskGuard {
         self.record_risk_event(store, "shadow_risk_pause", "warn", now, &details_json);
     }
 
+    fn activate_soft_exposure_pause(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        duration: chrono::Duration,
+        exposure_lamports: Lamports,
+        soft_cap_lamports: Lamports,
+        resume_below_lamports: Lamports,
+    ) {
+        let duration = if duration <= chrono::Duration::zero() {
+            chrono::Duration::minutes(1)
+        } else {
+            duration
+        };
+        let until = now + duration;
+        self.soft_exposure_pause_latched = true;
+        self.soft_exposure_pause_until = Some(until);
+        let detail = format!(
+            "open_notional_sol={:.6} >= soft_cap={:.6}; resume_below={:.6}",
+            lamports_to_sol(exposure_lamports),
+            lamports_to_sol(soft_cap_lamports),
+            lamports_to_sol(resume_below_lamports)
+        );
+        let reason = format!("exposure_soft_cap: {detail}; until={}", until.to_rfc3339());
+        self.soft_exposure_pause_reason = Some(reason.clone());
+        warn!(reason = %reason, "shadow risk soft exposure pause activated");
+        let details_json = format!(
+            "{{\"pause_type\":\"exposure_soft_cap\",\"detail\":\"{}\",\"until\":\"{}\",\"resume_below_sol\":{:.9}}}",
+            sanitize_json_value(&detail),
+            until.to_rfc3339(),
+            lamports_to_sol(resume_below_lamports)
+        );
+        self.record_risk_event(store, "shadow_risk_pause", "warn", now, &details_json);
+    }
+
     fn clear_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
         let Some(previous_until) = self.pause_until.take() else {
             self.pause_reason = None;
@@ -1623,13 +1762,51 @@ impl ShadowRiskGuard {
             .pause_reason
             .take()
             .unwrap_or_else(|| format!("paused_until={}", previous_until.to_rfc3339()));
+        let cleared_pause_type = previous_reason
+            .split_once(':')
+            .map(|(pause_type, _)| pause_type.trim())
+            .filter(|pause_type| !pause_type.is_empty())
+            .unwrap_or("timed_pause");
         info!(
             previous_reason = %previous_reason,
             previous_until = %previous_until.to_rfc3339(),
             "shadow risk timed pause cleared"
         );
         let details_json = format!(
-            "{{\"state\":\"cleared\",\"previous_reason\":\"{}\",\"previous_until\":\"{}\"}}",
+            "{{\"state\":\"cleared\",\"pause_type\":\"{}\",\"previous_reason\":\"{}\",\"previous_until\":\"{}\"}}",
+            sanitize_json_value(cleared_pause_type),
+            sanitize_json_value(&previous_reason),
+            previous_until.to_rfc3339()
+        );
+        self.record_risk_event(
+            store,
+            "shadow_risk_pause_cleared",
+            "info",
+            now,
+            &details_json,
+        );
+    }
+
+    fn clear_soft_exposure_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+        let Some(previous_until) = self.soft_exposure_pause_until.take() else {
+            self.soft_exposure_pause_latched = false;
+            self.soft_exposure_pause_reason = None;
+            return;
+        };
+        let previous_reason = self.soft_exposure_pause_reason.take().unwrap_or_else(|| {
+            format!(
+                "exposure_soft_cap: paused_until={}",
+                previous_until.to_rfc3339()
+            )
+        });
+        self.soft_exposure_pause_latched = false;
+        info!(
+            previous_reason = %previous_reason,
+            previous_until = %previous_until.to_rfc3339(),
+            "shadow risk soft exposure pause cleared"
+        );
+        let details_json = format!(
+            "{{\"state\":\"cleared\",\"pause_type\":\"exposure_soft_cap\",\"previous_reason\":\"{}\",\"previous_until\":\"{}\"}}",
             sanitize_json_value(&previous_reason),
             previous_until.to_rfc3339()
         );
@@ -2988,8 +3165,8 @@ mod app_tests {
     }
 
     #[test]
-    fn validate_execution_runtime_contract_rejects_duplicate_submit_route_order_after_normalization(
-    ) {
+    fn validate_execution_runtime_contract_rejects_duplicate_submit_route_order_after_normalization()
+     {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
         execution.submit_allowed_routes = vec!["paper".to_string()];
@@ -3008,8 +3185,8 @@ mod app_tests {
     }
 
     #[test]
-    fn validate_execution_runtime_contract_rejects_duplicate_route_policy_map_keys_after_normalization(
-    ) {
+    fn validate_execution_runtime_contract_rejects_duplicate_route_policy_map_keys_after_normalization()
+     {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
         execution.submit_allowed_routes = vec!["paper".to_string()];
@@ -3281,8 +3458,8 @@ mod app_tests {
     }
 
     #[test]
-    fn validate_execution_runtime_contract_rejects_fallback_adapter_endpoint_with_secret_bearing_url_forms(
-    ) {
+    fn validate_execution_runtime_contract_rejects_fallback_adapter_endpoint_with_secret_bearing_url_forms()
+     {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
         execution.mode = "adapter_submit_confirm".to_string();
@@ -3366,6 +3543,18 @@ mod app_tests {
             error
                 .to_string()
                 .contains("risk.shadow_soft_exposure_cap_sol"),
+            "unexpected error: {}",
+            error
+        );
+
+        let mut risk = RiskConfig::default();
+        risk.shadow_soft_exposure_resume_below_sol = 11.0;
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("soft exposure resume threshold above soft cap must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("risk.shadow_soft_exposure_resume_below_sol"),
             "unexpected error: {}",
             error
         );
@@ -4048,8 +4237,8 @@ mod app_tests {
     }
 
     #[test]
-    fn stale_lot_cleanup_terminal_closes_and_records_risk_events_when_reliable_price_missing_after_terminal_threshold(
-    ) -> Result<()> {
+    fn stale_lot_cleanup_terminal_closes_and_records_risk_events_when_reliable_price_missing_after_terminal_threshold()
+    -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-terminal-unpriced")?;
         let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
             .expect("timestamp")
@@ -4261,6 +4450,7 @@ mod app_tests {
         let (store, db_path) = make_test_store("timed-pause-autoclear")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
         cfg.shadow_hard_exposure_cap_sol = 2.0;
         cfg.shadow_soft_pause_minutes = 1;
         cfg.shadow_drawdown_1h_stop_sol = -999.0;
@@ -4282,8 +4472,12 @@ mod app_tests {
         }
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
         assert!(
-            guard.pause_until.is_some(),
-            "timed pause should be active after soft exposure cap breach"
+            guard.soft_exposure_pause_latched,
+            "soft exposure pause should latch after breach"
+        );
+        assert!(
+            guard.soft_exposure_pause_until.is_some(),
+            "soft exposure pause should capture its initial cooldown window"
         );
 
         store.delete_shadow_lot(lot_id)?;
@@ -4299,17 +4493,378 @@ mod app_tests {
             }
         }
         assert!(
-            guard.pause_until.is_none(),
-            "timed pause should clear after pause duration elapses and exposure normalizes"
+            !guard.soft_exposure_pause_latched,
+            "soft exposure pause latch should clear after exposure normalizes below resume threshold"
         );
         assert!(
-            guard.pause_reason.is_none(),
-            "timed pause reason should clear after pause duration elapses and exposure normalizes"
+            guard.soft_exposure_pause_until.is_none(),
+            "soft exposure pause window should clear after recovery below resume threshold"
+        );
+        assert!(
+            guard.soft_exposure_pause_reason.is_none(),
+            "soft exposure pause reason should clear after recovery below resume threshold"
         );
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
         assert_eq!(
             store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
             1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_soft_exposure_pause_does_not_rearm_or_extend_while_still_above_resume_threshold()
+    -> Result<()> {
+        let (store, db_path) = make_test_store("soft-pause-no-rearm")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.6, opened_ts)?;
+
+        match guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("exposure_soft_cap")),
+            other => panic!("expected initial soft pause block, got {other:?}"),
+        }
+        let initial_until = guard
+            .soft_exposure_pause_until
+            .expect("soft pause should set initial until");
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+
+        let still_breached_at =
+            now + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 10).max(10));
+        match guard.can_open_buy(&store, still_breached_at, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("exposure_soft_cap")),
+            other => panic!("expected soft pause to stay active without rearm, got {other:?}"),
+        }
+        assert_eq!(guard.soft_exposure_pause_until, Some(initial_until));
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+
+        let after_initial_until =
+            now + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 61).max(61));
+        match guard.can_open_buy(&store, after_initial_until, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("exposure_soft_cap")),
+            other => panic!(
+                "expected soft exposure latch to remain blocked above resume threshold, got {other:?}"
+            ),
+        }
+        assert_eq!(guard.soft_exposure_pause_until, Some(initial_until));
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            0
+        );
+
+        store.delete_shadow_lot(lot_id)?;
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_soft_exposure_pause_requires_recovery_below_resume_threshold_to_clear()
+    -> Result<()> {
+        let (store, db_path) = make_test_store("soft-pause-hysteresis")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.6, opened_ts)?;
+
+        let _ = guard.can_open_buy(&store, now, true);
+        store.update_shadow_lot(lot_id, 10.0, 0.45)?;
+        let between_thresholds_at =
+            now + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 61).max(61));
+        match guard.can_open_buy(&store, between_thresholds_at, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("exposure_soft_cap")),
+            other => panic!(
+                "expected soft exposure latch to stay blocked between resume and soft thresholds, got {other:?}"
+            ),
+        }
+        assert!(guard.soft_exposure_pause_latched);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            0
+        );
+
+        store.update_shadow_lot(lot_id, 10.0, 0.35)?;
+        let recovered_at = between_thresholds_at
+            + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 1).max(6));
+        match guard.can_open_buy(&store, recovered_at, true) {
+            BuyRiskDecision::Allow => {}
+            other => panic!(
+                "expected recovery below resume threshold to clear soft pause, got {other:?}"
+            ),
+        }
+        assert!(!guard.soft_exposure_pause_latched);
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            1
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_restores_active_soft_exposure_pause_after_restart_without_event_spam()
+    -> Result<()> {
+        let (store, db_path) = make_test_store("soft-pause-restore-active")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.6, opened_ts)?;
+
+        let mut original_guard = ShadowRiskGuard::new(cfg.clone());
+        let _ = original_guard.can_open_buy(&store, now, true);
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+
+        let restore_at = now + chrono::Duration::seconds(30);
+        let mut restarted_guard = ShadowRiskGuard::new(cfg);
+        restarted_guard.restore_pause_from_store(&store, restore_at);
+
+        match restarted_guard.can_open_buy(&store, restore_at, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("exposure_soft_cap")),
+            other => panic!("expected restored soft exposure pause after restart, got {other:?}"),
+        }
+        assert!(restarted_guard.soft_exposure_pause_latched);
+        assert!(restarted_guard.soft_exposure_pause_until.is_some());
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            0
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_restore_preserves_older_soft_exposure_pause_when_newer_timed_pause_was_cleared()
+    -> Result<()> {
+        let (store, db_path) = make_test_store("soft-pause-restore-overlap")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_1h_stop_sol = -0.3;
+        cfg.shadow_drawdown_1h_pause_minutes = 5;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.6, opened_ts)?;
+        store.insert_shadow_closed_trade(
+            "sig-overlap-dd1",
+            "wallet-a",
+            "token-a",
+            1.0,
+            1.0,
+            0.5,
+            -0.5,
+            now - chrono::Duration::minutes(10),
+            now - chrono::Duration::minutes(5),
+        )?;
+
+        let mut original_guard = ShadowRiskGuard::new(cfg.clone());
+        match original_guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("drawdown_1h")),
+            other => {
+                panic!("expected drawdown timed pause with overlapping soft latch, got {other:?}")
+            }
+        }
+        assert!(original_guard.soft_exposure_pause_latched);
+        assert!(original_guard.pause_until.is_some());
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 2);
+
+        original_guard.clear_pause(&store, now + chrono::Duration::seconds(30));
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            1
+        );
+
+        let restore_at = now + chrono::Duration::seconds(45);
+        let mut restarted_guard = ShadowRiskGuard::new(cfg);
+        restarted_guard.restore_pause_from_store(&store, restore_at);
+
+        assert!(
+            restarted_guard.soft_exposure_pause_latched,
+            "older soft exposure latch must be restored even when a newer timed pause was later cleared"
+        );
+        assert!(restarted_guard.soft_exposure_pause_until.is_some());
+        assert!(
+            restarted_guard.pause_until.is_none(),
+            "cleared generic timed pause should not be restored"
+        );
+        match restarted_guard.can_open_buy(&store, restore_at, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                ..
+            } => {}
+            other => panic!(
+                "expected restart path to stay blocked after restoring older soft exposure latch, got {other:?}"
+            ),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_restores_soft_exposure_pause_after_until_expiry_when_exposure_stays_in_hysteresis_band()
+    -> Result<()> {
+        let (store, db_path) = make_test_store("soft-pause-restore-expired-until")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.6, opened_ts)?;
+
+        let mut original_guard = ShadowRiskGuard::new(cfg.clone());
+        let _ = original_guard.can_open_buy(&store, now, true);
+        assert!(original_guard.soft_exposure_pause_latched);
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+
+        // Keep exposure in the hysteresis band after the initial pause window expires.
+        store.update_shadow_lot(lot_id, 10.0, 0.45)?;
+
+        let restore_at = now + chrono::Duration::minutes(2);
+        let mut restarted_guard = ShadowRiskGuard::new(cfg);
+        restarted_guard.restore_pause_from_store(&store, restore_at);
+
+        assert!(
+            restarted_guard.soft_exposure_pause_latched,
+            "soft exposure latch should survive restart even after initial until expires"
+        );
+        match restarted_guard.can_open_buy(&store, restore_at, true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TimedPause,
+                detail,
+            } => assert!(detail.contains("exposure_soft_cap")),
+            other => panic!(
+                "expected hysteresis-band exposure to remain blocked after restart, got {other:?}"
+            ),
+        }
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            0
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_restore_preserves_soft_exposure_pause_buried_under_many_newer_timed_pause_rows()
+    -> Result<()> {
+        let (store, db_path) = make_test_store("soft-pause-restore-many-newer-rows")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let now = Utc::now();
+
+        let mut original_guard = ShadowRiskGuard::new(cfg.clone());
+        original_guard.activate_soft_exposure_pause(
+            &store,
+            now,
+            chrono::Duration::minutes(1),
+            Lamports::new(600_000_000),
+            Lamports::new(500_000_000),
+            Lamports::new(400_000_000),
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+
+        for index in 0..80 {
+            original_guard.activate_pause(
+                &store,
+                now + chrono::Duration::seconds(index as i64 + 1),
+                chrono::Duration::minutes(5),
+                "drawdown_1h",
+                format!("synthetic timed pause spam #{index}"),
+            );
+        }
+        assert!(
+            store.risk_event_count_by_type("shadow_risk_pause")? > 64,
+            "regression setup must exceed the old fixed restore scan limit"
+        );
+
+        let restore_at = now + chrono::Duration::seconds(30);
+        let mut restarted_guard = ShadowRiskGuard::new(cfg);
+        restarted_guard.restore_pause_from_store(&store, restore_at);
+
+        assert!(
+            restarted_guard.soft_exposure_pause_latched,
+            "soft exposure latch must restore even when buried under many newer generic pause rows"
+        );
+        assert!(
+            restarted_guard.pause_until.is_some(),
+            "latest active generic pause should still restore alongside the soft latch"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -4700,24 +5255,30 @@ mod app_tests {
 
         let mut shadow_scheduler = ShadowScheduler::new();
 
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(
-                SHADOW_PENDING_TASK_CAPACITY,
-                make_task("A1", "wallet-a", "token-x"),
-            )
-            .is_ok());
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(
-                SHADOW_PENDING_TASK_CAPACITY,
-                make_task("A2", "wallet-a", "token-x"),
-            )
-            .is_ok());
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(
-                SHADOW_PENDING_TASK_CAPACITY,
-                make_task("B1", "wallet-b", "token-y"),
-            )
-            .is_ok());
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(
+                    SHADOW_PENDING_TASK_CAPACITY,
+                    make_task("A1", "wallet-a", "token-x"),
+                )
+                .is_ok()
+        );
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(
+                    SHADOW_PENDING_TASK_CAPACITY,
+                    make_task("A2", "wallet-a", "token-x"),
+                )
+                .is_ok()
+        );
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(
+                    SHADOW_PENDING_TASK_CAPACITY,
+                    make_task("B1", "wallet-b", "token-y"),
+                )
+                .is_ok()
+        );
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 3);
 
         let first = shadow_scheduler
@@ -4767,15 +5328,21 @@ mod app_tests {
         let mut shadow_scheduler = ShadowScheduler::new();
         let cap = 2usize;
 
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(cap, make_task("A1", "wallet-a", "token-x"),)
-            .is_ok());
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(cap, make_task("A2", "wallet-a", "token-x"),)
-            .is_ok());
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(cap, make_task("B1", "wallet-b", "token-y"),)
-            .is_err());
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(cap, make_task("A1", "wallet-a", "token-x"),)
+                .is_ok()
+        );
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(cap, make_task("A2", "wallet-a", "token-x"),)
+                .is_ok()
+        );
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(cap, make_task("B1", "wallet-b", "token-y"),)
+                .is_err()
+        );
         assert_eq!(shadow_scheduler.pending_shadow_task_count, cap);
     }
 
@@ -4831,9 +5398,11 @@ mod app_tests {
         let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
         let cap = 1usize;
 
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"),)
-            .is_ok());
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"),)
+                .is_ok()
+        );
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 1);
 
         let overflow_buy = shadow_scheduler
@@ -4949,9 +5518,11 @@ mod app_tests {
         let cap = 1usize;
         let now = Utc::now();
 
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"))
-            .is_ok());
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"))
+                .is_ok()
+        );
         assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
 
         let held_sell = make_sell_task("S1", "wallet-sell", "token-sell");
@@ -5017,14 +5588,16 @@ mod app_tests {
         let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
         let now = Utc::now();
 
-        assert!(shadow_scheduler
-            .hold_sell_for_causality(
-                2,
-                make_sell_task("S1", "wallet-sell", "token-sell"),
-                100,
-                now
-            )
-            .is_ok());
+        assert!(
+            shadow_scheduler
+                .hold_sell_for_causality(
+                    2,
+                    make_sell_task("S1", "wallet-sell", "token-sell"),
+                    100,
+                    now
+                )
+                .is_ok()
+        );
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
         assert_eq!(shadow_scheduler.held_shadow_sell_count(), 1);
         assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
@@ -5098,19 +5671,23 @@ mod app_tests {
         let mut shadow_scheduler = ShadowScheduler::new();
         let now = Utc::now();
 
-        assert!(shadow_scheduler
-            .hold_sell_for_causality(
-                1,
-                make_sell_task("S1", "wallet-sell", "token-sell"),
-                100,
-                now
-            )
-            .is_ok());
+        assert!(
+            shadow_scheduler
+                .hold_sell_for_causality(
+                    1,
+                    make_sell_task("S1", "wallet-sell", "token-sell"),
+                    100,
+                    now
+                )
+                .is_ok()
+        );
         assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
 
-        assert!(shadow_scheduler
-            .enqueue_shadow_task(1, make_buy_task("B1", "wallet-buy", "token-buy"))
-            .is_err());
+        assert!(
+            shadow_scheduler
+                .enqueue_shadow_task(1, make_buy_task("B1", "wallet-buy", "token-buy"))
+                .is_err()
+        );
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
         assert_eq!(shadow_scheduler.held_shadow_sell_count(), 1);
         assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
@@ -5321,9 +5898,11 @@ FOO=bar
 SOLANA_COPY_BOT_INGESTION_SOURCE=
 this-is-not-a-valid-line
 "#;
-        assert!(parse_ingestion_source_override(content)
-            .expect("invalid lines without source value should be ignored")
-            .is_none());
+        assert!(
+            parse_ingestion_source_override(content)
+                .expect("invalid lines without source value should be ignored")
+                .is_none()
+        );
     }
 
     #[test]
