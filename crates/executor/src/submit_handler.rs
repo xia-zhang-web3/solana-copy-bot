@@ -241,6 +241,8 @@ pub(crate) async fn handle_submit(
         submit_transport_artifact,
         SubmitTransportArtifact::UpstreamSignature(_)
     ) {
+        // Upstream may already have broadcast the transaction, so keep the
+        // idempotency claim in-flight before any later pure response checks.
         submit_claim_guard.retain_claim_on_drop();
     }
 
@@ -289,6 +291,56 @@ pub(crate) async fn handle_submit(
         )
         .await;
     }
+
+    let submitted_at = match resolve_submit_response_submitted_at(&backend_response, Utc::now()) {
+        Ok(submitted_at) => submitted_at,
+        Err(error) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "resolve_submit_response_submitted_at",
+                map_submit_response_validation_error_to_reject(error),
+            )
+            .await;
+        }
+    };
+
+    let parsed_response_fee_hints = match parse_response_fee_hint_fields(&backend_response) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "parse_response_fee_hint_fields",
+                map_fee_hint_field_parse_error_to_reject(error),
+            )
+            .await;
+        }
+    };
+
+    let resolved_fee_hints = match resolve_fee_hints(FeeHintInputs {
+        response_network_fee_lamports: parsed_response_fee_hints.network_fee_lamports,
+        response_base_fee_lamports: parsed_response_fee_hints.base_fee_lamports,
+        response_priority_fee_lamports: parsed_response_fee_hints.priority_fee_lamports,
+        response_ata_create_rent_lamports: parsed_response_fee_hints.ata_create_rent_lamports,
+        request_cu_limit: request.compute_budget.cu_limit,
+        request_cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
+        default_base_fee_lamports: crate::DEFAULT_BASE_FEE_LAMPORTS,
+    }) {
+        Ok(fee_hints) => fee_hints,
+        Err(error) => {
+            return reject_after_claimed_submit_error(
+                &mut submit_claim_guard,
+                route.as_str(),
+                request,
+                "resolve_fee_hints",
+                map_fee_hint_error_to_reject(error),
+            )
+            .await;
+        }
+    };
 
     let (tx_signature, submit_transport) = match submit_transport_artifact {
         SubmitTransportArtifact::UpstreamSignature(value) => {
@@ -349,56 +401,6 @@ pub(crate) async fn handle_submit(
                 )
                 .await;
             }
-        }
-    };
-
-    let submitted_at = match resolve_submit_response_submitted_at(&backend_response, Utc::now()) {
-        Ok(submitted_at) => submitted_at,
-        Err(error) => {
-            return reject_after_claimed_submit_error(
-                &mut submit_claim_guard,
-                route.as_str(),
-                request,
-                "resolve_submit_response_submitted_at",
-                map_submit_response_validation_error_to_reject(error),
-            )
-            .await;
-        }
-    };
-
-    let parsed_response_fee_hints = match parse_response_fee_hint_fields(&backend_response) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            return reject_after_claimed_submit_error(
-                &mut submit_claim_guard,
-                route.as_str(),
-                request,
-                "parse_response_fee_hint_fields",
-                map_fee_hint_field_parse_error_to_reject(error),
-            )
-            .await;
-        }
-    };
-
-    let resolved_fee_hints = match resolve_fee_hints(FeeHintInputs {
-        response_network_fee_lamports: parsed_response_fee_hints.network_fee_lamports,
-        response_base_fee_lamports: parsed_response_fee_hints.base_fee_lamports,
-        response_priority_fee_lamports: parsed_response_fee_hints.priority_fee_lamports,
-        response_ata_create_rent_lamports: parsed_response_fee_hints.ata_create_rent_lamports,
-        request_cu_limit: request.compute_budget.cu_limit,
-        request_cu_price_micro_lamports: request.compute_budget.cu_price_micro_lamports,
-        default_base_fee_lamports: crate::DEFAULT_BASE_FEE_LAMPORTS,
-    }) {
-        Ok(fee_hints) => fee_hints,
-        Err(error) => {
-            return reject_after_claimed_submit_error(
-                &mut submit_claim_guard,
-                route.as_str(),
-                request,
-                "resolve_fee_hints",
-                map_fee_hint_error_to_reject(error),
-            )
-            .await;
         }
     };
 
