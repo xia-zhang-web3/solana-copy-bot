@@ -6078,7 +6078,7 @@ EOF_DEVNET_EXECUTOR_ENV
         bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
     )"
     assert_field_equals "$tests_enabled_output" "tests_run" "true"
-    assert_field_equals "$tests_enabled_output" "tests_total" "20"
+    assert_field_equals "$tests_enabled_output" "tests_total" "23"
     assert_field_equals "$tests_enabled_output" "tests_failed" "0"
     local tests_enabled_artifact_path=""
     tests_enabled_artifact_path="$(extract_field_value "$tests_enabled_output" "artifact_tests")"
@@ -6099,6 +6099,9 @@ EOF_DEVNET_EXECUTOR_ENV
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q handle_submit_rejects_signed_tx_base64_signal_id_mismatch_before_send_rpc"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q handle_submit_accepts_case_insensitive_upstream_side_echo"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q handle_submit_rejects_non_string_request_id_field"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_rejects_invalid_submitted_at_before_send_rpc"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_rejects_invalid_fee_hint_before_send_rpc"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_signature_response_fails_late_validation"
   fi
 
   local required_windowed_disabled_output=""

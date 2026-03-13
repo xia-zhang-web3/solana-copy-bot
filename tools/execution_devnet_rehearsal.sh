@@ -978,6 +978,9 @@ if [[ "$run_tests_norm" == "true" ]]; then
     "cargo test -p copybot-adapter -q handle_submit_rejects_signed_tx_base64_signal_id_mismatch_before_send_rpc"
     "cargo test -p copybot-adapter -q handle_submit_accepts_case_insensitive_upstream_side_echo"
     "cargo test -p copybot-adapter -q handle_submit_rejects_non_string_request_id_field"
+    "cargo test -p copybot-executor -q handle_submit_rejects_invalid_submitted_at_before_send_rpc"
+    "cargo test -p copybot-executor -q handle_submit_rejects_invalid_fee_hint_before_send_rpc"
+    "cargo test -p copybot-executor -q handle_submit_keeps_claim_in_flight_when_upstream_signature_response_fails_late_validation"
   )
   for test_cmd in "${test_commands[@]}"; do
     tests_total=$((tests_total + 1))
