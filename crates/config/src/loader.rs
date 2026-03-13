@@ -599,6 +599,13 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.risk.max_hold_hours = max_hold_hours;
     }
+    if let Some(shadow_stale_close_terminal_zero_price_hours) = parse_env_number::<u32>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_STALE_CLOSE_TERMINAL_ZERO_PRICE_HOURS",
+        "u32",
+    )? {
+        config.risk.shadow_stale_close_terminal_zero_price_hours =
+            shadow_stale_close_terminal_zero_price_hours;
+    }
     if let Some(max_copy_delay_sec) =
         parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_MAX_COPY_DELAY_SEC", "u64")?
     {

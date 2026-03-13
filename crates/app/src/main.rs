@@ -6,7 +6,7 @@ use copybot_config::{
     load_from_env_or_default, normalize_ingestion_source, RiskConfig, ShadowConfig,
 };
 #[cfg(test)]
-use copybot_core_types::SwapEvent;
+use copybot_core_types::{SwapEvent, TokenQuantity};
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
@@ -570,6 +570,22 @@ fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
             "risk.max_copy_delay_sec must be >= 1, got {}",
             config.max_copy_delay_sec
         ));
+    }
+    if config.max_hold_hours == 0 && config.shadow_stale_close_terminal_zero_price_hours > 0 {
+        return Err(anyhow!(
+            "risk.shadow_stale_close_terminal_zero_price_hours ({}) requires risk.max_hold_hours >= 1",
+            config.shadow_stale_close_terminal_zero_price_hours
+        ));
+    }
+    if config.shadow_stale_close_terminal_zero_price_hours > 0 {
+        let min_terminal_zero_price_hours = config.max_hold_hours.saturating_mul(2);
+        if config.shadow_stale_close_terminal_zero_price_hours < min_terminal_zero_price_hours {
+            return Err(anyhow!(
+                "risk.shadow_stale_close_terminal_zero_price_hours ({}) must be 0 (disabled) or >= 2 * risk.max_hold_hours ({})",
+                config.shadow_stale_close_terminal_zero_price_hours,
+                min_terminal_zero_price_hours
+            ));
+        }
     }
     if !config.daily_loss_limit_pct.is_finite()
         || config.daily_loss_limit_pct < 0.0
@@ -1658,6 +1674,8 @@ async fn run_app_loop(
         .list_shadow_open_pairs()
         .context("failed to load open shadow lot index")?;
     let stale_lot_max_hold_hours = risk_config.max_hold_hours;
+    let stale_lot_terminal_zero_price_hours =
+        risk_config.shadow_stale_close_terminal_zero_price_hours;
     let mut shadow_risk_guard = ShadowRiskGuard::new(risk_config);
     shadow_risk_guard.restore_pause_from_store(&store, Utc::now());
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -2252,13 +2270,20 @@ async fn run_app_loop(
                     &store,
                     &mut open_shadow_lots,
                     stale_lot_max_hold_hours,
+                    stale_lot_terminal_zero_price_hours,
                     cleanup_now,
                 ) {
-                    Ok((closed, skipped)) if closed > 0 || skipped > 0 => {
+                    Ok(stats)
+                        if stats.closed_priced > 0
+                            || stats.terminal_zero_closed > 0
+                            || stats.skipped_unpriced > 0 =>
+                    {
                         info!(
-                            closed,
-                            skipped,
+                            closed_priced = stats.closed_priced,
+                            terminal_zero_closed = stats.terminal_zero_closed,
+                            skipped_unpriced = stats.skipped_unpriced,
                             max_hold_hours = stale_lot_max_hold_hours,
+                            terminal_zero_price_hours = stale_lot_terminal_zero_price_hours,
                             "stale lot cleanup tick"
                         );
                     }
@@ -3898,10 +3923,11 @@ mod app_tests {
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let (closed, skipped) = close_stale_shadow_lots(&store, &mut open_pairs, 8, now)?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, now)?;
 
-        assert_eq!(closed, 1);
-        assert_eq!(skipped, 0);
+        assert_eq!(stats.closed_priced, 1);
+        assert_eq!(stats.terminal_zero_closed, 0);
+        assert_eq!(stats.skipped_unpriced, 0);
         assert!(!store.has_shadow_lots("wallet-a", "token-a")?);
         assert!(!open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
 
@@ -3921,7 +3947,9 @@ mod app_tests {
     #[test]
     fn stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing() -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-unpriced")?;
-        let now = Utc::now();
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
         let opened_ts = now - chrono::Duration::hours(10);
 
         store.insert_observed_swap(&SwapEvent {
@@ -3939,19 +3967,142 @@ mod app_tests {
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let (closed, skipped) = close_stale_shadow_lots(&store, &mut open_pairs, 8, now)?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, now)?;
 
-        assert_eq!(closed, 0);
-        assert_eq!(skipped, 1);
+        assert_eq!(stats.closed_priced, 0);
+        assert_eq!(stats.terminal_zero_closed, 0);
+        assert_eq!(stats.skipped_unpriced, 1);
         assert!(store.has_shadow_lots("wallet-a", "token-a")?);
         assert!(open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
         assert_eq!(
             store.risk_event_count_by_type("shadow_stale_close_price_unavailable")?,
             1
         );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_terminal_zero_price")?,
+            0
+        );
+        let (trades, _) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
+        assert_eq!(trades, 0);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
+    }
+
+    #[test]
+    fn stale_lot_cleanup_terminal_closes_and_records_risk_events_when_reliable_price_missing_after_terminal_threshold(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-terminal-unpriced")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let opened_ts = now - chrono::Duration::hours(14);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample-terminal".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+            exact_amounts: None,
+        })?;
+        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, now)?;
+
+        assert_eq!(stats.closed_priced, 0);
+        assert_eq!(stats.terminal_zero_closed, 1);
+        assert_eq!(stats.skipped_unpriced, 0);
+        assert!(!store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(!open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_price_unavailable")?,
+            1
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_terminal_zero_price")?,
+            1
+        );
+        let (trades, pnl) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
+        assert_eq!(trades, 1);
+        assert!(pnl < 0.0, "terminal zero-price stale close must realize a loss");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_lot_cleanup_terminal_zero_price_preserves_exact_qty_sidecars() -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-unpriced-exact")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let opened_ts = now - chrono::Duration::hours(14);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1.0,
+            signature: "sig-exact-only-one-sample".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+            exact_amounts: None,
+        })?;
+        let lot_id = store.insert_shadow_lot_exact(
+            "wallet-a",
+            "token-a",
+            0.5,
+            Some(TokenQuantity::new(500_000, 6)),
+            0.25,
+            opened_ts,
+        )?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, now)?;
+
+        assert_eq!(stats.closed_priced, 0);
+        assert_eq!(stats.terminal_zero_closed, 1);
+        assert_eq!(stats.skipped_unpriced, 0);
+        assert!(!store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(!open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
+
+        let signal_id = format!("stale-close-{}-{}", lot_id, now.timestamp_millis());
+        assert_eq!(
+            store.shadow_closed_trade_qty_exact(&signal_id)?,
+            Some(TokenQuantity::new(500_000, 6))
+        );
+        assert_eq!(
+            store.shadow_closed_trade_accounting_bucket(&signal_id)?,
+            Some("exact_post_cutover".to_string())
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn validate_execution_risk_contract_rejects_invalid_stale_close_terminal_zero_price_hours() {
+        let mut risk = RiskConfig::default();
+        risk.max_hold_hours = 6;
+        risk.shadow_stale_close_terminal_zero_price_hours = 11;
+
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("expected stale close terminal zero threshold validation to fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("risk.shadow_stale_close_terminal_zero_price_hours"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
