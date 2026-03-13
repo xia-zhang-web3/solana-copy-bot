@@ -123,6 +123,10 @@ fi
 MAX_POSITION_SOL="$(cfg_value risk max_position_sol)"
 MAX_TOTAL_EXPOSURE_SOL="$(cfg_value risk max_total_exposure_sol)"
 MAX_HOLD_HOURS="$(cfg_value risk max_hold_hours)"
+STALE_CLOSE_RECOVERY_ZERO_PRICE_ENABLED="$(cfg_value risk shadow_stale_close_recovery_zero_price_enabled)"
+if [[ -z "${STALE_CLOSE_RECOVERY_ZERO_PRICE_ENABLED:-}" ]]; then
+  STALE_CLOSE_RECOVERY_ZERO_PRICE_ENABLED="false"
+fi
 SOFT_CAP_SOL="$(cfg_value risk shadow_soft_exposure_cap_sol)"
 HARD_CAP_SOL="$(cfg_value risk shadow_hard_exposure_cap_sol)"
 KILLSWITCH_ENABLED="$(cfg_value risk shadow_killswitch_enabled)"
@@ -421,6 +425,7 @@ echo "max_total_exposure_sol: ${MAX_TOTAL_EXPOSURE_SOL:-n/a} (usage $USAGE_TOTAL
 echo "shadow_soft_exposure_cap_sol: ${SOFT_CAP_SOL:-n/a} (usage $USAGE_SOFT)"
 echo "shadow_hard_exposure_cap_sol: ${HARD_CAP_SOL:-n/a} (usage $USAGE_HARD)"
 echo "max_hold_hours: ${MAX_HOLD_HOURS:-n/a}"
+echo "shadow_stale_close_recovery_zero_price_enabled: ${STALE_CLOSE_RECOVERY_ZERO_PRICE_ENABLED:-false}"
 echo "stale_open_lots_now: $STALE_LOTS"
 echo "stale_open_notional_sol_now: $STALE_NOTIONAL_SOL"
 echo "execution_pretrade_min_sol_reserve: ${PRETRADE_MIN_SOL_RESERVE:-n/a}"

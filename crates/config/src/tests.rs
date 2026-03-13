@@ -1117,6 +1117,48 @@ fn load_from_env_rejects_invalid_risk_shadow_soft_exposure_resume_below_sol_over
 }
 
 #[test]
+fn load_from_env_applies_risk_shadow_stale_close_recovery_zero_price_enabled_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_RISK_SHADOW_STALE_CLOSE_RECOVERY_ZERO_PRICE_ENABLED",
+                "true",
+                || {
+                    let (cfg, _) = load_from_env_or_default(config_path)
+                        .expect("load config with recovery override");
+                    assert!(cfg.risk.shadow_stale_close_recovery_zero_price_enabled);
+                },
+            );
+        });
+    });
+}
+
+#[test]
+fn load_from_env_rejects_invalid_risk_shadow_stale_close_recovery_zero_price_enabled_override() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_RISK_SHADOW_STALE_CLOSE_RECOVERY_ZERO_PRICE_ENABLED",
+                "sometimes",
+                || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err(
+                            "invalid risk shadow stale close recovery override must fail config load",
+                        )
+                        .to_string();
+                    assert!(
+                        err.contains(
+                            "SOLANA_COPY_BOT_RISK_SHADOW_STALE_CLOSE_RECOVERY_ZERO_PRICE_ENABLED"
+                        ),
+                        "unexpected error: {err}"
+                    );
+                },
+            );
+        });
+    });
+}
+
+#[test]
 fn load_from_env_rejects_invalid_risk_shadow_universe_breach_cycles_override() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {

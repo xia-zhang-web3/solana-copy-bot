@@ -119,6 +119,7 @@ max_concurrent_positions = 5
 daily_loss_limit_pct = 2.0
 max_drawdown_pct = 8.0
 max_hold_hours = 8
+shadow_stale_close_recovery_zero_price_enabled = false
 max_copy_delay_sec = 5
 shadow_killswitch_enabled = true
 shadow_soft_exposure_cap_sol = 10.0

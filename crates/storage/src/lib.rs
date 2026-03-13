@@ -1,18 +1,17 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 pub use copybot_core_types::{
+    CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
+    FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome, Lamports, SignedLamports,
+    TokenQualityCacheRow, TokenQualityRpcRow, TokenQuantity, WalletMetricRow, WalletUpsertRow,
     COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
-    CopySignalRow, EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS,
-    EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS, ExactSwapAmounts, ExecutionConfirmStateSnapshot,
-    ExecutionOrderRow, FinalizeExecutionConfirmOutcome, InsertExecutionOrderPendingOutcome,
-    Lamports, SignedLamports, TokenQualityCacheRow, TokenQualityRpcRow, TokenQuantity,
-    WalletMetricRow, WalletUpsertRow,
+    EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS, EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS,
 };
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
@@ -24,6 +23,7 @@ pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES: usize = 3;
 pub const STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
 pub const SHADOW_CLOSE_CONTEXT_MARKET: &str = "market";
 pub const SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE: &str = "stale_terminal_zero_price";
+pub const SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE: &str = "recovery_terminal_zero_price";
 pub const SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
 pub const SHADOW_RISK_CONTEXT_MARKET: &str = "market";
 pub const SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
@@ -1604,13 +1604,17 @@ mod tests {
                 opened_ts,
             )
             .expect_err("unknown risk_context must reject");
-        assert!(error.to_string().contains("unsupported shadow risk_context"));
+        assert!(error
+            .to_string()
+            .contains("unsupported shadow risk_context"));
 
         let lot_id = store.insert_shadow_lot("wallet", "token", 1.0, 0.10, opened_ts)?;
         let error = store
             .update_shadow_lot_risk_context(lot_id, "typo_quarantine")
             .expect_err("updating to unknown risk_context must reject");
-        assert!(error.to_string().contains("unsupported shadow risk_context"));
+        assert!(error
+            .to_string()
+            .contains("unsupported shadow risk_context"));
         assert_eq!(
             store.list_shadow_lots("wallet", "token")?[0].risk_context,
             SHADOW_RISK_CONTEXT_MARKET
@@ -2081,6 +2085,58 @@ mod tests {
     }
 
     #[test]
+    fn shadow_risk_metrics_ignore_recovery_terminal_zero_close_context() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("shadow-risk-ignore-recovery-zero.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let opened_ts = DateTime::parse_from_rfc3339("2026-03-01T10:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let closed_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.insert_shadow_closed_trade_exact_with_context(
+            "sig-recovery-zero",
+            "wallet",
+            "token",
+            10.0,
+            None,
+            0.10,
+            0.0,
+            -0.10,
+            SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+            opened_ts,
+            closed_ts,
+        )?;
+
+        let (all_trades, all_pnl) =
+            store.shadow_realized_pnl_lamports_since(opened_ts - Duration::minutes(1))?;
+        assert_eq!(all_trades, 1);
+        assert_eq!(all_pnl, SignedLamports::new(-100_000_000));
+
+        let (risk_trades, risk_pnl) =
+            store.shadow_risk_realized_pnl_lamports_since(opened_ts - Duration::minutes(1))?;
+        assert_eq!(risk_trades, 0);
+        assert_eq!(risk_pnl, SignedLamports::ZERO);
+
+        assert_eq!(
+            store.shadow_rug_loss_count_since(opened_ts - Duration::minutes(1), -0.70)?,
+            0
+        );
+        let (recent_rug_count, total_count, rug_rate) =
+            store.shadow_rug_loss_rate_recent(opened_ts - Duration::minutes(1), 10, -0.70)?;
+        assert_eq!(recent_rug_count, 0);
+        assert_eq!(total_count, 0);
+        assert_eq!(rug_rate, 0.0);
+        Ok(())
+    }
+
+    #[test]
     fn shadow_risk_metrics_ignore_quarantined_legacy_close_context_after_market_close() -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -2464,8 +2520,8 @@ mod tests {
     }
 
     #[test]
-    fn latest_active_buy_order_prefers_buy_side_active_statuses_and_respects_exclusion()
-    -> Result<()> {
+    fn latest_active_buy_order_prefers_buy_side_active_statuses_and_respects_exclusion(
+    ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("latest-active-buy-order.db");
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
@@ -2710,8 +2766,8 @@ mod tests {
     }
 
     #[test]
-    fn apply_execution_fill_to_positions_exact_preserves_and_drops_qty_sidecars_conservatively()
-    -> Result<()> {
+    fn apply_execution_fill_to_positions_exact_preserves_and_drops_qty_sidecars_conservatively(
+    ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("execution-exact-qty-sidecars.db");
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
@@ -3722,8 +3778,8 @@ mod tests {
     }
 
     #[test]
-    fn mark_order_reconcile_pending_rejects_downgrade_from_confirmed_reconcile_pending()
-    -> Result<()> {
+    fn mark_order_reconcile_pending_rejects_downgrade_from_confirmed_reconcile_pending(
+    ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
             .path()
@@ -4113,11 +4169,9 @@ mod tests {
         let error = store
             .mark_order_simulated("ord-sim-regress-1", "ok", Some("late simulation"))
             .expect_err("submitted order must not regress to execution_simulated");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected status=execution_submitted")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_submitted"));
         let order = store
             .execution_order_by_client_order_id("cb_sim_regress_a1")?
             .context("expected order row after rejected regression")?;
@@ -4197,11 +4251,9 @@ mod tests {
                 None,
             )
             .expect_err("confirmed order must not regress to execution_submitted");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected status=execution_confirmed")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_confirmed"));
         let order = store
             .execution_order_by_client_order_id("cb_submit_regress_a1")?
             .context("expected order row after rejected regression")?;
@@ -4415,11 +4467,9 @@ mod tests {
                 Some("should not overwrite confirmed"),
             )
             .expect_err("confirmed order must not regress to execution_failed");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected status=execution_confirmed")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected status=execution_confirmed"));
         let order = store
             .execution_order_by_client_order_id("cb_failed_regress_a1")?
             .context("expected order row after rejected failed regression")?;

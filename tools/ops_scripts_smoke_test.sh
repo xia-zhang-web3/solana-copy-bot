@@ -1400,6 +1400,7 @@ run_ops_scripts_for_db() {
   assert_field_equals "$snapshot_output" "open_market_notional_sol" "0.25"
   assert_field_equals "$snapshot_output" "open_quarantined_legacy_lots" "0"
   assert_field_equals "$snapshot_output" "open_quarantined_legacy_notional_sol" "0.0"
+  assert_field_equals "$snapshot_output" "shadow_stale_close_recovery_zero_price_enabled" "false"
   assert_contains "$snapshot_output" "ingestion_lag_ms_p95: 1700"
   assert_contains "$snapshot_output" "parse_rejected_total: 5"
   assert_contains "$snapshot_output" "parse_rejected_by_reason: {\"missing_signer\": 3, \"other\": 2}"
@@ -1614,6 +1615,7 @@ run_runtime_snapshot_no_ingestion_case() {
   assert_field_equals "$snapshot_output" "open_risk_notional_sol" "0.25"
   assert_field_equals "$snapshot_output" "open_market_lots" "1"
   assert_field_equals "$snapshot_output" "open_quarantined_legacy_lots" "0"
+  assert_field_equals "$snapshot_output" "shadow_stale_close_recovery_zero_price_enabled" "false"
   echo "[ok] runtime snapshot no-ingestion branch"
 }
 

@@ -164,6 +164,7 @@ daily_loss_limit_pct = 1.0
 max_drawdown_pct = 5.0
 max_hold_hours = 6
 shadow_stale_close_terminal_zero_price_hours = 12
+shadow_stale_close_recovery_zero_price_enabled = false
 max_copy_delay_sec = 4
 shadow_killswitch_enabled = true
 shadow_soft_exposure_cap_sol = 10.0

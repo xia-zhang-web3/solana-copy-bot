@@ -1,9 +1,9 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use copybot_config::ExecutionConfig;
 use copybot_config::{
-    RiskConfig, ShadowConfig, load_from_env_or_default, normalize_ingestion_source,
+    load_from_env_or_default, normalize_ingestion_source, RiskConfig, ShadowConfig,
 };
 #[cfg(test)]
 use copybot_core_types::{SwapEvent, TokenQuantity};
@@ -12,8 +12,8 @@ use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
 use copybot_storage::{
-    DiscoveryAggregateWriteConfig, Lamports, SignedLamports, SqliteStore,
-    sqlite_contention_snapshot,
+    sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, Lamports, SignedLamports,
+    SqliteStore,
 };
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
@@ -629,6 +629,20 @@ fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
         return Err(anyhow!(
             "risk.shadow_stale_close_terminal_zero_price_hours ({}) requires risk.max_hold_hours >= 1",
             config.shadow_stale_close_terminal_zero_price_hours
+        ));
+    }
+    if config.max_hold_hours == 0 && config.shadow_stale_close_recovery_zero_price_enabled {
+        return Err(anyhow!(
+            "risk.shadow_stale_close_recovery_zero_price_enabled=true requires risk.max_hold_hours >= 1"
+        ));
+    }
+    if config.shadow_stale_close_recovery_zero_price_enabled
+        && config.shadow_stale_close_terminal_zero_price_hours <= config.max_hold_hours
+    {
+        return Err(anyhow!(
+            "risk.shadow_stale_close_recovery_zero_price_enabled=true requires risk.shadow_stale_close_terminal_zero_price_hours ({}) > risk.max_hold_hours ({})",
+            config.shadow_stale_close_terminal_zero_price_hours,
+            config.max_hold_hours
         ));
     }
     if config.shadow_stale_close_terminal_zero_price_hours > 0 {
@@ -1907,6 +1921,8 @@ async fn run_app_loop(
     let stale_lot_max_hold_hours = risk_config.max_hold_hours;
     let stale_lot_terminal_zero_price_hours =
         risk_config.shadow_stale_close_terminal_zero_price_hours;
+    let stale_lot_recovery_zero_price_enabled =
+        risk_config.shadow_stale_close_recovery_zero_price_enabled;
     let mut shadow_risk_guard = ShadowRiskGuard::new(risk_config);
     shadow_risk_guard.restore_pause_from_store(&store, Utc::now());
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -2506,19 +2522,23 @@ async fn run_app_loop(
                     &mut open_shadow_lots,
                     stale_lot_max_hold_hours,
                     stale_lot_terminal_zero_price_hours,
+                    stale_lot_recovery_zero_price_enabled,
                     cleanup_now,
                 ) {
                     Ok(stats)
                         if stats.closed_priced > 0
+                            || stats.recovery_zero_closed > 0
                             || stats.terminal_zero_closed > 0
                             || stats.skipped_unpriced > 0 =>
                     {
                         info!(
                             closed_priced = stats.closed_priced,
+                            recovery_zero_closed = stats.recovery_zero_closed,
                             terminal_zero_closed = stats.terminal_zero_closed,
                             skipped_unpriced = stats.skipped_unpriced,
                             max_hold_hours = stale_lot_max_hold_hours,
                             terminal_zero_price_hours = stale_lot_terminal_zero_price_hours,
+                            recovery_zero_price_enabled = stale_lot_recovery_zero_price_enabled,
                             "stale lot cleanup tick"
                         );
                     }
@@ -3165,8 +3185,8 @@ mod app_tests {
     }
 
     #[test]
-    fn validate_execution_runtime_contract_rejects_duplicate_submit_route_order_after_normalization()
-     {
+    fn validate_execution_runtime_contract_rejects_duplicate_submit_route_order_after_normalization(
+    ) {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
         execution.submit_allowed_routes = vec!["paper".to_string()];
@@ -3185,8 +3205,8 @@ mod app_tests {
     }
 
     #[test]
-    fn validate_execution_runtime_contract_rejects_duplicate_route_policy_map_keys_after_normalization()
-     {
+    fn validate_execution_runtime_contract_rejects_duplicate_route_policy_map_keys_after_normalization(
+    ) {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
         execution.submit_allowed_routes = vec!["paper".to_string()];
@@ -3458,8 +3478,8 @@ mod app_tests {
     }
 
     #[test]
-    fn validate_execution_runtime_contract_rejects_fallback_adapter_endpoint_with_secret_bearing_url_forms()
-     {
+    fn validate_execution_runtime_contract_rejects_fallback_adapter_endpoint_with_secret_bearing_url_forms(
+    ) {
         let mut execution = ExecutionConfig::default();
         execution.enabled = true;
         execution.mode = "adapter_submit_confirm".to_string();
@@ -4170,7 +4190,7 @@ mod app_tests {
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, now)?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, now)?;
 
         assert_eq!(stats.closed_priced, 1);
         assert_eq!(stats.terminal_zero_closed, 0);
@@ -4214,7 +4234,7 @@ mod app_tests {
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, now)?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, now)?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.terminal_zero_closed, 0);
@@ -4237,8 +4257,61 @@ mod app_tests {
     }
 
     #[test]
-    fn stale_lot_cleanup_terminal_closes_and_records_risk_events_when_reliable_price_missing_after_terminal_threshold()
-    -> Result<()> {
+    fn stale_lot_cleanup_recovery_zero_price_closes_unpriced_lot_only_when_enabled() -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-recovery-unpriced")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let opened_ts = now - chrono::Duration::hours(10);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample-recovery".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+            exact_amounts: None,
+        })?;
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, now)?;
+
+        assert_eq!(stats.closed_priced, 0);
+        assert_eq!(stats.recovery_zero_closed, 1);
+        assert_eq!(stats.terminal_zero_closed, 0);
+        assert_eq!(stats.skipped_unpriced, 0);
+        assert!(!store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(!open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_price_unavailable")?,
+            1
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_recovery_zero_price")?,
+            1
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_terminal_zero_price")?,
+            0
+        );
+        let signal_id = format!("stale-close-{}-{}", lot_id, now.timestamp_millis());
+        assert_eq!(
+            store.shadow_closed_trade_close_context(&signal_id)?,
+            Some(copybot_storage::SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE.to_string())
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_lot_cleanup_terminal_closes_and_records_risk_events_when_reliable_price_missing_after_terminal_threshold(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-terminal-unpriced")?;
         let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
             .expect("timestamp")
@@ -4260,7 +4333,7 @@ mod app_tests {
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, now)?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, now)?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.terminal_zero_closed, 1);
@@ -4280,6 +4353,54 @@ mod app_tests {
         assert!(
             pnl < 0.0,
             "terminal zero-price stale close must realize a loss"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_lot_cleanup_recovery_zero_price_does_not_override_terminal_close_after_threshold(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-recovery-terminal-boundary")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let opened_ts = now - chrono::Duration::hours(14);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample-recovery-terminal".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+            exact_amounts: None,
+        })?;
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, now)?;
+
+        assert_eq!(stats.closed_priced, 0);
+        assert_eq!(stats.recovery_zero_closed, 0);
+        assert_eq!(stats.terminal_zero_closed, 1);
+        assert_eq!(stats.skipped_unpriced, 0);
+        let signal_id = format!("stale-close-{}-{}", lot_id, now.timestamp_millis());
+        assert_eq!(
+            store.shadow_closed_trade_close_context(&signal_id)?,
+            Some(copybot_storage::SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE.to_string())
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_recovery_zero_price")?,
+            0
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_terminal_zero_price")?,
+            1
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -4316,7 +4437,7 @@ mod app_tests {
         )?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, now)?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, now)?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.terminal_zero_closed, 1);
@@ -4361,7 +4482,7 @@ mod app_tests {
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, now)?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, now)?;
         assert_eq!(stats.terminal_zero_closed, 1);
 
         let (all_trades, all_pnl) =
@@ -4394,6 +4515,60 @@ mod app_tests {
     }
 
     #[test]
+    fn risk_guard_ignores_recovery_zero_price_stale_close_losses_for_hard_stop() -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-recovery-risk-ignore")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let opened_ts = now - chrono::Duration::hours(10);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample-recovery-risk-ignore".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+            exact_amounts: None,
+        })?;
+        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, now)?;
+        assert_eq!(stats.recovery_zero_closed, 1);
+
+        let (all_trades, all_pnl) =
+            store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
+        assert_eq!(all_trades, 1);
+        assert!(all_pnl < 0.0);
+
+        let (risk_trades, risk_pnl) =
+            store.shadow_risk_realized_pnl_lamports_since(now - chrono::Duration::days(1))?;
+        assert_eq!(risk_trades, 0);
+        assert_eq!(risk_pnl, SignedLamports::ZERO);
+
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_24h_stop_sol = -0.5;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        match guard.can_open_buy(&store, now + chrono::Duration::seconds(1), true) {
+            BuyRiskDecision::Allow => {}
+            other => {
+                panic!("recovery zero-price stale close should not trip hard stop, got {other:?}")
+            }
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn validate_execution_risk_contract_rejects_invalid_stale_close_terminal_zero_price_hours() {
         let mut risk = RiskConfig::default();
         risk.max_hold_hours = 6;
@@ -4401,6 +4576,41 @@ mod app_tests {
 
         let error = validate_execution_risk_contract(&risk)
             .expect_err("expected stale close terminal zero threshold validation to fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("risk.shadow_stale_close_terminal_zero_price_hours"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_execution_risk_contract_rejects_stale_close_recovery_without_max_hold_hours() {
+        let mut risk = RiskConfig::default();
+        risk.max_hold_hours = 0;
+        risk.shadow_stale_close_recovery_zero_price_enabled = true;
+
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("expected stale close recovery validation to fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("risk.shadow_stale_close_recovery_zero_price_enabled"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_execution_risk_contract_rejects_stale_close_recovery_without_dead_zone() {
+        let mut risk = RiskConfig::default();
+        risk.max_hold_hours = 6;
+        risk.shadow_stale_close_terminal_zero_price_hours = 0;
+        risk.shadow_stale_close_recovery_zero_price_enabled = true;
+
+        let error = validate_execution_risk_contract(&risk)
+            .expect_err("expected stale close recovery dead-zone validation to fail");
 
         assert!(
             error
@@ -4554,8 +4764,8 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_soft_exposure_pause_does_not_rearm_or_extend_while_still_above_resume_threshold()
-    -> Result<()> {
+    fn risk_guard_soft_exposure_pause_does_not_rearm_or_extend_while_still_above_resume_threshold(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("soft-pause-no-rearm")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_soft_exposure_cap_sol = 0.5;
@@ -4620,8 +4830,8 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_soft_exposure_pause_requires_recovery_below_resume_threshold_to_clear()
-    -> Result<()> {
+    fn risk_guard_soft_exposure_pause_requires_recovery_below_resume_threshold_to_clear(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("soft-pause-hysteresis")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_soft_exposure_cap_sol = 0.5;
@@ -4678,8 +4888,8 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_restores_active_soft_exposure_pause_after_restart_without_event_spam()
-    -> Result<()> {
+    fn risk_guard_restores_active_soft_exposure_pause_after_restart_without_event_spam(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("soft-pause-restore-active")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_soft_exposure_cap_sol = 0.5;
@@ -4723,8 +4933,8 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_restore_preserves_older_soft_exposure_pause_when_newer_timed_pause_was_cleared()
-    -> Result<()> {
+    fn risk_guard_restore_preserves_older_soft_exposure_pause_when_newer_timed_pause_was_cleared(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("soft-pause-restore-overlap")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_soft_exposure_cap_sol = 0.5;
@@ -4800,8 +5010,8 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_restores_soft_exposure_pause_after_until_expiry_when_exposure_stays_in_hysteresis_band()
-    -> Result<()> {
+    fn risk_guard_restores_soft_exposure_pause_after_until_expiry_when_exposure_stays_in_hysteresis_band(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("soft-pause-restore-expired-until")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_soft_exposure_cap_sol = 0.5;
@@ -4853,8 +5063,8 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_restore_preserves_soft_exposure_pause_buried_under_many_newer_timed_pause_rows()
-    -> Result<()> {
+    fn risk_guard_restore_preserves_soft_exposure_pause_buried_under_many_newer_timed_pause_rows(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("soft-pause-restore-many-newer-rows")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_soft_exposure_cap_sol = 0.5;
@@ -5294,30 +5504,24 @@ mod app_tests {
 
         let mut shadow_scheduler = ShadowScheduler::new();
 
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(
-                    SHADOW_PENDING_TASK_CAPACITY,
-                    make_task("A1", "wallet-a", "token-x"),
-                )
-                .is_ok()
-        );
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(
-                    SHADOW_PENDING_TASK_CAPACITY,
-                    make_task("A2", "wallet-a", "token-x"),
-                )
-                .is_ok()
-        );
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(
-                    SHADOW_PENDING_TASK_CAPACITY,
-                    make_task("B1", "wallet-b", "token-y"),
-                )
-                .is_ok()
-        );
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(
+                SHADOW_PENDING_TASK_CAPACITY,
+                make_task("A1", "wallet-a", "token-x"),
+            )
+            .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(
+                SHADOW_PENDING_TASK_CAPACITY,
+                make_task("A2", "wallet-a", "token-x"),
+            )
+            .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(
+                SHADOW_PENDING_TASK_CAPACITY,
+                make_task("B1", "wallet-b", "token-y"),
+            )
+            .is_ok());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 3);
 
         let first = shadow_scheduler
@@ -5367,21 +5571,15 @@ mod app_tests {
         let mut shadow_scheduler = ShadowScheduler::new();
         let cap = 2usize;
 
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(cap, make_task("A1", "wallet-a", "token-x"),)
-                .is_ok()
-        );
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(cap, make_task("A2", "wallet-a", "token-x"),)
-                .is_ok()
-        );
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(cap, make_task("B1", "wallet-b", "token-y"),)
-                .is_err()
-        );
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_task("A1", "wallet-a", "token-x"),)
+            .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_task("A2", "wallet-a", "token-x"),)
+            .is_ok());
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_task("B1", "wallet-b", "token-y"),)
+            .is_err());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, cap);
     }
 
@@ -5437,11 +5635,9 @@ mod app_tests {
         let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
         let cap = 1usize;
 
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"),)
-                .is_ok()
-        );
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"),)
+            .is_ok());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 1);
 
         let overflow_buy = shadow_scheduler
@@ -5557,11 +5753,9 @@ mod app_tests {
         let cap = 1usize;
         let now = Utc::now();
 
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"))
-                .is_ok()
-        );
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(cap, make_buy_task("B0", "wallet-buy", "token-buy"))
+            .is_ok());
         assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
 
         let held_sell = make_sell_task("S1", "wallet-sell", "token-sell");
@@ -5627,16 +5821,14 @@ mod app_tests {
         let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
         let now = Utc::now();
 
-        assert!(
-            shadow_scheduler
-                .hold_sell_for_causality(
-                    2,
-                    make_sell_task("S1", "wallet-sell", "token-sell"),
-                    100,
-                    now
-                )
-                .is_ok()
-        );
+        assert!(shadow_scheduler
+            .hold_sell_for_causality(
+                2,
+                make_sell_task("S1", "wallet-sell", "token-sell"),
+                100,
+                now
+            )
+            .is_ok());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
         assert_eq!(shadow_scheduler.held_shadow_sell_count(), 1);
         assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
@@ -5710,23 +5902,19 @@ mod app_tests {
         let mut shadow_scheduler = ShadowScheduler::new();
         let now = Utc::now();
 
-        assert!(
-            shadow_scheduler
-                .hold_sell_for_causality(
-                    1,
-                    make_sell_task("S1", "wallet-sell", "token-sell"),
-                    100,
-                    now
-                )
-                .is_ok()
-        );
+        assert!(shadow_scheduler
+            .hold_sell_for_causality(
+                1,
+                make_sell_task("S1", "wallet-sell", "token-sell"),
+                100,
+                now
+            )
+            .is_ok());
         assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
 
-        assert!(
-            shadow_scheduler
-                .enqueue_shadow_task(1, make_buy_task("B1", "wallet-buy", "token-buy"))
-                .is_err()
-        );
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(1, make_buy_task("B1", "wallet-buy", "token-buy"))
+            .is_err());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
         assert_eq!(shadow_scheduler.held_shadow_sell_count(), 1);
         assert_eq!(shadow_scheduler.buffered_shadow_task_count(), 1);
@@ -5937,11 +6125,9 @@ FOO=bar
 SOLANA_COPY_BOT_INGESTION_SOURCE=
 this-is-not-a-valid-line
 "#;
-        assert!(
-            parse_ingestion_source_override(content)
-                .expect("invalid lines without source value should be ignored")
-                .is_none()
-        );
+        assert!(parse_ingestion_source_override(content)
+            .expect("invalid lines without source value should be ignored")
+            .is_none());
     }
 
     #[test]
