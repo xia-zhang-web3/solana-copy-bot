@@ -22,10 +22,10 @@ CREATE TABLE shadow_lots (
   opened_ts TEXT NOT NULL
 );
 
-INSERT INTO shadow_lots(wallet_id, token, risk_context, qty, cost_sol, opened_ts) VALUES
-  ('wallet-a', 'token-old', 'market', 10.0, 0.20, '2026-03-01T10:00:00Z'),
-  ('wallet-a', 'token-fresh', 'market', 10.0, 0.30, '2100-01-01T10:00:00Z'),
-  ('wallet-b', 'token-old', 'quarantined_legacy', 10.0, 0.40, '2026-03-01T10:00:00Z');
+INSERT INTO shadow_lots(wallet_id, token, risk_context, qty, cost_sol, cost_lamports, opened_ts) VALUES
+  ('wallet-a', 'token-old', 'market', 10.0, 0.20, 250000000, '2026-03-01T10:00:00Z'),
+  ('wallet-a', 'token-fresh', 'market', 10.0, 0.30, NULL, '2100-01-01T10:00:00Z'),
+  ('wallet-b', 'token-old', 'quarantined_legacy', 10.0, 0.40, 400000000, '2026-03-01T10:00:00Z');
 SQL
 
 dry_run_output="$(
@@ -33,7 +33,7 @@ dry_run_output="$(
 )"
 [[ "$dry_run_output" == *"mode: dry_run"* ]]
 [[ "$dry_run_output" == *"matched_lots: 1"* ]]
-[[ "$dry_run_output" == *"matched_accounting_notional_sol: 0.2"* ]]
+[[ "$dry_run_output" == *"matched_accounting_notional_sol: 0.25"* ]]
 [[ "$dry_run_output" == *"updated_lots: 0"* ]]
 
 apply_output="$(

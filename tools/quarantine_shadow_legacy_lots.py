@@ -71,11 +71,19 @@ def main() -> int:
             raise SystemExit(
                 "shadow_lots.risk_context is missing; apply migration 0038_shadow_lot_risk_context.sql first"
             )
+        notional_sol_expr = "cost_sol"
+        if "cost_lamports" in columns:
+            notional_sol_expr = (
+                "CASE "
+                "WHEN cost_lamports IS NOT NULL THEN CAST(cost_lamports AS REAL) / 1000000000.0 "
+                "ELSE cost_sol "
+                "END"
+            )
         where_sql, params = build_where(args, cutoff_ts)
         summary_sql = f"""
             SELECT
               COUNT(*) AS matched_lots,
-              COALESCE(SUM(cost_sol), 0.0) AS matched_accounting_notional_sol,
+              COALESCE(SUM({notional_sol_expr}), 0.0) AS matched_accounting_notional_sol,
               COUNT(DISTINCT wallet_id) AS matched_wallets,
               COUNT(DISTINCT token) AS matched_tokens
             FROM shadow_lots

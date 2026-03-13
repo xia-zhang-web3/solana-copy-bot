@@ -115,6 +115,11 @@ if shadow_lot_column_exists risk_context; then
   SHADOW_LOT_RISK_CONTEXT_EXPR="COALESCE(risk_context, 'market')"
 fi
 
+SHADOW_LOT_NOTIONAL_SOL_EXPR="cost_sol"
+if shadow_lot_column_exists cost_lamports; then
+  SHADOW_LOT_NOTIONAL_SOL_EXPR="CASE WHEN cost_lamports IS NOT NULL THEN CAST(cost_lamports AS REAL) / 1000000000.0 ELSE cost_sol END"
+fi
+
 SHADOW_LOT_OPEN_FILTER_EXPR="1"
 if shadow_lot_column_exists qty; then
   SHADOW_LOT_OPEN_FILTER_EXPR="qty > 0.000000000001"
@@ -194,8 +199,8 @@ fi
 open_row="$(sql_row "
 SELECT
   COUNT(*) AS open_lots,
-  COALESCE(SUM(cost_sol), 0.0) AS open_accounting_notional_sol,
-  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'market' THEN cost_sol ELSE 0.0 END), 0.0) AS open_risk_notional_sol,
+  COALESCE(SUM(${SHADOW_LOT_NOTIONAL_SOL_EXPR}), 0.0) AS open_accounting_notional_sol,
+  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'market' THEN ${SHADOW_LOT_NOTIONAL_SOL_EXPR} ELSE 0.0 END), 0.0) AS open_risk_notional_sol,
   COUNT(DISTINCT wallet_id) AS open_wallets,
   COUNT(DISTINCT token) AS open_tokens
 FROM shadow_lots
@@ -206,9 +211,9 @@ IFS='|' read -r OPEN_LOTS OPEN_ACCOUNTING_NOTIONAL_SOL OPEN_RISK_NOTIONAL_SOL OP
 risk_context_breakdown_row="$(sql_row "
 SELECT
   COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'market' THEN 1 ELSE 0 END), 0) AS market_lots,
-  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'market' THEN cost_sol ELSE 0.0 END), 0.0) AS market_notional_sol,
+  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'market' THEN ${SHADOW_LOT_NOTIONAL_SOL_EXPR} ELSE 0.0 END), 0.0) AS market_notional_sol,
   COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'quarantined_legacy' THEN 1 ELSE 0 END), 0) AS quarantined_legacy_lots,
-  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'quarantined_legacy' THEN cost_sol ELSE 0.0 END), 0.0) AS quarantined_legacy_notional_sol
+  COALESCE(SUM(CASE WHEN ${SHADOW_LOT_RISK_CONTEXT_EXPR} = 'quarantined_legacy' THEN ${SHADOW_LOT_NOTIONAL_SOL_EXPR} ELSE 0.0 END), 0.0) AS quarantined_legacy_notional_sol
 FROM shadow_lots
 WHERE ${SHADOW_LOT_OPEN_FILTER_EXPR};
 ")"
@@ -247,7 +252,7 @@ IFS='|' read -r SIGNALS_TOTAL SIGNALS_BUY SIGNALS_SELL <<< "$signal_window_row"
 opened_window_row="$(sql_row "
 SELECT
   COUNT(*) AS opened_lots_window,
-  COALESCE(SUM(cost_sol), 0.0) AS opened_notional_window
+  COALESCE(SUM(${SHADOW_LOT_NOTIONAL_SOL_EXPR}), 0.0) AS opened_notional_window
 FROM shadow_lots
 WHERE datetime(opened_ts) >= datetime('now', '-${WINDOW_HOURS} hours');
 ")"
@@ -266,7 +271,7 @@ if [[ "${MAX_HOLD_HOURS:-0}" =~ ^[0-9]+$ ]] && (( MAX_HOLD_HOURS > 0 )); then
   stale_row="$(sql_row "
   SELECT
     COUNT(*) AS stale_lots,
-    COALESCE(SUM(cost_sol), 0.0) AS stale_notional_sol
+    COALESCE(SUM(${SHADOW_LOT_NOTIONAL_SOL_EXPR}), 0.0) AS stale_notional_sol
   FROM shadow_lots
   WHERE datetime(opened_ts) <= datetime('now', '-${MAX_HOLD_HOURS} hours');
   ")"

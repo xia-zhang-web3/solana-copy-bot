@@ -957,6 +957,11 @@ create_modern_db() {
   local db_path="$1"
   init_common_tables "$db_path"
   sqlite3 "$db_path" <<'SQL'
+ALTER TABLE shadow_lots ADD COLUMN cost_lamports INTEGER;
+UPDATE shadow_lots
+SET cost_sol = 0.24,
+    cost_lamports = 250000000;
+
 CREATE TABLE orders (
   order_id TEXT PRIMARY KEY,
   route TEXT,
@@ -1086,6 +1091,7 @@ UPDATE shadow_lots
 SET accounting_bucket = 'exact_post_cutover',
     qty_raw = '250000000',
     qty_decimals = 9,
+    cost_sol = 0.24,
     cost_lamports = 250000000;
 
 UPDATE shadow_closed_trades
