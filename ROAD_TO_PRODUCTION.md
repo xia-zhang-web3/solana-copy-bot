@@ -3087,10 +3087,11 @@ Ordered coder follow-up queue:
    14. `DONE 2026-03-14` discovery runtime-cursor restore/read now fails closed on fatal SQLite I/O while busy/locked cursor-load failures still fall back to the existing window-start bootstrap path,
    15. `DONE 2026-03-14` discovery warm-load of the recent observed-swaps slice now fails closed on fatal SQLite I/O while busy/locked read failures still keep the warn-only warm-load fallback,
    16. `DONE 2026-03-14` direct `main.rs` risk-event writes now fail closed on fatal SQLite I/O for operator emergency-stop activation / clear and shadow-queue backpressure events, while busy/locked risk-event writes stay warn-only and `ShadowRiskGuard` risk-event paths remain a separate follow-up,
-   17. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes:
+   17. `DONE 2026-03-14` startup durable pause restore now fails closed on fatal SQLite I/O while busy/locked pause-restore reads remain warn-only and the existing soft/timed/cleared overlap restore semantics stay covered,
+   18. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes / startup durable pause restore:
       1. verify other non-startup write paths have the right fatal vs retryable semantics,
       2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
-   18. not closed by either `e24eca2` or `8caa9b7`.
+   19. not closed by either `e24eca2` or `8caa9b7`.
 6. `P2` only after instrumentation decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,

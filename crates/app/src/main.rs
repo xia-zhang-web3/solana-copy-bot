@@ -430,6 +430,10 @@ fn risk_event_write_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn shadow_risk_pause_restore_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn persist_runtime_risk_event_or_warn(
     store: &SqliteStore,
     event_type: &str,
@@ -1208,9 +1212,9 @@ impl ShadowRiskGuard {
         }
     }
 
-    fn restore_pause_from_store(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+    fn restore_pause_from_store(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
         if !self.config.shadow_killswitch_enabled {
-            return;
+            return Ok(());
         }
         let restore_result = (|| -> Result<Vec<(String, DateTime<Utc>, String)>> {
             let pause_events = store.list_risk_events_by_type_desc("shadow_risk_pause")?;
@@ -1318,9 +1322,15 @@ impl ShadowRiskGuard {
                 }
             }
             Err(error) => {
+                if shadow_risk_pause_restore_error_requires_restart(&error) {
+                    return Err(error).context(
+                        "failed to restore shadow risk timed pause with fatal sqlite I/O",
+                    );
+                }
                 warn!(error = %error, "failed to restore shadow risk timed pause");
             }
         }
+        Ok(())
     }
 
     fn shadow_soft_exposure_cap_lamports(&self) -> Result<Lamports> {
@@ -2261,7 +2271,7 @@ async fn run_app_loop(
         risk_config.shadow_stale_close_recovery_zero_price_enabled;
     let mut shadow_risk_guard =
         ShadowRiskGuard::new_with_ingestion_source(risk_config, ingestion_source);
-    shadow_risk_guard.restore_pause_from_store(&store, Utc::now());
+    shadow_risk_guard.restore_pause_from_store(&store, Utc::now())?;
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -5765,7 +5775,7 @@ mod app_tests {
 
         let restore_at = now + chrono::Duration::seconds(30);
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
-        restarted_guard.restore_pause_from_store(&store, restore_at);
+        restarted_guard.restore_pause_from_store(&store, restore_at)?;
 
         match restarted_guard.can_open_buy(&store, restore_at, true) {
             BuyRiskDecision::Blocked {
@@ -5838,7 +5848,7 @@ mod app_tests {
 
         let restore_at = now + chrono::Duration::seconds(45);
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
-        restarted_guard.restore_pause_from_store(&store, restore_at);
+        restarted_guard.restore_pause_from_store(&store, restore_at)?;
 
         assert!(
             restarted_guard.soft_exposure_pause_latched,
@@ -5891,7 +5901,7 @@ mod app_tests {
 
         let restore_at = now + chrono::Duration::minutes(2);
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
-        restarted_guard.restore_pause_from_store(&store, restore_at);
+        restarted_guard.restore_pause_from_store(&store, restore_at)?;
 
         assert!(
             restarted_guard.soft_exposure_pause_latched,
@@ -5959,7 +5969,7 @@ mod app_tests {
 
         let restore_at = now + chrono::Duration::seconds(30);
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
-        restarted_guard.restore_pause_from_store(&store, restore_at);
+        restarted_guard.restore_pause_from_store(&store, restore_at)?;
 
         assert!(
             restarted_guard.soft_exposure_pause_latched,
@@ -5995,7 +6005,7 @@ mod app_tests {
 
         let restore_at = now + chrono::Duration::seconds(30);
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
-        restarted_guard.restore_pause_from_store(&store, restore_at);
+        restarted_guard.restore_pause_from_store(&store, restore_at)?;
 
         match restarted_guard.can_open_buy(&store, restore_at, true) {
             BuyRiskDecision::Blocked {
@@ -6039,7 +6049,7 @@ mod app_tests {
         original_guard.clear_pause(&store, now + chrono::Duration::seconds(10));
 
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
-        restarted_guard.restore_pause_from_store(&store, now + chrono::Duration::seconds(20));
+        restarted_guard.restore_pause_from_store(&store, now + chrono::Duration::seconds(20))?;
 
         match restarted_guard.can_open_buy(&store, now + chrono::Duration::seconds(20), true) {
             BuyRiskDecision::Allow => {}
@@ -7150,6 +7160,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn risk_event_write_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!risk_event_write_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn shadow_risk_pause_restore_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed to list pause events: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(shadow_risk_pause_restore_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn shadow_risk_pause_restore_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!shadow_risk_pause_restore_error_requires_restart(&error));
     }
 
     #[test]
