@@ -410,6 +410,10 @@ fn history_retention_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn observed_swap_retention_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -2562,6 +2566,11 @@ async fn run_app_loop(
                 match observed_swap_retention_join {
                     Some(Ok(Ok(()))) => {}
                     Some(Ok(Err(error))) => {
+                        if observed_swap_retention_error_requires_restart(&error) {
+                            return Err(error).context(
+                                "observed swap retention maintenance failed with fatal sqlite I/O",
+                            );
+                        }
                         warn!(error = %error, "observed swap retention maintenance failed");
                     }
                     Some(Err(error)) => {
@@ -6950,6 +6959,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn history_retention_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is busy");
         assert!(!history_retention_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn observed_swap_retention_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed to delete observed swap retention slice: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(observed_swap_retention_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn observed_swap_retention_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!observed_swap_retention_error_requires_restart(&error));
     }
 
     #[test]

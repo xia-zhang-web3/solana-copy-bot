@@ -1,7 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
-use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
+use copybot_storage::{
+    is_fatal_sqlite_anyhow_error, DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor,
+    SqliteStore,
+};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -391,64 +394,81 @@ pub(crate) fn run_observed_swap_retention_maintenance_once(
     let store = SqliteStore::open(Path::new(sqlite_path)).with_context(|| {
         format!("failed to open sqlite db for observed swap retention maintenance: {sqlite_path}")
     })?;
-    run_observed_swap_retention_maintenance(&store, config);
-    Ok(())
+    run_observed_swap_retention_maintenance(&store, config)
 }
 
 fn run_observed_swap_retention_maintenance(
     store: &SqliteStore,
     config: ObservedSwapRetentionConfig,
-) {
+) -> Result<()> {
     let now = Utc::now();
-    let nominal_cutoff = now - ChronoDuration::days(config.retention_days.max(1) as i64);
-    let effective_cutoff = match store.load_discovery_scoring_backfill_protected_since(now) {
-        Ok(Some(protected_since)) => nominal_cutoff.min(protected_since),
-        Ok(None) => nominal_cutoff,
+    let nominal_cutoff = observed_swap_retention_nominal_cutoff(now, config);
+    let effective_cutoff = resolve_observed_swap_retention_effective_cutoff(
+        config,
+        now,
+        |now| store.load_discovery_scoring_backfill_protected_since(now),
+    )?;
+    let deleted_raw = store.delete_observed_swaps_before(effective_cutoff).with_context(|| {
+        format!(
+            "observed swap retention sweep failed retention_days={} nominal_cutoff={} effective_cutoff={}",
+            config.retention_days, nominal_cutoff, effective_cutoff
+        )
+    })?;
+    let deleted_scoring = if config.aggregate_writes_enabled {
+        let aggregate_cutoff =
+            now - ChronoDuration::days(config.aggregate_retention_days.max(1) as i64);
+        store
+            .prune_discovery_scoring_before(aggregate_cutoff)
+            .with_context(|| {
+                format!(
+                    "discovery scoring retention sweep failed aggregate_retention_days={} aggregate_cutoff={}",
+                    config.aggregate_retention_days, aggregate_cutoff
+                )
+            })?
+    } else {
+        0
+    };
+    run_retention_wal_checkpoint(
+        store,
+        config,
+        nominal_cutoff,
+        effective_cutoff,
+        deleted_raw,
+        deleted_scoring,
+    )
+}
+
+fn observed_swap_retention_nominal_cutoff(
+    now: chrono::DateTime<Utc>,
+    config: ObservedSwapRetentionConfig,
+) -> chrono::DateTime<Utc> {
+    now - ChronoDuration::days(config.retention_days.max(1) as i64)
+}
+
+fn resolve_observed_swap_retention_effective_cutoff<F>(
+    config: ObservedSwapRetentionConfig,
+    now: chrono::DateTime<Utc>,
+    load_protected_since: F,
+) -> Result<chrono::DateTime<Utc>>
+where
+    F: FnOnce(chrono::DateTime<Utc>) -> Result<Option<chrono::DateTime<Utc>>>,
+{
+    let nominal_cutoff = observed_swap_retention_nominal_cutoff(now, config);
+    match load_protected_since(now) {
+        Ok(Some(protected_since)) => Ok(nominal_cutoff.min(protected_since)),
+        Ok(None) => Ok(nominal_cutoff),
         Err(error) => {
+            if observed_swap_retention_protection_load_error_requires_abort(&error) {
+                return Err(error).context(
+                    "observed swap retention source protection lookup failed with fatal sqlite I/O",
+                );
+            }
             warn!(
                 error = %error,
                 retention_days = config.retention_days,
                 "failed loading discovery scoring backfill source protection; using nominal observed swap retention cutoff"
             );
-            nominal_cutoff
-        }
-    };
-    match store.delete_observed_swaps_before(effective_cutoff) {
-        Ok(deleted_raw) => {
-            let deleted_scoring = if config.aggregate_writes_enabled {
-                let aggregate_cutoff =
-                    now - ChronoDuration::days(config.aggregate_retention_days.max(1) as i64);
-                match store.prune_discovery_scoring_before(aggregate_cutoff) {
-                    Ok(deleted_scoring) => deleted_scoring,
-                    Err(error) => {
-                        warn!(
-                            error = %error,
-                            aggregate_retention_days = config.aggregate_retention_days,
-                            "discovery scoring retention sweep failed"
-                        );
-                        0
-                    }
-                }
-            } else {
-                0
-            };
-            run_retention_wal_checkpoint(
-                store,
-                config,
-                nominal_cutoff,
-                effective_cutoff,
-                deleted_raw,
-                deleted_scoring,
-            );
-        }
-        Err(error) => {
-            warn!(
-                error = %error,
-                retention_days = config.retention_days,
-                nominal_observed_swap_cutoff = %nominal_cutoff,
-                effective_observed_swap_cutoff = %effective_cutoff,
-                "observed swap retention sweep failed"
-            );
+            Ok(nominal_cutoff)
         }
     }
 }
@@ -470,7 +490,7 @@ fn run_retention_wal_checkpoint(
     effective_cutoff: chrono::DateTime<Utc>,
     deleted_raw: usize,
     deleted_scoring: usize,
-) {
+) -> Result<()> {
     if deleted_raw > 0 || deleted_scoring > 0 {
         match store.checkpoint_wal_truncate() {
             Ok((busy, log_frames, checkpointed_frames)) if busy == 0 => {
@@ -487,7 +507,7 @@ fn run_retention_wal_checkpoint(
                     wal_checkpointed_frames = checkpointed_frames,
                     "observed swap retention sweep reclaimed sqlite wal"
                 );
-                return;
+                return Ok(());
             }
             Ok((busy, log_frames, checkpointed_frames)) => match store.checkpoint_wal_passive() {
                 Ok((passive_busy, passive_log_frames, passive_checkpointed_frames)) => {
@@ -507,9 +527,14 @@ fn run_retention_wal_checkpoint(
                         wal_passive_checkpointed_frames = passive_checkpointed_frames,
                         "observed swap retention sweep truncate checkpoint was blocked by readers; passive checkpoint attempted"
                     );
-                    return;
+                    return Ok(());
                 }
                 Err(passive_error) => {
+                    if observed_swap_retention_checkpoint_error_requires_abort(None, Some(&passive_error)) {
+                        return Err(passive_error).context(
+                            "observed swap retention wal checkpoint failed with fatal sqlite I/O",
+                        );
+                    }
                     warn!(
                         error = %passive_error,
                         retention_days = config.retention_days,
@@ -524,7 +549,7 @@ fn run_retention_wal_checkpoint(
                         wal_checkpointed_frames = checkpointed_frames,
                         "observed swap retention sweep truncate checkpoint was blocked by readers and passive checkpoint failed"
                     );
-                    return;
+                    return Ok(());
                 }
             },
             Err(error) => match store.checkpoint_wal_passive() {
@@ -543,9 +568,22 @@ fn run_retention_wal_checkpoint(
                         wal_passive_checkpointed_frames = passive_checkpointed_frames,
                         "observed swap retention sweep truncate checkpoint failed; passive checkpoint attempted"
                     );
-                    return;
+                    return Ok(());
                 }
                 Err(passive_error) => {
+                    if observed_swap_retention_checkpoint_error_requires_abort(
+                        Some(&error),
+                        Some(&passive_error),
+                    ) {
+                        let fatal_error = if is_fatal_sqlite_anyhow_error(&error) {
+                            error
+                        } else {
+                            passive_error
+                        };
+                        return Err(fatal_error).context(
+                            "observed swap retention wal checkpoints failed with fatal sqlite I/O",
+                        );
+                    }
                     warn!(
                         error = %error,
                         fallback_error = %passive_error,
@@ -557,7 +595,7 @@ fn run_retention_wal_checkpoint(
                         deleted_scoring_rows = deleted_scoring,
                         "observed swap retention sweep deleted rows but wal checkpoints failed"
                     );
-                    return;
+                    return Ok(());
                 }
             },
         }
@@ -578,8 +616,14 @@ fn run_retention_wal_checkpoint(
                 wal_passive_checkpointed_frames = passive_checkpointed_frames,
                 "observed swap retention sweep attempted periodic passive wal checkpoint"
             );
+            Ok(())
         }
         Err(error) => {
+            if observed_swap_retention_checkpoint_error_requires_abort(None, Some(&error)) {
+                return Err(error).context(
+                    "observed swap retention periodic wal checkpoint failed with fatal sqlite I/O",
+                );
+            }
             warn!(
                 error = %error,
                 retention_days = config.retention_days,
@@ -591,8 +635,21 @@ fn run_retention_wal_checkpoint(
                 wal_checkpoint_mode = "passive_periodic",
                 "observed swap retention sweep periodic passive wal checkpoint failed"
             );
+            Ok(())
         }
     }
+}
+
+fn observed_swap_retention_checkpoint_error_requires_abort(
+    primary_error: Option<&anyhow::Error>,
+    fallback_error: Option<&anyhow::Error>,
+) -> bool {
+    primary_error.is_some_and(is_fatal_sqlite_anyhow_error)
+        || fallback_error.is_some_and(is_fatal_sqlite_anyhow_error)
+}
+
+fn observed_swap_retention_protection_load_error_requires_abort(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
 }
 
 fn run_aggregate_startup_replay(
@@ -702,7 +759,7 @@ fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
 #[cfg(test)]
 mod tests {
     use super::{ObservedSwapWriter, ObservedSwapWriterConfig};
-    use anyhow::{Context, Result};
+    use anyhow::{anyhow, Context, Result};
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use copybot_core_types::SwapEvent;
     use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
@@ -1370,6 +1427,115 @@ mod tests {
         );
         let _ = std::fs::remove_file(db_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_retention_checkpoint_error_requires_abort_on_xshmmap_io_failure() {
+        let primary = anyhow!("database is locked");
+        let fallback =
+            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        assert!(!super::observed_swap_retention_checkpoint_error_requires_abort(
+            Some(&primary),
+            None
+        ));
+        assert!(super::observed_swap_retention_checkpoint_error_requires_abort(
+            Some(&primary),
+            Some(&fallback)
+        ));
+    }
+
+    #[test]
+    fn observed_swap_retention_effective_cutoff_requires_abort_on_fatal_protection_load_failure() {
+        let now = Utc::now();
+        let config = super::ObservedSwapRetentionConfig::production(1, 7, false);
+        let error = super::resolve_observed_swap_retention_effective_cutoff(config, now, |_| {
+            Err(anyhow!(
+                "failed querying discovery_scoring_state.backfill_protect_since_ts: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+            ))
+        })
+        .expect_err("fatal protection load failure must not fall back to nominal cutoff");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("source protection lookup failed with fatal sqlite I/O"),
+            "expected fatal protection lookup context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite I/O marker to survive error chain, got: {error_text}"
+        );
+    }
+
+    #[test]
+    fn observed_swap_retention_effective_cutoff_falls_back_on_busy_protection_load_failure() {
+        let now = Utc::now();
+        let config = super::ObservedSwapRetentionConfig::production(1, 7, false);
+        let effective_cutoff =
+            super::resolve_observed_swap_retention_effective_cutoff(config, now, |_| {
+                Err(anyhow!("database is locked"))
+            })
+            .expect("busy protection load failure should keep nominal fallback behavior");
+        assert_eq!(
+            effective_cutoff,
+            super::observed_swap_retention_nominal_cutoff(now, config)
+        );
+    }
+
+    #[test]
+    fn observed_swap_retention_maintenance_returns_error_on_fatal_raw_delete_failure() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-retention-fatal-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let stale_swap = SwapEvent {
+            wallet: "wallet-fatal-delete".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-fatal-delete".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-fatal-delete".to_string(),
+            slot: 100,
+            ts_utc: Utc::now() - ChronoDuration::days(3),
+            exact_amounts: None,
+        };
+        seed_store.insert_observed_swaps_batch(&[stale_swap])?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_observed_swap_retention_delete
+             BEFORE DELETE ON observed_swaps
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = super::run_observed_swap_retention_maintenance_once(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            super::ObservedSwapRetentionConfig::production(1, 7, false),
+        )
+        .expect_err("fatal raw delete failure must propagate out of retention maintenance");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("failed to delete observed swap retention slice"),
+            "expected retention delete failure context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite I/O marker to survive error chain, got: {error_text}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 
