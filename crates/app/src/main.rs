@@ -422,6 +422,10 @@ fn alert_delivery_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn discovery_task_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -2362,6 +2366,10 @@ async fn run_app_loop(
                         }
                     }
                     Ok(Err(error)) => {
+                        if discovery_task_error_requires_restart(&error) {
+                            return Err(error)
+                                .context("discovery cycle failed with fatal sqlite I/O");
+                        }
                         warn!(error = %error, "discovery cycle failed");
                     }
                     Err(error) => {
@@ -7071,6 +7079,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn alert_delivery_error_does_not_require_restart_on_webhook_failure() {
         let error = anyhow!("alert webhook request failed");
         assert!(!alert_delivery_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn discovery_task_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed persisting discovery runtime cursor with fatal sqlite I/O: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(discovery_task_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn discovery_task_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("failed persisting discovery runtime cursor: database is locked");
+        assert!(!discovery_task_error_requires_restart(&error));
     }
 
     #[test]

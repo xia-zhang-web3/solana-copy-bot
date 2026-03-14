@@ -1,10 +1,11 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
-    DiscoveryRuntimeCursor, PersistedWalletMetricSnapshotRow, SqliteStore, WalletMetricRow,
-    WalletScoringBuyFactRow, WalletScoringQualitySource, WalletUpsertRow,
+    is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor, PersistedWalletMetricSnapshotRow,
+    SqliteStore, WalletMetricRow, WalletScoringBuyFactRow, WalletScoringQualitySource,
+    WalletUpsertRow,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,6 +29,10 @@ const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES: u32 = 3;
+
+fn discovery_runtime_cursor_error_requires_abort(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
@@ -380,6 +385,11 @@ impl DiscoveryService {
                     signature: cursor.signature,
                 };
                 if let Err(error) = store.upsert_discovery_runtime_cursor(&persisted) {
+                    if discovery_runtime_cursor_error_requires_abort(&error) {
+                        return Err(error).context(
+                            "failed persisting discovery runtime cursor with fatal sqlite I/O",
+                        );
+                    }
                     warn!(
                         error = %error,
                         "failed persisting discovery runtime cursor"
@@ -1741,11 +1751,12 @@ fn is_sol_sell(swap: &SwapEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context;
+    use anyhow::{anyhow, Context};
     use copybot_config::ShadowConfig;
     use copybot_storage::{
         DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore, WalletActivityDayRow,
     };
+    use rusqlite::Connection;
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -3742,6 +3753,82 @@ mod tests {
                 .iter()
                 .any(|label| label.starts_with("wallet_aggregate_live:")),
             "aggregate scoring should produce the profitable wallet even with an empty raw window"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_runtime_cursor_error_requires_abort_on_xshmmap_io_failure() {
+        let error = anyhow!(
+            "disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(discovery_runtime_cursor_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn discovery_runtime_cursor_error_does_not_require_abort_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!discovery_runtime_cursor_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn run_cycle_returns_error_on_fatal_runtime_cursor_write_failure() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-discovery-runtime-cursor-fatal.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+        assert_eq!(store.load_discovery_runtime_cursor()?, None);
+
+        let now = DateTime::parse_from_rfc3339("2026-03-14T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        store.insert_observed_swap(&swap(
+            "wallet_cursor_fatal",
+            "cursor-fatal-sig-001",
+            now - Duration::minutes(5),
+            SOL_MINT,
+            "TokenCursorFatal111111111111111111111111",
+            1.0,
+            100.0,
+        ))?;
+
+        let conn = Connection::open(Path::new(&db_path))?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_discovery_runtime_cursor_insert
+             BEFORE INSERT ON discovery_runtime_state
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.max_window_swaps_in_memory = 100;
+        config.max_fetch_swaps_per_cycle = 10;
+        config.max_fetch_pages_per_cycle = 1;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+
+        let error = discovery
+            .run_cycle(&store, now)
+            .expect_err("fatal discovery cursor persist must propagate");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("failed persisting discovery runtime cursor with fatal sqlite I/O"),
+            "expected fatal discovery cursor context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed updating discovery runtime cursor"),
+            "expected sqlite cursor upsert context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert_eq!(
+            store.load_discovery_runtime_cursor()?,
+            None,
+            "fatal cursor persist failure must leave runtime cursor unset"
         );
         Ok(())
     }

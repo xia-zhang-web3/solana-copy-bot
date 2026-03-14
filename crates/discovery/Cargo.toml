@@ -12,4 +12,5 @@ copybot-storage = { path = "../storage" }
 tracing.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile = "3"

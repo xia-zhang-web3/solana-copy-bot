@@ -3080,10 +3080,11 @@ Ordered coder follow-up queue:
    7. `DONE 2026-03-14` observed-swap retention maintenance now fails closed on fatal SQLite I/O across protection-state lookup, raw retention delete, and fatal WAL checkpoint paths, while busy/locked maintenance failures stay warn-only,
    8. `DONE 2026-03-14` stale-lot cleanup now fails closed on fatal SQLite I/O, including fatal stale-close risk-event writes inside the unpriced branches, while busy/locked cleanup failures stay warn-only,
    9. `DONE 2026-03-14` alert-delivery poll now fails closed on fatal SQLite I/O during cursor load/read/advance paths, while webhook/network failures remain non-fatal and busy/locked SQLite stays warn-only,
-   10. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery:
+   10. `DONE 2026-03-14` discovery runtime-cursor persistence now fails closed on fatal SQLite I/O while busy/locked cursor-persist failures stay warn-only and app discovery-task joins only restart on the fatal SQLite subset,
+   11. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence:
       1. verify other non-startup write paths have the right fatal vs retryable semantics,
       2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
-   11. not closed by either `e24eca2` or `8caa9b7`.
+   12. not closed by either `e24eca2` or `8caa9b7`.
 6. `P2` only after instrumentation decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,
