@@ -330,12 +330,24 @@ fn observed_swap_writer_loop(
                                         },
                                     )
                                 {
+                                    if observed_swap_writer_discovery_scoring_error_requires_abort(
+                                        &gap_error,
+                                    ) {
+                                        return Err(gap_error).context(
+                                            "observed swap writer stopping after fatal discovery scoring gap cursor failure",
+                                        );
+                                    }
                                     warn!(
                                         error = %gap_error,
                                         gap_since = %first_gap_swap.ts_utc,
                                         "failed to latch discovery scoring materialization gap after aggregate batch failure"
                                     );
                                 }
+                            }
+                            if observed_swap_writer_discovery_scoring_error_requires_abort(&error) {
+                                return Err(error).context(
+                                    "observed swap writer stopping after fatal discovery scoring materialization failure",
+                                );
                             }
                             warn!(
                                 error = %error,
@@ -355,6 +367,13 @@ fn observed_swap_writer_loop(
                                     signature: max_swap.signature.clone(),
                                 },
                             ) {
+                                if observed_swap_writer_discovery_scoring_error_requires_abort(
+                                    &error,
+                                ) {
+                                    return Err(error).context(
+                                        "observed swap writer stopping after fatal discovery scoring coverage watermark failure",
+                                    );
+                                }
                                 warn!(
                                     error = %error,
                                     covered_through = %max_swap.ts_utc,
@@ -646,6 +665,10 @@ fn observed_swap_retention_checkpoint_error_requires_abort(
 ) -> bool {
     primary_error.is_some_and(is_fatal_sqlite_anyhow_error)
         || fallback_error.is_some_and(is_fatal_sqlite_anyhow_error)
+}
+
+fn observed_swap_writer_discovery_scoring_error_requires_abort(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
 }
 
 fn observed_swap_retention_protection_load_error_requires_abort(error: &anyhow::Error) -> bool {
@@ -1286,6 +1309,304 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_writer_reports_terminal_failure_after_fatal_discovery_scoring_materialization_failure(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-aggregate-fatal-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for aggregate fatal trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_wallet_scoring_days_insert
+             BEFORE INSERT ON wallet_scoring_days
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = runtime.block_on(async {
+            ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    aggregate_writes_enabled: true,
+                    aggregate_write_config: aggregate_write_config(),
+                },
+            )
+        })?;
+
+        let failing_swap = SwapEvent {
+            wallet: "wallet-aggregate-fatal".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-aggregate-fatal".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-aggregate-fatal".to_string(),
+            slot: 220,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T13:20:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+
+        runtime.block_on(async { writer.enqueue(&failing_swap).await })?;
+        std::thread::sleep(StdDuration::from_millis(50));
+
+        let error = writer
+            .ensure_running()
+            .expect_err("fatal discovery scoring materialization failure must latch");
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains(super::OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT),
+            "unexpected terminal aggregate failure error: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("fatal discovery scoring materialization failure"),
+            "missing aggregate fatal context: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("xShmMap"),
+            "missing fatal sqlite marker: {error_chain}"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface fatal aggregate materialization failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain.contains("fatal discovery scoring materialization failure"),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store
+                .load_discovery_scoring_materialization_gap_cursor()?
+                .expect("fatal aggregate failure should still latch materialization gap"),
+            DiscoveryRuntimeCursor {
+                ts_utc: failing_swap.ts_utc,
+                slot: failing_swap.slot,
+                signature: failing_swap.signature.clone(),
+            }
+        );
+        drop(trigger_conn);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_reports_terminal_failure_after_fatal_discovery_scoring_gap_cursor_failure(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-gap-fatal-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for gap fatal trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_wallet_scoring_days_insert
+             BEFORE INSERT ON wallet_scoring_days
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced discovery scoring failure');
+             END;
+             CREATE TRIGGER fail_discovery_scoring_state_insert
+             BEFORE INSERT ON discovery_scoring_state
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = runtime.block_on(async {
+            ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    aggregate_writes_enabled: true,
+                    aggregate_write_config: aggregate_write_config(),
+                },
+            )
+        })?;
+
+        let failing_swap = SwapEvent {
+            wallet: "wallet-gap-fatal".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-gap-fatal".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-gap-fatal".to_string(),
+            slot: 221,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T13:21:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+
+        runtime.block_on(async { writer.enqueue(&failing_swap).await })?;
+        std::thread::sleep(StdDuration::from_millis(50));
+
+        let error = writer
+            .ensure_running()
+            .expect_err("fatal discovery scoring gap cursor failure must latch");
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains(super::OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT),
+            "unexpected terminal gap-cursor failure error: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("fatal discovery scoring gap cursor failure"),
+            "missing gap-cursor fatal context: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("xShmMap"),
+            "missing fatal sqlite marker: {error_chain}"
+        );
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_materialization_gap_cursor()?,
+            None,
+            "fatal gap cursor failure must leave the materialization gap cursor unset"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface fatal gap cursor failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain.contains("fatal discovery scoring gap cursor failure"),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+        drop(trigger_conn);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_reports_terminal_failure_after_fatal_discovery_scoring_coverage_watermark_failure(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-covered-through-fatal-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for covered-through fatal trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_discovery_scoring_state_insert
+             BEFORE INSERT ON discovery_scoring_state
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = runtime.block_on(async {
+            ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    aggregate_writes_enabled: true,
+                    aggregate_write_config: aggregate_write_config(),
+                },
+            )
+        })?;
+
+        let failing_swap = SwapEvent {
+            wallet: "wallet-covered-through-fatal".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-covered-through-fatal".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-covered-through-fatal".to_string(),
+            slot: 222,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T13:22:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+
+        runtime.block_on(async { writer.enqueue(&failing_swap).await })?;
+        std::thread::sleep(StdDuration::from_millis(50));
+
+        let error = writer
+            .ensure_running()
+            .expect_err("fatal coverage watermark failure must latch");
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains(super::OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT),
+            "unexpected terminal coverage watermark failure error: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("fatal discovery scoring coverage watermark failure"),
+            "missing coverage watermark fatal context: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("xShmMap"),
+            "missing fatal sqlite marker: {error_chain}"
+        );
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_covered_through_cursor()?,
+            None,
+            "fatal coverage watermark failure must leave covered-through cursor unset"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface fatal coverage watermark failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain.contains("fatal discovery scoring coverage watermark failure"),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+        drop(trigger_conn);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_writer_keeps_retention_out_of_inline_batch_path() -> Result<()> {
         let unique = format!(
             "copybot-app-observed-swap-retention-{}-{}",
@@ -1443,6 +1764,19 @@ mod tests {
             Some(&primary),
             Some(&fallback)
         ));
+    }
+
+    #[test]
+    fn observed_swap_writer_discovery_scoring_error_requires_abort_on_xshmmap_io_failure() {
+        let error =
+            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        assert!(super::observed_swap_writer_discovery_scoring_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn observed_swap_writer_discovery_scoring_error_does_not_require_abort_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!super::observed_swap_writer_discovery_scoring_error_requires_abort(&error));
     }
 
     #[test]
