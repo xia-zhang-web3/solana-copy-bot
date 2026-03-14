@@ -76,6 +76,7 @@ const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
 const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
 const RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES: u64 = 5;
 const RISK_INFRA_CLEAR_HEALTHY_SAMPLES: u64 = 5;
+const RECENT_SWAP_SIGNATURE_DEDUPE_CAPACITY: usize = 32_768;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
 const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
@@ -391,6 +392,23 @@ fn ingestion_error_backoff_ms(consecutive_errors: u32) -> u64 {
     let index =
         (consecutive_errors.saturating_sub(1) as usize).min(INGESTION_ERROR_BACKOFF_MS.len() - 1);
     INGESTION_ERROR_BACKOFF_MS[index]
+}
+
+fn note_recent_swap_signature(
+    recent_signatures: &mut HashSet<String>,
+    recent_signature_order: &mut VecDeque<String>,
+    signature: &str,
+) -> bool {
+    if !recent_signatures.insert(signature.to_string()) {
+        return false;
+    }
+    recent_signature_order.push_back(signature.to_string());
+    while recent_signature_order.len() > RECENT_SWAP_SIGNATURE_DEDUPE_CAPACITY {
+        if let Some(evicted) = recent_signature_order.pop_front() {
+            recent_signatures.remove(&evicted);
+        }
+    }
+    true
 }
 
 fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
@@ -2026,6 +2044,8 @@ async fn run_app_loop(
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut recent_swap_signatures: HashSet<String> = HashSet::new();
+    let mut recent_swap_signature_order: VecDeque<String> = VecDeque::new();
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
@@ -2401,32 +2421,107 @@ async fn run_app_loop(
                     }
                 };
 
-                match observed_swap_writer.write(&swap).await {
-                    Ok(true) => {
-                        debug!(
-                            signature = %swap.signature,
-                            wallet = %swap.wallet,
-                            dex = %swap.dex,
-                            token_in = %swap.token_in,
-                            token_out = %swap.token_out,
-                            amount_in = swap.amount_in,
-                            amount_out = swap.amount_out,
-                            ingestion_lag_ms = (Utc::now() - swap.ts_utc).num_milliseconds().max(0),
-                            "observed swap stored"
+                if let Err(error) = observed_swap_writer.enqueue(&swap).await {
+                    let error_chain = format_error_chain(&error);
+                    if observed_swap_writer_error_requires_restart(&error) {
+                        return Err(error).context(
+                            "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
                         );
+                    }
+                    warn!(
+                        error = %error,
+                        error_chain = %error_chain,
+                        signature = %swap.signature,
+                        "failed enqueueing observed swap"
+                    );
+                    continue;
+                }
 
-                        let Some(side) = classify_swap_side(&swap) else {
-                            continue;
-                        };
-                        if matches!(side, ShadowSwapSide::Buy)
-                            && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
-                        {
-                            let reason = "not_followed";
-                            *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
-                            *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
+                if !note_recent_swap_signature(
+                    &mut recent_swap_signatures,
+                    &mut recent_swap_signature_order,
+                    &swap.signature,
+                ) {
+                    debug!(signature = %swap.signature, "duplicate swap ignored by recent signature dedupe");
+                    continue;
+                }
+
+                let Some(side) = classify_swap_side(&swap) else {
+                    continue;
+                };
+                if matches!(side, ShadowSwapSide::Buy)
+                    && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
+                {
+                    let reason = "not_followed";
+                    *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+                    *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
+                    debug!(
+                        stage = "follow",
+                        reason,
+                        side = "buy",
+                        wallet = %swap.wallet,
+                        signature = %swap.signature,
+                        "shadow gate dropped"
+                    );
+                    continue;
+                }
+
+                if matches!(side, ShadowSwapSide::Sell)
+                    && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
+                {
+                    let wallet_has_recent_follow_history = follow_snapshot.is_active(&swap.wallet)
+                        || follow_snapshot.promoted_at.contains_key(&swap.wallet)
+                        || follow_snapshot.demoted_at.contains_key(&swap.wallet);
+                    let sell_key = shadow_task_key_for_swap(&swap, side);
+                    let key_tuple = (sell_key.wallet.clone(), sell_key.token.clone());
+                    let has_pending_or_inflight =
+                        shadow_scheduler.key_has_pending_or_inflight(&sell_key);
+                    if !wallet_has_recent_follow_history
+                        && !has_pending_or_inflight
+                        && !open_shadow_lots.contains(&key_tuple)
+                    {
+                        let reason = "not_followed";
+                        *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+                        *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
+                        debug!(
+                            stage = "follow",
+                            reason,
+                            side = "sell",
+                            wallet = %swap.wallet,
+                            signature = %swap.signature,
+                            "shadow gate dropped"
+                        );
+                        continue;
+                    }
+                }
+
+                if matches!(side, ShadowSwapSide::Buy) {
+                    if operator_emergency_stop.is_active() {
+                        let reason_key = BuyRiskBlockReason::OperatorEmergencyStop.as_str();
+                        *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
+                        *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
+                        debug!(
+                            stage = "risk",
+                            reason = reason_key,
+                            detail = %operator_emergency_stop.detail(),
+                            side = "buy",
+                            wallet = %swap.wallet,
+                            signature = %swap.signature,
+                            "shadow gate dropped"
+                        );
+                        continue;
+                    }
+
+                    match shadow_risk_guard.can_open_buy(&store, now, pause_new_trades_on_outage) {
+                        BuyRiskDecision::Allow => {}
+                        BuyRiskDecision::Blocked { reason, detail } => {
+                            let reason_key = reason.as_str();
+                            *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
+                            *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
                             debug!(
-                                stage = "follow",
-                                reason,
+                                stage = "risk",
+                                reason = reason_key,
+                                detail = %detail,
                                 side = "buy",
                                 wallet = %swap.wallet,
                                 signature = %swap.signature,
@@ -2434,172 +2529,77 @@ async fn run_app_loop(
                             );
                             continue;
                         }
+                    }
+                }
 
-                        if matches!(side, ShadowSwapSide::Sell)
-                            && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
-                        {
-                            let wallet_has_recent_follow_history = follow_snapshot.is_active(&swap.wallet)
-                                || follow_snapshot.promoted_at.contains_key(&swap.wallet)
-                                || follow_snapshot.demoted_at.contains_key(&swap.wallet);
-                            let sell_key = shadow_task_key_for_swap(&swap, side);
-                            let key_tuple = (sell_key.wallet.clone(), sell_key.token.clone());
-                            let has_pending_or_inflight =
-                                shadow_scheduler.key_has_pending_or_inflight(&sell_key);
-                            if !wallet_has_recent_follow_history
-                                && !has_pending_or_inflight
-                                && !open_shadow_lots.contains(&key_tuple)
-                            {
-                                let reason = "not_followed";
-                                *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
-                                *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
-                                debug!(
-                                    stage = "follow",
-                                    reason,
-                                    side = "sell",
-                                    wallet = %swap.wallet,
-                                    signature = %swap.signature,
-                                    "shadow gate dropped"
-                                );
-                                continue;
-                            }
-                        }
-
-                        if matches!(side, ShadowSwapSide::Buy) {
-                            if operator_emergency_stop.is_active() {
-                                let reason_key = BuyRiskBlockReason::OperatorEmergencyStop.as_str();
-                                *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
-                                *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
-                                debug!(
-                                    stage = "risk",
-                                    reason = reason_key,
-                                    detail = %operator_emergency_stop.detail(),
-                                    side = "buy",
-                                    wallet = %swap.wallet,
-                                    signature = %swap.signature,
-                                    "shadow gate dropped"
-                                );
-                                continue;
-                            }
-
-                            match shadow_risk_guard.can_open_buy(
-                                &store,
-                                now,
-                                pause_new_trades_on_outage,
-                            ) {
-                                BuyRiskDecision::Allow => {}
-                                BuyRiskDecision::Blocked { reason, detail } => {
-                                    let reason_key = reason.as_str();
-                                    *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
-                                    *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
-                                    debug!(
-                                        stage = "risk",
-                                        reason = reason_key,
-                                        detail = %detail,
-                                        side = "buy",
-                                        wallet = %swap.wallet,
-                                        signature = %swap.signature,
-                                        "shadow gate dropped"
-                                    );
-                                    continue;
-                                }
-                            }
-                        }
-
-                        let task_key = shadow_task_key_for_swap(&swap, side);
-                        let task_input = ShadowTaskInput {
-                            swap,
-                            follow_snapshot: Arc::clone(&follow_snapshot),
-                            key: task_key,
-                        };
-                        if shadow_scheduler.should_hold_sell_for_causality(
-                            shadow_causal_holdback_enabled,
+                let task_key = shadow_task_key_for_swap(&swap, side);
+                let task_input = ShadowTaskInput {
+                    swap,
+                    follow_snapshot: Arc::clone(&follow_snapshot),
+                    key: task_key,
+                };
+                if shadow_scheduler.should_hold_sell_for_causality(
+                    shadow_causal_holdback_enabled,
+                    shadow_causal_holdback_ms,
+                    side,
+                    &task_input.key,
+                    &open_shadow_lots,
+                ) {
+                    match shadow_scheduler.hold_sell_for_causality(
+                        SHADOW_PENDING_TASK_CAPACITY,
+                        task_input,
+                        shadow_causal_holdback_ms,
+                        Utc::now(),
+                    ) {
+                        Ok(()) => {}
+                        Err(overflow_task) => shadow_scheduler.handle_held_sell_overflow(
+                            overflow_task,
+                            SHADOW_PENDING_TASK_CAPACITY,
                             shadow_causal_holdback_ms,
+                            Utc::now(),
+                            &mut shadow_drop_reason_counts,
+                            &mut shadow_drop_stage_counts,
+                            &mut shadow_queue_full_outcome_counts,
+                        ),
+                    }
+                    continue;
+                }
+                if shadow_scheduler.should_process_shadow_inline(
+                    shadow_queue_full,
+                    shadow_scheduler.shadow_scheduler_needs_reset,
+                    shadow_scheduler.shadow_workers.len(),
+                    &task_input.key,
+                ) {
+                    if shadow_scheduler.inflight_shadow_keys.insert(task_input.key.clone()) {
+                        spawn_shadow_worker_task(
+                            &mut shadow_scheduler.shadow_workers,
+                            &shadow,
+                            &sqlite_path,
+                            task_input,
+                        );
+                    } else if let Err(dropped_task) = shadow_scheduler
+                        .enqueue_shadow_task(SHADOW_PENDING_TASK_CAPACITY, task_input)
+                    {
+                        shadow_scheduler.handle_shadow_enqueue_overflow(
                             side,
-                            &task_input.key,
-                            &open_shadow_lots,
-                        ) {
-                            match shadow_scheduler.hold_sell_for_causality(
-                                SHADOW_PENDING_TASK_CAPACITY,
-                                task_input,
-                                shadow_causal_holdback_ms,
-                                Utc::now(),
-                            ) {
-                                Ok(()) => {}
-                                Err(overflow_task) => shadow_scheduler.handle_held_sell_overflow(
-                                    overflow_task,
-                                    SHADOW_PENDING_TASK_CAPACITY,
-                                    shadow_causal_holdback_ms,
-                                    Utc::now(),
-                                    &mut shadow_drop_reason_counts,
-                                    &mut shadow_drop_stage_counts,
-                                    &mut shadow_queue_full_outcome_counts,
-                                ),
-                            }
-                            continue;
-                        }
-                        if shadow_scheduler.should_process_shadow_inline(
-                            shadow_queue_full,
-                            shadow_scheduler.shadow_scheduler_needs_reset,
-                            shadow_scheduler.shadow_workers.len(),
-                            &task_input.key,
-                        )
-                        {
-                            if shadow_scheduler.inflight_shadow_keys.insert(task_input.key.clone()) {
-                                spawn_shadow_worker_task(
-                                    &mut shadow_scheduler.shadow_workers,
-                                    &shadow,
-                                    &sqlite_path,
-                                    task_input,
-                                );
-                            } else {
-                                if let Err(dropped_task) = shadow_scheduler.enqueue_shadow_task(
-                                    SHADOW_PENDING_TASK_CAPACITY,
-                                    task_input,
-                                )
-                                {
-                                    shadow_scheduler.handle_shadow_enqueue_overflow(
-                                        side,
-                                        dropped_task,
-                                        SHADOW_PENDING_TASK_CAPACITY,
-                                        &mut shadow_drop_reason_counts,
-                                        &mut shadow_drop_stage_counts,
-                                        &mut shadow_queue_full_outcome_counts,
-                                    );
-                                }
-                            }
-                        } else {
-                            if let Err(dropped_task) = shadow_scheduler.enqueue_shadow_task(
-                                SHADOW_PENDING_TASK_CAPACITY,
-                                task_input,
-                            ) {
-                                shadow_scheduler.handle_shadow_enqueue_overflow(
-                                    side,
-                                    dropped_task,
-                                    SHADOW_PENDING_TASK_CAPACITY,
-                                    &mut shadow_drop_reason_counts,
-                                    &mut shadow_drop_stage_counts,
-                                    &mut shadow_queue_full_outcome_counts,
-                                );
-                            }
-                        }
-                    }
-                    Ok(false) => {
-                        debug!(signature = %swap.signature, "duplicate swap ignored");
-                    }
-                    Err(error) => {
-                        let error_chain = format_error_chain(&error);
-                        if observed_swap_writer_error_requires_restart(&error) {
-                            return Err(error).context(
-                                "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                            );
-                        }
-                        warn!(
-                            error = %error,
-                            error_chain = %error_chain,
-                            signature = %swap.signature,
-                            "failed writing observed swap"
+                            dropped_task,
+                            SHADOW_PENDING_TASK_CAPACITY,
+                            &mut shadow_drop_reason_counts,
+                            &mut shadow_drop_stage_counts,
+                            &mut shadow_queue_full_outcome_counts,
                         );
                     }
+                } else if let Err(dropped_task) =
+                    shadow_scheduler.enqueue_shadow_task(SHADOW_PENDING_TASK_CAPACITY, task_input)
+                {
+                    shadow_scheduler.handle_shadow_enqueue_overflow(
+                        side,
+                        dropped_task,
+                        SHADOW_PENDING_TASK_CAPACITY,
+                        &mut shadow_drop_reason_counts,
+                        &mut shadow_drop_stage_counts,
+                        &mut shadow_queue_full_outcome_counts,
+                    );
                 }
             }
             _ = discovery_interval.tick() => {
@@ -6401,6 +6401,43 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn transient_observed_swap_write_errors_do_not_require_restart() {
         let error = anyhow!("database is locked");
         assert!(!observed_swap_writer_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn recent_swap_signature_dedupe_rejects_duplicate_until_evicted() {
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+
+        assert!(note_recent_swap_signature(
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            "sig-1",
+        ));
+        assert!(
+            !note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                "sig-1",
+            ),
+            "duplicate signature should be rejected while still inside bounded dedupe window"
+        );
+
+        for idx in 0..RECENT_SWAP_SIGNATURE_DEDUPE_CAPACITY {
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &format!("sig-evict-{idx}"),
+            ));
+        }
+
+        assert!(
+            note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                "sig-1",
+            ),
+            "signature should become admissible again once it is evicted from bounded dedupe state"
+        );
     }
 
     #[test]

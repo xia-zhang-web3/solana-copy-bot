@@ -48,7 +48,7 @@ impl ObservedSwapWriterConfig {
 
 struct ObservedSwapWriteRequest {
     swap: SwapEvent,
-    reply_tx: oneshot::Sender<Result<bool>>,
+    reply_tx: Option<oneshot::Sender<Result<bool>>>,
 }
 
 pub(crate) struct ObservedSwapWriter {
@@ -87,12 +87,22 @@ impl ObservedSwapWriter {
         })
     }
 
+    pub(crate) async fn enqueue(&self, swap: &SwapEvent) -> Result<()> {
+        self.sender
+            .send(ObservedSwapWriteRequest {
+                swap: swap.clone(),
+                reply_tx: None,
+            })
+            .await
+            .context(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)
+    }
+
     pub(crate) async fn write(&self, swap: &SwapEvent) -> Result<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(ObservedSwapWriteRequest {
                 swap: swap.clone(),
-                reply_tx,
+                reply_tx: Some(reply_tx),
             })
             .await
             .context(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)?;
@@ -147,7 +157,9 @@ fn observed_swap_writer_loop(
         match store.insert_observed_swaps_batch_with_activity_days(&swaps) {
             Ok(results) => {
                 for (reply_tx, inserted) in replies.into_iter().zip(results.iter().copied()) {
-                    let _ = reply_tx.send(Ok(inserted));
+                    if let Some(reply_tx) = reply_tx {
+                        let _ = reply_tx.send(Ok(inserted));
+                    }
                 }
                 if config.aggregate_writes_enabled {
                     let inserted_swaps: Vec<SwapEvent> = swaps
@@ -213,9 +225,18 @@ fn observed_swap_writer_loop(
             }
             Err(error) => {
                 let message = format!("{error:#}");
+                warn!(
+                    error = %error,
+                    batch_swaps = swaps.len(),
+                    "failed to insert observed swap batch with activity days"
+                );
                 for reply_tx in replies {
-                    let _ = reply_tx.send(Err(anyhow!(message.clone())));
+                    if let Some(reply_tx) = reply_tx {
+                        let _ = reply_tx.send(Err(anyhow!(message.clone())));
+                    }
                 }
+                return Err(anyhow!(message))
+                    .context("observed swap writer stopping after raw batch insert failure");
             }
         }
 
@@ -617,6 +638,187 @@ mod tests {
         )?;
         assert_eq!(swaps.len(), 1);
         assert_eq!(swaps[0].signature, "sig-observed-swap-async");
+        let _ = std::fs::remove_file(db_path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_enqueue_returns_before_locked_batch_commits() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-enqueue-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let blocker_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open blocker sqlite connection")?;
+        blocker_conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let sqlite_path = db_path
+            .to_str()
+            .context("sqlite path must be valid utf-8")?
+            .to_string();
+        let swap = SwapEvent {
+            wallet: "wallet-enqueue".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-enqueue".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-enqueue".to_string(),
+            slot: 124,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T12:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = runtime.block_on(async move {
+            let writer =
+                ObservedSwapWriter::start(sqlite_path, 45, 45, true, aggregate_write_config())?;
+            timeout(Duration::from_millis(50), writer.enqueue(&swap))
+                .await
+                .context("observed swap enqueue should not wait for batch commit")??;
+            Ok::<ObservedSwapWriter, anyhow::Error>(writer)
+        })?;
+
+        let verify_before_commit = SqliteStore::open(Path::new(&db_path))?;
+        let before_swaps = verify_before_commit.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-14T11:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert!(
+            before_swaps.is_empty(),
+            "enqueue should not imply the batch has already committed under sqlite lock"
+        );
+
+        blocker_conn.execute_batch("COMMIT")?;
+        writer.shutdown()?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-14T11:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].signature, "sig-observed-swap-enqueue");
+        let _ = std::fs::remove_file(db_path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_closes_channel_after_async_batch_insert_failure() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-async-fail-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for async failure trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_wallet_activity_days_insert
+             BEFORE INSERT ON wallet_activity_days
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced async observed swap failure');
+             END;",
+        )?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = runtime.block_on(async {
+            ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    retention_days: 45,
+                    aggregate_retention_days: 31,
+                    retention_sweep_interval: StdDuration::from_secs(3600),
+                    aggregate_writes_enabled: true,
+                    aggregate_write_config: aggregate_write_config(),
+                },
+            )
+        })?;
+
+        let failing_swap = SwapEvent {
+            wallet: "wallet-async-fail".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-async-fail".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-async-fail".to_string(),
+            slot: 200,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T13:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        let subsequent_swap = SwapEvent {
+            signature: "sig-observed-swap-after-fail".to_string(),
+            slot: 201,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T13:01:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            ..failing_swap.clone()
+        };
+
+        runtime.block_on(async { writer.enqueue(&failing_swap).await })?;
+        std::thread::sleep(StdDuration::from_millis(50));
+
+        let error = runtime
+            .block_on(async { writer.enqueue(&subsequent_swap).await })
+            .expect_err("writer channel should close after async raw batch insert failure");
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains(super::OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT),
+            "unexpected enqueue-after-failure error: {error_chain}"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface async raw batch insert failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain.contains("forced async observed swap failure"),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+        drop(trigger_conn);
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-14T12:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert!(
+            swaps.is_empty(),
+            "failed async batch insert must not leave partially persisted observed swaps"
+        );
         let _ = std::fs::remove_file(db_path);
 
         Ok(())
