@@ -38,6 +38,10 @@ fn discovery_runtime_cursor_load_error_requires_abort(error: &anyhow::Error) -> 
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn discovery_recent_window_load_error_requires_abort(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn discovery_wallet_activity_day_count_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
@@ -321,6 +325,11 @@ impl DiscoveryService {
                         }
                     }
                     Err(error) => {
+                        if discovery_recent_window_load_error_requires_abort(&error) {
+                            return Err(error).context(
+                                "failed warm-loading discovery window from sqlite recent slice with fatal sqlite I/O",
+                            );
+                        }
                         warn!(
                             error = %error,
                             "failed warm-loading discovery window from sqlite recent slice"
@@ -3877,6 +3886,19 @@ mod tests {
     fn discovery_runtime_cursor_load_error_does_not_require_abort_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!discovery_runtime_cursor_load_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn discovery_recent_window_load_error_requires_abort_on_xshmmap_io_failure() {
+        let error =
+            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        assert!(discovery_recent_window_load_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn discovery_recent_window_load_error_does_not_require_abort_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!discovery_recent_window_load_error_requires_abort(&error));
     }
 
     fn aggregate_write_config(config: &DiscoveryConfig) -> DiscoveryAggregateWriteConfig {
