@@ -74,6 +74,8 @@ const RISK_DB_REFRESH_MIN_SECONDS: i64 = 5;
 const RISK_INFRA_SAMPLE_MIN_SECONDS: i64 = 10;
 const RISK_FAIL_CLOSED_LOG_THROTTLE_SECONDS: i64 = 60;
 const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
+const RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES: u64 = 5;
+const RISK_INFRA_CLEAR_HEALTHY_SAMPLES: u64 = 5;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
 const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
@@ -307,6 +309,7 @@ async fn main() -> Result<()> {
         discovery_scoring_retention_days,
         config.discovery.scoring_aggregates_write_enabled,
         discovery_aggregate_write_config,
+        config.ingestion.source.clone(),
         config.shadow.refresh_seconds,
         config.shadow.max_signal_lag_seconds,
         config.shadow.causal_holdback_enabled,
@@ -909,9 +912,26 @@ enum BuyRiskDecision {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InfraBlockKey {
+    LagP95,
+    NoIngestionProgress,
+    ParserStall,
+    ReplacedRatio,
+    Rpc429,
+    Rpc5xx,
+}
+
+#[derive(Debug, Clone)]
+struct InfraBlockSignal {
+    key: InfraBlockKey,
+    reason: String,
+}
+
 #[derive(Debug, Default)]
 struct ShadowRiskGuard {
     config: RiskConfig,
+    ingestion_source: String,
     hard_stop_reason: Option<String>,
     hard_stop_clear_healthy_streak: u64,
     last_db_refresh_error: Option<String>,
@@ -926,6 +946,10 @@ struct ShadowRiskGuard {
     universe_blocked: bool,
     infra_samples: VecDeque<IngestionRuntimeSnapshot>,
     lag_breach_since: Option<DateTime<Utc>>,
+    infra_block_key: Option<InfraBlockKey>,
+    infra_candidate_key: Option<InfraBlockKey>,
+    infra_candidate_streak: u64,
+    infra_healthy_streak: u64,
     infra_block_reason: Option<String>,
     infra_last_event_at: Option<DateTime<Utc>>,
     last_db_refresh_at: Option<DateTime<Utc>>,
@@ -934,8 +958,13 @@ struct ShadowRiskGuard {
 
 impl ShadowRiskGuard {
     fn new(config: RiskConfig) -> Self {
+        Self::new_with_ingestion_source(config, "mock")
+    }
+
+    fn new_with_ingestion_source(config: RiskConfig, ingestion_source: impl Into<String>) -> Self {
         Self {
             config,
+            ingestion_source: ingestion_source.into(),
             ..Self::default()
         }
     }
@@ -1192,22 +1221,60 @@ impl ShadowRiskGuard {
             self.lag_breach_since = None;
         }
 
-        let new_reason = self.compute_infra_block_reason(sample_ts);
-        if new_reason != self.infra_block_reason {
-            self.infra_block_reason = new_reason.clone();
-            if let Some(reason) = new_reason {
-                warn!(reason = %reason, "shadow risk infra stop activated");
-                let details_json = format!("{{\"reason\":\"{}\"}}", reason);
-                if self.should_emit_infra_event(now) {
-                    self.record_risk_event(
-                        store,
-                        "shadow_risk_infra_stop",
-                        "warn",
-                        now,
-                        &details_json,
-                    );
+        let new_signal = self.compute_infra_block_signal(sample_ts);
+        match new_signal {
+            Some(signal) => {
+                self.infra_healthy_streak = 0;
+                if self.infra_candidate_key == Some(signal.key) {
+                    self.infra_candidate_streak = self.infra_candidate_streak.saturating_add(1);
+                } else {
+                    self.infra_candidate_key = Some(signal.key);
+                    self.infra_candidate_streak = 1;
                 }
-            } else {
+
+                if self.infra_block_key == Some(signal.key) {
+                    self.infra_block_reason = Some(signal.reason);
+                    return;
+                }
+
+                if self.infra_block_key.is_some() {
+                    if self.infra_candidate_streak >= RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+                        self.infra_block_key = Some(signal.key);
+                        self.infra_block_reason = Some(signal.reason);
+                    }
+                    return;
+                }
+
+                if self.infra_candidate_streak >= RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+                    let reason = signal.reason;
+                    self.infra_block_key = Some(signal.key);
+                    self.infra_block_reason = Some(reason.clone());
+                    warn!(reason = %reason, "shadow risk infra stop activated");
+                    let details_json = format!("{{\"reason\":\"{}\"}}", reason);
+                    if self.should_emit_infra_event(now) {
+                        self.record_risk_event(
+                            store,
+                            "shadow_risk_infra_stop",
+                            "warn",
+                            now,
+                            &details_json,
+                        );
+                    }
+                }
+            }
+            None => {
+                self.infra_candidate_key = None;
+                self.infra_candidate_streak = 0;
+                if self.infra_block_key.is_none() {
+                    return;
+                }
+                self.infra_healthy_streak = self.infra_healthy_streak.saturating_add(1);
+                if self.infra_healthy_streak < RISK_INFRA_CLEAR_HEALTHY_SAMPLES {
+                    return;
+                }
+                self.infra_healthy_streak = 0;
+                self.infra_block_key = None;
+                self.infra_block_reason = None;
                 info!("shadow risk infra stop cleared");
                 if self.should_emit_infra_event(now) {
                     self.record_risk_event(
@@ -1545,6 +1612,11 @@ impl ShadowRiskGuard {
     }
 
     fn compute_infra_block_reason(&self, now: DateTime<Utc>) -> Option<String> {
+        self.compute_infra_block_signal(now)
+            .map(|signal| signal.reason)
+    }
+
+    fn compute_infra_block_signal(&self, now: DateTime<Utc>) -> Option<InfraBlockSignal> {
         if self.infra_samples.is_empty() {
             return None;
         }
@@ -1555,11 +1627,14 @@ impl ShadowRiskGuard {
                     self.config.shadow_infra_lag_breach_minutes.max(1) as i64
                 )
             {
-                return Some(format!(
-                    "lag_p95_over_threshold_for={}m threshold_ms={}",
-                    self.config.shadow_infra_lag_breach_minutes,
-                    self.config.shadow_infra_lag_p95_threshold_ms
-                ));
+                return Some(InfraBlockSignal {
+                    key: InfraBlockKey::LagP95,
+                    reason: format!(
+                        "lag_p95_over_threshold_for={}m threshold_ms={}",
+                        self.config.shadow_infra_lag_breach_minutes,
+                        self.config.shadow_infra_lag_p95_threshold_ms
+                    ),
+                });
             }
         }
 
@@ -1606,10 +1681,13 @@ impl ShadowRiskGuard {
             && delta_rpc_429 == 0
             && delta_rpc_5xx == 0
         {
-            return Some(format!(
-                "no_ingestion_progress_for={}m",
-                self.config.shadow_infra_window_minutes.max(1)
-            ));
+            return Some(InfraBlockSignal {
+                key: InfraBlockKey::NoIngestionProgress,
+                reason: format!(
+                    "no_ingestion_progress_for={}m",
+                    self.config.shadow_infra_window_minutes.max(1)
+                ),
+            });
         }
 
         if has_full_window_coverage
@@ -1622,13 +1700,16 @@ impl ShadowRiskGuard {
                 let parser_error_ratio =
                     parser_errors_delta as f64 / delta_grpc_transaction_updates_total as f64;
                 if parser_error_ratio >= INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD {
-                    return Some(format!(
-                        "parser_stall_for={}m tx_updates_delta={} parser_errors_delta={} error_ratio={:.4}",
-                        self.config.shadow_infra_window_minutes.max(1),
-                        delta_grpc_transaction_updates_total,
-                        parser_errors_delta,
-                        parser_error_ratio
-                    ));
+                    return Some(InfraBlockSignal {
+                        key: InfraBlockKey::ParserStall,
+                        reason: format!(
+                            "parser_stall_for={}m tx_updates_delta={} parser_errors_delta={} error_ratio={:.4}",
+                            self.config.shadow_infra_window_minutes.max(1),
+                            delta_grpc_transaction_updates_total,
+                            parser_errors_delta,
+                            parser_error_ratio
+                        ),
+                    });
                 }
             }
         }
@@ -1636,25 +1717,40 @@ impl ShadowRiskGuard {
         if delta_enqueued > 0 {
             let replaced_ratio = delta_replaced as f64 / delta_enqueued as f64;
             if replaced_ratio > self.config.shadow_infra_replaced_ratio_threshold {
-                return Some(format!(
-                    "replaced_ratio={:.4} delta_replaced={} delta_enqueued={}",
-                    replaced_ratio, delta_replaced, delta_enqueued
-                ));
+                if !self.uses_yellowstone_ingestion() {
+                    return Some(InfraBlockSignal {
+                        key: InfraBlockKey::ReplacedRatio,
+                        reason: format!(
+                            "replaced_ratio={:.4} delta_replaced={} delta_enqueued={}",
+                            replaced_ratio, delta_replaced, delta_enqueued
+                        ),
+                    });
+                }
             }
         }
         if delta_rpc_429 >= self.config.shadow_infra_rpc429_delta_threshold {
-            return Some(format!(
-                "rpc_429_delta={} threshold={}",
-                delta_rpc_429, self.config.shadow_infra_rpc429_delta_threshold
-            ));
+            return Some(InfraBlockSignal {
+                key: InfraBlockKey::Rpc429,
+                reason: format!(
+                    "rpc_429_delta={} threshold={}",
+                    delta_rpc_429, self.config.shadow_infra_rpc429_delta_threshold
+                ),
+            });
         }
         if delta_rpc_5xx >= self.config.shadow_infra_rpc5xx_delta_threshold {
-            return Some(format!(
-                "rpc_5xx_delta={} threshold={}",
-                delta_rpc_5xx, self.config.shadow_infra_rpc5xx_delta_threshold
-            ));
+            return Some(InfraBlockSignal {
+                key: InfraBlockKey::Rpc5xx,
+                reason: format!(
+                    "rpc_5xx_delta={} threshold={}",
+                    delta_rpc_5xx, self.config.shadow_infra_rpc5xx_delta_threshold
+                ),
+            });
         }
         None
+    }
+
+    fn uses_yellowstone_ingestion(&self) -> bool {
+        self.ingestion_source == "yellowstone_grpc"
     }
 
     fn activate_hard_stop(
@@ -1886,6 +1982,7 @@ async fn run_app_loop(
     discovery_scoring_retention_days: u32,
     discovery_scoring_writes_enabled: bool,
     discovery_aggregate_write_config: DiscoveryAggregateWriteConfig,
+    ingestion_source: String,
     shadow_refresh_seconds: u64,
     shadow_max_signal_lag_seconds: u64,
     shadow_causal_holdback_enabled: bool,
@@ -1923,7 +2020,8 @@ async fn run_app_loop(
         risk_config.shadow_stale_close_terminal_zero_price_hours;
     let stale_lot_recovery_zero_price_enabled =
         risk_config.shadow_stale_close_recovery_zero_price_enabled;
-    let mut shadow_risk_guard = ShadowRiskGuard::new(risk_config);
+    let mut shadow_risk_guard =
+        ShadowRiskGuard::new_with_ingestion_source(risk_config, ingestion_source);
     shadow_risk_guard.restore_pause_from_store(&store, Utc::now());
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -3618,8 +3716,28 @@ mod app_tests {
         );
     }
 
+    fn infra_snapshot(
+        ts_utc: DateTime<Utc>,
+        ws_notifications_enqueued: u64,
+        ws_notifications_replaced_oldest: u64,
+    ) -> IngestionRuntimeSnapshot {
+        IngestionRuntimeSnapshot {
+            ts_utc,
+            ws_notifications_enqueued,
+            ws_notifications_replaced_oldest,
+            grpc_message_total: 2_400_000 + ws_notifications_enqueued,
+            grpc_transaction_updates_total: 24_000 + ws_notifications_enqueued,
+            parse_rejected_total: 0,
+            grpc_decode_errors: 0,
+            rpc_429: 0,
+            rpc_5xx: 0,
+            ingestion_lag_ms_p95: 2_000,
+        }
+    }
+
     #[test]
-    fn risk_guard_infra_ratio_uses_window_delta_not_cumulative() -> Result<()> {
+    fn risk_guard_infra_ratio_uses_window_delta_not_cumulative_with_consecutive_hysteresis(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("infra-ratio")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_infra_replaced_ratio_threshold = 0.80;
@@ -3627,67 +3745,178 @@ mod app_tests {
         let mut guard = ShadowRiskGuard::new(cfg);
         let now = Utc::now();
         guard.infra_samples = VecDeque::from([
-            IngestionRuntimeSnapshot {
-                ts_utc: now - chrono::Duration::minutes(30),
-                ws_notifications_enqueued: 10_000,
-                ws_notifications_replaced_oldest: 9_000,
-                grpc_message_total: 1_200_000,
-                grpc_transaction_updates_total: 12_000,
-                parse_rejected_total: 0,
-                grpc_decode_errors: 0,
-                rpc_429: 0,
-                rpc_5xx: 0,
-                ingestion_lag_ms_p95: 2_000,
-            },
-            IngestionRuntimeSnapshot {
-                ts_utc: now - chrono::Duration::minutes(10),
-                ws_notifications_enqueued: 16_500_000,
-                ws_notifications_replaced_oldest: 14_400_000,
-                grpc_message_total: 2_400_000,
-                grpc_transaction_updates_total: 24_000,
-                parse_rejected_total: 0,
-                grpc_decode_errors: 0,
-                rpc_429: 0,
-                rpc_5xx: 0,
-                ingestion_lag_ms_p95: 2_000,
-            },
-            IngestionRuntimeSnapshot {
-                ts_utc: now,
-                ws_notifications_enqueued: 16_500_176,
-                ws_notifications_replaced_oldest: 14_400_134,
-                grpc_message_total: 2_400_176,
-                grpc_transaction_updates_total: 24_176,
-                parse_rejected_total: 0,
-                grpc_decode_errors: 0,
-                rpc_429: 0,
-                rpc_5xx: 0,
-                ingestion_lag_ms_p95: 2_000,
-            },
+            infra_snapshot(now - chrono::Duration::minutes(30), 10_000, 9_000),
+            infra_snapshot(now - chrono::Duration::minutes(10), 16_500_000, 14_400_000),
+            infra_snapshot(now, 16_500_176, 14_400_134),
         ]);
         assert!(
             guard.compute_infra_block_reason(now).is_none(),
             "rolling delta ratio (134/176 ~= 0.76) should not trigger threshold 0.80"
         );
 
+        for offset in 1..RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(20 * offset as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(20 * offset as i64),
+                    16_500_300 + (offset as u64 * 40),
+                    14_400_270 + (offset as u64 * 36),
+                )),
+            );
+            assert!(
+                guard.infra_block_reason.is_none(),
+                "infra gate should wait for consecutive breaches before activating"
+            );
+        }
         guard.observe_ingestion_snapshot(
             &store,
-            now,
-            Some(IngestionRuntimeSnapshot {
-                ts_utc: now + chrono::Duration::seconds(20),
-                ws_notifications_enqueued: 16_500_300,
-                ws_notifications_replaced_oldest: 14_400_270,
-                grpc_message_total: 2_400_300,
-                grpc_transaction_updates_total: 24_300,
-                parse_rejected_total: 0,
-                grpc_decode_errors: 0,
-                rpc_429: 0,
-                rpc_5xx: 0,
-                ingestion_lag_ms_p95: 2_000,
-            }),
+            now + chrono::Duration::seconds(20 * RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as i64),
+            Some(infra_snapshot(
+                now + chrono::Duration::seconds(
+                    20 * RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as i64,
+                ),
+                16_500_300 + (RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as u64 * 40),
+                14_400_270 + (RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as u64 * 36),
+            )),
         );
         assert!(
             guard.infra_block_reason.is_some(),
-            "rolling delta ratio should trigger once it exceeds threshold"
+            "rolling delta ratio should activate after consecutive breaches"
+        );
+
+        for offset in 1..RISK_INFRA_CLEAR_HEALTHY_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(400 + 20 * offset as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(400 + 20 * offset as i64),
+                    16_502_000 + (offset as u64 * 200),
+                    14_400_900 + (offset as u64 * 5),
+                )),
+            );
+            assert!(
+                guard.infra_block_reason.is_some(),
+                "infra gate should require consecutive healthy samples before clearing"
+            );
+        }
+        guard.observe_ingestion_snapshot(
+            &store,
+            now + chrono::Duration::seconds(400 + 20 * RISK_INFRA_CLEAR_HEALTHY_SAMPLES as i64),
+            Some(infra_snapshot(
+                now + chrono::Duration::seconds(400 + 20 * RISK_INFRA_CLEAR_HEALTHY_SAMPLES as i64),
+                16_502_000 + (RISK_INFRA_CLEAR_HEALTHY_SAMPLES as u64 * 200),
+                14_400_900 + (RISK_INFRA_CLEAR_HEALTHY_SAMPLES as u64 * 5),
+            )),
+        );
+        assert!(
+            guard.infra_block_reason.is_none(),
+            "infra gate should clear after consecutive healthy samples"
+        );
+
+        let infra_stops = store.list_risk_events_by_type_desc("shadow_risk_infra_stop")?;
+        let infra_clears = store.list_risk_events_by_type_desc("shadow_risk_infra_cleared")?;
+        assert_eq!(
+            infra_stops.len(),
+            1,
+            "expected one infra stop activation event"
+        );
+        assert_eq!(infra_clears.len(), 1, "expected one infra clear event");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_infra_replaced_ratio_does_not_gate_yellowstone_source() -> Result<()> {
+        let (store, db_path) = make_test_store("infra-ratio-yellowstone")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_replaced_ratio_threshold = 0.80;
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new_with_ingestion_source(cfg, "yellowstone_grpc");
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            infra_snapshot(now - chrono::Duration::minutes(30), 10_000, 9_000),
+            infra_snapshot(now - chrono::Duration::minutes(10), 16_500_000, 14_400_000),
+            infra_snapshot(now, 16_500_300, 14_400_270),
+        ]);
+        assert!(
+            guard.compute_infra_block_reason(now).is_none(),
+            "yellowstone replaced_ratio should remain telemetry-only and not gate buys"
+        );
+
+        for offset in 1..=RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(20 * offset as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(20 * offset as i64),
+                    16_500_300 + (offset as u64 * 40),
+                    14_400_270 + (offset as u64 * 36),
+                )),
+            );
+        }
+        assert!(
+            guard.infra_block_reason.is_none(),
+            "yellowstone replaced_ratio should not activate infra gate even after sustained breaches"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_infra_stop_does_not_reemit_when_same_key_detail_changes() -> Result<()> {
+        let (store, db_path) = make_test_store("infra-ratio-reemit")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_replaced_ratio_threshold = 0.80;
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            infra_snapshot(now - chrono::Duration::minutes(30), 10_000, 9_000),
+            infra_snapshot(now - chrono::Duration::minutes(10), 16_500_000, 14_400_000),
+            infra_snapshot(now, 16_500_176, 14_400_134),
+        ]);
+
+        for offset in 1..=RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(20 * offset as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(20 * offset as i64),
+                    16_500_300 + (offset as u64 * 60),
+                    14_400_270 + (offset as u64 * 54),
+                )),
+            );
+        }
+        let first_reason = guard
+            .infra_block_reason
+            .clone()
+            .expect("infra gate should activate after sustained replaced_ratio breaches");
+
+        guard.observe_ingestion_snapshot(
+            &store,
+            now + chrono::Duration::seconds(140),
+            Some(infra_snapshot(
+                now + chrono::Duration::seconds(140),
+                16_501_000,
+                14_400_950,
+            )),
+        );
+        let updated_reason = guard
+            .infra_block_reason
+            .clone()
+            .expect("infra gate should remain active for same-key follow-up breach");
+        assert_ne!(
+            first_reason, updated_reason,
+            "reason detail should still refresh even when gating identity stays stable"
+        );
+        let infra_stops = store.list_risk_events_by_type_desc("shadow_risk_infra_stop")?;
+        assert_eq!(
+            infra_stops.len(),
+            1,
+            "dynamic replaced_ratio details must not create duplicate infra stop events"
         );
 
         let _ = std::fs::remove_file(db_path);
