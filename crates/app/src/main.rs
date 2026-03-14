@@ -414,6 +414,10 @@ fn observed_swap_retention_error_requires_restart(error: &anyhow::Error) -> bool
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn stale_lot_cleanup_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -3050,6 +3054,10 @@ async fn run_app_loop(
                     }
                     Ok(_) => {}
                     Err(error) => {
+                        if stale_lot_cleanup_error_requires_restart(&error) {
+                            return Err(error)
+                                .context("stale lot cleanup failed with fatal sqlite I/O");
+                        }
                         warn!(error = %error, "stale lot cleanup failed");
                     }
                 }
@@ -4984,6 +4992,60 @@ mod app_tests {
         );
         let (trades, _) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
         assert_eq!(trades, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_lot_cleanup_returns_error_on_fatal_price_unavailable_risk_event_write() -> Result<()> {
+        let (store, db_path) = make_test_store("stale-lot-unpriced-risk-event-fatal")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let opened_ts = now - chrono::Duration::hours(10);
+
+        store.insert_observed_swap(&SwapEvent {
+            wallet: "leader-wallet".to_string(),
+            dex: "pumpswap".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            signature: "sig-only-one-sample-risk-event-fatal".to_string(),
+            slot: 1,
+            ts_utc: now - chrono::Duration::minutes(5),
+            exact_amounts: None,
+        })?;
+        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_stale_close_risk_event_insert
+             BEFORE INSERT ON risk_events
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let error = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, now)
+            .expect_err("fatal stale-close risk event write must abort cleanup");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("failed to record stale-close price unavailable risk event with fatal sqlite I/O"),
+            "expected stale-close fatal risk-event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -6973,6 +7035,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn observed_swap_retention_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!observed_swap_retention_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn stale_lot_cleanup_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed stale close for wallet=wallet-a token=token-a lot_id=1: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(stale_lot_cleanup_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn stale_lot_cleanup_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is busy");
+        assert!(!stale_lot_cleanup_error_requires_restart(&error));
     }
 
     #[test]
