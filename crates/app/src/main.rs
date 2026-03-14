@@ -1418,9 +1418,9 @@ impl ShadowRiskGuard {
         now: DateTime<Utc>,
         eligible_wallets: usize,
         active_follow_wallets: usize,
-    ) {
+    ) -> Result<()> {
         if !self.config.shadow_killswitch_enabled {
-            return;
+            return Ok(());
         }
         let breached = (active_follow_wallets as u64)
             < self.config.shadow_universe_min_active_follow_wallets
@@ -1433,7 +1433,6 @@ impl ShadowRiskGuard {
         let should_block =
             self.universe_breach_streak >= self.config.shadow_universe_breach_cycles.max(1);
         if should_block != self.universe_blocked {
-            self.universe_blocked = should_block;
             if should_block {
                 let details_json = format!(
                     "{{\"active_follow_wallets\":{},\"eligible_wallets\":{},\"streak\":{},\"min_active_follow_wallets\":{},\"min_eligible_wallets\":{}}}",
@@ -1452,27 +1451,31 @@ impl ShadowRiskGuard {
                     min_eligible_wallets = self.config.shadow_universe_min_eligible_wallets,
                     "shadow risk universe stop activated"
                 );
-                self.record_risk_event(
+                record_shadow_risk_state_event_or_warn(
                     store,
                     "shadow_risk_universe_stop",
                     "warn",
                     now,
                     &details_json,
-                );
+                    "failed to persist shadow risk universe stop event with fatal sqlite I/O",
+                )?;
             } else {
                 info!(
                     active_follow_wallets,
                     eligible_wallets, "shadow risk universe stop cleared"
                 );
-                self.record_risk_event(
+                record_shadow_risk_state_event_or_warn(
                     store,
                     "shadow_risk_universe_cleared",
                     "info",
                     now,
                     "{\"state\":\"cleared\"}",
-                );
+                    "failed to persist shadow risk universe clear event with fatal sqlite I/O",
+                )?;
             }
+            self.universe_blocked = should_block;
         }
+        Ok(())
     }
 
     fn observe_ingestion_snapshot(
@@ -1651,7 +1654,27 @@ impl ShadowRiskGuard {
                         .unwrap_or_else(|| format!("paused_until={}", until.to_rfc3339())),
                 };
             }
-            self.clear_pause(store, now);
+            if let Err(error) = self.clear_pause(store, now) {
+                let should_log = self.on_risk_refresh_error(now);
+                if should_log {
+                    warn!(error = %error, "shadow risk fail-closed activated during timed pause clear");
+                    let details_json = format!(
+                        "{{\"error\":\"{}\"}}",
+                        sanitize_json_value(&error.to_string())
+                    );
+                    self.record_risk_event(
+                        store,
+                        "shadow_risk_fail_closed",
+                        "error",
+                        now,
+                        &details_json,
+                    );
+                }
+                return BuyRiskDecision::Blocked {
+                    reason: BuyRiskBlockReason::FailClosed,
+                    detail: format!("timed_pause_clear_error: {error}"),
+                };
+            }
         }
 
         if self.soft_exposure_pause_latched {
@@ -2190,38 +2213,42 @@ impl ShadowRiskGuard {
         )
     }
 
-    fn clear_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
-        let Some(previous_until) = self.pause_until.take() else {
+    fn clear_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        let Some(previous_until) = self.pause_until else {
             self.pause_reason = None;
-            return;
+            return Ok(());
         };
         let previous_reason = self
             .pause_reason
-            .take()
+            .clone()
             .unwrap_or_else(|| format!("paused_until={}", previous_until.to_rfc3339()));
         let cleared_pause_type = previous_reason
             .split_once(':')
             .map(|(pause_type, _)| pause_type.trim())
             .filter(|pause_type| !pause_type.is_empty())
             .unwrap_or("timed_pause");
-        info!(
-            previous_reason = %previous_reason,
-            previous_until = %previous_until.to_rfc3339(),
-            "shadow risk timed pause cleared"
-        );
         let details_json = format!(
             "{{\"state\":\"cleared\",\"pause_type\":\"{}\",\"previous_reason\":\"{}\",\"previous_until\":\"{}\"}}",
             sanitize_json_value(cleared_pause_type),
             sanitize_json_value(&previous_reason),
             previous_until.to_rfc3339()
         );
-        self.record_risk_event(
+        record_shadow_risk_state_event_or_warn(
             store,
             "shadow_risk_pause_cleared",
             "info",
             now,
             &details_json,
+            "failed to persist shadow risk timed pause clear event with fatal sqlite I/O",
+        )?;
+        self.pause_until = None;
+        self.pause_reason = None;
+        info!(
+            previous_reason = %previous_reason,
+            previous_until = %previous_until.to_rfc3339(),
+            "shadow risk timed pause cleared"
         );
+        Ok(())
     }
 
     fn clear_soft_exposure_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
@@ -2492,7 +2519,7 @@ async fn run_app_loop(
                                 discovery_output.cycle_ts,
                                 discovery_output.eligible_wallets,
                                 discovery_output.active_follow_wallets,
-                            );
+                            ).context("shadow risk discovery-cycle universe event failed with fatal sqlite I/O")?;
                         }
                     }
                     Ok(Err(error)) => {
@@ -4910,15 +4937,114 @@ mod app_tests {
         let mut guard = ShadowRiskGuard::new(cfg);
         let now = Utc::now();
 
-        guard.observe_discovery_cycle(&store, now, 70, 14);
+        guard.observe_discovery_cycle(&store, now, 70, 14)?;
         assert!(!guard.universe_blocked);
-        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(3), 70, 14);
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(3), 70, 14)?;
         assert!(!guard.universe_blocked);
-        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(6), 70, 14);
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(6), 70, 14)?;
         assert!(guard.universe_blocked);
 
-        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(9), 150, 30);
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(9), 150, 30)?;
         assert!(!guard.universe_blocked);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_discovery_cycle_returns_error_on_fatal_universe_stop_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 1;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_universe_stop_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_universe_stop'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = guard
+            .observe_discovery_cycle(&store, now, 70, 14)
+            .expect_err("fatal universe-stop risk event write must abort discovery-cycle observation");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("failed to persist shadow risk universe stop event with fatal sqlite I/O"),
+            "expected universe-stop fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(
+            !guard.universe_blocked,
+            "fatal universe-stop write must not flip runtime blocked state"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_universe_stop")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_discovery_cycle_returns_error_on_fatal_universe_clear_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-clear-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 1;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        guard.observe_discovery_cycle(&store, now, 70, 14)?;
+        assert!(guard.universe_blocked);
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_universe_stop")?, 1);
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_universe_clear_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_universe_cleared'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = guard
+            .observe_discovery_cycle(&store, now + chrono::Duration::minutes(3), 150, 30)
+            .expect_err("fatal universe-clear risk event write must abort discovery-cycle observation");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text
+                .contains("failed to persist shadow risk universe clear event with fatal sqlite I/O"),
+            "expected universe-clear fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(
+            guard.universe_blocked,
+            "fatal universe-clear write must preserve runtime blocked state"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_universe_cleared")?, 0);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -5916,7 +6042,7 @@ mod app_tests {
         assert!(original_guard.pause_until.is_some());
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 2);
 
-        original_guard.clear_pause(&store, now + chrono::Duration::seconds(30));
+        original_guard.clear_pause(&store, now + chrono::Duration::seconds(30))?;
         assert_eq!(
             store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
             1
@@ -6122,7 +6248,7 @@ mod app_tests {
             "restart_test",
             "cleared pause should stay cleared".to_string(),
         )?;
-        original_guard.clear_pause(&store, now + chrono::Duration::seconds(10));
+        original_guard.clear_pause(&store, now + chrono::Duration::seconds(10))?;
 
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
         restarted_guard.restore_pause_from_store(&store, now + chrono::Duration::seconds(20))?;
@@ -6574,6 +6700,57 @@ mod app_tests {
         );
         assert!(guard.pause_until.is_some());
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_expired_timed_pause_blocks_buy_on_fatal_clear_risk_event_write() -> Result<()> {
+        let (store, db_path) = make_test_store("timed-pause-clear-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let pause_started_at = Utc::now() - chrono::Duration::minutes(10);
+        let mut guard = ShadowRiskGuard::new(cfg);
+        guard.activate_pause(
+            &store,
+            pause_started_at,
+            chrono::Duration::minutes(5),
+            "drawdown_1h",
+            "expired pause should fail closed on fatal clear write".to_string(),
+        )?;
+        assert!(guard.pause_until.is_some());
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_timed_pause_clear_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_pause_cleared'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let decision = guard.can_open_buy(&store, Utc::now(), true);
+        match decision {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::FailClosed,
+                detail,
+            } => assert!(detail.contains("timed_pause_clear_error")),
+            other => panic!(
+                "expected fail-closed block when fatal timed-pause clear write fails, got {other:?}"
+            ),
+        }
+        assert!(
+            guard.pause_until.is_some(),
+            "fatal timed-pause clear write must preserve runtime pause state"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause_cleared")?, 0);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
