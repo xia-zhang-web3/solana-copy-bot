@@ -3030,7 +3030,10 @@ Ordered coder follow-up queue:
    3. Follow-up hardening included:
       1. bounded recent-signature dedupe before scheduler path,
       2. async raw batch insert failure now terminates the writer and makes the next enqueue fail-fast,
-      3. old ack-based `write()` path remains for callers that still need commit outcome.
+      3. recent-signature dedupe now happens before `enqueue()`, so duplicate replays no longer pay writer / SQLite cost,
+      4. enqueue failure rolls back the recent-signature dedupe window, so retries are still admitted,
+      5. terminal writer failure now latches in `ObservedSwapWriter`, and app health-checks it before dedupe so duplicate replay cannot mask a dead writer,
+      6. old ack-based `write()` path remains for callers that still need commit outcome.
    4. This closed the immediate consumer-loop serialization slice, but did not yet answer the relevance-ordering or telemetry gaps below.
 2. `DONE 2026-03-14` add consumer-path telemetry for the remaining Yellowstone bottleneck.
    1. `de1a7ab Add Yellowstone output queue telemetry` exposed explicit:

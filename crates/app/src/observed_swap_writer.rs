@@ -20,6 +20,8 @@ pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT: &str =
     "observed swap writer channel closed";
 pub(crate) const OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT: &str =
     "observed swap writer reply channel closed";
+pub(crate) const OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT: &str =
+    "observed swap writer terminal failure";
 
 #[derive(Clone)]
 struct ObservedSwapWriterConfig {
@@ -132,10 +134,27 @@ pub(crate) struct ObservedSwapWriter {
     sender: mpsc::Sender<ObservedSwapWriteRequest>,
     worker: Option<thread::JoinHandle<Result<()>>>,
     telemetry: Arc<ObservedSwapWriterTelemetry>,
+    terminal_failure_message: Arc<Mutex<Option<String>>>,
 }
 
 impl ObservedSwapWriter {
+    fn terminal_failure_error(&self) -> Option<anyhow::Error> {
+        self.terminal_failure_message
+            .lock()
+            .ok()
+            .and_then(|message| message.clone())
+            .map(|message| anyhow!(message).context(OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT))
+    }
+
+    pub(crate) fn ensure_running(&self) -> Result<()> {
+        if let Some(error) = self.terminal_failure_error() {
+            return Err(error);
+        }
+        Ok(())
+    }
+
     async fn send_request(&self, request: ObservedSwapWriteRequest) -> Result<()> {
+        self.ensure_running()?;
         let permit = self
             .sender
             .reserve()
@@ -160,17 +179,27 @@ impl ObservedSwapWriter {
     fn start_with_config(sqlite_path: String, config: ObservedSwapWriterConfig) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
         let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
+        let terminal_failure_message = Arc::new(Mutex::new(None));
         let worker_telemetry = Arc::clone(&telemetry);
+        let worker_terminal_failure_message = Arc::clone(&terminal_failure_message);
         let worker = thread::Builder::new()
             .name("copybot-observed-swap-writer".to_string())
             .spawn(move || {
-                observed_swap_writer_loop(sqlite_path, receiver, config, worker_telemetry)
+                let result =
+                    observed_swap_writer_loop(sqlite_path, receiver, config, worker_telemetry);
+                if let Err(error) = &result {
+                    if let Ok(mut message) = worker_terminal_failure_message.lock() {
+                        *message = Some(format!("{error:#}"));
+                    }
+                }
+                result
             })
             .context("failed to spawn observed swap writer thread")?;
         Ok(Self {
             sender,
             worker: Some(worker),
             telemetry,
+            terminal_failure_message,
         })
     }
 
@@ -985,7 +1014,8 @@ mod tests {
             .expect_err("writer channel should close after async raw batch insert failure");
         let error_chain = format!("{error:#}");
         assert!(
-            error_chain.contains(super::OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT),
+            error_chain.contains(super::OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)
+                || error_chain.contains(super::OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT),
             "unexpected enqueue-after-failure error: {error_chain}"
         );
 
@@ -1011,6 +1041,92 @@ mod tests {
         );
         let _ = std::fs::remove_file(db_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_reports_terminal_failure_after_async_batch_insert_failure() -> Result<()>
+    {
+        let unique = format!(
+            "copybot-app-observed-swap-async-health-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for async failure trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_wallet_activity_days_insert
+             BEFORE INSERT ON wallet_activity_days
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced async observed swap failure');
+             END;",
+        )?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = runtime.block_on(async {
+            ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    aggregate_writes_enabled: true,
+                    aggregate_write_config: aggregate_write_config(),
+                },
+            )
+        })?;
+
+        let failing_swap = SwapEvent {
+            wallet: "wallet-async-health".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-async-health".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-async-health".to_string(),
+            slot: 210,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T13:10:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+
+        runtime.block_on(async { writer.enqueue(&failing_swap).await })?;
+        std::thread::sleep(StdDuration::from_millis(50));
+
+        let error = writer
+            .ensure_running()
+            .expect_err("terminal async writer failure should be latched before next enqueue");
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains(super::OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT),
+            "unexpected terminal failure health-check error: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("forced async observed swap failure"),
+            "unexpected terminal failure health-check chain: {error_chain}"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface async raw batch insert failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain.contains("forced async observed swap failure"),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+        drop(trigger_conn);
+
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 

@@ -52,7 +52,7 @@ use crate::history_retention::HistoryRetentionRunner;
 use crate::observed_swap_writer::{
     run_observed_swap_retention_maintenance_once, ObservedSwapRetentionConfig, ObservedSwapWriter,
     OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL, OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT,
-    OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT,
+    OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
 };
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
@@ -387,6 +387,7 @@ fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
         let message = cause.to_string();
         message == OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT
             || message == OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT
+            || message == OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT
     })
 }
 
@@ -411,6 +412,29 @@ fn note_recent_swap_signature(
         }
     }
     true
+}
+
+fn forget_recent_swap_signature(
+    recent_signatures: &mut HashSet<String>,
+    recent_signature_order: &mut VecDeque<String>,
+    signature: &str,
+) {
+    if !recent_signatures.remove(signature) {
+        return;
+    }
+    if recent_signature_order
+        .back()
+        .is_some_and(|queued| queued == signature)
+    {
+        recent_signature_order.pop_back();
+        return;
+    }
+    if let Some(position) = recent_signature_order
+        .iter()
+        .position(|queued| queued == signature)
+    {
+        recent_signature_order.remove(position);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2549,7 +2573,31 @@ async fn run_app_loop(
                 let swap_processing_started_at = StdInstant::now();
                 app_consumer_loop_telemetry.note_swap_seen();
 
+                if let Err(error) = observed_swap_writer.ensure_running() {
+                    app_consumer_loop_telemetry
+                        .note_processing_started_at(swap_processing_started_at);
+                    return Err(error).context(
+                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                    );
+                }
+
+                if !note_recent_swap_signature(
+                    &mut recent_swap_signatures,
+                    &mut recent_swap_signature_order,
+                    &swap.signature,
+                ) {
+                    app_consumer_loop_telemetry
+                        .note_processing_started_at(swap_processing_started_at);
+                    debug!(signature = %swap.signature, "duplicate swap ignored by recent signature dedupe");
+                    continue;
+                }
+
                 if let Err(error) = observed_swap_writer.enqueue(&swap).await {
+                    forget_recent_swap_signature(
+                        &mut recent_swap_signatures,
+                        &mut recent_swap_signature_order,
+                        &swap.signature,
+                    );
                     app_consumer_loop_telemetry
                         .note_processing_started_at(swap_processing_started_at);
                     let error_chain = format_error_chain(&error);
@@ -2564,17 +2612,6 @@ async fn run_app_loop(
                         signature = %swap.signature,
                         "failed enqueueing observed swap"
                     );
-                    continue;
-                }
-
-                if !note_recent_swap_signature(
-                    &mut recent_swap_signatures,
-                    &mut recent_swap_signature_order,
-                    &swap.signature,
-                ) {
-                    app_consumer_loop_telemetry
-                        .note_processing_started_at(swap_processing_started_at);
-                    debug!(signature = %swap.signature, "duplicate swap ignored by recent signature dedupe");
                     continue;
                 }
 
@@ -6624,6 +6661,13 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
+    fn observed_swap_writer_terminal_failure_error_requires_restart() {
+        let error = anyhow!("forced async observed swap failure")
+            .context(OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT);
+        assert!(observed_swap_writer_error_requires_restart(&error));
+    }
+
+    #[test]
     fn transient_observed_swap_write_errors_do_not_require_restart() {
         let error = anyhow!("database is locked");
         assert!(!observed_swap_writer_error_requires_restart(&error));
@@ -6663,6 +6707,41 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 "sig-1",
             ),
             "signature should become admissible again once it is evicted from bounded dedupe state"
+        );
+    }
+
+    #[test]
+    fn recent_swap_signature_dedupe_allows_retry_after_forget() {
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+
+        assert!(note_recent_swap_signature(
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            "sig-retry",
+        ));
+        assert!(
+            !note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                "sig-retry",
+            ),
+            "signature should stay deduped until the failed enqueue rollback forgets it"
+        );
+
+        forget_recent_swap_signature(
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            "sig-retry",
+        );
+
+        assert!(
+            note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                "sig-retry",
+            ),
+            "rollback after failed enqueue should make the signature admissible again"
         );
     }
 
