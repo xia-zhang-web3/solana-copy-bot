@@ -442,6 +442,10 @@ fn shadow_open_lot_refresh_error_requires_restart(error: &anyhow::Error) -> bool
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn shadow_snapshot_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn shadow_risk_state_event_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
@@ -2604,6 +2608,10 @@ async fn run_app_loop(
                         }
                     }
                     Ok(Err(error)) => {
+                        if shadow_snapshot_error_requires_restart(&error) {
+                            return Err(error)
+                                .context("shadow snapshot failed with fatal sqlite I/O");
+                        }
                         warn!(error = %error, "shadow snapshot failed");
                     }
                     Err(error) => {
@@ -7958,6 +7966,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn shadow_open_lot_refresh_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is busy");
         assert!(!shadow_open_lot_refresh_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn shadow_snapshot_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed building shadow snapshot: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(shadow_snapshot_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn shadow_snapshot_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!shadow_snapshot_error_requires_restart(&error));
     }
 
     #[test]
