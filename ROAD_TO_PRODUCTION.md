@@ -3092,10 +3092,11 @@ Ordered coder follow-up queue:
    19. `DONE 2026-03-14` shadow snapshot refresh of `open_shadow_lots` now fails closed on fatal SQLite I/O while busy/locked refresh failures remain warn-only and existing causal-holdback semantics stay covered,
    20. `DONE 2026-03-14` `ShadowRiskGuard` state-event writes inside `maybe_refresh_db_state()` now fail closed on fatal SQLite I/O for hard-stop / hard-exposure-cap / soft-exposure-pause transitions while busy/locked writes stay warn-only and generic timed-pause / generic risk-event paths remain separate follow-ups,
    21. `DONE 2026-03-14` drawdown timed-pause activation writes inside `ShadowRiskGuard::maybe_refresh_db_state()` now fail closed on fatal SQLite I/O while busy/locked timed-pause writes stay warn-only and timed-pause clear / generic risk-event paths remain separate follow-ups,
-   22. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes / startup durable pause restore / periodic shadow-risk background refresh / shadow open-lot refresh / `ShadowRiskGuard` state-event writes / drawdown timed-pause activation writes:
+   22. `DONE 2026-03-14` expired timed-pause clear writes in `can_open_buy()` now fail closed on fatal SQLite I/O while busy/locked timed-pause clear writes stay warn-only and fatal clear writes preserve the runtime pause state instead of unblocking buys,
+   23. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes / startup durable pause restore / periodic shadow-risk background refresh / shadow open-lot refresh / `ShadowRiskGuard` state-event writes / drawdown timed-pause activation writes / expired timed-pause clear writes:
       1. verify other non-startup write paths have the right fatal vs retryable semantics,
       2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
-   23. not closed by either `e24eca2` or `8caa9b7`.
+   24. not closed by either `e24eca2` or `8caa9b7`.
 6. `P2` only after instrumentation decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,
