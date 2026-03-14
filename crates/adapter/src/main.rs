@@ -4929,6 +4929,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_submit_signature_uses_fallback_after_primary_non_object_status_row() {
+        let signature = bs58::encode([73u8; 64]).into_string();
+        let primary_body = r#"{"jsonrpc":"2.0","result":{"value":["not-an-object"]}}"#;
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", primary_body)
+        else {
+            return;
+        };
+        let fallback_body =
+            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
+        else {
+            return;
+        };
+
+        let mut state = test_state(primary_url.as_str());
+        state.config.submit_signature_verify = Some(SubmitSignatureVerifyConfig {
+            endpoints: vec![primary_url, fallback_url],
+            attempts: 1,
+            interval_ms: 1,
+            strict: true,
+        });
+
+        let result = verify_submitted_signature_visibility(&state, "rpc", signature.as_str()).await;
+        let Ok(SubmitSignatureVerification::Seen {
+            confirmation_status,
+        }) = result
+        else {
+            panic!("expected fallback verify endpoint to return Seen");
+        };
+        assert_eq!(confirmation_status, "confirmed");
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_rejects_invalid_confirmation_status_type_when_strict() {
+        let signature = bs58::encode([74u8; 64]).into_string();
+        let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":123}]}}"#;
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
+        else {
+            return;
+        };
+
+        let mut state = test_state(verify_url.as_str());
+        state.config.submit_signature_verify = Some(SubmitSignatureVerifyConfig {
+            endpoints: vec![verify_url],
+            attempts: 1,
+            interval_ms: 1,
+            strict: true,
+        });
+
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str())
+            .await
+            .expect_err("invalid confirmationStatus type must fail closed");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains("confirmation_status_invalid"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_returns_unseen_when_not_strict() {
         let signature = bs58::encode([10u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#;

@@ -12520,6 +12520,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_submit_signature_uses_fallback_after_primary_non_object_status_row() {
+        let signature = bs58::encode([73u8; 64]).into_string();
+        let primary_body = r#"{"jsonrpc":"2.0","result":{"value":["not-an-object"]}}"#;
+        let Some((primary_url, primary_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", primary_body)
+        else {
+            return;
+        };
+        let fallback_body =
+            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![primary_url.as_str(), fallback_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let verification = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect("fallback verify endpoint should succeed after malformed primary status row");
+        match verification {
+            SubmitSignatureVerification::Seen {
+                confirmation_status,
+            } => {
+                assert_eq!(confirmation_status, "confirmed");
+            }
+            other => panic!("expected Seen verification, got {:?}", other),
+        }
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_rejects_invalid_confirmation_status_type_when_strict() {
+        let signature = bs58::encode([74u8; 64]).into_string();
+        let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":123}]}}"#;
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let submit_deadline = crate::submit_deadline::SubmitDeadline::new(1_000);
+        let reject = verify_submitted_signature_visibility(
+            &state,
+            "rpc",
+            signature.as_str(),
+            Some(&submit_deadline),
+        )
+        .await
+        .expect_err("invalid confirmationStatus type must fail closed");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains("confirmation_status_invalid"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
     async fn verify_submit_signature_returns_unseen_when_not_strict() {
         let signature = bs58::encode([10u8; 64]).into_string();
         let body = r#"{"jsonrpc":"2.0","result":{"value":[null]}}"#;

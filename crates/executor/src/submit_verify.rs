@@ -173,6 +173,13 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 ));
                 continue;
             }
+            let Some(status_row) = status_row.as_object() else {
+                set_reason_and_continue(format!(
+                    "signature status invalid endpoint={} reason=row_not_object",
+                    endpoint_label
+                ));
+                continue;
+            };
             if let Some(err_payload) = status_row.get("err") {
                 if !err_payload.is_null() {
                     let err_detail = truncate_detail_chars(
@@ -188,13 +195,26 @@ pub(crate) async fn verify_submitted_signature_visibility(
                     ));
                 }
             }
-            let confirmation_status = status_row
-                .get("confirmationStatus")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("present")
-                .to_string();
+            let confirmation_status = match status_row.get("confirmationStatus") {
+                Some(value) => {
+                    let Some(confirmation_status) = value.as_str().map(str::trim) else {
+                        set_reason_and_continue(format!(
+                            "signature status invalid endpoint={} reason=confirmation_status_invalid",
+                            endpoint_label
+                        ));
+                        continue;
+                    };
+                    if confirmation_status.is_empty() {
+                        set_reason_and_continue(format!(
+                            "signature status invalid endpoint={} reason=confirmation_status_invalid",
+                            endpoint_label
+                        ));
+                        continue;
+                    }
+                    confirmation_status.to_string()
+                }
+                None => "present".to_string(),
+            };
             return Ok(SubmitSignatureVerification::Seen {
                 confirmation_status,
             });
