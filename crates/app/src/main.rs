@@ -555,6 +555,47 @@ enum IrrelevantObservedSwapPersistence {
     NeedsAwaitedFallback,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservedSwapShadowRelevance {
+    Relevant(ShadowSwapSide),
+    IrrelevantUnclassified,
+    IrrelevantNotFollowed(ShadowSwapSide),
+}
+
+fn classify_observed_swap_shadow_relevance(
+    swap: &SwapEvent,
+    follow_snapshot: &FollowSnapshot,
+    shadow_scheduler: &ShadowScheduler,
+    open_shadow_lots: &HashSet<(String, String)>,
+) -> ObservedSwapShadowRelevance {
+    let Some(side) = classify_swap_side(swap) else {
+        return ObservedSwapShadowRelevance::IrrelevantUnclassified;
+    };
+
+    if matches!(side, ShadowSwapSide::Buy) && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
+    {
+        return ObservedSwapShadowRelevance::IrrelevantNotFollowed(side);
+    }
+
+    if matches!(side, ShadowSwapSide::Sell) && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
+    {
+        let wallet_has_recent_follow_history = follow_snapshot.is_active(&swap.wallet)
+            || follow_snapshot.promoted_at.contains_key(&swap.wallet)
+            || follow_snapshot.demoted_at.contains_key(&swap.wallet);
+        let sell_key = shadow_task_key_for_swap(swap, side);
+        let key_tuple = (sell_key.wallet.clone(), sell_key.token.clone());
+        let has_pending_or_inflight = shadow_scheduler.key_has_pending_or_inflight(&sell_key);
+        if !wallet_has_recent_follow_history
+            && !has_pending_or_inflight
+            && !open_shadow_lots.contains(&key_tuple)
+        {
+            return ObservedSwapShadowRelevance::IrrelevantNotFollowed(side);
+        }
+    }
+
+    ObservedSwapShadowRelevance::Relevant(side)
+}
+
 fn try_persist_irrelevant_observed_swap<F>(
     swap: &SwapEvent,
     mut try_enqueue: F,
@@ -566,6 +607,28 @@ where
         Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath)
     } else {
         Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback)
+    }
+}
+
+async fn enqueue_irrelevant_observed_swap(
+    observed_swap_writer: &ObservedSwapWriter,
+    recent_signatures: &mut HashSet<String>,
+    recent_signature_order: &mut VecDeque<String>,
+    swap: &SwapEvent,
+) -> Result<()> {
+    match try_persist_irrelevant_observed_swap(swap, |swap| {
+        observed_swap_writer.try_enqueue(swap)
+    })? {
+        IrrelevantObservedSwapPersistence::EnqueuedFastPath => Ok(()),
+        IrrelevantObservedSwapPersistence::NeedsAwaitedFallback => {
+            enqueue_observed_swap_immediately(
+                observed_swap_writer,
+                recent_signatures,
+                recent_signature_order,
+                swap,
+            )
+            .await
+        }
     }
 }
 
@@ -2877,38 +2940,21 @@ async fn run_app_loop(
                     continue;
                 }
 
-                let Some(side) = classify_swap_side(&swap) else {
-                    match try_persist_irrelevant_observed_swap(&swap, |swap| {
-                        observed_swap_writer.try_enqueue(swap)
-                    }) {
-                        Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath) => {}
-                        Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback) => {
-                            if let Err(error) = enqueue_observed_swap_immediately(
-                                &observed_swap_writer,
-                                &mut recent_swap_signatures,
-                                &mut recent_swap_signature_order,
-                                &swap,
-                            )
-                            .await
-                            {
-                                app_consumer_loop_telemetry
-                                    .note_processing_started_at(swap_processing_started_at);
-                                let error_chain = format_error_chain(&error);
-                                if observed_swap_writer_error_requires_restart(&error) {
-                                    return Err(error).context(
-                                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                                    );
-                                }
-                                warn!(
-                                    error = %error,
-                                    error_chain = %error_chain,
-                                    signature = %swap.signature,
-                                    "failed enqueueing observed swap"
-                                );
-                                continue;
-                            }
-                        }
-                        Err(error) => {
+                let side = match classify_observed_swap_shadow_relevance(
+                    &swap,
+                    &follow_snapshot,
+                    &shadow_scheduler,
+                    &open_shadow_lots,
+                ) {
+                    ObservedSwapShadowRelevance::IrrelevantUnclassified => {
+                        if let Err(error) = enqueue_irrelevant_observed_swap(
+                            &observed_swap_writer,
+                            &mut recent_swap_signatures,
+                            &mut recent_swap_signature_order,
+                            &swap,
+                        )
+                        .await
+                        {
                             app_consumer_loop_telemetry
                                 .note_processing_started_at(swap_processing_started_at);
                             let error_chain = format_error_chain(&error);
@@ -2925,45 +2971,19 @@ async fn run_app_loop(
                             );
                             continue;
                         }
+                        app_consumer_loop_telemetry
+                            .note_processing_started_at(swap_processing_started_at);
+                        continue;
                     }
-                    app_consumer_loop_telemetry
-                        .note_processing_started_at(swap_processing_started_at);
-                    continue;
-                };
-                if matches!(side, ShadowSwapSide::Buy)
-                    && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
-                {
-                    match try_persist_irrelevant_observed_swap(&swap, |swap| {
-                        observed_swap_writer.try_enqueue(swap)
-                    }) {
-                        Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath) => {}
-                        Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback) => {
-                            if let Err(error) = enqueue_observed_swap_immediately(
-                                &observed_swap_writer,
-                                &mut recent_swap_signatures,
-                                &mut recent_swap_signature_order,
-                                &swap,
-                            )
-                            .await
-                            {
-                                app_consumer_loop_telemetry
-                                    .note_processing_started_at(swap_processing_started_at);
-                                let error_chain = format_error_chain(&error);
-                                if observed_swap_writer_error_requires_restart(&error) {
-                                    return Err(error).context(
-                                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                                    );
-                                }
-                                warn!(
-                                    error = %error,
-                                    error_chain = %error_chain,
-                                    signature = %swap.signature,
-                                    "failed enqueueing observed swap"
-                                );
-                                continue;
-                            }
-                        }
-                        Err(error) => {
+                    ObservedSwapShadowRelevance::IrrelevantNotFollowed(side) => {
+                        if let Err(error) = enqueue_irrelevant_observed_swap(
+                            &observed_swap_writer,
+                            &mut recent_swap_signatures,
+                            &mut recent_swap_signature_order,
+                            &swap,
+                        )
+                        .await
+                        {
                             app_consumer_loop_telemetry
                                 .note_processing_started_at(swap_processing_started_at);
                             let error_chain = format_error_chain(&error);
@@ -2979,86 +2999,6 @@ async fn run_app_loop(
                                 "failed enqueueing observed swap"
                             );
                             continue;
-                        }
-                    }
-                    app_consumer_loop_telemetry.note_follow_rejected();
-                    app_consumer_loop_telemetry
-                        .note_processing_started_at(swap_processing_started_at);
-                    let reason = "not_followed";
-                    *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
-                    *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
-                    debug!(
-                        stage = "follow",
-                        reason,
-                        side = "buy",
-                        wallet = %swap.wallet,
-                        signature = %swap.signature,
-                        "shadow gate dropped"
-                    );
-                    continue;
-                }
-
-                if matches!(side, ShadowSwapSide::Sell)
-                    && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
-                {
-                    let wallet_has_recent_follow_history = follow_snapshot.is_active(&swap.wallet)
-                        || follow_snapshot.promoted_at.contains_key(&swap.wallet)
-                        || follow_snapshot.demoted_at.contains_key(&swap.wallet);
-                    let sell_key = shadow_task_key_for_swap(&swap, side);
-                    let key_tuple = (sell_key.wallet.clone(), sell_key.token.clone());
-                    let has_pending_or_inflight =
-                        shadow_scheduler.key_has_pending_or_inflight(&sell_key);
-                    if !wallet_has_recent_follow_history
-                        && !has_pending_or_inflight
-                        && !open_shadow_lots.contains(&key_tuple)
-                    {
-                        match try_persist_irrelevant_observed_swap(&swap, |swap| {
-                            observed_swap_writer.try_enqueue(swap)
-                        }) {
-                            Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath) => {}
-                            Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback) => {
-                                if let Err(error) = enqueue_observed_swap_immediately(
-                                    &observed_swap_writer,
-                                    &mut recent_swap_signatures,
-                                    &mut recent_swap_signature_order,
-                                    &swap,
-                                )
-                                .await
-                                {
-                                    app_consumer_loop_telemetry
-                                        .note_processing_started_at(swap_processing_started_at);
-                                    let error_chain = format_error_chain(&error);
-                                    if observed_swap_writer_error_requires_restart(&error) {
-                                        return Err(error).context(
-                                            "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                                        );
-                                    }
-                                    warn!(
-                                        error = %error,
-                                        error_chain = %error_chain,
-                                        signature = %swap.signature,
-                                        "failed enqueueing observed swap"
-                                    );
-                                    continue;
-                                }
-                            }
-                            Err(error) => {
-                                app_consumer_loop_telemetry
-                                    .note_processing_started_at(swap_processing_started_at);
-                                let error_chain = format_error_chain(&error);
-                                if observed_swap_writer_error_requires_restart(&error) {
-                                    return Err(error).context(
-                                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                                    );
-                                }
-                                warn!(
-                                    error = %error,
-                                    error_chain = %error_chain,
-                                    signature = %swap.signature,
-                                    "failed enqueueing observed swap"
-                                );
-                                continue;
-                            }
                         }
                         app_consumer_loop_telemetry.note_follow_rejected();
                         app_consumer_loop_telemetry
@@ -3069,14 +3009,19 @@ async fn run_app_loop(
                         debug!(
                             stage = "follow",
                             reason,
-                            side = "sell",
+                            side = if matches!(side, ShadowSwapSide::Buy) {
+                                "buy"
+                            } else {
+                                "sell"
+                            },
                             wallet = %swap.wallet,
                             signature = %swap.signature,
                             "shadow gate dropped"
                         );
                         continue;
                     }
-                }
+                    ObservedSwapShadowRelevance::Relevant(side) => side,
+                };
 
                 if let Err(error) = enqueue_observed_swap_immediately(
                     &observed_swap_writer,
@@ -8288,6 +8233,113 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 "sig-retry",
             ),
             "rollback after failed enqueue should make the signature admissible again"
+        );
+    }
+
+    #[test]
+    fn observed_swap_shadow_relevance_marks_unclassified_swaps_irrelevant() {
+        let mut swap = test_swap("sig-unclassified");
+        swap.token_in = "token-a".to_string();
+        swap.token_out = "token-b".to_string();
+
+        assert_eq!(
+            classify_observed_swap_shadow_relevance(
+                &swap,
+                &FollowSnapshot::default(),
+                &ShadowScheduler::new(),
+                &HashSet::new(),
+            ),
+            ObservedSwapShadowRelevance::IrrelevantUnclassified
+        );
+    }
+
+    #[test]
+    fn observed_swap_shadow_relevance_marks_unfollowed_buy_irrelevant() {
+        let swap = test_swap("sig-unfollowed-buy");
+
+        assert_eq!(
+            classify_observed_swap_shadow_relevance(
+                &swap,
+                &FollowSnapshot::default(),
+                &ShadowScheduler::new(),
+                &HashSet::new(),
+            ),
+            ObservedSwapShadowRelevance::IrrelevantNotFollowed(ShadowSwapSide::Buy)
+        );
+    }
+
+    #[test]
+    fn observed_swap_shadow_relevance_keeps_followed_buy_relevant() {
+        let swap = test_swap("sig-followed-buy");
+        let mut follow_snapshot = FollowSnapshot::default();
+        follow_snapshot.active.insert(swap.wallet.clone());
+
+        assert_eq!(
+            classify_observed_swap_shadow_relevance(
+                &swap,
+                &follow_snapshot,
+                &ShadowScheduler::new(),
+                &HashSet::new(),
+            ),
+            ObservedSwapShadowRelevance::Relevant(ShadowSwapSide::Buy)
+        );
+    }
+
+    #[test]
+    fn observed_swap_shadow_relevance_marks_cold_sell_irrelevant() {
+        let mut swap = test_swap("sig-cold-sell");
+        swap.token_in = "token-a".to_string();
+        swap.token_out = "So11111111111111111111111111111111111111112".to_string();
+
+        assert_eq!(
+            classify_observed_swap_shadow_relevance(
+                &swap,
+                &FollowSnapshot::default(),
+                &ShadowScheduler::new(),
+                &HashSet::new(),
+            ),
+            ObservedSwapShadowRelevance::IrrelevantNotFollowed(ShadowSwapSide::Sell)
+        );
+    }
+
+    #[test]
+    fn observed_swap_shadow_relevance_keeps_sell_with_open_lot_relevant() {
+        let mut swap = test_swap("sig-sell-open-lot");
+        swap.token_in = "token-a".to_string();
+        swap.token_out = "So11111111111111111111111111111111111111112".to_string();
+        let sell_key = shadow_task_key_for_swap(&swap, ShadowSwapSide::Sell);
+        let open_shadow_lots = HashSet::from([(sell_key.wallet.clone(), sell_key.token.clone())]);
+
+        assert_eq!(
+            classify_observed_swap_shadow_relevance(
+                &swap,
+                &FollowSnapshot::default(),
+                &ShadowScheduler::new(),
+                &open_shadow_lots,
+            ),
+            ObservedSwapShadowRelevance::Relevant(ShadowSwapSide::Sell)
+        );
+    }
+
+    #[test]
+    fn observed_swap_shadow_relevance_keeps_sell_with_recent_follow_history_relevant() {
+        let mut swap = test_swap("sig-sell-recent-follow");
+        swap.token_in = "token-a".to_string();
+        swap.token_out = "So11111111111111111111111111111111111111112".to_string();
+        let mut follow_snapshot = FollowSnapshot::default();
+        follow_snapshot.demoted_at.insert(
+            swap.wallet.clone(),
+            swap.ts_utc - chrono::Duration::seconds(1),
+        );
+
+        assert_eq!(
+            classify_observed_swap_shadow_relevance(
+                &swap,
+                &follow_snapshot,
+                &ShadowScheduler::new(),
+                &HashSet::new(),
+            ),
+            ObservedSwapShadowRelevance::Relevant(ShadowSwapSide::Sell)
         );
     }
 
