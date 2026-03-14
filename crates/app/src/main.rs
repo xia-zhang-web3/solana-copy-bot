@@ -406,6 +406,10 @@ fn runtime_sqlite_write_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn history_retention_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -2463,6 +2467,10 @@ async fn run_app_loop(
                         }
                         Ok(_) => {}
                         Err(error) => {
+                            if history_retention_error_requires_restart(&error) {
+                                return Err(error)
+                                    .context("history retention sweep failed with fatal sqlite I/O");
+                            }
                             warn!(error = %error, "history retention sweep failed");
                         }
                     }
@@ -6928,6 +6936,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn runtime_sqlite_write_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!runtime_sqlite_write_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn history_retention_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed deleting retained risk events: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(history_retention_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn history_retention_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is busy");
+        assert!(!history_retention_error_requires_restart(&error));
     }
 
     #[test]

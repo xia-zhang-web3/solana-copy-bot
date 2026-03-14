@@ -3076,10 +3076,11 @@ Ordered coder follow-up queue:
    3. not a `replaced_ratio` tuning exercise,
    4. `DONE 2026-03-14` startup WAL checkpoint now fails closed on fatal SQLite I/O / `xShmMap` / disk-full class failures instead of warning and continuing,
    5. `DONE 2026-03-14` runtime alive-heartbeat writes now fail closed on fatal SQLite I/O while busy/locked contention stays warn-only,
-   6. remaining work is still broader than startup / heartbeat:
-      1. verify non-startup write paths have the right fatal vs retryable semantics,
+   6. `DONE 2026-03-14` periodic history retention sweep now also fails closed on fatal SQLite I/O while busy/locked retention failures stay warn-only,
+   7. remaining work is still broader than startup / heartbeat / history retention:
+      1. verify other non-startup write paths have the right fatal vs retryable semantics,
       2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
-   7. not closed by either `e24eca2` or `8caa9b7`.
+   8. not closed by either `e24eca2` or `8caa9b7`.
 6. `P2` only after instrumentation decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,
