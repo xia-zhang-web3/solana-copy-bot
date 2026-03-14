@@ -442,6 +442,10 @@ fn shadow_open_lot_refresh_error_requires_restart(error: &anyhow::Error) -> bool
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn execution_task_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn shadow_snapshot_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
@@ -2739,6 +2743,10 @@ async fn run_app_loop(
                         log_execution_batch_report(&report);
                     }
                     Some(Ok(Err(error))) => {
+                        if execution_task_error_requires_restart(&error) {
+                            return Err(error)
+                                .context("execution batch failed with fatal sqlite I/O");
+                        }
                         warn!(error = %error, "execution batch failed");
                     }
                     Some(Err(error)) => {
@@ -7980,6 +7988,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn shadow_snapshot_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!shadow_snapshot_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn execution_task_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed executing shadow batch: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(execution_task_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn execution_task_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is busy");
+        assert!(!execution_task_error_requires_restart(&error));
     }
 
     #[test]
