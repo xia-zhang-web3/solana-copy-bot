@@ -1883,7 +1883,7 @@ impl ShadowRiskGuard {
                         signed_lamports_to_sol(pnl_6h_lamports),
                         signed_lamports_to_sol(drawdown_6h_stop_lamports)
                     ),
-                );
+                )?;
             }
             if pnl_1h_lamports <= drawdown_1h_stop_lamports {
                 self.activate_pause(
@@ -1898,7 +1898,7 @@ impl ShadowRiskGuard {
                         signed_lamports_to_sol(pnl_1h_lamports),
                         signed_lamports_to_sol(drawdown_1h_stop_lamports)
                     ),
-                );
+                )?;
             }
 
             Ok(())
@@ -2117,7 +2117,7 @@ impl ShadowRiskGuard {
         duration: chrono::Duration,
         pause_type: &str,
         detail: String,
-    ) {
+    ) -> Result<()> {
         let duration = if duration <= chrono::Duration::zero() {
             chrono::Duration::minutes(1)
         } else {
@@ -2126,7 +2126,7 @@ impl ShadowRiskGuard {
         let until = now + duration;
         let should_update = self.pause_until.map(|value| until > value).unwrap_or(true);
         if !should_update {
-            return;
+            return Ok(());
         }
         self.pause_until = Some(until);
         let reason = format!("{pause_type}: {detail}; until={}", until.to_rfc3339());
@@ -2138,7 +2138,14 @@ impl ShadowRiskGuard {
             sanitize_json_value(&detail),
             until.to_rfc3339()
         );
-        self.record_risk_event(store, "shadow_risk_pause", "warn", now, &details_json);
+        record_shadow_risk_state_event_or_warn(
+            store,
+            "shadow_risk_pause",
+            "warn",
+            now,
+            &details_json,
+            "failed to persist shadow risk timed pause event with fatal sqlite I/O",
+        )
     }
 
     fn activate_soft_exposure_pause(
@@ -6029,7 +6036,7 @@ mod app_tests {
                 chrono::Duration::minutes(5),
                 "drawdown_1h",
                 format!("synthetic timed pause spam #{index}"),
-            );
+            )?;
         }
         assert!(
             store.risk_event_count_by_type("shadow_risk_pause")? > 64,
@@ -6070,7 +6077,7 @@ mod app_tests {
             chrono::Duration::minutes(5),
             "restart_test",
             "active pause should survive restart".to_string(),
-        );
+        )?;
 
         let restore_at = now + chrono::Duration::seconds(30);
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
@@ -6114,7 +6121,7 @@ mod app_tests {
             chrono::Duration::minutes(5),
             "restart_test",
             "cleared pause should stay cleared".to_string(),
-        );
+        )?;
         original_guard.clear_pause(&store, now + chrono::Duration::seconds(10));
 
         let mut restarted_guard = ShadowRiskGuard::new(cfg);
@@ -6507,6 +6514,65 @@ mod app_tests {
             "expected fatal sqlite marker to survive error chain, got: {error_text}"
         );
         assert!(guard.soft_exposure_pause_latched);
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_refresh_returns_error_on_fatal_drawdown_timed_pause_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("drawdown-timed-pause-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -0.3;
+        cfg.shadow_drawdown_1h_pause_minutes = 30;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        store.insert_shadow_closed_trade(
+            "sig-dd1-fatal",
+            "wallet-a",
+            "token-a",
+            1.0,
+            1.0,
+            0.5,
+            -0.5,
+            now - chrono::Duration::minutes(10),
+            now - chrono::Duration::minutes(5),
+        )?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_timed_pause_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_pause'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = guard
+            .maybe_refresh_db_state(&store, now)
+            .expect_err("fatal timed-pause risk event write must abort refresh");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text
+                .contains("failed to persist shadow risk timed pause event with fatal sqlite I/O"),
+            "expected timed-pause fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(guard.pause_until.is_some());
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 0);
 
         let _ = std::fs::remove_file(db_path);
