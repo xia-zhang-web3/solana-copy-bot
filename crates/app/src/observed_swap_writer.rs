@@ -212,6 +212,26 @@ impl ObservedSwapWriter {
         .await
     }
 
+    pub(crate) fn try_enqueue(&self, swap: &SwapEvent) -> Result<bool> {
+        self.ensure_running()?;
+        match self.sender.try_reserve() {
+            Ok(permit) => {
+                self.telemetry.note_enqueued();
+                permit.send(ObservedSwapWriteRequest {
+                    swap: swap.clone(),
+                    reply_tx: None,
+                    enqueued_at: Instant::now(),
+                });
+                Ok(true)
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(false),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(anyhow!(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT))
+                    .context(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)
+            }
+        }
+    }
+
     pub(crate) async fn write(&self, swap: &SwapEvent) -> Result<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.send_request(ObservedSwapWriteRequest {
@@ -870,6 +890,84 @@ mod tests {
         assert_eq!(swaps[0].signature, "sig-observed-swap-enqueue");
         let _ = std::fs::remove_file(db_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_try_enqueue_returns_false_when_channel_is_full() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-try-enqueue-full-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let blocker_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open blocker sqlite connection")?;
+        blocker_conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig {
+                channel_capacity: 1,
+                batch_max_size: 1,
+                aggregate_writes_enabled: true,
+                aggregate_write_config: aggregate_write_config(),
+            },
+        )?;
+
+        let first_swap = SwapEvent {
+            wallet: "wallet-try-enqueue".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-try-enqueue-a".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-try-enqueue-a".to_string(),
+            slot: 125,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T12:10:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        assert!(writer.try_enqueue(&first_swap)?);
+        let mut saw_full = false;
+        for idx in 0..32u64 {
+            let swap = SwapEvent {
+                token_out: format!("token-try-enqueue-{idx}"),
+                signature: format!("sig-try-enqueue-{idx}"),
+                slot: 126 + idx,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-14T12:10:01Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+                ..first_swap.clone()
+            };
+            if !writer.try_enqueue(&swap)? {
+                saw_full = true;
+                break;
+            }
+        }
+        assert!(
+            saw_full,
+            "non-blocking try_enqueue should report a full channel instead of waiting once the bounded queue saturates"
+        );
+
+        blocker_conn.execute_batch("COMMIT")?;
+        std::thread::sleep(StdDuration::from_millis(50));
+        writer.shutdown()?;
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 

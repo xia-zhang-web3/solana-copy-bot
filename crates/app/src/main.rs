@@ -5,8 +5,9 @@ use copybot_config::ExecutionConfig;
 use copybot_config::{
     load_from_env_or_default, normalize_ingestion_source, RiskConfig, ShadowConfig,
 };
+use copybot_core_types::SwapEvent;
 #[cfg(test)]
-use copybot_core_types::{SwapEvent, TokenQuantity};
+use copybot_core_types::TokenQuantity;
 use copybot_discovery::DiscoveryService;
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
@@ -435,6 +436,39 @@ fn forget_recent_swap_signature(
     {
         recent_signature_order.remove(position);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IrrelevantObservedSwapPersistence {
+    EnqueuedFastPath,
+    NeedsAwaitedFallback,
+}
+
+fn try_persist_irrelevant_observed_swap<F>(
+    swap: &SwapEvent,
+    mut try_enqueue: F,
+) -> Result<IrrelevantObservedSwapPersistence>
+where
+    F: FnMut(&SwapEvent) -> Result<bool>,
+{
+    if try_enqueue(swap)? {
+        Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath)
+    } else {
+        Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback)
+    }
+}
+
+async fn enqueue_observed_swap_immediately(
+    observed_swap_writer: &ObservedSwapWriter,
+    recent_signatures: &mut HashSet<String>,
+    recent_signature_order: &mut VecDeque<String>,
+    swap: &SwapEvent,
+) -> Result<()> {
+    if let Err(error) = observed_swap_writer.enqueue(swap).await {
+        forget_recent_swap_signature(recent_signatures, recent_signature_order, &swap.signature);
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -2592,30 +2626,55 @@ async fn run_app_loop(
                     continue;
                 }
 
-                if let Err(error) = observed_swap_writer.enqueue(&swap).await {
-                    forget_recent_swap_signature(
-                        &mut recent_swap_signatures,
-                        &mut recent_swap_signature_order,
-                        &swap.signature,
-                    );
-                    app_consumer_loop_telemetry
-                        .note_processing_started_at(swap_processing_started_at);
-                    let error_chain = format_error_chain(&error);
-                    if observed_swap_writer_error_requires_restart(&error) {
-                        return Err(error).context(
-                            "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                        );
-                    }
-                    warn!(
-                        error = %error,
-                        error_chain = %error_chain,
-                        signature = %swap.signature,
-                        "failed enqueueing observed swap"
-                    );
-                    continue;
-                }
-
                 let Some(side) = classify_swap_side(&swap) else {
+                    match try_persist_irrelevant_observed_swap(&swap, |swap| {
+                        observed_swap_writer.try_enqueue(swap)
+                    }) {
+                        Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath) => {}
+                        Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback) => {
+                            if let Err(error) = enqueue_observed_swap_immediately(
+                                &observed_swap_writer,
+                                &mut recent_swap_signatures,
+                                &mut recent_swap_signature_order,
+                                &swap,
+                            )
+                            .await
+                            {
+                                app_consumer_loop_telemetry
+                                    .note_processing_started_at(swap_processing_started_at);
+                                let error_chain = format_error_chain(&error);
+                                if observed_swap_writer_error_requires_restart(&error) {
+                                    return Err(error).context(
+                                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                                    );
+                                }
+                                warn!(
+                                    error = %error,
+                                    error_chain = %error_chain,
+                                    signature = %swap.signature,
+                                    "failed enqueueing observed swap"
+                                );
+                                continue;
+                            }
+                        }
+                        Err(error) => {
+                            app_consumer_loop_telemetry
+                                .note_processing_started_at(swap_processing_started_at);
+                            let error_chain = format_error_chain(&error);
+                            if observed_swap_writer_error_requires_restart(&error) {
+                                return Err(error).context(
+                                    "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                                );
+                            }
+                            warn!(
+                                error = %error,
+                                error_chain = %error_chain,
+                                signature = %swap.signature,
+                                "failed enqueueing observed swap"
+                            );
+                            continue;
+                        }
+                    }
                     app_consumer_loop_telemetry
                         .note_processing_started_at(swap_processing_started_at);
                     continue;
@@ -2623,6 +2682,54 @@ async fn run_app_loop(
                 if matches!(side, ShadowSwapSide::Buy)
                     && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
                 {
+                    match try_persist_irrelevant_observed_swap(&swap, |swap| {
+                        observed_swap_writer.try_enqueue(swap)
+                    }) {
+                        Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath) => {}
+                        Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback) => {
+                            if let Err(error) = enqueue_observed_swap_immediately(
+                                &observed_swap_writer,
+                                &mut recent_swap_signatures,
+                                &mut recent_swap_signature_order,
+                                &swap,
+                            )
+                            .await
+                            {
+                                app_consumer_loop_telemetry
+                                    .note_processing_started_at(swap_processing_started_at);
+                                let error_chain = format_error_chain(&error);
+                                if observed_swap_writer_error_requires_restart(&error) {
+                                    return Err(error).context(
+                                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                                    );
+                                }
+                                warn!(
+                                    error = %error,
+                                    error_chain = %error_chain,
+                                    signature = %swap.signature,
+                                    "failed enqueueing observed swap"
+                                );
+                                continue;
+                            }
+                        }
+                        Err(error) => {
+                            app_consumer_loop_telemetry
+                                .note_processing_started_at(swap_processing_started_at);
+                            let error_chain = format_error_chain(&error);
+                            if observed_swap_writer_error_requires_restart(&error) {
+                                return Err(error).context(
+                                    "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                                );
+                            }
+                            warn!(
+                                error = %error,
+                                error_chain = %error_chain,
+                                signature = %swap.signature,
+                                "failed enqueueing observed swap"
+                            );
+                            continue;
+                        }
+                    }
                     app_consumer_loop_telemetry.note_follow_rejected();
                     app_consumer_loop_telemetry
                         .note_processing_started_at(swap_processing_started_at);
@@ -2654,6 +2761,54 @@ async fn run_app_loop(
                         && !has_pending_or_inflight
                         && !open_shadow_lots.contains(&key_tuple)
                     {
+                        match try_persist_irrelevant_observed_swap(&swap, |swap| {
+                            observed_swap_writer.try_enqueue(swap)
+                        }) {
+                            Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath) => {}
+                            Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback) => {
+                                if let Err(error) = enqueue_observed_swap_immediately(
+                                    &observed_swap_writer,
+                                    &mut recent_swap_signatures,
+                                    &mut recent_swap_signature_order,
+                                    &swap,
+                                )
+                                .await
+                                {
+                                    app_consumer_loop_telemetry
+                                        .note_processing_started_at(swap_processing_started_at);
+                                    let error_chain = format_error_chain(&error);
+                                    if observed_swap_writer_error_requires_restart(&error) {
+                                        return Err(error).context(
+                                            "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                                        );
+                                    }
+                                    warn!(
+                                        error = %error,
+                                        error_chain = %error_chain,
+                                        signature = %swap.signature,
+                                        "failed enqueueing observed swap"
+                                    );
+                                    continue;
+                                }
+                            }
+                            Err(error) => {
+                                app_consumer_loop_telemetry
+                                    .note_processing_started_at(swap_processing_started_at);
+                                let error_chain = format_error_chain(&error);
+                                if observed_swap_writer_error_requires_restart(&error) {
+                                    return Err(error).context(
+                                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                                    );
+                                }
+                                warn!(
+                                    error = %error,
+                                    error_chain = %error_chain,
+                                    signature = %swap.signature,
+                                    "failed enqueueing observed swap"
+                                );
+                                continue;
+                            }
+                        }
                         app_consumer_loop_telemetry.note_follow_rejected();
                         app_consumer_loop_telemetry
                             .note_processing_started_at(swap_processing_started_at);
@@ -2670,6 +2825,31 @@ async fn run_app_loop(
                         );
                         continue;
                     }
+                }
+
+                if let Err(error) = enqueue_observed_swap_immediately(
+                    &observed_swap_writer,
+                    &mut recent_swap_signatures,
+                    &mut recent_swap_signature_order,
+                    &swap,
+                )
+                .await
+                {
+                    app_consumer_loop_telemetry
+                        .note_processing_started_at(swap_processing_started_at);
+                    let error_chain = format_error_chain(&error);
+                    if observed_swap_writer_error_requires_restart(&error) {
+                        return Err(error).context(
+                            "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                        );
+                    }
+                    warn!(
+                        error = %error,
+                        error_chain = %error_chain,
+                        signature = %swap.signature,
+                        "failed enqueueing observed swap"
+                    );
+                    continue;
                 }
 
                 if matches!(side, ShadowSwapSide::Buy) {
@@ -2948,6 +3128,23 @@ mod app_tests {
         error
             .chain()
             .any(|cause| cause.to_string().contains(needle))
+    }
+
+    fn test_swap(signature: &str) -> SwapEvent {
+        SwapEvent {
+            wallet: "wallet-test".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-test".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: signature.to_string(),
+            slot: 1,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T16:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        }
     }
 
     #[test]
@@ -6743,6 +6940,27 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             ),
             "rollback after failed enqueue should make the signature admissible again"
         );
+    }
+
+    #[test]
+    fn irrelevant_observed_swap_persistence_uses_fast_path_when_writer_try_enqueue_accepts(
+    ) -> Result<()> {
+        let swap = test_swap("sig-deferred");
+        let outcome = try_persist_irrelevant_observed_swap(&swap, |_swap| Ok(true))?;
+        assert_eq!(outcome, IrrelevantObservedSwapPersistence::EnqueuedFastPath);
+        Ok(())
+    }
+
+    #[test]
+    fn irrelevant_observed_swap_persistence_requires_awaited_fallback_when_writer_try_enqueue_is_full(
+    ) -> Result<()> {
+        let swap = test_swap("sig-fallback");
+        let outcome = try_persist_irrelevant_observed_swap(&swap, |_swap| Ok(false))?;
+        assert_eq!(
+            outcome,
+            IrrelevantObservedSwapPersistence::NeedsAwaitedFallback
+        );
+        Ok(())
     }
 
     #[test]
