@@ -442,6 +442,10 @@ fn shadow_open_lot_refresh_error_requires_restart(error: &anyhow::Error) -> bool
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn shadow_risk_state_event_error_requires_abort(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn persist_runtime_risk_event_or_warn(
     store: &SqliteStore,
     event_type: &str,
@@ -796,6 +800,28 @@ fn refresh_shadow_open_lot_index_or_warn(
             Ok(())
         }
     }
+}
+
+fn record_shadow_risk_state_event_or_warn(
+    store: &SqliteStore,
+    event_type: &str,
+    severity: &str,
+    ts: DateTime<Utc>,
+    details_json: &str,
+    fatal_context: &'static str,
+) -> Result<()> {
+    if let Err(error) = store.insert_risk_event(event_type, severity, ts, Some(details_json)) {
+        if shadow_risk_state_event_error_requires_abort(&error) {
+            return Err(error).context(fatal_context);
+        }
+        warn!(
+            error = %error,
+            event_type,
+            severity,
+            "failed to persist shadow risk event"
+        );
+    }
+    Ok(())
 }
 
 fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
@@ -1763,7 +1789,7 @@ impl ShadowRiskGuard {
 
             if let Some((stop_type, detail)) = hard_stop_breach {
                 self.hard_stop_clear_healthy_streak = 0;
-                self.activate_hard_stop(store, now, stop_type, detail);
+                self.activate_hard_stop(store, now, stop_type, detail)?;
                 return Ok(());
             }
 
@@ -1775,7 +1801,7 @@ impl ShadowRiskGuard {
                 if self.hard_stop_clear_healthy_streak < HARD_STOP_CLEAR_HEALTHY_REFRESHES {
                     return Ok(());
                 }
-                self.clear_hard_stop(store, now);
+                self.clear_hard_stop(store, now)?;
             } else {
                 self.hard_stop_clear_healthy_streak = 0;
             }
@@ -1799,23 +1825,25 @@ impl ShadowRiskGuard {
                         "{{\"state\":\"active\",\"detail\":\"{}\"}}",
                         sanitize_json_value(&exposure_detail)
                     );
-                    self.record_risk_event(
+                    record_shadow_risk_state_event_or_warn(
                         store,
                         "shadow_risk_exposure_hard_cap",
                         "warn",
                         now,
                         &details_json,
-                    );
+                        "failed to persist shadow risk exposure hard cap event with fatal sqlite I/O",
+                    )?;
                 } else {
                     self.exposure_hard_detail = None;
                     info!("shadow risk exposure hard cap cleared");
-                    self.record_risk_event(
+                    record_shadow_risk_state_event_or_warn(
                         store,
                         "shadow_risk_exposure_hard_cap_cleared",
                         "info",
                         now,
                         "{\"state\":\"cleared\"}",
-                    );
+                        "failed to persist shadow risk exposure hard cap clear event with fatal sqlite I/O",
+                    )?;
                 }
             } else if exposure_blocked_now {
                 self.exposure_hard_detail = Some(exposure_detail);
@@ -1828,7 +1856,7 @@ impl ShadowRiskGuard {
                 && self.pause_until.is_none()
                 && exposure_lamports < shadow_soft_exposure_resume_below_lamports
             {
-                self.clear_soft_exposure_pause(store, now);
+                self.clear_soft_exposure_pause(store, now)?;
             } else if !self.soft_exposure_pause_latched
                 && self.pause_until.is_none()
                 && exposure_lamports >= shadow_soft_exposure_cap_lamports
@@ -1840,7 +1868,7 @@ impl ShadowRiskGuard {
                     exposure_lamports,
                     shadow_soft_exposure_cap_lamports,
                     shadow_soft_exposure_resume_below_lamports,
-                );
+                )?;
             }
             if pnl_6h_lamports <= drawdown_6h_stop_lamports {
                 self.activate_pause(
@@ -2036,10 +2064,10 @@ impl ShadowRiskGuard {
         now: DateTime<Utc>,
         stop_type: &str,
         detail: String,
-    ) {
+    ) -> Result<()> {
         self.hard_stop_clear_healthy_streak = 0;
         if self.hard_stop_reason.is_some() {
-            return;
+            return Ok(());
         }
         let reason = format!("{stop_type}: {detail}");
         self.hard_stop_reason = Some(reason.clone());
@@ -2049,13 +2077,20 @@ impl ShadowRiskGuard {
             sanitize_json_value(stop_type),
             sanitize_json_value(&detail)
         );
-        self.record_risk_event(store, "shadow_risk_hard_stop", "error", now, &details_json);
+        record_shadow_risk_state_event_or_warn(
+            store,
+            "shadow_risk_hard_stop",
+            "error",
+            now,
+            &details_json,
+            "failed to persist shadow risk hard stop event with fatal sqlite I/O",
+        )
     }
 
-    fn clear_hard_stop(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+    fn clear_hard_stop(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
         self.hard_stop_clear_healthy_streak = 0;
         let Some(previous_reason) = self.hard_stop_reason.take() else {
-            return;
+            return Ok(());
         };
         info!(
             previous_reason = %previous_reason,
@@ -2065,13 +2100,14 @@ impl ShadowRiskGuard {
             "{{\"state\":\"cleared\",\"previous_reason\":\"{}\"}}",
             sanitize_json_value(&previous_reason)
         );
-        self.record_risk_event(
+        record_shadow_risk_state_event_or_warn(
             store,
             "shadow_risk_hard_stop_cleared",
             "info",
             now,
             &details_json,
-        );
+            "failed to persist shadow risk hard stop clear event with fatal sqlite I/O",
+        )
     }
 
     fn activate_pause(
@@ -2113,7 +2149,7 @@ impl ShadowRiskGuard {
         exposure_lamports: Lamports,
         soft_cap_lamports: Lamports,
         resume_below_lamports: Lamports,
-    ) {
+    ) -> Result<()> {
         let duration = if duration <= chrono::Duration::zero() {
             chrono::Duration::minutes(1)
         } else {
@@ -2137,7 +2173,14 @@ impl ShadowRiskGuard {
             until.to_rfc3339(),
             lamports_to_sol(resume_below_lamports)
         );
-        self.record_risk_event(store, "shadow_risk_pause", "warn", now, &details_json);
+        record_shadow_risk_state_event_or_warn(
+            store,
+            "shadow_risk_pause",
+            "warn",
+            now,
+            &details_json,
+            "failed to persist shadow risk soft exposure pause event with fatal sqlite I/O",
+        )
     }
 
     fn clear_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
@@ -2174,11 +2217,11 @@ impl ShadowRiskGuard {
         );
     }
 
-    fn clear_soft_exposure_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+    fn clear_soft_exposure_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
         let Some(previous_until) = self.soft_exposure_pause_until.take() else {
             self.soft_exposure_pause_latched = false;
             self.soft_exposure_pause_reason = None;
-            return;
+            return Ok(());
         };
         let previous_reason = self.soft_exposure_pause_reason.take().unwrap_or_else(|| {
             format!(
@@ -2197,13 +2240,14 @@ impl ShadowRiskGuard {
             sanitize_json_value(&previous_reason),
             previous_until.to_rfc3339()
         );
-        self.record_risk_event(
+        record_shadow_risk_state_event_or_warn(
             store,
             "shadow_risk_pause_cleared",
             "info",
             now,
             &details_json,
-        );
+            "failed to persist shadow risk soft exposure pause clear event with fatal sqlite I/O",
+        )
     }
 
     fn record_risk_event(
@@ -5975,7 +6019,7 @@ mod app_tests {
             Lamports::new(600_000_000),
             Lamports::new(500_000_000),
             Lamports::new(400_000_000),
-        );
+        )?;
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
 
         for index in 0..80 {
@@ -6296,6 +6340,174 @@ mod app_tests {
             guard.hard_stop_reason.is_none(),
             "hard stop should clear after metrics normalize"
         );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_refresh_returns_error_on_fatal_hard_stop_risk_event_write() -> Result<()> {
+        let (store, db_path) = make_test_store("hard-stop-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_24h_stop_sol = -0.5;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-hard-stop-fatal",
+            "wallet-a",
+            "token-a",
+            1.0,
+            1.0,
+            0.2,
+            -0.8,
+            now - chrono::Duration::minutes(30),
+            now - chrono::Duration::minutes(20),
+        )?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_hard_stop_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_hard_stop'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = guard
+            .maybe_refresh_db_state(&store, now)
+            .expect_err("fatal hard-stop risk event write must abort refresh");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text
+                .contains("failed to persist shadow risk hard stop event with fatal sqlite I/O"),
+            "expected hard-stop fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(guard.hard_stop_reason.is_some());
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_hard_stop")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_refresh_returns_error_on_fatal_exposure_hard_cap_risk_event_write() -> Result<()>
+    {
+        let (store, db_path) = make_test_store("exposure-hard-cap-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 1.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        store.insert_shadow_lot("wallet-a", "token-a", 10.0, 1.2, opened_ts)?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_exposure_hard_cap_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_exposure_hard_cap'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = guard
+            .maybe_refresh_db_state(&store, now)
+            .expect_err("fatal exposure hard-cap risk event write must abort refresh");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains(
+                "failed to persist shadow risk exposure hard cap event with fatal sqlite I/O"
+            ),
+            "expected hard-cap fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(guard.exposure_hard_blocked);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_exposure_hard_cap")?,
+            0
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_refresh_returns_error_on_fatal_soft_exposure_pause_risk_event_write() -> Result<()>
+    {
+        let (store, db_path) = make_test_store("soft-exposure-pause-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.6, opened_ts)?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_soft_pause_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_pause'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = guard
+            .maybe_refresh_db_state(&store, now)
+            .expect_err("fatal soft-exposure pause risk event write must abort refresh");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains(
+                "failed to persist shadow risk soft exposure pause event with fatal sqlite I/O"
+            ),
+            "expected soft-pause fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(guard.soft_exposure_pause_latched);
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 0);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -7231,6 +7443,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn shadow_open_lot_refresh_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is busy");
         assert!(!shadow_open_lot_refresh_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn shadow_risk_state_event_error_requires_abort_on_xshmmap_io_failure() {
+        let error = anyhow!(
+            "failed to insert risk event: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(shadow_risk_state_event_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn shadow_risk_state_event_error_does_not_require_abort_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!shadow_risk_state_event_error_requires_abort(&error));
     }
 
     #[test]

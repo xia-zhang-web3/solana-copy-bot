@@ -3090,10 +3090,11 @@ Ordered coder follow-up queue:
    17. `DONE 2026-03-14` startup durable pause restore now fails closed on fatal SQLite I/O while busy/locked pause-restore reads remain warn-only and the existing soft/timed/cleared overlap restore semantics stay covered,
    18. `DONE 2026-03-14` periodic shadow-risk background refresh now fails closed on fatal SQLite I/O while busy/locked refresh failures stay warn-only and existing buy-path throttle / hysteresis / hard-stop semantics remain unchanged,
    19. `DONE 2026-03-14` shadow snapshot refresh of `open_shadow_lots` now fails closed on fatal SQLite I/O while busy/locked refresh failures remain warn-only and existing causal-holdback semantics stay covered,
-   20. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes / startup durable pause restore / periodic shadow-risk background refresh / shadow open-lot refresh:
+   20. `DONE 2026-03-14` `ShadowRiskGuard` state-event writes inside `maybe_refresh_db_state()` now fail closed on fatal SQLite I/O for hard-stop / hard-exposure-cap / soft-exposure-pause transitions while busy/locked writes stay warn-only and generic timed-pause / generic risk-event paths remain separate follow-ups,
+   21. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes / startup durable pause restore / periodic shadow-risk background refresh / shadow open-lot refresh / `ShadowRiskGuard` state-event writes:
       1. verify other non-startup write paths have the right fatal vs retryable semantics,
       2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
-   21. not closed by either `e24eca2` or `8caa9b7`.
+   22. not closed by either `e24eca2` or `8caa9b7`.
 6. `P2` only after instrumentation decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,
