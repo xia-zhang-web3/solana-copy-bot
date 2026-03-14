@@ -434,6 +434,10 @@ fn shadow_risk_pause_restore_error_requires_restart(error: &anyhow::Error) -> bo
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn shadow_risk_background_refresh_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn persist_runtime_risk_event_or_warn(
     store: &SqliteStore,
     event_type: &str,
@@ -2602,6 +2606,10 @@ async fn run_app_loop(
                     continue;
                 }
                 if let Err(error) = shadow_risk_guard.maybe_refresh_db_state(&store, now) {
+                    if shadow_risk_background_refresh_error_requires_restart(&error) {
+                        return Err(error)
+                            .context("shadow risk background refresh failed with fatal sqlite I/O");
+                    }
                     if shadow_risk_guard.on_risk_refresh_error(now) {
                         warn!(error = %error, "shadow risk background refresh failed");
                     }
@@ -7174,6 +7182,24 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn shadow_risk_pause_restore_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!shadow_risk_pause_restore_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn shadow_risk_background_refresh_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed refreshing shadow risk state: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(shadow_risk_background_refresh_error_requires_restart(
+            &error
+        ));
+    }
+
+    #[test]
+    fn shadow_risk_background_refresh_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!shadow_risk_background_refresh_error_requires_restart(
+            &error
+        ));
     }
 
     #[test]
