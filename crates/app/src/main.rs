@@ -418,6 +418,10 @@ fn stale_lot_cleanup_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn alert_delivery_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -2455,6 +2459,10 @@ async fn run_app_loop(
                         }
                         Ok(_) => {}
                         Err(error) => {
+                            if alert_delivery_error_requires_restart(&error) {
+                                return Err(error)
+                                    .context("alert delivery poll failed with fatal sqlite I/O");
+                            }
                             warn!(error = %error, "alert delivery poll failed");
                         }
                     }
@@ -7049,6 +7057,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn stale_lot_cleanup_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is busy");
         assert!(!stale_lot_cleanup_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn alert_delivery_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed to advance alert delivery cursor: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(alert_delivery_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn alert_delivery_error_does_not_require_restart_on_webhook_failure() {
+        let error = anyhow!("alert webhook request failed");
+        assert!(!alert_delivery_error_requires_restart(&error));
     }
 
     #[test]

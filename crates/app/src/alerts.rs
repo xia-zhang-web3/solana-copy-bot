@@ -420,6 +420,54 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn deliver_pending_returns_error_on_fatal_cursor_write_failure() -> Result<()> {
+        let (server_url, captured, handle) = spawn_capture_server(1).await?;
+        let dispatcher = AlertDispatcher {
+            client: Client::builder()
+                .timeout(Duration::from_millis(1_000))
+                .build()?,
+            webhook_url: Url::parse(&server_url)?,
+            test_on_startup: false,
+        };
+        let (store, db_path) = make_test_store("alert-delivery-cursor-fatal")?;
+        let now = Utc::now();
+        store.insert_risk_event("warn_event", "warn", now, Some("{\"severity\":\"warn\"}"))?;
+
+        let conn = rusqlite::Connection::open(Path::new(&db_path))?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_alert_delivery_cursor_insert
+             BEFORE INSERT ON alert_delivery_state
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = dispatcher
+            .deliver_pending(&store)
+            .await
+            .expect_err("fatal alert-delivery cursor write must propagate");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("failed to advance alert delivery cursor"),
+            "expected alert-delivery cursor context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to upsert alert delivery cursor"),
+            "expected sqlite cursor upsert context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert_eq!(captured.lock().await.len(), 1);
+        assert_eq!(store.load_alert_delivery_cursor(ALERT_DELIVERY_CHANNEL)?, None);
+
+        handle.abort();
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
     #[test]
     fn from_env_rejects_invalid_timeout() {
         with_alert_env(
