@@ -2805,3 +2805,273 @@ Formal verdict:
 1. The stale-close deadlock that kept old shadow lots open forever is now closed in live.
 2. The old exposure-soft-cap pause should no longer be pinned by immortal stale lots, because open shadow exposure was fully cleared.
 3. The immediate follow-up blocker is now the shadow hard-stop caused by the forced one-time zero-price realization of the stale backlog.
+
+### 2026-03-13 — sqlite restart hardening rolled out successfully; protected first cycle and normal second-cycle recovery confirmed, with residual cursor-persist contention to monitor
+
+Источник:
+
+1. `ops/server_reports/2026-03-13_afternoon_sqlite_restart_hardening_rollout_report.md`
+
+Краткий статус:
+
+1. Deployed `origin/main = 06ade443fe94f9149cc17aef5905f1f86adf46d9` to live.
+   1. Functional runtime delta came from `dc107bb Harden sqlite restart recovery paths`.
+   2. `06ade44` itself is docs-only.
+2. Performed a controlled rollout:
+   1. server repo fast-forwarded from `d06da0a`,
+   2. rebuilt `copybot-app`, `copybot-adapter`, `copybot-executor`,
+   3. backed up live config at `/etc/solana-copy-bot/live.server.toml.bak.20260313T123101Z`,
+   4. added server-local parity knob `risk.execution_buy_cooldown_seconds = 60`,
+   5. stopped services,
+   6. ran static `PRAGMA wal_checkpoint(TRUNCATE);`,
+   7. restarted all three services cleanly.
+3. Startup WAL hardening executed exactly as intended:
+   1. startup log shows `wal_checkpoint_mode=truncate`,
+   2. `wal_checkpoint_busy=0`,
+   3. startup heartbeat reported `sqlite_wal_size_bytes = 16512`,
+   4. initial contention counters came up `0 / 0`.
+4. The first post-restart discovery cycle used the protected bridge path:
+   1. `scoring_source = persisted_wallet_metrics_truncated_warm_restore`,
+   2. `follow_promoted = 0`,
+   3. `follow_demoted = 0`,
+   4. `metrics_written = 0`,
+   5. `metrics_persisted = false`,
+   6. `followlist_activations_suppressed = true`,
+   7. `followlist_deactivations_suppressed = true`,
+   8. `active_follow_wallets = 126`.
+5. Subsequent cycles returned to normal capped-raw semantics:
+   1. by `2026-03-13T12:36:18Z` discovery was back on `scoring_source = raw_window`,
+   2. no false mass-demotion recurred,
+   3. `follow_promoted = 4` on the first raw cycle,
+   4. `active_follow_wallets` stabilized at `130`,
+   5. later non-recompute cycles stayed `15-27 ms`.
+6. The previous restart-time WAL failure mode did not recur:
+   1. WAL telemetry climbed only to `~62.9M`,
+   2. filesystem-level WAL stayed `~60M`,
+   3. contention counters flattened at `sqlite_busy_error_total = 5`, `sqlite_write_retry_total = 4`,
+   4. no repeat of the earlier `11G WAL + frozen heads` incident.
+
+Операционный вывод:
+
+1. `dc107bb` removed the specific restart-time failure mode that previously combined capped warm-restore, WAL growth, and followlist collapse for this rollout window.
+2. The restart bridge is now one-shot in live practice:
+   1. protected first cycle,
+   2. ordinary raw-window follow-up cycles,
+   3. no renewed false demotion.
+3. Residual watch item remains:
+   1. one transient `failed persisting discovery runtime cursor` occurred during the first protected cycle,
+   2. bounded contention counters remained non-zero rather than fully flat,
+   3. treat this as monitor-worthy residual cursor-persist contention, not as a closed-forever issue.
+4. This rollout did not address live trading enablement; `execution.enabled` remains `false`.
+
+### Pending follow-up queue — shadow soft-cap / risk-model after 2026-03-13 live stall
+
+Status note:
+
+1. The current live stall analysis split the work into four ordered PR slices.
+2. `PR1` is the soft-cap hysteresis / non-rearming pause fix.
+3. `PR2`, `PR3`, and `PR4` are still required follow-up work and should not be lost if chat context resets.
+
+Ordered follow-up queue:
+
+1. `PR2` — split accounting exposure vs risk exposure.
+   1. Add durable `shadow_lots.risk_context`.
+   2. Add `shadow_risk_open_notional_*` alongside generic open-notional accounting.
+   3. Switch `ShadowRiskGuard` to risk-only exposure while keeping generic accounting exposure for reporting/evidence.
+2. `PR3` — operator quarantine path plus reporting/snapshot.
+   1. Add explicit operator path for quarantining legacy/pinned lots.
+   2. Keep quarantined lots in accounting/PnL/evidence.
+   3. Exclude quarantined lots from live risk gating and propagate context into close-side risk metrics.
+   4. Extend runtime/reporting surfaces with risk-context breakdown.
+3. `PR4` — optional explicit recovery path for stale lots in the `6h..12h` dead zone.
+   1. Do not change default business semantics silently.
+   2. Add explicit operator/recovery mode only.
+   3. Cover activation semantics with dedicated tests.
+
+Non-goal reminder:
+
+1. Raising `shadow_soft_exposure_cap_sol` alone is not a fix.
+2. Shifting `max_hold_hours` or `shadow_stale_close_terminal_zero_price_hours` alone is not a fix.
+
+### 2026-03-13 evening — PR2/PR3/PR4 server rollout accepted
+
+Artifacts:
+
+- `ops/server_reports/2026-03-13_evening_pr234_risk_rollout_report.md`
+
+Summary:
+
+1. Deployed `origin/main = 06ade443fe94f9149cc17aef5905f1f86adf46d9` to live, with functional runtime delta from:
+   1. `dc107bb Harden sqlite restart recovery paths`
+   2. `f50eef2 Split shadow risk exposure accounting`
+   3. `a400e43 Add shadow quarantine risk controls`
+   4. `9743a59 Add stale close recovery dead-zone mode`
+2. Applied server-local risk parity:
+   1. `execution_buy_cooldown_seconds = 60`
+   2. `max_hold_hours = 6`
+   3. `shadow_stale_close_terminal_zero_price_hours = 12`
+   4. `shadow_stale_close_recovery_zero_price_enabled = false`
+   5. `shadow_soft_exposure_cap_sol = 10.0`
+   6. `shadow_soft_exposure_resume_below_sol = 9.5`
+3. Live migrations applied:
+   1. `0036_shadow_close_context.sql`
+   2. `0037_risk_events_type_index.sql`
+   3. `0038_shadow_lot_risk_context.sql`
+4. Runtime outcome:
+   1. all 3 services active, `NRestarts = 0`
+   2. first restart cycle used protected `persisted_wallet_metrics_truncated_warm_restore`
+   3. no false mass demotion on warm restart
+   4. subsequent cycles returned to `raw_window`
+   5. `followlist.active = 220`
+   6. `copy_signals = 509105`
+   7. `shadow_lots_open = 51`
+   8. `shadow_closed_trades = 732`
+5. Important semantic change confirmed in live:
+   1. soft-cap pause was restored from durable state,
+   2. no new `shadow risk timed pause activated` spam appeared after restart,
+   3. latest `shadow_risk_pause` event remained pre-rollout.
+6. Residual note:
+   1. one transient `failed persisting discovery runtime cursor` occurred during the first protected cycle,
+   2. treat this as residual cursor-persist contention to monitor, not a fresh rollback blocker.
+
+### 2026-03-14 morning — shadow stale policy recommendation after overnight evidence
+
+Artifacts:
+
+- `ops/server_reports/2026-03-14_morning_shadow_policy_analysis.md`
+
+Evidence window:
+
+1. start: `2026-03-13 20:48 Europe/Kiev`
+2. end: `2026-03-14 09:31 Europe/Kiev`
+3. duration: about `12h 43m`
+
+Key findings:
+
+1. Normal `market` closes after cleanup:
+   1. `139` closes
+   2. `+2.127307293 SOL`
+   3. all `market` closes completed in `< 1h`
+2. Automatic stale tail after cleanup:
+   1. `52` `stale_terminal_zero_price` closes
+   2. `-9.533076415 SOL`
+   3. average hold `~12.06h`
+3. Loss concentration:
+   1. the stale loss is concentrated in a handful of tokens,
+   2. this looks like illiquid/rug tail behavior rather than broad entry failure.
+
+Working conclusion:
+
+1. The strategy currently behaves like a short-horizon strategy.
+2. The current policy:
+   1. `max_hold_hours = 6`
+   2. `shadow_stale_close_terminal_zero_price_hours = 12`
+   is too slow for the observed edge.
+3. The dominant loss source is stale inventory surviving until `~12h` and then zero-closing.
+
+Recommended next policy step:
+
+1. change `max_hold_hours` from `6` to `2`
+2. change `shadow_stale_close_terminal_zero_price_hours` from `12` to `4`
+3. keep `shadow_stale_close_recovery_zero_price_enabled = false` on the first rollout for clean attribution
+
+Monitoring after such rollout should focus on:
+
+1. `market` close count and PnL,
+2. stale-terminal close count and loss,
+3. hold-time distribution,
+4. open-lot age buckets,
+5. `shadow_risk_pause` frequency,
+6. open exposure / risk-notional.
+
+### 2026-03-14 midday — post-hotfix Yellowstone ingestion follow-up to preserve
+
+Status:
+
+1. The false BUY gate on Yellowstone `replaced_ratio` is fixed by `e24eca2`, but this did not close the broader ingestion-consumer bottleneck track.
+2. Current working verdict from server audit:
+   1. `replaced_ratio` is a valid overflow metric,
+   2. the immediate false gate was the wrong policy on top of it,
+   3. the remaining work is consumer-path decoupling + Yellowstone-specific telemetry + separate SQLite/WAL reliability investigation.
+
+Server-auditor findings to preserve:
+
+1. The main app loop is still serialized on observed-swap persistence:
+   1. after `ingestion.next_swap()` the hot path still does `observed_swap_writer.write(&swap).await`,
+   2. the writer uses a per-item oneshot reply,
+   3. so the channel hides work on another thread but does not actually decouple the consumer loop from persistence latency.
+2. The current order likely pays storage cost before relevance is known:
+   1. raw observed swap is persisted first,
+   2. only after that do follow/relevance drops happen,
+   3. logs indicate many drops are `not_followed`, so irrelevant Yellowstone traffic may still be paying the SQLite path first.
+3. The observed-swap writer thread still mixes multiple duties on one ack path:
+   1. raw insert,
+   2. `wallet_activity_days`,
+   3. optional discovery aggregates / coverage watermarking,
+   4. retention sweep / WAL checkpoint side work.
+4. Yellowstone observability is still incomplete:
+   1. queue depth is exposed only through generic fields,
+   2. `fetch_to_output_queue_depth` is still hardcoded `0`,
+   3. we do not yet have enough stage-specific telemetry to localize burst pressure cleanly.
+5. Available archive evidence does not prove a permanent steady-state overflow:
+   1. there is evidence of transient startup pressure,
+   2. there are also healthy windows with `replaced_oldest = 0` and flat SQLite contention counters,
+   3. so treat the current bottleneck as a burst/cold-start consumer-path problem until stronger proof exists.
+6. There is a separate storage reliability track:
+   1. repeated SQLite `xShmMap` / disk-I/O style failures were seen on observed-swap batch commit,
+   2. this is a real operational risk,
+   3. but it should be tracked separately from the false-gate hotfix and not conflated with steady-state Yellowstone pressure.
+
+Ordered coder follow-up queue:
+
+1. `DONE 2026-03-14` decouple `ingestion.next_swap()` from synchronous observed-swap ack.
+   1. Closed by `8caa9b7 Decouple observed swap persistence from app loop`.
+   2. Hot path now uses bounded `enqueue()` instead of per-swap `write().await`.
+   3. Follow-up hardening included:
+      1. bounded recent-signature dedupe before scheduler path,
+      2. async raw batch insert failure now terminates the writer and makes the next enqueue fail-fast,
+      3. old ack-based `write()` path remains for callers that still need commit outcome.
+   4. This closed the immediate consumer-loop serialization slice, but did not yet answer the relevance-ordering or telemetry gaps below.
+2. `DONE 2026-03-14` add consumer-path telemetry for the remaining Yellowstone bottleneck.
+   1. `de1a7ab Add Yellowstone output queue telemetry` exposed explicit:
+      1. `yellowstone_output_queue_depth`,
+      2. `yellowstone_output_queue_capacity`,
+      3. `yellowstone_output_queue_fill_ratio`,
+      4. `yellowstone_output_oldest_age_ms`
+      in the ingestion telemetry/report path from actual queue snapshots.
+   2. `00b23ff Add observed swap writer runtime telemetry` exposed:
+      1. `observed_swap_writer_pending_requests`,
+      2. `observed_swap_writer_write_ms_p95`,
+      3. blocked-batch / fast-success / async-failure semantics through regressions.
+   3. `b63bf6a Add app consumer loop telemetry` exposed:
+      1. `app_consumer_swaps_seen`,
+      2. `app_follow_rejected`,
+      3. `app_follow_rejected_ratio`,
+      4. `app_consumer_loop_time_ms_p95`.
+   4. `4522eef Expose Yellowstone queue metrics in runtime snapshots` carried the Yellowstone output-queue fields through `IngestionRuntimeSnapshot`, so app/runtime consumers can read them without parsing logs.
+   5. Remaining telemetry gap:
+      1. `fetch_to_output_queue_depth` is still hardcoded `0`,
+      2. downstream consumers are not yet acting on the new Yellowstone queue fields.
+3. `DONE 2026-03-14` remove retention/WAL maintenance from the observed-swap writer hot path.
+   1. Closed by `4f5f343 Move observed swap retention out of writer loop`.
+   2. The writer now owns:
+      1. raw insert,
+      2. `wallet_activity_days`,
+      3. discovery aggregate / coverage watermark path.
+   3. Observed-swap retention sweep and WAL checkpoint now run on a separate app-side maintenance task.
+   4. Existing retention semantics remain covered:
+      1. stale pruning still works,
+      2. discovery backfill source protection still defers raw retention pruning.
+4. `P1` reconsider ordering between relevance gate and raw persistence.
+   1. decide explicitly whether raw observed-swap persistence is required before follow/relevance filtering,
+   2. if not required, move cheap follow gating earlier so irrelevant Yellowstone traffic does not pay SQLite cost first,
+   3. if required, keep persistence fully decoupled from trading-path latency and document the consistency tradeoff.
+5. `P1` investigate SQLite/WAL reliability as a separate track.
+   1. filesystem / WAL / checkpoint / runtime environment,
+   2. repeated `xShmMap` / disk-I/O failures stay on this track,
+   3. not a `replaced_ratio` tuning exercise,
+   4. not closed by either `e24eca2` or `8caa9b7`.
+6. `P2` only after instrumentation decide whether runtime tuning is needed.
+   1. do not start with simply raising queue capacity,
+   2. do not start with simply raising Yellowstone thresholds,
+   3. first prove where burst pressure really sits after the decoupling slice.
