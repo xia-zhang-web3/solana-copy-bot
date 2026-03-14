@@ -2552,7 +2552,7 @@ async fn run_app_loop(
                             &mut open_shadow_lots,
                             &mut shadow_drop_reason_counts,
                             &mut shadow_drop_stage_counts,
-                        );
+                        )?;
                     }
                     Some(Err(error)) => {
                         warn!(error = %error, "shadow task join failed");
