@@ -2,8 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
-use std::path::Path;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -13,7 +13,8 @@ use tracing::{info, warn};
 
 const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
-const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
+pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
+    StdDuration::from_secs(15 * 60);
 const OBSERVED_SWAP_WRITER_LATENCY_SAMPLE_CAPACITY: usize = 512;
 pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT: &str =
     "observed swap writer channel closed";
@@ -24,28 +25,41 @@ pub(crate) const OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT: &str =
 struct ObservedSwapWriterConfig {
     channel_capacity: usize,
     batch_max_size: usize,
-    retention_days: u32,
-    aggregate_retention_days: u32,
-    retention_sweep_interval: StdDuration,
     aggregate_writes_enabled: bool,
     aggregate_write_config: DiscoveryAggregateWriteConfig,
 }
 
 impl ObservedSwapWriterConfig {
     fn production(
-        retention_days: u32,
-        aggregate_retention_days: u32,
         aggregate_writes_enabled: bool,
         aggregate_write_config: DiscoveryAggregateWriteConfig,
     ) -> Self {
         Self {
             channel_capacity: OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
             batch_max_size: OBSERVED_SWAP_BATCH_MAX_SIZE,
-            retention_days,
-            aggregate_retention_days,
-            retention_sweep_interval: OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL,
             aggregate_writes_enabled,
             aggregate_write_config,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ObservedSwapRetentionConfig {
+    pub retention_days: u32,
+    pub aggregate_retention_days: u32,
+    pub aggregate_writes_enabled: bool,
+}
+
+impl ObservedSwapRetentionConfig {
+    pub(crate) fn production(
+        retention_days: u32,
+        aggregate_retention_days: u32,
+        aggregate_writes_enabled: bool,
+    ) -> Self {
+        Self {
+            retention_days,
+            aggregate_retention_days,
+            aggregate_writes_enabled,
         }
     }
 }
@@ -81,7 +95,10 @@ impl ObservedSwapWriterTelemetry {
         let now = Instant::now();
         if let Ok(mut samples) = self.write_latency_ms_samples.lock() {
             for queued_at in queued_at {
-                let latency_ms = now.duration_since(*queued_at).as_millis().min(u128::from(u64::MAX)) as u64;
+                let latency_ms = now
+                    .duration_since(*queued_at)
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64;
                 if samples.len() >= OBSERVED_SWAP_WRITER_LATENCY_SAMPLE_CAPACITY {
                     let _ = samples.pop_front();
                 }
@@ -90,11 +107,11 @@ impl ObservedSwapWriterTelemetry {
             self.last_write_latency_ms_p95
                 .store(percentile_from_deque(&samples, 0.95), Ordering::Relaxed);
         }
-        let _ = self.pending_requests.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(current.saturating_sub(queued_at.len())),
-        );
+        let _ =
+            self.pending_requests
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(queued_at.len()))
+                });
     }
 
     fn snapshot(&self) -> ObservedSwapWriterSnapshot {
@@ -131,19 +148,12 @@ impl ObservedSwapWriter {
 
     pub(crate) fn start(
         sqlite_path: String,
-        retention_days: u32,
-        aggregate_retention_days: u32,
         aggregate_writes_enabled: bool,
         aggregate_write_config: DiscoveryAggregateWriteConfig,
     ) -> Result<Self> {
         Self::start_with_config(
             sqlite_path,
-            ObservedSwapWriterConfig::production(
-                retention_days,
-                aggregate_retention_days,
-                aggregate_writes_enabled,
-                aggregate_write_config,
-            ),
+            ObservedSwapWriterConfig::production(aggregate_writes_enabled, aggregate_write_config),
         )
     }
 
@@ -153,7 +163,9 @@ impl ObservedSwapWriter {
         let worker_telemetry = Arc::clone(&telemetry);
         let worker = thread::Builder::new()
             .name("copybot-observed-swap-writer".to_string())
-            .spawn(move || observed_swap_writer_loop(sqlite_path, receiver, config, worker_telemetry))
+            .spawn(move || {
+                observed_swap_writer_loop(sqlite_path, receiver, config, worker_telemetry)
+            })
             .context("failed to spawn observed swap writer thread")?;
         Ok(Self {
             sender,
@@ -211,9 +223,6 @@ fn observed_swap_writer_loop(
         format!("failed to open sqlite db for observed swap writer: {sqlite_path}")
     })?;
     run_aggregate_startup_replay(&store, &config)?;
-    let mut last_retention_sweep = Instant::now()
-        .checked_sub(config.retention_sweep_interval)
-        .unwrap_or_else(Instant::now);
 
     while let Some(first_request) = receiver.blocking_recv() {
         let mut batch = vec![first_request];
@@ -321,66 +330,78 @@ fn observed_swap_writer_loop(
                     .context("observed swap writer stopping after raw batch insert failure");
             }
         }
-
-        if last_retention_sweep.elapsed() >= config.retention_sweep_interval {
-            let now = Utc::now();
-            let nominal_cutoff = now - ChronoDuration::days(config.retention_days.max(1) as i64);
-            let effective_cutoff = match store.load_discovery_scoring_backfill_protected_since(now)
-            {
-                Ok(Some(protected_since)) => nominal_cutoff.min(protected_since),
-                Ok(None) => nominal_cutoff,
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        retention_days = config.retention_days,
-                        "failed loading discovery scoring backfill source protection; using nominal observed swap retention cutoff"
-                    );
-                    nominal_cutoff
-                }
-            };
-            match store.delete_observed_swaps_before(effective_cutoff) {
-                Ok(deleted_raw) => {
-                    let deleted_scoring = if config.aggregate_writes_enabled {
-                        let aggregate_cutoff = now
-                            - ChronoDuration::days(config.aggregate_retention_days.max(1) as i64);
-                        match store.prune_discovery_scoring_before(aggregate_cutoff) {
-                            Ok(deleted_scoring) => deleted_scoring,
-                            Err(error) => {
-                                warn!(
-                                    error = %error,
-                                    aggregate_retention_days = config.aggregate_retention_days,
-                                    "discovery scoring retention sweep failed"
-                                );
-                                0
-                            }
-                        }
-                    } else {
-                        0
-                    };
-                    run_retention_wal_checkpoint(
-                        &store,
-                        &config,
-                        nominal_cutoff,
-                        effective_cutoff,
-                        deleted_raw,
-                        deleted_scoring,
-                    );
-                }
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        retention_days = config.retention_days,
-                        nominal_observed_swap_cutoff = %nominal_cutoff,
-                        effective_observed_swap_cutoff = %effective_cutoff,
-                        "observed swap retention sweep failed"
-                    );
-                }
-            }
-            last_retention_sweep = Instant::now();
-        }
     }
 
     Ok(())
+}
+
+pub(crate) fn run_observed_swap_retention_maintenance_once(
+    sqlite_path: &str,
+    config: ObservedSwapRetentionConfig,
+) -> Result<()> {
+    let store = SqliteStore::open(Path::new(sqlite_path)).with_context(|| {
+        format!("failed to open sqlite db for observed swap retention maintenance: {sqlite_path}")
+    })?;
+    run_observed_swap_retention_maintenance(&store, config);
+    Ok(())
+}
+
+fn run_observed_swap_retention_maintenance(
+    store: &SqliteStore,
+    config: ObservedSwapRetentionConfig,
+) {
+    let now = Utc::now();
+    let nominal_cutoff = now - ChronoDuration::days(config.retention_days.max(1) as i64);
+    let effective_cutoff = match store.load_discovery_scoring_backfill_protected_since(now) {
+        Ok(Some(protected_since)) => nominal_cutoff.min(protected_since),
+        Ok(None) => nominal_cutoff,
+        Err(error) => {
+            warn!(
+                error = %error,
+                retention_days = config.retention_days,
+                "failed loading discovery scoring backfill source protection; using nominal observed swap retention cutoff"
+            );
+            nominal_cutoff
+        }
+    };
+    match store.delete_observed_swaps_before(effective_cutoff) {
+        Ok(deleted_raw) => {
+            let deleted_scoring = if config.aggregate_writes_enabled {
+                let aggregate_cutoff =
+                    now - ChronoDuration::days(config.aggregate_retention_days.max(1) as i64);
+                match store.prune_discovery_scoring_before(aggregate_cutoff) {
+                    Ok(deleted_scoring) => deleted_scoring,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            aggregate_retention_days = config.aggregate_retention_days,
+                            "discovery scoring retention sweep failed"
+                        );
+                        0
+                    }
+                }
+            } else {
+                0
+            };
+            run_retention_wal_checkpoint(
+                store,
+                config,
+                nominal_cutoff,
+                effective_cutoff,
+                deleted_raw,
+                deleted_scoring,
+            );
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                retention_days = config.retention_days,
+                nominal_observed_swap_cutoff = %nominal_cutoff,
+                effective_observed_swap_cutoff = %effective_cutoff,
+                "observed swap retention sweep failed"
+            );
+        }
+    }
 }
 
 fn percentile_from_deque(values: &VecDeque<u64>, q: f64) -> u64 {
@@ -395,7 +416,7 @@ fn percentile_from_deque(values: &VecDeque<u64>, q: f64) -> u64 {
 
 fn run_retention_wal_checkpoint(
     store: &SqliteStore,
-    config: &ObservedSwapWriterConfig,
+    config: ObservedSwapRetentionConfig,
     nominal_cutoff: chrono::DateTime<Utc>,
     effective_cutoff: chrono::DateTime<Utc>,
     deleted_raw: usize,
@@ -691,13 +712,8 @@ mod tests {
         let runtime_handle = thread::spawn(move || -> Result<bool> {
             let runtime = Builder::new_current_thread().enable_all().build()?;
             runtime.block_on(async move {
-                let writer = ObservedSwapWriter::start(
-                    sqlite_path.clone(),
-                    45,
-                    45,
-                    true,
-                    aggregate_write_config(),
-                )?;
+                let writer =
+                    ObservedSwapWriter::start(sqlite_path.clone(), true, aggregate_write_config())?;
                 let swap_for_task = swap.clone();
                 let insert_task = tokio::spawn(async move { writer.write(&swap_for_task).await });
 
@@ -778,8 +794,7 @@ mod tests {
 
         let runtime = Builder::new_current_thread().enable_all().build()?;
         let writer = runtime.block_on(async move {
-            let writer =
-                ObservedSwapWriter::start(sqlite_path, 45, 45, true, aggregate_write_config())?;
+            let writer = ObservedSwapWriter::start(sqlite_path, true, aggregate_write_config())?;
             timeout(Duration::from_millis(50), writer.enqueue(&swap))
                 .await
                 .context("observed swap enqueue should not wait for batch commit")??;
@@ -851,8 +866,6 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                45,
-                45,
                 true,
                 aggregate_write_config(),
             )
@@ -935,9 +948,6 @@ mod tests {
                 ObservedSwapWriterConfig {
                     channel_capacity: 16,
                     batch_max_size: 8,
-                    retention_days: 45,
-                    aggregate_retention_days: 31,
-                    retention_sweep_interval: StdDuration::from_secs(3600),
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
                 },
@@ -1005,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn observed_swap_writer_applies_retention_sweep() -> Result<()> {
+    fn observed_swap_writer_keeps_retention_out_of_inline_batch_path() -> Result<()> {
         let unique = format!(
             "copybot-app-observed-swap-retention-{}-{}",
             std::process::id(),
@@ -1029,9 +1039,6 @@ mod tests {
                 ObservedSwapWriterConfig {
                     channel_capacity: 16,
                     batch_max_size: 8,
-                    retention_days: 1,
-                    aggregate_retention_days: 7,
-                    retention_sweep_interval: StdDuration::ZERO,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
                 },
@@ -1069,17 +1076,36 @@ mod tests {
         })?;
 
         let verify_store = SqliteStore::open(Path::new(&db_path))?;
-        let swaps = verify_store.load_observed_swaps_since(Utc::now() - ChronoDuration::days(7))?;
-        assert_eq!(swaps.len(), 1);
-        assert_eq!(swaps[0].signature, "sig-observed-swap-new");
+        let swaps_before_maintenance =
+            verify_store.load_observed_swaps_since(Utc::now() - ChronoDuration::days(7))?;
+        assert_eq!(
+            swaps_before_maintenance.len(),
+            2,
+            "writer should no longer prune stale rows inline while inserting fresh observed swaps"
+        );
+
+        super::run_observed_swap_retention_maintenance_once(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            super::ObservedSwapRetentionConfig::production(1, 7, true),
+        )?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps_after_maintenance =
+            verify_store.load_observed_swaps_since(Utc::now() - ChronoDuration::days(7))?;
+        assert_eq!(swaps_after_maintenance.len(), 1);
+        assert_eq!(
+            swaps_after_maintenance[0].signature,
+            "sig-observed-swap-new"
+        );
         let _ = std::fs::remove_file(db_path);
 
         Ok(())
     }
 
     #[test]
-    fn observed_swap_writer_respects_backfill_source_protection_during_retention_sweep(
-    ) -> Result<()> {
+    fn observed_swap_retention_maintenance_respects_backfill_source_protection() -> Result<()> {
         let unique = format!(
             "copybot-app-observed-swap-retention-protect-{}-{}",
             std::process::id(),
@@ -1111,41 +1137,12 @@ mod tests {
             Utc::now() + ChronoDuration::hours(1),
         )?;
 
-        let runtime = Builder::new_current_thread().enable_all().build()?;
-        runtime.block_on(async {
-            let writer = ObservedSwapWriter::start_with_config(
-                db_path
-                    .to_str()
-                    .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    retention_days: 1,
-                    aggregate_retention_days: 7,
-                    retention_sweep_interval: StdDuration::ZERO,
-                    aggregate_writes_enabled: false,
-                    aggregate_write_config: aggregate_write_config(),
-                },
-            )?;
-
-            let fresh_swap = SwapEvent {
-                wallet: "wallet-protected-new".to_string(),
-                dex: "raydium".to_string(),
-                token_in: "So11111111111111111111111111111111111111112".to_string(),
-                token_out: "token-protected-new".to_string(),
-                amount_in: 2.0,
-                amount_out: 20.0,
-                signature: "sig-protected-new".to_string(),
-                slot: 101,
-                ts_utc: Utc::now(),
-                exact_amounts: None,
-            };
-
-            writer.write(&fresh_swap).await?;
-            writer.shutdown()?;
-            Ok::<(), anyhow::Error>(())
-        })?;
+        super::run_observed_swap_retention_maintenance_once(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            super::ObservedSwapRetentionConfig::production(1, 7, false),
+        )?;
 
         let verify_store = SqliteStore::open(Path::new(&db_path))?;
         let stale_rows = verify_store
@@ -1220,9 +1217,6 @@ mod tests {
                 ObservedSwapWriterConfig {
                     channel_capacity: 16,
                     batch_max_size: 8,
-                    retention_days: 45,
-                    aggregate_retention_days: 31,
-                    retention_sweep_interval: StdDuration::from_secs(3600),
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
                 },
@@ -1262,9 +1256,6 @@ mod tests {
                 ObservedSwapWriterConfig {
                     channel_capacity: 16,
                     batch_max_size: 8,
-                    retention_days: 45,
-                    aggregate_retention_days: 31,
-                    retention_sweep_interval: StdDuration::from_secs(3600),
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
                 },
@@ -1378,9 +1369,6 @@ mod tests {
             ObservedSwapWriterConfig {
                 channel_capacity: 16,
                 batch_max_size: 8,
-                retention_days: 45,
-                aggregate_retention_days: 31,
-                retention_sweep_interval: StdDuration::from_secs(3600),
                 aggregate_writes_enabled: true,
                 aggregate_write_config: aggregate_write_config(),
             },
@@ -1436,9 +1424,6 @@ mod tests {
                 ObservedSwapWriterConfig {
                     channel_capacity: 16,
                     batch_max_size: 8,
-                    retention_days: 45,
-                    aggregate_retention_days: 31,
-                    retention_sweep_interval: StdDuration::from_secs(3600),
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
                 },

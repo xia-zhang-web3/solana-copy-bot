@@ -49,9 +49,10 @@ use crate::config_contract::{contains_placeholder_value, validate_execution_runt
 use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
 use crate::history_retention::HistoryRetentionRunner;
-use crate::observed_swap_writer::ObservedSwapWriter;
 use crate::observed_swap_writer::{
-    OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT,
+    run_observed_swap_retention_maintenance_once, ObservedSwapRetentionConfig, ObservedSwapWriter,
+    OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL, OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT,
+    OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT,
 };
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
@@ -2120,12 +2121,20 @@ async fn run_app_loop(
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
     let observed_swap_writer = ObservedSwapWriter::start(
         sqlite_path.clone(),
-        observed_swaps_retention_days,
-        discovery_scoring_retention_days,
         discovery_scoring_writes_enabled,
         discovery_aggregate_write_config,
     )
     .context("failed to start observed swap writer")?;
+    let observed_swap_retention_config = ObservedSwapRetentionConfig::production(
+        observed_swaps_retention_days,
+        discovery_scoring_retention_days,
+        discovery_scoring_writes_enabled,
+    );
+    let observed_swap_retention_sweep_interval =
+        Duration::from_secs(OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL.as_secs().max(1));
+    let mut last_observed_swap_retention_sweep = StdInstant::now()
+        .checked_sub(observed_swap_retention_sweep_interval)
+        .unwrap_or_else(StdInstant::now);
     let history_retention = HistoryRetentionRunner::new(history_retention_config);
     let history_retention_sweep_interval = Duration::from_secs(history_retention.sweep_seconds());
     let mut last_history_retention_sweep = StdInstant::now()
@@ -2136,6 +2145,7 @@ async fn run_app_loop(
     let mut execution_hard_stop_pause_logged = false;
     let mut execution_shadow_risk_pause_logged_reason: Option<String> = None;
     let mut execution_outage_pause_logged = false;
+    let mut observed_swap_retention_handle: Option<JoinHandle<Result<()>>> = None;
     let mut ingestion_error_streak: u32 = 0;
     let mut ingestion_backoff_until: Option<time::Instant> = None;
     operator_emergency_stop.refresh(&store, Utc::now());
@@ -2373,6 +2383,19 @@ async fn run_app_loop(
                     }
                     last_history_retention_sweep = StdInstant::now();
                 }
+                if observed_swap_retention_handle.is_none()
+                    && last_observed_swap_retention_sweep.elapsed()
+                        >= observed_swap_retention_sweep_interval
+                {
+                    let sqlite_path = sqlite_path.clone();
+                    observed_swap_retention_handle = Some(tokio::task::spawn_blocking(move || {
+                        run_observed_swap_retention_maintenance_once(
+                            &sqlite_path,
+                            observed_swap_retention_config,
+                        )
+                    }));
+                    last_observed_swap_retention_sweep = StdInstant::now();
+                }
                 let sqlite_contention = sqlite_contention_snapshot();
                 let wal_size_bytes = std::fs::metadata(format!("{sqlite_path}-wal"))
                     .map(|metadata| metadata.len())
@@ -2432,6 +2455,24 @@ async fn run_app_loop(
                     }
                     Some(Err(error)) => {
                         warn!(error = %error, "execution task join failed");
+                    }
+                    None => {}
+                }
+            }
+            observed_swap_retention_join = async {
+                match observed_swap_retention_handle.as_mut() {
+                    Some(handle) => Some(handle.await),
+                    None => None,
+                }
+            }, if observed_swap_retention_handle.is_some() => {
+                observed_swap_retention_handle = None;
+                match observed_swap_retention_join {
+                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Err(error))) => {
+                        warn!(error = %error, "observed swap retention maintenance failed");
+                    }
+                    Some(Err(error)) => {
+                        warn!(error = %error, "observed swap retention maintenance task join failed");
                     }
                     None => {}
                 }
@@ -2769,6 +2810,9 @@ async fn run_app_loop(
     }
 
     if let Some(handle) = execution_handle.take() {
+        handle.abort();
+    }
+    if let Some(handle) = observed_swap_retention_handle.take() {
         handle.abort();
     }
     if let Some(handle) = discovery_handle.take() {
