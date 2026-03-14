@@ -92,44 +92,53 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
             detail: "upstream ok/accepted flags conflict when status is missing".to_string(),
         });
     }
+
+    let retryable = match parse_optional_bool_field(
+        body,
+        "retryable",
+        "upstream retryable must be boolean when present",
+    ) {
+        Ok(Some(value)) => value,
+        Ok(None) => false,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                retryable: false,
+                code: "upstream_invalid_response".to_string(),
+                detail,
+            });
+        }
+    };
+    let response_code = match parse_optional_non_empty_string_field(
+        body,
+        "code",
+        "upstream code must be non-empty string when present",
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                retryable: false,
+                code: "upstream_invalid_response".to_string(),
+                detail,
+            });
+        }
+    };
+    let response_detail = match parse_optional_non_empty_string_field(
+        body,
+        "detail",
+        "upstream detail must be non-empty string when present",
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return UpstreamOutcome::Reject(ParsedUpstreamReject {
+                retryable: false,
+                code: "upstream_invalid_response".to_string(),
+                detail,
+            });
+        }
+    };
     if is_reject {
-        let retryable = match parse_optional_bool_field(
-            body,
-            "retryable",
-            "upstream reject retryable must be boolean when present",
-        ) {
-            Ok(Some(value)) => value,
-            Ok(None) => false,
-            Err(detail) => {
-                return UpstreamOutcome::Reject(ParsedUpstreamReject {
-                    retryable: false,
-                    code: "upstream_invalid_response".to_string(),
-                    detail,
-                });
-            }
-        };
-        let code = match parse_optional_non_empty_string_field(body, "code") {
-            Ok(Some(value)) => value,
-            Ok(None) => default_reject_code.to_string(),
-            Err(detail) => {
-                return UpstreamOutcome::Reject(ParsedUpstreamReject {
-                    retryable: false,
-                    code: "upstream_invalid_response".to_string(),
-                    detail,
-                });
-            }
-        };
-        let detail = match parse_optional_non_empty_string_field(body, "detail") {
-            Ok(Some(value)) => value,
-            Ok(None) => "upstream rejected request".to_string(),
-            Err(detail) => {
-                return UpstreamOutcome::Reject(ParsedUpstreamReject {
-                    retryable: false,
-                    code: "upstream_invalid_response".to_string(),
-                    detail,
-                });
-            }
-        };
+        let code = response_code.unwrap_or_else(|| default_reject_code.to_string());
+        let detail = response_detail.unwrap_or_else(|| "upstream rejected request".to_string());
         return UpstreamOutcome::Reject(ParsedUpstreamReject {
             retryable,
             code,
@@ -152,22 +161,17 @@ pub(crate) fn parse_upstream_outcome(body: &Value, default_reject_code: &str) ->
 fn parse_optional_non_empty_string_field(
     payload: &Value,
     field_name: &str,
+    invalid_detail: &str,
 ) -> Result<Option<String>, String> {
     let Some(field_value) = payload.get(field_name) else {
         return Ok(None);
     };
     let Some(raw_value) = field_value.as_str() else {
-        return Err(format!(
-            "upstream reject {} must be non-empty string when present",
-            field_name
-        ));
+        return Err(invalid_detail.to_string());
     };
     let normalized = raw_value.trim();
     if normalized.is_empty() {
-        return Err(format!(
-            "upstream reject {} must be non-empty string when present",
-            field_name
-        ));
+        return Err(invalid_detail.to_string());
     }
     Ok(Some(normalized.to_string()))
 }
@@ -345,6 +349,46 @@ mod tests {
     }
 
     #[test]
+    fn upstream_outcome_rejects_non_string_code_in_success_envelope() {
+        let payload = json!({
+            "status": "ok",
+            "ok": true,
+            "accepted": true,
+            "code": 123
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(reject
+                    .detail
+                    .contains("upstream code must be non-empty string when present"));
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn upstream_outcome_rejects_null_detail_in_success_envelope() {
+        let payload = json!({
+            "status": "ok",
+            "ok": true,
+            "accepted": true,
+            "detail": null
+        });
+        match parse_upstream_outcome(&payload, "default") {
+            UpstreamOutcome::Reject(reject) => {
+                assert!(!reject.retryable);
+                assert_eq!(reject.code, "upstream_invalid_response");
+                assert!(reject
+                    .detail
+                    .contains("upstream detail must be non-empty string when present"));
+            }
+            UpstreamOutcome::Success => panic!("expected reject"),
+        }
+    }
+
+    #[test]
     fn upstream_outcome_rejects_non_string_reject_code_when_present() {
         let payload = json!({
             "status": "reject",
@@ -358,7 +402,7 @@ mod tests {
                 assert_eq!(reject.code, "upstream_invalid_response");
                 assert!(reject
                     .detail
-                    .contains("upstream reject code must be non-empty string when present"));
+                    .contains("upstream code must be non-empty string when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -378,7 +422,7 @@ mod tests {
                 assert_eq!(reject.code, "upstream_invalid_response");
                 assert!(reject
                     .detail
-                    .contains("upstream reject detail must be non-empty string when present"));
+                    .contains("upstream detail must be non-empty string when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -399,7 +443,7 @@ mod tests {
                 assert_eq!(reject.code, "upstream_invalid_response");
                 assert!(reject
                     .detail
-                    .contains("upstream reject retryable must be boolean when present"));
+                    .contains("upstream retryable must be boolean when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -420,7 +464,7 @@ mod tests {
                 assert_eq!(reject.code, "upstream_invalid_response");
                 assert!(reject
                     .detail
-                    .contains("upstream reject retryable must be boolean when present"));
+                    .contains("upstream retryable must be boolean when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }

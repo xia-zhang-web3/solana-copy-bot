@@ -5634,6 +5634,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_submit_rejects_non_boolean_upstream_retryable_before_send_rpc() {
+        let (signed_tx_base64, _) = test_signed_tx_base64_with_signature([81u8; 64]);
+        let upstream_body = format!(
+            r#"{{"status":"ok","ok":true,"accepted":true,"retryable":"true","signed_tx_base64":"{}"}}"#,
+            signed_tx_base64
+        );
+        let Some((upstream_url, upstream_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", upstream_body.as_str())
+        else {
+            return;
+        };
+
+        let mut state =
+            test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
+        if let Some(backend) = state.config.route_backends.get_mut("rpc") {
+            backend.send_rpc_url = Some("http://127.0.0.1:1/send-rpc".to_string());
+        } else {
+            panic!("rpc backend must exist");
+        }
+
+        let raw_body = json!({
+            "contract_version": "v1",
+            "signal_id": "signal-invalid-retryable-before-send-rpc-1",
+            "client_order_id": "client-order-invalid-retryable-before-send-rpc-1",
+            "request_id": "request-invalid-retryable-before-send-rpc-1",
+            "side": "buy",
+            "token": "11111111111111111111111111111111",
+            "notional_sol": 0.1,
+            "signal_ts": "2026-02-20T00:00:00Z",
+            "route": "rpc",
+            "slippage_bps": 10.0,
+            "route_slippage_cap_bps": 20.0,
+            "tip_lamports": 0,
+            "compute_budget": {
+                "cu_limit": 300000,
+                "cu_price_micro_lamports": 1000
+            }
+        });
+        let raw_body_bytes = serde_json::to_vec(&raw_body).expect("serialize submit request");
+        let request: SubmitRequest =
+            serde_json::from_slice(&raw_body_bytes).expect("deserialize submit request");
+
+        let reject = handle_submit(&state, &request, raw_body_bytes.as_slice())
+            .await
+            .expect_err("non-boolean upstream retryable must reject before send RPC");
+        assert!(!reject.retryable);
+        assert_eq!(reject.code, "upstream_invalid_response");
+        assert!(
+            reject
+                .detail
+                .contains("upstream retryable must be boolean when present"),
+            "unexpected detail: {}",
+            reject.detail
+        );
+        let _ = upstream_handle.join();
+    }
+
+    #[tokio::test]
     async fn handle_submit_rejects_route_payload_mismatch_before_forward() {
         let state = test_state_with_backends(
             "http://127.0.0.1:1/upstream",
