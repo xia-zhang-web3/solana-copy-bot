@@ -6078,7 +6078,7 @@ EOF_DEVNET_EXECUTOR_ENV
         bash "$ROOT_DIR/tools/execution_devnet_rehearsal.sh" 24 60
     )"
     assert_field_equals "$tests_enabled_output" "tests_run" "true"
-    assert_field_equals "$tests_enabled_output" "tests_total" "47"
+    assert_field_equals "$tests_enabled_output" "tests_total" "50"
     assert_field_equals "$tests_enabled_output" "tests_failed" "0"
     local tests_enabled_artifact_path=""
     tests_enabled_artifact_path="$(extract_field_value "$tests_enabled_output" "artifact_tests")"
@@ -6088,6 +6088,9 @@ EOF_DEVNET_EXECUTOR_ENV
     fi
     local tests_enabled_artifact_text=""
     tests_enabled_artifact_text="$(cat "$tests_enabled_artifact_path")"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-app -q risk_guard_infra_ratio_uses_window_delta_not_cumulative_with_consecutive_hysteresis"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-app -q risk_guard_infra_replaced_ratio_does_not_gate_yellowstone_source"
+    assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-app -q risk_guard_infra_stop_does_not_reemit_when_same_key_detail_changes"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-executor -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_invalid_signature_bytes"
     assert_contains "$tests_enabled_artifact_text" "cargo test -p copybot-adapter -q send_signed_transaction_via_rpc_rejects_canonical_transaction_with_trailing_garbage"
