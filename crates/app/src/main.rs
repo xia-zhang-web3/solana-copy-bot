@@ -402,6 +402,10 @@ fn startup_sqlite_wal_checkpoint_error_requires_abort(
         || fallback_error.is_some_and(is_fatal_sqlite_anyhow_error)
 }
 
+fn runtime_sqlite_write_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -2426,6 +2430,10 @@ async fn run_app_loop(
             }
             _ = interval.tick() => {
                 if let Err(error) = store.record_heartbeat("copybot-app", "alive") {
+                    if runtime_sqlite_write_error_requires_restart(&error) {
+                        return Err(error)
+                            .context("runtime heartbeat write failed with fatal sqlite I/O");
+                    }
                     warn!(error = %error, "heartbeat write failed");
                 }
                 if let Some(dispatcher) = &alert_dispatcher {
@@ -6906,6 +6914,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             Some(&primary),
             Some(&fallback)
         ));
+    }
+
+    #[test]
+    fn runtime_sqlite_write_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed to commit heartbeat transaction: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(runtime_sqlite_write_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn runtime_sqlite_write_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!runtime_sqlite_write_error_requires_restart(&error));
     }
 
     #[test]
