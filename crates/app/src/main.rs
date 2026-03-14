@@ -736,11 +736,11 @@ impl OperatorEmergencyStop {
             return Ok(());
         }
 
-        self.active = active;
-        self.detail = detail;
         let path_display = self.path.display().to_string();
 
-        if self.active {
+        if active {
+            self.active = true;
+            self.detail = detail;
             warn!(
                 path = %path_display,
                 detail = %self.detail(),
@@ -775,6 +775,8 @@ impl OperatorEmergencyStop {
                 "failed to persist operator emergency stop clear event",
                 "failed to persist operator emergency stop clear event with fatal sqlite I/O",
             )?;
+            self.active = false;
+            self.detail.clear();
         }
         Ok(())
     }
@@ -8496,6 +8498,73 @@ manual override by operator
         );
         assert_eq!(
             store.risk_event_count_by_type("operator_emergency_stop_activated")?,
+            0
+        );
+
+        let _ = std::fs::remove_file(stop_path);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn operator_emergency_stop_refresh_returns_error_on_fatal_clear_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("operator-stop-clear-risk-event-fatal")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-14T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let stop_path = std::env::temp_dir().join(format!(
+            "copybot-operator-stop-clear-{}-{}.flag",
+            std::process::id(),
+            now.timestamp_nanos_opt()
+                .unwrap_or(now.timestamp_micros() * 1000)
+        ));
+        let _ = std::fs::remove_file(&stop_path);
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_operator_emergency_stop_clear_risk_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'operator_emergency_stop_cleared'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let mut stop = OperatorEmergencyStop {
+            path: stop_path.clone(),
+            poll_interval: Duration::from_millis(100),
+            next_refresh_at: StdInstant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(StdInstant::now),
+            active: true,
+            detail: "manual override by operator".to_string(),
+        };
+        let error = stop
+            .refresh(&store, now)
+            .expect_err("fatal operator stop clear risk-event write must abort refresh");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains(
+                "failed to persist operator emergency stop clear event with fatal sqlite I/O"
+            ),
+            "expected operator-stop clear fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(
+            stop.is_active(),
+            "fatal operator stop clear write must preserve active fail-closed state"
+        );
+        assert_eq!(stop.detail(), "manual override by operator");
+        assert_eq!(
+            store.risk_event_count_by_type("operator_emergency_stop_cleared")?,
             0
         );
 
