@@ -17,12 +17,19 @@ use super::{
 };
 
 impl YellowstoneGrpcSource {
+    pub(super) fn report_stage_queue_depths(output_queue_depth: usize) -> (usize, usize) {
+        (0, output_queue_depth)
+    }
+
     fn output_queue_metrics(&self) -> (usize, usize, u64) {
         self.pipeline
             .as_ref()
             .and_then(|pipeline| {
                 pipeline.output_queue.try_snapshot(|item| {
-                    item.enqueued_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+                    item.enqueued_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u128::from(u64::MAX)) as u64
                 })
             })
             .map(|snapshot| {
@@ -258,13 +265,15 @@ impl YellowstoneGrpcSource {
 
     fn maybe_report_pipeline_metrics(&self) {
         let (queue_depth, queue_capacity, oldest_age_ms) = self.output_queue_metrics();
+        let (ws_to_fetch_queue_depth, fetch_to_output_queue_depth) =
+            Self::report_stage_queue_depths(queue_depth);
         self.runtime_config
             .telemetry
             .note_yellowstone_output_queue_metrics(queue_depth, queue_capacity, oldest_age_ms);
         self.runtime_config.telemetry.maybe_report(
             self.telemetry_report_seconds,
-            queue_depth,
-            0,
+            ws_to_fetch_queue_depth,
+            fetch_to_output_queue_depth,
             self.reorder.len(),
         );
     }

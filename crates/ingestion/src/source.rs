@@ -960,6 +960,22 @@ mod tests {
     }
 
     #[test]
+    fn yellowstone_report_stage_queue_depths_route_output_backlog_to_fetch_to_output() {
+        let (ws_to_fetch_queue_depth, fetch_to_output_queue_depth) =
+            YellowstoneGrpcSource::report_stage_queue_depths(7);
+        assert_eq!(ws_to_fetch_queue_depth, 0);
+        assert_eq!(fetch_to_output_queue_depth, 7);
+    }
+
+    #[test]
+    fn yellowstone_report_stage_queue_depths_preserve_zero_depth() {
+        let (ws_to_fetch_queue_depth, fetch_to_output_queue_depth) =
+            YellowstoneGrpcSource::report_stage_queue_depths(0);
+        assert_eq!(ws_to_fetch_queue_depth, 0);
+        assert_eq!(fetch_to_output_queue_depth, 0);
+    }
+
+    #[test]
     fn normalize_program_ids_or_fallback_tracks_missing_program_ids_fallback() -> Result<()> {
         let telemetry = IngestionTelemetry::default();
         let interested = HashSet::from([String::from("prog-1")]);
