@@ -3074,7 +3074,11 @@ Ordered coder follow-up queue:
    1. filesystem / WAL / checkpoint / runtime environment,
    2. repeated `xShmMap` / disk-I/O failures stay on this track,
    3. not a `replaced_ratio` tuning exercise,
-   4. not closed by either `e24eca2` or `8caa9b7`.
+   4. `DONE 2026-03-14` startup WAL checkpoint now fails closed on fatal SQLite I/O / `xShmMap` / disk-full class failures instead of warning and continuing,
+   5. remaining work is still broader than startup:
+      1. verify non-startup write paths have the right fatal vs retryable semantics,
+      2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
+   6. not closed by either `e24eca2` or `8caa9b7`.
 6. `P2` only after instrumentation decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,

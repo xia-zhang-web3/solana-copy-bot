@@ -13,8 +13,8 @@ use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
 use copybot_storage::{
-    sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, Lamports, SignedLamports,
-    SqliteStore,
+    is_fatal_sqlite_anyhow_error, sqlite_contention_snapshot, DiscoveryAggregateWriteConfig,
+    Lamports, SignedLamports, SqliteStore,
 };
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
@@ -205,6 +205,10 @@ async fn main() -> Result<()> {
                 );
             }
             Err(error) => {
+                if startup_sqlite_wal_checkpoint_error_requires_abort(None, Some(&error)) {
+                    return Err(error)
+                        .context("startup sqlite wal checkpoint failed with fatal sqlite I/O");
+                }
                 warn!(
                     error = %error,
                     wal_checkpoint_mode = "truncate_then_passive",
@@ -227,6 +231,13 @@ async fn main() -> Result<()> {
                 );
             }
             Err(passive_error) => {
+                if startup_sqlite_wal_checkpoint_error_requires_abort(
+                    Some(&error),
+                    Some(&passive_error),
+                ) {
+                    return Err(passive_error)
+                        .context("startup sqlite wal checkpoints failed with fatal sqlite I/O");
+                }
                 warn!(
                     error = %error,
                     fallback_error = %passive_error,
@@ -381,6 +392,14 @@ fn parse_ingestion_source_override(content: &str) -> Result<Option<String>> {
         }
     }
     Ok(None)
+}
+
+fn startup_sqlite_wal_checkpoint_error_requires_abort(
+    primary_error: Option<&anyhow::Error>,
+    fallback_error: Option<&anyhow::Error>,
+) -> bool {
+    primary_error.is_some_and(is_fatal_sqlite_anyhow_error)
+        || fallback_error.is_some_and(is_fatal_sqlite_anyhow_error)
 }
 
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
@@ -6862,6 +6881,31 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
         let error = anyhow!("forced async observed swap failure")
             .context(OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT);
         assert!(observed_swap_writer_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn startup_sqlite_wal_checkpoint_error_requires_abort_on_xshmmap_io_failure() {
+        let primary = anyhow!("database is locked");
+        let fallback =
+            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        assert!(!startup_sqlite_wal_checkpoint_error_requires_abort(
+            Some(&primary),
+            None
+        ));
+        assert!(startup_sqlite_wal_checkpoint_error_requires_abort(
+            Some(&primary),
+            Some(&fallback)
+        ));
+    }
+
+    #[test]
+    fn startup_sqlite_wal_checkpoint_error_does_not_abort_on_busy_only_failures() {
+        let primary = anyhow!("database is locked");
+        let fallback = anyhow!("database is busy");
+        assert!(!startup_sqlite_wal_checkpoint_error_requires_abort(
+            Some(&primary),
+            Some(&fallback)
+        ));
     }
 
     #[test]

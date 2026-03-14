@@ -117,6 +117,14 @@ fn is_retryable_sqlite_message(message: &str) -> bool {
         || lowered.contains("database table is locked")
 }
 
+fn is_fatal_sqlite_io_message(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("disk i/o error")
+        || lowered.contains("i/o error within the xshmmap method")
+        || lowered.contains("database or disk is full")
+        || lowered.contains("disk full")
+}
+
 pub(crate) fn is_retryable_sqlite_error(error: &rusqlite::Error) -> bool {
     match error {
         rusqlite::Error::SqliteFailure(code, message) => {
@@ -139,4 +147,32 @@ pub fn is_retryable_sqlite_anyhow_error(error: &anyhow::Error) -> bool {
         }
         is_retryable_sqlite_message(&cause.to_string())
     })
+}
+
+pub fn is_fatal_sqlite_anyhow_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| is_fatal_sqlite_io_message(&cause.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error};
+    use anyhow::anyhow;
+
+    #[test]
+    fn fatal_sqlite_classifier_matches_xshmmap_io_error() {
+        let error = anyhow!(
+            "failed to commit observed swap batch write transaction: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(is_fatal_sqlite_anyhow_error(&error));
+        assert!(!is_retryable_sqlite_anyhow_error(&error));
+    }
+
+    #[test]
+    fn fatal_sqlite_classifier_does_not_match_busy_lock_contention() {
+        let error = anyhow!("database is locked");
+        assert!(!is_fatal_sqlite_anyhow_error(&error));
+        assert!(is_retryable_sqlite_anyhow_error(&error));
+    }
 }
