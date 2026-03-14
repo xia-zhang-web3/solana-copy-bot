@@ -3054,7 +3054,7 @@ Ordered coder follow-up queue:
       4. `app_consumer_loop_time_ms_p95`.
    4. `4522eef Expose Yellowstone queue metrics in runtime snapshots` carried the Yellowstone output-queue fields through `IngestionRuntimeSnapshot`, so app/runtime consumers can read them without parsing logs.
    5. Remaining telemetry gap:
-      1. `fetch_to_output_queue_depth` is still hardcoded `0`,
+      1. `DONE 2026-03-14` `1e04fcc Fix Yellowstone stage depth telemetry` stopped hardcoding `fetch_to_output_queue_depth = 0` for Yellowstone and now routes output backlog to the honest generic stage-depth mapping (`ws_to_fetch_queue_depth = 0`, `fetch_to_output_queue_depth = output backlog`),
       2. downstream consumers are not yet acting on the new Yellowstone queue fields.
 3. `DONE 2026-03-14` remove retention/WAL maintenance from the observed-swap writer hot path.
    1. Closed by `4f5f343 Move observed swap retention out of writer loop`.
@@ -3066,10 +3066,14 @@ Ordered coder follow-up queue:
    4. Existing retention semantics remain covered:
       1. stale pruning still works,
       2. discovery backfill source protection still defers raw retention pruning.
-4. `P1` reconsider ordering between relevance gate and raw persistence.
-   1. decide explicitly whether raw observed-swap persistence is required before follow/relevance filtering,
-   2. if not required, move cheap follow gating earlier so irrelevant Yellowstone traffic does not pay SQLite cost first,
-   3. if required, keep persistence fully decoupled from trading-path latency and document the consistency tradeoff.
+4. `DONE 2026-03-14` reconsider ordering between relevance gate and raw persistence.
+   1. Closed by `53d3ea7 Centralize observed swap relevance gating`.
+   2. App loop now makes one explicit relevance decision before any raw-persistence path instead of relying on scattered inline `if/continue` ordering.
+   3. Current explicit policy:
+      1. unclassified swaps drop before raw persistence,
+      2. unfollowed buys drop before raw persistence,
+      3. cold unfollowed sells without recent follow history / pending-inflight work / open lots drop before raw persistence,
+      4. relevant swaps still immediate-persist before risk / scheduler path.
 5. `P1` investigate SQLite/WAL reliability as a separate track.
    1. filesystem / WAL / checkpoint / runtime environment,
    2. repeated `xShmMap` / disk-I/O failures stay on this track,
@@ -3101,10 +3105,11 @@ Ordered coder follow-up queue:
    28. `DONE 2026-03-14` execution batch task outcomes now fail closed on fatal SQLite I/O while busy/locked execution failures stay warn-only and existing join-failure semantics remain unchanged,
    29. `DONE 2026-03-14` soft-exposure pause clear writes now preserve the runtime latch / until / reason on fatal SQLite I/O instead of half-applying the clear before `shadow_risk_pause_cleared` persistence succeeds,
    30. `DONE 2026-03-14` hard-stop clear and exposure-hard-cap clear writes now preserve active runtime block state on fatal SQLite I/O instead of half-applying the clear before persistence succeeds,
-   31. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes / startup durable pause restore / periodic shadow-risk background refresh / shadow open-lot refresh / `ShadowRiskGuard` state-event writes / drawdown timed-pause activation writes / expired timed-pause clear writes / discovery-cycle universe event writes / ingestion-snapshot infra event writes / `shadow_risk_fail_closed` event writes / shadow worker task outcomes / shadow snapshot task outcomes / execution batch task outcomes / soft-exposure pause clear writes / hard-stop clear and exposure-hard-cap clear writes:
+   31. `DONE 2026-03-14` operator emergency-stop clear writes now preserve active runtime fail-closed state on fatal SQLite I/O instead of half-applying the clear before `operator_emergency_stop_cleared` persistence succeeds,
+   32. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes / startup durable pause restore / periodic shadow-risk background refresh / shadow open-lot refresh / `ShadowRiskGuard` state-event writes / drawdown timed-pause activation writes / expired timed-pause clear writes / discovery-cycle universe event writes / ingestion-snapshot infra event writes / `shadow_risk_fail_closed` event writes / shadow worker task outcomes / shadow snapshot task outcomes / execution batch task outcomes / soft-exposure pause clear writes / hard-stop clear and exposure-hard-cap clear writes / operator emergency-stop clear writes:
       1. verify other non-startup write paths have the right fatal vs retryable semantics,
       2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
-   32. not closed by either `e24eca2` or `8caa9b7`.
+   33. not closed by either `e24eca2` or `8caa9b7`.
 6. `P2` only after instrumentation decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,
