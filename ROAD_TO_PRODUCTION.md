@@ -3083,10 +3083,11 @@ Ordered coder follow-up queue:
    10. `DONE 2026-03-14` discovery runtime-cursor persistence now fails closed on fatal SQLite I/O while busy/locked cursor-persist failures stay warn-only and app discovery-task joins only restart on the fatal SQLite subset,
    11. `DONE 2026-03-14` writer-owned discovery scoring materialization now fails closed on fatal SQLite I/O across aggregate materialization failure, materialization-gap cursor latch, and covered-through coverage watermark advance, while non-fatal aggregate issues stay warn-only,
    12. `DONE 2026-03-14` discovery token-quality cache DB access now fails closed on fatal SQLite I/O across cache lookup / refresh write / refresh readback, while busy/locked cache failures and Helius/network fallbacks remain non-fatal,
-   13. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache:
+   13. `DONE 2026-03-14` discovery persisted activity-day count reads now fail closed on fatal SQLite I/O while busy/locked reads still fall back to the cached window,
+   14. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / discovery token-quality cache / discovery activity-day counts:
       1. verify other non-startup write paths have the right fatal vs retryable semantics,
       2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
-   14. not closed by either `e24eca2` or `8caa9b7`.
+   15. not closed by either `e24eca2` or `8caa9b7`.
 6. `P2` only after instrumentation decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,

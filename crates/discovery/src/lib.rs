@@ -34,6 +34,10 @@ fn discovery_runtime_cursor_error_requires_abort(error: &anyhow::Error) -> bool 
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn discovery_wallet_activity_day_count_error_requires_abort(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
     config: DiscoveryConfig,
@@ -1098,6 +1102,11 @@ impl DiscoveryService {
         ) {
             Ok(counts) => counts,
             Err(error) => {
+                if discovery_wallet_activity_day_count_error_requires_abort(&error) {
+                    return Err(error).context(
+                        "failed loading persisted wallet activity-day counts with fatal sqlite I/O",
+                    );
+                }
                 warn!(
                     error = %error,
                     wallet_count = wallet_ids.len(),
@@ -3438,6 +3447,21 @@ mod tests {
             "persisted day-level activity should satisfy min_active_days even when the capped tail only contains one day"
         );
         Ok(())
+    }
+
+    #[test]
+    fn discovery_wallet_activity_day_count_error_requires_abort_on_xshmmap_io_failure() {
+        let error =
+            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        assert!(discovery_wallet_activity_day_count_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn discovery_wallet_activity_day_count_error_does_not_require_abort_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!discovery_wallet_activity_day_count_error_requires_abort(
+            &error
+        ));
     }
 
     #[test]
