@@ -438,6 +438,10 @@ fn shadow_risk_background_refresh_error_requires_restart(error: &anyhow::Error) 
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn shadow_open_lot_refresh_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
 fn persist_runtime_risk_event_or_warn(
     store: &SqliteStore,
     event_type: &str,
@@ -772,6 +776,26 @@ fn record_shadow_queue_backpressure_risk_event(
         "failed to persist shadow queue backpressure risk event",
         "failed to persist shadow queue backpressure risk event with fatal sqlite I/O",
     )
+}
+
+fn refresh_shadow_open_lot_index_or_warn(
+    store: &SqliteStore,
+    open_shadow_lots: &mut HashSet<(String, String)>,
+) -> Result<()> {
+    match store.list_shadow_open_pairs() {
+        Ok(pairs) => {
+            *open_shadow_lots = pairs;
+            Ok(())
+        }
+        Err(error) => {
+            if shadow_open_lot_refresh_error_requires_restart(&error) {
+                return Err(error)
+                    .context("failed to refresh open shadow lot index with fatal sqlite I/O");
+            }
+            warn!(error = %error, "failed to refresh open shadow lot index");
+            Ok(())
+        }
+    }
 }
 
 fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
@@ -2460,14 +2484,7 @@ async fn run_app_loop(
                 shadow_scheduler.shadow_snapshot_handle = None;
                 match snapshot_result.expect("guard ensures shadow snapshot task exists") {
                     Ok(Ok(snapshot)) => {
-                        match store.list_shadow_open_pairs() {
-                            Ok(pairs) => {
-                                open_shadow_lots = pairs;
-                            }
-                            Err(error) => {
-                                warn!(error = %error, "failed to refresh open shadow lot index");
-                            }
-                        }
+                        refresh_shadow_open_lot_index_or_warn(&store, &mut open_shadow_lots)?;
                         info!(
                             closed_trades_24h = snapshot.closed_trades_24h,
                             realized_pnl_sol_24h = snapshot.realized_pnl_sol_24h,
@@ -7200,6 +7217,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
         assert!(!shadow_risk_background_refresh_error_requires_restart(
             &error
         ));
+    }
+
+    #[test]
+    fn shadow_open_lot_refresh_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed listing shadow open pairs: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(shadow_open_lot_refresh_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn shadow_open_lot_refresh_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is busy");
+        assert!(!shadow_open_lot_refresh_error_requires_restart(&error));
     }
 
     #[test]
