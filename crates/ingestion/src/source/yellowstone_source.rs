@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use copybot_config::IngestionConfig;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
@@ -17,6 +17,24 @@ use super::{
 };
 
 impl YellowstoneGrpcSource {
+    fn output_queue_metrics(&self) -> (usize, usize, u64) {
+        self.pipeline
+            .as_ref()
+            .and_then(|pipeline| {
+                pipeline.output_queue.try_snapshot(|item| {
+                    item.enqueued_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+                })
+            })
+            .map(|snapshot| {
+                (
+                    snapshot.len,
+                    snapshot.capacity,
+                    snapshot.oldest.unwrap_or(0),
+                )
+            })
+            .unwrap_or((0, 0, 0))
+    }
+
     pub fn new(config: &IngestionConfig) -> Result<Self> {
         let mut interested_program_ids: HashSet<String> =
             config.yellowstone_program_ids.iter().cloned().collect();
@@ -239,11 +257,10 @@ impl YellowstoneGrpcSource {
     }
 
     fn maybe_report_pipeline_metrics(&self) {
-        let queue_depth = self
-            .pipeline
-            .as_ref()
-            .map(|pipeline| pipeline.output_queue_depth.load(Ordering::Relaxed))
-            .unwrap_or(0);
+        let (queue_depth, queue_capacity, oldest_age_ms) = self.output_queue_metrics();
+        self.runtime_config
+            .telemetry
+            .note_yellowstone_output_queue_metrics(queue_depth, queue_capacity, oldest_age_ms);
         self.runtime_config.telemetry.maybe_report(
             self.telemetry_report_seconds,
             queue_depth,

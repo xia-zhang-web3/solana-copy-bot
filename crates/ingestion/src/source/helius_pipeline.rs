@@ -351,6 +351,7 @@ async fn fetch_swap_with_retries(
                     raw,
                     arrival_seq: notification.arrival_seq,
                     fetch_latency_ms,
+                    enqueued_at: Instant::now(),
                 }));
             }
             Ok(None) => return Ok(None),

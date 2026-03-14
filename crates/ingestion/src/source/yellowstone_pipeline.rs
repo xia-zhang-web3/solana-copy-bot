@@ -197,6 +197,7 @@ pub(super) async fn yellowstone_stream_loop(
                                 raw,
                                 arrival_seq,
                                 fetch_latency_ms: 0,
+                                enqueued_at: Instant::now(),
                             };
 
                             match output_queue.push(fetched, queue_overflow_policy).await {

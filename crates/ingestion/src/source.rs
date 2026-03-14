@@ -213,6 +213,7 @@ struct FetchedObservation {
     raw: RawSwapObservation,
     arrival_seq: u64,
     fetch_latency_ms: u64,
+    enqueued_at: Instant,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1037,6 +1038,7 @@ mod tests {
             },
             arrival_seq: 2,
             fetch_latency_ms: 10,
+            enqueued_at: Instant::now(),
         });
         source.push_reorder_entry(FetchedObservation {
             raw: RawSwapObservation {
@@ -1054,6 +1056,7 @@ mod tests {
             },
             arrival_seq: 1,
             fetch_latency_ms: 10,
+            enqueued_at: Instant::now(),
         });
 
         // Force early release via buffer cap branch.
@@ -1098,6 +1101,7 @@ mod tests {
             },
             arrival_seq: 2,
             fetch_latency_ms: 5,
+            enqueued_at: Instant::now(),
         });
         source.push_reorder_entry(FetchedObservation {
             raw: RawSwapObservation {
@@ -1115,6 +1119,7 @@ mod tests {
             },
             arrival_seq: 1,
             fetch_latency_ms: 5,
+            enqueued_at: Instant::now(),
         });
 
         source.reorder.set_max_buffer(1);
@@ -1160,6 +1165,48 @@ mod tests {
         let second = queue.pop().await.expect("second item");
         assert_eq!(first.signature, "sig-2");
         assert_eq!(second.signature, "sig-3");
+    }
+
+    #[tokio::test]
+    async fn raw_observation_queue_snapshot_reports_depth_capacity_and_oldest_age() {
+        let queue = RawObservationQueue::new(2);
+        let build = |signature: &str, oldest_age_ms: u64| FetchedObservation {
+            raw: RawSwapObservation {
+                signature: signature.to_string(),
+                slot: 1,
+                signer: "wallet".to_string(),
+                token_in: SOL_MINT.to_string(),
+                token_out: "mint".to_string(),
+                amount_in: 1.0,
+                amount_out: 100.0,
+                exact_amounts: None,
+                program_ids: vec![],
+                dex_hint: "raydium".to_string(),
+                ts_utc: Utc::now(),
+            },
+            arrival_seq: 0,
+            fetch_latency_ms: 0,
+            enqueued_at: Instant::now() - Duration::from_millis(oldest_age_ms),
+        };
+
+        queue
+            .push(build("sig-1", 25), QueueOverflowPolicy::Block)
+            .await
+            .expect("queue open");
+        queue
+            .push(build("sig-2", 0), QueueOverflowPolicy::Block)
+            .await
+            .expect("queue open");
+
+        let snapshot = queue
+            .try_snapshot(|item| item.enqueued_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+            .expect("queue snapshot should be available without awaiting");
+        assert_eq!(snapshot.len, 2);
+        assert_eq!(snapshot.capacity, 2);
+        assert!(
+            snapshot.oldest.unwrap_or(0) >= 20,
+            "oldest queue age should reflect resident item time"
+        );
     }
 
     #[test]

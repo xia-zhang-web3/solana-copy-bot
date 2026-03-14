@@ -35,6 +35,9 @@ pub(super) struct IngestionTelemetry {
     pub(super) rpc_429: AtomicU64,
     pub(super) rpc_5xx: AtomicU64,
     pub(super) last_ingestion_lag_p95: AtomicU64,
+    pub(super) last_yellowstone_output_queue_depth: AtomicU64,
+    pub(super) last_yellowstone_output_queue_capacity: AtomicU64,
+    pub(super) last_yellowstone_output_oldest_age_ms: AtomicU64,
     pub(super) fetch_latency_ms_samples: Mutex<VecDeque<u64>>,
     pub(super) ingestion_lag_ms_samples: Mutex<VecDeque<u64>>,
     pub(super) reorder_hold_ms_samples: Mutex<VecDeque<u64>>,
@@ -69,6 +72,9 @@ impl Default for IngestionTelemetry {
             rpc_429: AtomicU64::new(0),
             rpc_5xx: AtomicU64::new(0),
             last_ingestion_lag_p95: AtomicU64::new(0),
+            last_yellowstone_output_queue_depth: AtomicU64::new(0),
+            last_yellowstone_output_queue_capacity: AtomicU64::new(0),
+            last_yellowstone_output_oldest_age_ms: AtomicU64::new(0),
             fetch_latency_ms_samples: Mutex::new(VecDeque::with_capacity(
                 TELEMETRY_SAMPLE_CAPACITY,
             )),
@@ -105,6 +111,20 @@ impl IngestionTelemetry {
         let _ = self
             .max_reorder_buffer_size
             .fetch_max(size, Ordering::Relaxed);
+    }
+
+    pub(super) fn note_yellowstone_output_queue_metrics(
+        &self,
+        depth: usize,
+        capacity: usize,
+        oldest_age_ms: u64,
+    ) {
+        self.last_yellowstone_output_queue_depth
+            .store(depth as u64, Ordering::Relaxed);
+        self.last_yellowstone_output_queue_capacity
+            .store(capacity as u64, Ordering::Relaxed);
+        self.last_yellowstone_output_oldest_age_ms
+            .store(oldest_age_ms, Ordering::Relaxed);
     }
 
     pub(super) fn note_parse_rejected(&self, error: &anyhow::Error) {
@@ -177,6 +197,20 @@ impl IngestionTelemetry {
         let ingestion_lag_ms_p95 = percentile(&lag_samples, 0.95);
         self.last_ingestion_lag_p95
             .store(ingestion_lag_ms_p95, Ordering::Relaxed);
+        let yellowstone_output_queue_depth = self
+            .last_yellowstone_output_queue_depth
+            .load(Ordering::Relaxed);
+        let yellowstone_output_queue_capacity = self
+            .last_yellowstone_output_queue_capacity
+            .load(Ordering::Relaxed);
+        let yellowstone_output_oldest_age_ms = self
+            .last_yellowstone_output_oldest_age_ms
+            .load(Ordering::Relaxed);
+        let yellowstone_output_queue_fill_ratio = if yellowstone_output_queue_capacity == 0 {
+            0.0
+        } else {
+            yellowstone_output_queue_depth as f64 / yellowstone_output_queue_capacity as f64
+        };
 
         info!(
             ws_notifications_seen = self.ws_notifications_seen.load(Ordering::Relaxed),
@@ -197,6 +231,10 @@ impl IngestionTelemetry {
             grpc_decode_errors = self.grpc_decode_errors.load(Ordering::Relaxed),
             ws_to_fetch_queue_depth,
             fetch_to_output_queue_depth,
+            yellowstone_output_queue_depth,
+            yellowstone_output_queue_capacity,
+            yellowstone_output_queue_fill_ratio,
+            yellowstone_output_oldest_age_ms,
             fetch_concurrency_inflight = self.fetch_inflight.load(Ordering::Relaxed),
             fetch_success = self.fetch_success.load(Ordering::Relaxed),
             fetch_failed = self.fetch_failed.load(Ordering::Relaxed),

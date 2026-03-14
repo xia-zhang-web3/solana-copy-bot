@@ -29,6 +29,13 @@ pub(super) enum QueuePushResult {
     ReplacedOldest,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct OverflowQueueSnapshot<U> {
+    pub(super) len: usize,
+    pub(super) capacity: usize,
+    pub(super) oldest: Option<U>,
+}
+
 #[derive(Debug)]
 struct OverflowQueueState<T> {
     deque: VecDeque<T>,
@@ -120,5 +127,17 @@ impl<T> OverflowQueue<T> {
         drop(guard);
         self.not_empty.notify_waiters();
         self.not_full.notify_waiters();
+    }
+
+    pub(super) fn try_snapshot<U, F>(&self, map_oldest: F) -> Option<OverflowQueueSnapshot<U>>
+    where
+        F: FnOnce(&T) -> U,
+    {
+        let guard = self.state.try_lock().ok()?;
+        Some(OverflowQueueSnapshot {
+            len: guard.deque.len(),
+            capacity: self.capacity,
+            oldest: guard.deque.front().map(map_oldest),
+        })
     }
 }
