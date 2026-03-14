@@ -426,6 +426,34 @@ fn discovery_task_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn risk_event_write_error_requires_restart(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+}
+
+fn persist_runtime_risk_event_or_warn(
+    store: &SqliteStore,
+    event_type: &str,
+    severity: &str,
+    ts: DateTime<Utc>,
+    details_json: Option<&str>,
+    warning_message: &'static str,
+    fatal_context: &'static str,
+) -> Result<()> {
+    if let Err(error) = store.insert_risk_event(event_type, severity, ts, details_json) {
+        if risk_event_write_error_requires_restart(&error) {
+            return Err(error).context(fatal_context);
+        }
+        warn!(
+            error = %error,
+            event_type,
+            severity,
+            warning_message,
+            "failed to persist runtime risk event"
+        );
+    }
+    Ok(())
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -636,10 +664,10 @@ impl OperatorEmergencyStop {
         }
     }
 
-    fn refresh(&mut self, store: &SqliteStore, now: DateTime<Utc>) {
+    fn refresh(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
         let instant_now = StdInstant::now();
         if instant_now < self.next_refresh_at {
-            return;
+            return Ok(());
         }
         self.next_refresh_at = instant_now + self.poll_interval;
 
@@ -665,7 +693,7 @@ impl OperatorEmergencyStop {
         };
 
         if active == self.active && detail == self.detail {
-            return;
+            return Ok(());
         }
 
         self.active = active;
@@ -683,36 +711,59 @@ impl OperatorEmergencyStop {
                 sanitize_json_value(&path_display),
                 sanitize_json_value(self.detail())
             );
-            if let Err(error) = store.insert_risk_event(
+            persist_runtime_risk_event_or_warn(
+                store,
                 "operator_emergency_stop_activated",
                 "warn",
                 now,
                 Some(&details_json),
-            ) {
-                warn!(
-                    error = %error,
-                    "failed to persist operator emergency stop activation event"
-                );
-            }
+                "failed to persist operator emergency stop activation event",
+                "failed to persist operator emergency stop activation event with fatal sqlite I/O",
+            )?;
         } else {
             info!(path = %path_display, "operator emergency stop cleared");
             let details_json = format!(
                 "{{\"path\":\"{}\",\"state\":\"cleared\"}}",
                 sanitize_json_value(&path_display)
             );
-            if let Err(error) = store.insert_risk_event(
+            persist_runtime_risk_event_or_warn(
+                store,
                 "operator_emergency_stop_cleared",
                 "info",
                 now,
                 Some(&details_json),
-            ) {
-                warn!(
-                    error = %error,
-                    "failed to persist operator emergency stop clear event"
-                );
-            }
+                "failed to persist operator emergency stop clear event",
+                "failed to persist operator emergency stop clear event with fatal sqlite I/O",
+            )?;
         }
+        Ok(())
     }
+}
+
+fn record_shadow_queue_backpressure_risk_event(
+    store: &SqliteStore,
+    pending_shadow_task_count: usize,
+    held_shadow_task_count: usize,
+    shadow_buffered_task_count: usize,
+    shadow_pending_capacity: usize,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let details_json = format!(
+        "{{\"reason\":\"queue_backpressure\",\"pending\":{},\"held\":{},\"buffered\":{},\"capacity\":{}}}",
+        pending_shadow_task_count,
+        held_shadow_task_count,
+        shadow_buffered_task_count,
+        shadow_pending_capacity
+    );
+    persist_runtime_risk_event_or_warn(
+        store,
+        "shadow_queue_saturated",
+        "warn",
+        now,
+        Some(&details_json),
+        "failed to persist shadow queue backpressure risk event",
+        "failed to persist shadow queue backpressure risk event with fatal sqlite I/O",
+    )
 }
 
 fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
@@ -2249,7 +2300,7 @@ async fn run_app_loop(
     let mut observed_swap_retention_handle: Option<JoinHandle<Result<()>>> = None;
     let mut ingestion_error_streak: u32 = 0;
     let mut ingestion_backoff_until: Option<time::Instant> = None;
-    operator_emergency_stop.refresh(&store, Utc::now());
+    operator_emergency_stop.refresh(&store, Utc::now())?;
     info!(
         path = %operator_emergency_stop.path().display(),
         pause_new_trades_on_outage,
@@ -2272,7 +2323,7 @@ async fn run_app_loop(
     }
 
     loop {
-        operator_emergency_stop.refresh(&store, Utc::now());
+        operator_emergency_stop.refresh(&store, Utc::now())?;
 
         if shadow_scheduler.shadow_scheduler_needs_reset {
             if shadow_scheduler.shadow_workers.is_empty() {
@@ -2308,24 +2359,14 @@ async fn run_app_loop(
                 shadow_pending_capacity = SHADOW_PENDING_TASK_CAPACITY,
                 "shadow queue backpressure active; switching to inline shadow processing"
             );
-            let details_json = format!(
-                "{{\"reason\":\"queue_backpressure\",\"pending\":{},\"held\":{},\"buffered\":{},\"capacity\":{}}}",
+            record_shadow_queue_backpressure_risk_event(
+                &store,
                 shadow_scheduler.pending_shadow_task_count,
                 shadow_scheduler.held_shadow_sell_count(),
                 shadow_buffered_task_count,
-                SHADOW_PENDING_TASK_CAPACITY
-            );
-            if let Err(error) = store.insert_risk_event(
-                "shadow_queue_saturated",
-                "warn",
+                SHADOW_PENDING_TASK_CAPACITY,
                 Utc::now(),
-                Some(&details_json),
-            ) {
-                warn!(
-                    error = %error,
-                    "failed to persist shadow queue backpressure risk event"
-                );
-            }
+            )?;
         } else if !shadow_queue_full && shadow_scheduler.shadow_queue_backpressure_active {
             shadow_scheduler.shadow_queue_backpressure_active = false;
             info!(
@@ -5049,7 +5090,9 @@ mod app_tests {
             .expect_err("fatal stale-close risk event write must abort cleanup");
         let error_text = format!("{error:#}");
         assert!(
-            error_text.contains("failed to record stale-close price unavailable risk event with fatal sqlite I/O"),
+            error_text.contains(
+                "failed to record stale-close price unavailable risk event with fatal sqlite I/O"
+            ),
             "expected stale-close fatal risk-event context, got: {error_text}"
         );
         assert!(
@@ -7096,6 +7139,20 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
+    fn risk_event_write_error_requires_restart_on_fatal_io() {
+        let error = anyhow!(
+            "failed to insert risk event: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(risk_event_write_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn risk_event_write_error_does_not_require_restart_on_busy_lock() {
+        let error = anyhow!("database is locked");
+        assert!(!risk_event_write_error_requires_restart(&error));
+    }
+
+    #[test]
     fn transient_observed_swap_write_errors_do_not_require_restart() {
         let error = anyhow!("database is locked");
         assert!(!observed_swap_writer_error_requires_restart(&error));
@@ -7320,6 +7377,112 @@ manual override by operator
             parse_operator_emergency_stop_reason(content).as_deref(),
             Some("manual override by operator")
         );
+    }
+
+    #[test]
+    fn operator_emergency_stop_refresh_returns_error_on_fatal_activation_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("operator-stop-risk-event-fatal")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-14T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let stop_path = std::env::temp_dir().join(format!(
+            "copybot-operator-stop-{}-{}.flag",
+            std::process::id(),
+            now.timestamp_nanos_opt()
+                .unwrap_or(now.timestamp_micros() * 1000)
+        ));
+        std::fs::write(&stop_path, "manual override by operator\n")?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_operator_emergency_stop_risk_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'operator_emergency_stop_activated'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let mut stop = OperatorEmergencyStop {
+            path: stop_path.clone(),
+            poll_interval: Duration::from_millis(100),
+            next_refresh_at: StdInstant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(StdInstant::now),
+            active: false,
+            detail: String::new(),
+        };
+        let error = stop
+            .refresh(&store, now)
+            .expect_err("fatal operator stop risk-event write must abort refresh");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains(
+                "failed to persist operator emergency stop activation event with fatal sqlite I/O"
+            ),
+            "expected operator-stop fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(
+            stop.is_active(),
+            "activation state should already be fail-closed"
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("operator_emergency_stop_activated")?,
+            0
+        );
+
+        let _ = std::fs::remove_file(stop_path);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn record_shadow_queue_backpressure_risk_event_returns_error_on_fatal_write() -> Result<()> {
+        let (store, db_path) = make_test_store("shadow-queue-risk-event-fatal")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-14T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_queue_risk_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_queue_saturated'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = record_shadow_queue_backpressure_risk_event(&store, 7, 2, 256, 256, now)
+            .expect_err("fatal queue-backpressure risk-event write must abort");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains(
+                "failed to persist shadow queue backpressure risk event with fatal sqlite I/O"
+            ),
+            "expected queue-backpressure fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_queue_saturated")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
     }
 
     #[test]
