@@ -2308,6 +2308,14 @@ async fn run_app_loop(
                 let wal_size_bytes = std::fs::metadata(format!("{sqlite_path}-wal"))
                     .map(|metadata| metadata.len())
                     .unwrap_or(0);
+                let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
+                info!(
+                    observed_swap_writer_pending_requests =
+                        observed_swap_writer_snapshot.pending_requests,
+                    observed_swap_writer_write_ms_p95 =
+                        observed_swap_writer_snapshot.write_latency_ms_p95,
+                    "observed swap writer telemetry"
+                );
                 info!(
                     sqlite_write_retry_total = sqlite_contention.write_retry_total,
                     sqlite_busy_error_total = sqlite_contention.busy_error_total,

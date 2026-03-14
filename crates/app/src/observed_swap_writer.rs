@@ -3,6 +3,9 @@ use chrono::{Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
 use std::path::Path;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -11,6 +14,7 @@ use tracing::{info, warn};
 const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
 const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
+const OBSERVED_SWAP_WRITER_LATENCY_SAMPLE_CAPACITY: usize = 512;
 pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT: &str =
     "observed swap writer channel closed";
 pub(crate) const OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT: &str =
@@ -49,14 +53,82 @@ impl ObservedSwapWriterConfig {
 struct ObservedSwapWriteRequest {
     swap: SwapEvent,
     reply_tx: Option<oneshot::Sender<Result<bool>>>,
+    enqueued_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObservedSwapWriterSnapshot {
+    pub pending_requests: usize,
+    pub write_latency_ms_p95: u64,
+}
+
+#[derive(Debug, Default)]
+struct ObservedSwapWriterTelemetry {
+    pending_requests: AtomicUsize,
+    last_write_latency_ms_p95: AtomicU64,
+    write_latency_ms_samples: Mutex<VecDeque<u64>>,
+}
+
+impl ObservedSwapWriterTelemetry {
+    fn note_enqueued(&self) {
+        self.pending_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_batch_completed(&self, queued_at: &[Instant]) {
+        if queued_at.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        if let Ok(mut samples) = self.write_latency_ms_samples.lock() {
+            for queued_at in queued_at {
+                let latency_ms = now.duration_since(*queued_at).as_millis().min(u128::from(u64::MAX)) as u64;
+                if samples.len() >= OBSERVED_SWAP_WRITER_LATENCY_SAMPLE_CAPACITY {
+                    let _ = samples.pop_front();
+                }
+                samples.push_back(latency_ms);
+            }
+            self.last_write_latency_ms_p95
+                .store(percentile_from_deque(&samples, 0.95), Ordering::Relaxed);
+        }
+        let _ = self.pending_requests.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(queued_at.len())),
+        );
+    }
+
+    fn snapshot(&self) -> ObservedSwapWriterSnapshot {
+        let write_latency_ms_p95 = self
+            .write_latency_ms_samples
+            .lock()
+            .ok()
+            .map(|samples| percentile_from_deque(&samples, 0.95))
+            .unwrap_or_else(|| self.last_write_latency_ms_p95.load(Ordering::Relaxed));
+        ObservedSwapWriterSnapshot {
+            pending_requests: self.pending_requests.load(Ordering::Relaxed),
+            write_latency_ms_p95,
+        }
+    }
 }
 
 pub(crate) struct ObservedSwapWriter {
     sender: mpsc::Sender<ObservedSwapWriteRequest>,
     worker: Option<thread::JoinHandle<Result<()>>>,
+    telemetry: Arc<ObservedSwapWriterTelemetry>,
 }
 
 impl ObservedSwapWriter {
+    async fn send_request(&self, request: ObservedSwapWriteRequest) -> Result<()> {
+        let permit = self
+            .sender
+            .reserve()
+            .await
+            .context(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)?;
+        self.telemetry.note_enqueued();
+        permit.send(request);
+        Ok(())
+    }
+
     pub(crate) fn start(
         sqlite_path: String,
         retention_days: u32,
@@ -77,38 +149,43 @@ impl ObservedSwapWriter {
 
     fn start_with_config(sqlite_path: String, config: ObservedSwapWriterConfig) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
+        let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
+        let worker_telemetry = Arc::clone(&telemetry);
         let worker = thread::Builder::new()
             .name("copybot-observed-swap-writer".to_string())
-            .spawn(move || observed_swap_writer_loop(sqlite_path, receiver, config))
+            .spawn(move || observed_swap_writer_loop(sqlite_path, receiver, config, worker_telemetry))
             .context("failed to spawn observed swap writer thread")?;
         Ok(Self {
             sender,
             worker: Some(worker),
+            telemetry,
         })
     }
 
     pub(crate) async fn enqueue(&self, swap: &SwapEvent) -> Result<()> {
-        self.sender
-            .send(ObservedSwapWriteRequest {
-                swap: swap.clone(),
-                reply_tx: None,
-            })
-            .await
-            .context(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)
+        self.send_request(ObservedSwapWriteRequest {
+            swap: swap.clone(),
+            reply_tx: None,
+            enqueued_at: Instant::now(),
+        })
+        .await
     }
 
     pub(crate) async fn write(&self, swap: &SwapEvent) -> Result<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(ObservedSwapWriteRequest {
-                swap: swap.clone(),
-                reply_tx: Some(reply_tx),
-            })
-            .await
-            .context(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)?;
+        self.send_request(ObservedSwapWriteRequest {
+            swap: swap.clone(),
+            reply_tx: Some(reply_tx),
+            enqueued_at: Instant::now(),
+        })
+        .await?;
         reply_rx
             .await
             .context(OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT)?
+    }
+
+    pub(crate) fn snapshot(&self) -> ObservedSwapWriterSnapshot {
+        self.telemetry.snapshot()
     }
 
     pub(crate) fn shutdown(mut self) -> Result<()> {
@@ -128,6 +205,7 @@ fn observed_swap_writer_loop(
     sqlite_path: String,
     mut receiver: mpsc::Receiver<ObservedSwapWriteRequest>,
     config: ObservedSwapWriterConfig,
+    telemetry: Arc<ObservedSwapWriterTelemetry>,
 ) -> Result<()> {
     let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
         format!("failed to open sqlite db for observed swap writer: {sqlite_path}")
@@ -149,9 +227,11 @@ fn observed_swap_writer_loop(
 
         let mut swaps = Vec::with_capacity(batch.len());
         let mut replies = Vec::with_capacity(batch.len());
+        let mut queued_at = Vec::with_capacity(batch.len());
         for request in batch {
             swaps.push(request.swap);
             replies.push(request.reply_tx);
+            queued_at.push(request.enqueued_at);
         }
 
         match store.insert_observed_swaps_batch_with_activity_days(&swaps) {
@@ -161,6 +241,7 @@ fn observed_swap_writer_loop(
                         let _ = reply_tx.send(Ok(inserted));
                     }
                 }
+                telemetry.note_batch_completed(&queued_at);
                 if config.aggregate_writes_enabled {
                     let inserted_swaps: Vec<SwapEvent> = swaps
                         .iter()
@@ -235,6 +316,7 @@ fn observed_swap_writer_loop(
                         let _ = reply_tx.send(Err(anyhow!(message.clone())));
                     }
                 }
+                telemetry.note_batch_completed(&queued_at);
                 return Err(anyhow!(message))
                     .context("observed swap writer stopping after raw batch insert failure");
             }
@@ -299,6 +381,16 @@ fn observed_swap_writer_loop(
     }
 
     Ok(())
+}
+
+fn percentile_from_deque(values: &VecDeque<u64>, q: f64) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.iter().copied().collect::<Vec<_>>();
+    sorted.sort_unstable();
+    let idx = ((sorted.len() - 1) as f64 * q.clamp(0.0, 1.0)).round() as usize;
+    sorted[idx]
 }
 
 fn run_retention_wal_checkpoint(
@@ -693,6 +785,11 @@ mod tests {
                 .context("observed swap enqueue should not wait for batch commit")??;
             Ok::<ObservedSwapWriter, anyhow::Error>(writer)
         })?;
+        let pending_snapshot = writer.snapshot();
+        assert_eq!(
+            pending_snapshot.pending_requests, 1,
+            "snapshot should expose the locked batch as one pending observed swap write"
+        );
 
         let verify_before_commit = SqliteStore::open(Path::new(&db_path))?;
         let before_swaps = verify_before_commit.load_observed_swaps_since(
@@ -705,7 +802,18 @@ mod tests {
             "enqueue should not imply the batch has already committed under sqlite lock"
         );
 
+        std::thread::sleep(StdDuration::from_millis(50));
         blocker_conn.execute_batch("COMMIT")?;
+        std::thread::sleep(StdDuration::from_millis(50));
+        let committed_snapshot = writer.snapshot();
+        assert_eq!(
+            committed_snapshot.pending_requests, 0,
+            "snapshot should clear pending depth after the blocked batch commits"
+        );
+        assert!(
+            committed_snapshot.write_latency_ms_p95 >= 40,
+            "snapshot should retain queue+commit latency once the blocked batch completes"
+        );
         writer.shutdown()?;
 
         let verify_store = SqliteStore::open(Path::new(&db_path))?;
@@ -716,6 +824,78 @@ mod tests {
         )?;
         assert_eq!(swaps.len(), 1);
         assert_eq!(swaps[0].signature, "sig-observed-swap-enqueue");
+        let _ = std::fs::remove_file(db_path);
+
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_snapshot_clears_pending_after_fast_successful_enqueue() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-fast-snapshot-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = runtime.block_on(async {
+            ObservedSwapWriter::start(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                45,
+                45,
+                true,
+                aggregate_write_config(),
+            )
+        })?;
+
+        for idx in 0..8 {
+            let swap = SwapEvent {
+                wallet: "wallet-fast-snapshot".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: format!("token-fast-snapshot-{idx}"),
+                amount_in: 1.0,
+                amount_out: 10.0 + idx as f64,
+                signature: format!("sig-observed-swap-fast-snapshot-{idx}"),
+                slot: 300 + idx as u64,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-14T14:00:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+                exact_amounts: None,
+            };
+            runtime.block_on(async { writer.enqueue(&swap).await })?;
+        }
+
+        std::thread::sleep(StdDuration::from_millis(50));
+        let snapshot = writer.snapshot();
+        assert_eq!(
+            snapshot.pending_requests, 0,
+            "fast successful batches must not leave phantom pending writer requests"
+        );
+        assert!(
+            snapshot.write_latency_ms_p95 < 250,
+            "fast successful batches should not report lock-scale writer latency"
+        );
+
+        writer.shutdown()?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-14T13:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(swaps.len(), 8);
         let _ = std::fs::remove_file(db_path);
 
         Ok(())
