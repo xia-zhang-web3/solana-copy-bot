@@ -71,6 +71,10 @@ pub struct IngestionRuntimeSnapshot {
     pub rpc_429: u64,
     pub rpc_5xx: u64,
     pub ingestion_lag_ms_p95: u64,
+    pub yellowstone_output_queue_depth: u64,
+    pub yellowstone_output_queue_capacity: u64,
+    pub yellowstone_output_queue_fill_ratio: f64,
+    pub yellowstone_output_oldest_age_ms: u64,
 }
 
 pub enum IngestionSource {
@@ -940,6 +944,22 @@ mod tests {
     }
 
     #[test]
+    fn ingestion_runtime_snapshot_exposes_yellowstone_output_queue_metrics() {
+        let telemetry = IngestionTelemetry::default();
+        telemetry.note_yellowstone_output_queue_metrics(7, 10, 33);
+
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.yellowstone_output_queue_depth, 7);
+        assert_eq!(snapshot.yellowstone_output_queue_capacity, 10);
+        assert_eq!(snapshot.yellowstone_output_oldest_age_ms, 33);
+        assert!(
+            (snapshot.yellowstone_output_queue_fill_ratio - 0.7).abs() < f64::EPSILON,
+            "unexpected fill ratio: {}",
+            snapshot.yellowstone_output_queue_fill_ratio
+        );
+    }
+
+    #[test]
     fn normalize_program_ids_or_fallback_tracks_missing_program_ids_fallback() -> Result<()> {
         let telemetry = IngestionTelemetry::default();
         let interested = HashSet::from([String::from("prog-1")]);
@@ -1199,7 +1219,12 @@ mod tests {
             .expect("queue open");
 
         let snapshot = queue
-            .try_snapshot(|item| item.enqueued_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+            .try_snapshot(|item| {
+                item.enqueued_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64
+            })
             .expect("queue snapshot should be available without awaiting");
         assert_eq!(snapshot.len, 2);
         assert_eq!(snapshot.capacity, 2);

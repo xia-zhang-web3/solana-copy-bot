@@ -3882,6 +3882,10 @@ mod app_tests {
             rpc_429: 0,
             rpc_5xx: 0,
             ingestion_lag_ms_p95: 2_000,
+            yellowstone_output_queue_depth: 0,
+            yellowstone_output_queue_capacity: 0,
+            yellowstone_output_queue_fill_ratio: 0.0,
+            yellowstone_output_oldest_age_ms: 0,
         }
     }
 
@@ -4091,6 +4095,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now - chrono::Duration::minutes(10),
@@ -4103,6 +4111,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now,
@@ -4115,6 +4127,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
         ]);
 
@@ -4146,6 +4162,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now - chrono::Duration::minutes(10),
@@ -4158,6 +4178,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now,
@@ -4170,6 +4194,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
         ]);
 
@@ -4197,6 +4225,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now - chrono::Duration::minutes(10),
@@ -4209,6 +4241,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now,
@@ -4221,6 +4257,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
         ]);
 
@@ -4252,6 +4292,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now - chrono::Duration::minutes(10),
@@ -4264,6 +4308,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now,
@@ -4276,6 +4324,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
         ]);
 
@@ -4307,6 +4359,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now - chrono::Duration::minutes(10),
@@ -4319,6 +4375,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now,
@@ -4331,6 +4391,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
         ]);
 
@@ -4358,6 +4422,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now - chrono::Duration::minutes(10),
@@ -4370,6 +4438,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
             IngestionRuntimeSnapshot {
                 ts_utc: now,
@@ -4382,6 +4454,10 @@ mod app_tests {
                 rpc_429: 0,
                 rpc_5xx: 0,
                 ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 0,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
             },
         ]);
 
