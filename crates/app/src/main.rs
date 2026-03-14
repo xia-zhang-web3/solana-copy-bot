@@ -1483,12 +1483,12 @@ impl ShadowRiskGuard {
         store: &SqliteStore,
         now: DateTime<Utc>,
         snapshot: Option<IngestionRuntimeSnapshot>,
-    ) {
+    ) -> Result<()> {
         if !self.config.shadow_killswitch_enabled {
-            return;
+            return Ok(());
         }
         let Some(snapshot) = snapshot else {
-            return;
+            return Ok(());
         };
         let sample_ts = snapshot.ts_utc;
         let min_interval = chrono::Duration::seconds(RISK_INFRA_SAMPLE_MIN_SECONDS.max(1));
@@ -1540,7 +1540,7 @@ impl ShadowRiskGuard {
 
                 if self.infra_block_key == Some(signal.key) {
                     self.infra_block_reason = Some(signal.reason);
-                    return;
+                    return Ok(());
                 }
 
                 if self.infra_block_key.is_some() {
@@ -1548,51 +1548,54 @@ impl ShadowRiskGuard {
                         self.infra_block_key = Some(signal.key);
                         self.infra_block_reason = Some(signal.reason);
                     }
-                    return;
+                    return Ok(());
                 }
 
                 if self.infra_candidate_streak >= RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
                     let reason = signal.reason;
-                    self.infra_block_key = Some(signal.key);
-                    self.infra_block_reason = Some(reason.clone());
                     warn!(reason = %reason, "shadow risk infra stop activated");
                     let details_json = format!("{{\"reason\":\"{}\"}}", reason);
                     if self.should_emit_infra_event(now) {
-                        self.record_risk_event(
+                        record_shadow_risk_state_event_or_warn(
                             store,
                             "shadow_risk_infra_stop",
                             "warn",
                             now,
                             &details_json,
-                        );
+                            "failed to persist shadow risk infra stop event with fatal sqlite I/O",
+                        )?;
                     }
+                    self.infra_block_key = Some(signal.key);
+                    self.infra_block_reason = Some(reason);
                 }
             }
             None => {
                 self.infra_candidate_key = None;
                 self.infra_candidate_streak = 0;
                 if self.infra_block_key.is_none() {
-                    return;
+                    return Ok(());
                 }
                 self.infra_healthy_streak = self.infra_healthy_streak.saturating_add(1);
                 if self.infra_healthy_streak < RISK_INFRA_CLEAR_HEALTHY_SAMPLES {
-                    return;
+                    return Ok(());
                 }
                 self.infra_healthy_streak = 0;
-                self.infra_block_key = None;
-                self.infra_block_reason = None;
                 info!("shadow risk infra stop cleared");
                 if self.should_emit_infra_event(now) {
-                    self.record_risk_event(
+                    record_shadow_risk_state_event_or_warn(
                         store,
                         "shadow_risk_infra_cleared",
                         "info",
                         now,
                         "{\"state\":\"cleared\"}",
-                    );
+                        "failed to persist shadow risk infra clear event with fatal sqlite I/O",
+                    )?;
                 }
+                self.infra_block_key = None;
+                self.infra_block_reason = None;
             }
         }
+        Ok(())
     }
 
     fn can_open_buy(
@@ -2696,7 +2699,7 @@ async fn run_app_loop(
                     &store,
                     now,
                     ingestion.runtime_snapshot(),
-                );
+                ).context("shadow risk ingestion snapshot infra event failed with fatal sqlite I/O")?;
                 if !shadow_risk_guard.config.shadow_killswitch_enabled {
                     continue;
                 }
@@ -2791,7 +2794,7 @@ async fn run_app_loop(
                     &store,
                     now,
                     ingestion.runtime_snapshot(),
-                );
+                ).context("shadow risk ingestion snapshot infra event failed with fatal sqlite I/O")?;
                 let swap = match maybe_swap {
                     Ok(Some(swap)) => {
                         if ingestion_error_streak > 0 {
@@ -4373,7 +4376,7 @@ mod app_tests {
                     16_500_300 + (offset as u64 * 40),
                     14_400_270 + (offset as u64 * 36),
                 )),
-            );
+            )?;
             assert!(
                 guard.infra_block_reason.is_none(),
                 "infra gate should wait for consecutive breaches before activating"
@@ -4389,7 +4392,7 @@ mod app_tests {
                 16_500_300 + (RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as u64 * 40),
                 14_400_270 + (RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as u64 * 36),
             )),
-        );
+        )?;
         assert!(
             guard.infra_block_reason.is_some(),
             "rolling delta ratio should activate after consecutive breaches"
@@ -4404,7 +4407,7 @@ mod app_tests {
                     16_502_000 + (offset as u64 * 200),
                     14_400_900 + (offset as u64 * 5),
                 )),
-            );
+            )?;
             assert!(
                 guard.infra_block_reason.is_some(),
                 "infra gate should require consecutive healthy samples before clearing"
@@ -4418,7 +4421,7 @@ mod app_tests {
                 16_502_000 + (RISK_INFRA_CLEAR_HEALTHY_SAMPLES as u64 * 200),
                 14_400_900 + (RISK_INFRA_CLEAR_HEALTHY_SAMPLES as u64 * 5),
             )),
-        );
+        )?;
         assert!(
             guard.infra_block_reason.is_none(),
             "infra gate should clear after consecutive healthy samples"
@@ -4464,12 +4467,172 @@ mod app_tests {
                     16_500_300 + (offset as u64 * 40),
                     14_400_270 + (offset as u64 * 36),
                 )),
-            );
+            )?;
         }
         assert!(
             guard.infra_block_reason.is_none(),
             "yellowstone replaced_ratio should not activate infra gate even after sustained breaches"
         );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_ingestion_snapshot_returns_error_on_fatal_infra_stop_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("infra-stop-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_replaced_ratio_threshold = 0.80;
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            infra_snapshot(now - chrono::Duration::minutes(30), 10_000, 9_000),
+            infra_snapshot(now - chrono::Duration::minutes(10), 16_500_000, 14_400_000),
+            infra_snapshot(now, 16_500_176, 14_400_134),
+        ]);
+
+        for offset in 1..RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(20 * offset as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(20 * offset as i64),
+                    16_500_300 + (offset as u64 * 40),
+                    14_400_270 + (offset as u64 * 36),
+                )),
+            )?;
+        }
+        assert!(guard.infra_block_key.is_none());
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_infra_stop_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_infra_stop'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = guard
+            .observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(20 * RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(
+                        20 * RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as i64,
+                    ),
+                    16_500_300 + (RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as u64 * 40),
+                    14_400_270 + (RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as u64 * 36),
+                )),
+            )
+            .expect_err("fatal infra-stop risk event write must abort ingestion-snapshot observation");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("failed to persist shadow risk infra stop event with fatal sqlite I/O"),
+            "expected infra-stop fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(
+            guard.infra_block_key.is_none(),
+            "fatal infra-stop write must not flip runtime infra block state"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_infra_stop")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_ingestion_snapshot_returns_error_on_fatal_infra_clear_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("infra-clear-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_replaced_ratio_threshold = 0.80;
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            infra_snapshot(now - chrono::Duration::minutes(30), 10_000, 9_000),
+            infra_snapshot(now - chrono::Duration::minutes(10), 16_500_000, 14_400_000),
+            infra_snapshot(now, 16_500_176, 14_400_134),
+        ]);
+
+        for offset in 1..=RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(20 * offset as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(20 * offset as i64),
+                    16_500_300 + (offset as u64 * 40),
+                    14_400_270 + (offset as u64 * 36),
+                )),
+            )?;
+        }
+        assert!(guard.infra_block_key.is_some());
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_infra_stop")?, 1);
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_infra_clear_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_infra_cleared'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        for offset in 1..RISK_INFRA_CLEAR_HEALTHY_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(400 + 20 * offset as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(400 + 20 * offset as i64),
+                    16_502_000 + (offset as u64 * 200),
+                    14_400_900 + (offset as u64 * 5),
+                )),
+            )?;
+        }
+        let error = guard
+            .observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(400 + 20 * RISK_INFRA_CLEAR_HEALTHY_SAMPLES as i64),
+                Some(infra_snapshot(
+                    now + chrono::Duration::seconds(
+                        400 + 20 * RISK_INFRA_CLEAR_HEALTHY_SAMPLES as i64,
+                    ),
+                    16_502_000 + (RISK_INFRA_CLEAR_HEALTHY_SAMPLES as u64 * 200),
+                    14_400_900 + (RISK_INFRA_CLEAR_HEALTHY_SAMPLES as u64 * 5),
+                )),
+            )
+            .expect_err("fatal infra-clear risk event write must abort ingestion-snapshot observation");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("failed to persist shadow risk infra clear event with fatal sqlite I/O"),
+            "expected infra-clear fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(
+            guard.infra_block_key.is_some(),
+            "fatal infra-clear write must preserve runtime infra block state"
+        );
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_infra_cleared")?, 0);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -4498,7 +4661,7 @@ mod app_tests {
                     16_500_300 + (offset as u64 * 60),
                     14_400_270 + (offset as u64 * 54),
                 )),
-            );
+            )?;
         }
         let first_reason = guard
             .infra_block_reason
@@ -4513,7 +4676,7 @@ mod app_tests {
                 16_501_000,
                 14_400_950,
             )),
-        );
+        )?;
         let updated_reason = guard
             .infra_block_reason
             .clone()
