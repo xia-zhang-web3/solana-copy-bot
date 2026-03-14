@@ -470,6 +470,22 @@ fn persist_runtime_risk_event_or_warn(
     Ok(())
 }
 
+fn persist_shadow_risk_fail_closed_event_or_warn(
+    store: &SqliteStore,
+    ts: DateTime<Utc>,
+    details_json: &str,
+) -> Result<()> {
+    persist_runtime_risk_event_or_warn(
+        store,
+        "shadow_risk_fail_closed",
+        "error",
+        ts,
+        Some(details_json),
+        "failed to persist shadow risk fail-closed event",
+        "failed to persist shadow risk fail-closed event with fatal sqlite I/O",
+    )
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -1609,6 +1625,7 @@ impl ShadowRiskGuard {
         }
 
         if let Err(error) = self.maybe_refresh_db_state(store, now) {
+            let fail_closed_detail = format!("risk_check_error: {error}");
             let should_log = self.on_risk_refresh_error(now);
             if should_log {
                 warn!(error = %error, "shadow risk fail-closed activated");
@@ -1616,17 +1633,20 @@ impl ShadowRiskGuard {
                     "{{\"error\":\"{}\"}}",
                     sanitize_json_value(&error.to_string())
                 );
-                self.record_risk_event(
-                    store,
-                    "shadow_risk_fail_closed",
-                    "error",
-                    now,
-                    &details_json,
-                );
+                if let Err(event_error) =
+                    persist_shadow_risk_fail_closed_event_or_warn(store, now, &details_json)
+                {
+                    return BuyRiskDecision::Blocked {
+                        reason: BuyRiskBlockReason::FailClosed,
+                        detail: format!(
+                            "{fail_closed_detail}; fail_closed_event_error: {event_error:#}"
+                        ),
+                    };
+                }
             }
             return BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::FailClosed,
-                detail: format!("risk_check_error: {error}"),
+                detail: fail_closed_detail,
             };
         }
 
@@ -1658,6 +1678,7 @@ impl ShadowRiskGuard {
                 };
             }
             if let Err(error) = self.clear_pause(store, now) {
+                let fail_closed_detail = format!("timed_pause_clear_error: {error}");
                 let should_log = self.on_risk_refresh_error(now);
                 if should_log {
                     warn!(error = %error, "shadow risk fail-closed activated during timed pause clear");
@@ -1665,17 +1686,20 @@ impl ShadowRiskGuard {
                         "{{\"error\":\"{}\"}}",
                         sanitize_json_value(&error.to_string())
                     );
-                    self.record_risk_event(
-                        store,
-                        "shadow_risk_fail_closed",
-                        "error",
-                        now,
-                        &details_json,
-                    );
+                    if let Err(event_error) =
+                        persist_shadow_risk_fail_closed_event_or_warn(store, now, &details_json)
+                    {
+                        return BuyRiskDecision::Blocked {
+                            reason: BuyRiskBlockReason::FailClosed,
+                            detail: format!(
+                                "{fail_closed_detail}; fail_closed_event_error: {event_error:#}"
+                            ),
+                        };
+                    }
                 }
                 return BuyRiskDecision::Blocked {
                     reason: BuyRiskBlockReason::FailClosed,
-                    detail: format!("timed_pause_clear_error: {error}"),
+                    detail: fail_closed_detail,
                 };
             }
         }
@@ -2285,24 +2309,6 @@ impl ShadowRiskGuard {
             &details_json,
             "failed to persist shadow risk soft exposure pause clear event with fatal sqlite I/O",
         )
-    }
-
-    fn record_risk_event(
-        &self,
-        store: &SqliteStore,
-        event_type: &str,
-        severity: &str,
-        ts: DateTime<Utc>,
-        details_json: &str,
-    ) {
-        if let Err(error) = store.insert_risk_event(event_type, severity, ts, Some(details_json)) {
-            warn!(
-                error = %error,
-                event_type,
-                severity,
-                "failed to persist shadow risk event"
-            );
-        }
     }
 
     fn should_emit_infra_event(&mut self, now: DateTime<Utc>) -> bool {
@@ -6914,6 +6920,109 @@ mod app_tests {
             "fatal timed-pause clear write must preserve runtime pause state"
         );
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause_cleared")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_cached_refresh_error_blocks_buy_on_fatal_fail_closed_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("cached-refresh-fail-closed-risk-event-fatal")?;
+        let mut guard = ShadowRiskGuard::new(RiskConfig::default());
+        let now = Utc::now();
+        guard.last_db_refresh_at = Some(now);
+        guard.last_db_refresh_error = Some("simulated refresh failure".to_string());
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_fail_closed_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_fail_closed'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let decision = guard.can_open_buy(&store, now + chrono::Duration::seconds(1), true);
+        match decision {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::FailClosed,
+                detail,
+            } => {
+                assert!(detail.contains("cached error"));
+                assert!(detail.contains("fail_closed_event_error"));
+                assert!(
+                    detail.contains("failed to persist shadow risk fail-closed event with fatal sqlite I/O")
+                );
+                assert!(detail.contains("xShmMap"));
+            }
+            other => panic!(
+                "expected fail-closed block when fatal fail-closed event write fails, got {other:?}"
+            ),
+        }
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_fail_closed")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_timed_pause_clear_blocks_buy_on_fatal_fail_closed_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("timed-pause-clear-fail-closed-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let pause_started_at = Utc::now() - chrono::Duration::minutes(10);
+        let mut guard = ShadowRiskGuard::new(cfg);
+        guard.activate_pause(
+            &store,
+            pause_started_at,
+            chrono::Duration::minutes(5),
+            "drawdown_1h",
+            "expired pause should fail closed on fatal fail-closed write".to_string(),
+        )?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_timed_pause_clear_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_pause_cleared'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;
+             CREATE TRIGGER fail_shadow_risk_fail_closed_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_fail_closed'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let decision = guard.can_open_buy(&store, Utc::now(), true);
+        match decision {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::FailClosed,
+                detail,
+            } => {
+                assert!(detail.contains("timed_pause_clear_error"));
+                assert!(detail.contains("fail_closed_event_error"));
+                assert!(
+                    detail.contains("failed to persist shadow risk fail-closed event with fatal sqlite I/O")
+                );
+                assert!(detail.contains("xShmMap"));
+            }
+            other => panic!(
+                "expected fail-closed block when fatal fail-closed event write fails after timed-pause clear error, got {other:?}"
+            ),
+        }
+        assert!(guard.pause_until.is_some());
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause_cleared")?, 0);
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_fail_closed")?, 0);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
