@@ -77,6 +77,7 @@ const RISK_INFRA_EVENT_THROTTLE_SECONDS: i64 = 300;
 const RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES: u64 = 5;
 const RISK_INFRA_CLEAR_HEALTHY_SAMPLES: u64 = 5;
 const RECENT_SWAP_SIGNATURE_DEDUPE_CAPACITY: usize = 32_768;
+const APP_CONSUMER_LOOP_LATENCY_SAMPLE_CAPACITY: usize = 512;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
 const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
@@ -409,6 +410,73 @@ fn note_recent_swap_signature(
         }
     }
     true
+}
+
+#[derive(Debug, Default)]
+struct AppConsumerLoopTelemetry {
+    swaps_seen: u64,
+    follow_rejected: u64,
+    processing_ms_samples: VecDeque<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AppConsumerLoopTelemetrySnapshot {
+    swaps_seen: u64,
+    follow_rejected: u64,
+    follow_rejected_ratio: f64,
+    processing_ms_p95: u64,
+}
+
+impl AppConsumerLoopTelemetry {
+    fn note_swap_seen(&mut self) {
+        self.swaps_seen = self.swaps_seen.saturating_add(1);
+    }
+
+    fn note_follow_rejected(&mut self) {
+        self.follow_rejected = self.follow_rejected.saturating_add(1);
+    }
+
+    fn note_processing_duration(&mut self, duration_ms: u64) {
+        if self.processing_ms_samples.len() >= APP_CONSUMER_LOOP_LATENCY_SAMPLE_CAPACITY {
+            let _ = self.processing_ms_samples.pop_front();
+        }
+        self.processing_ms_samples.push_back(duration_ms);
+    }
+
+    fn note_processing_started_at(&mut self, started_at: StdInstant) {
+        let duration_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        self.note_processing_duration(duration_ms);
+    }
+
+    fn snapshot_and_reset(&mut self) -> AppConsumerLoopTelemetrySnapshot {
+        let swaps_seen = self.swaps_seen;
+        let follow_rejected = self.follow_rejected;
+        let processing_ms_p95 = percentile_u64_deque(&self.processing_ms_samples, 0.95);
+        let follow_rejected_ratio = if swaps_seen == 0 {
+            0.0
+        } else {
+            follow_rejected as f64 / swaps_seen as f64
+        };
+        self.swaps_seen = 0;
+        self.follow_rejected = 0;
+        self.processing_ms_samples.clear();
+        AppConsumerLoopTelemetrySnapshot {
+            swaps_seen,
+            follow_rejected,
+            follow_rejected_ratio,
+            processing_ms_p95,
+        }
+    }
+}
+
+fn percentile_u64_deque(values: &VecDeque<u64>, q: f64) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.iter().copied().collect::<Vec<_>>();
+    sorted.sort_unstable();
+    let idx = ((sorted.len() - 1) as f64 * q.clamp(0.0, 1.0)).round() as usize;
+    sorted[idx]
 }
 
 fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
@@ -2044,6 +2112,7 @@ async fn run_app_loop(
     let mut shadow_drop_reason_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_drop_stage_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut shadow_queue_full_outcome_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut app_consumer_loop_telemetry = AppConsumerLoopTelemetry::default();
     let mut recent_swap_signatures: HashSet<String> = HashSet::new();
     let mut recent_swap_signature_order: VecDeque<String> = VecDeque::new();
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
@@ -2309,12 +2378,20 @@ async fn run_app_loop(
                     .map(|metadata| metadata.len())
                     .unwrap_or(0);
                 let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
+                let app_consumer_loop_snapshot = app_consumer_loop_telemetry.snapshot_and_reset();
                 info!(
                     observed_swap_writer_pending_requests =
                         observed_swap_writer_snapshot.pending_requests,
                     observed_swap_writer_write_ms_p95 =
                         observed_swap_writer_snapshot.write_latency_ms_p95,
                     "observed swap writer telemetry"
+                );
+                info!(
+                    app_consumer_swaps_seen = app_consumer_loop_snapshot.swaps_seen,
+                    app_follow_rejected = app_consumer_loop_snapshot.follow_rejected,
+                    app_follow_rejected_ratio = app_consumer_loop_snapshot.follow_rejected_ratio,
+                    app_consumer_loop_time_ms_p95 = app_consumer_loop_snapshot.processing_ms_p95,
+                    "app consumer loop telemetry"
                 );
                 info!(
                     sqlite_write_retry_total = sqlite_contention.write_retry_total,
@@ -2428,8 +2505,12 @@ async fn run_app_loop(
                         continue;
                     }
                 };
+                let swap_processing_started_at = StdInstant::now();
+                app_consumer_loop_telemetry.note_swap_seen();
 
                 if let Err(error) = observed_swap_writer.enqueue(&swap).await {
+                    app_consumer_loop_telemetry
+                        .note_processing_started_at(swap_processing_started_at);
                     let error_chain = format_error_chain(&error);
                     if observed_swap_writer_error_requires_restart(&error) {
                         return Err(error).context(
@@ -2450,16 +2531,23 @@ async fn run_app_loop(
                     &mut recent_swap_signature_order,
                     &swap.signature,
                 ) {
+                    app_consumer_loop_telemetry
+                        .note_processing_started_at(swap_processing_started_at);
                     debug!(signature = %swap.signature, "duplicate swap ignored by recent signature dedupe");
                     continue;
                 }
 
                 let Some(side) = classify_swap_side(&swap) else {
+                    app_consumer_loop_telemetry
+                        .note_processing_started_at(swap_processing_started_at);
                     continue;
                 };
                 if matches!(side, ShadowSwapSide::Buy)
                     && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
                 {
+                    app_consumer_loop_telemetry.note_follow_rejected();
+                    app_consumer_loop_telemetry
+                        .note_processing_started_at(swap_processing_started_at);
                     let reason = "not_followed";
                     *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
                     *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
@@ -2488,6 +2576,9 @@ async fn run_app_loop(
                         && !has_pending_or_inflight
                         && !open_shadow_lots.contains(&key_tuple)
                     {
+                        app_consumer_loop_telemetry.note_follow_rejected();
+                        app_consumer_loop_telemetry
+                            .note_processing_started_at(swap_processing_started_at);
                         let reason = "not_followed";
                         *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
                         *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
@@ -2505,6 +2596,8 @@ async fn run_app_loop(
 
                 if matches!(side, ShadowSwapSide::Buy) {
                     if operator_emergency_stop.is_active() {
+                        app_consumer_loop_telemetry
+                            .note_processing_started_at(swap_processing_started_at);
                         let reason_key = BuyRiskBlockReason::OperatorEmergencyStop.as_str();
                         *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
                         *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
@@ -2523,6 +2616,8 @@ async fn run_app_loop(
                     match shadow_risk_guard.can_open_buy(&store, now, pause_new_trades_on_outage) {
                         BuyRiskDecision::Allow => {}
                         BuyRiskDecision::Blocked { reason, detail } => {
+                            app_consumer_loop_telemetry
+                                .note_processing_started_at(swap_processing_started_at);
                             let reason_key = reason.as_str();
                             *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
                             *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
@@ -2570,6 +2665,8 @@ async fn run_app_loop(
                             &mut shadow_queue_full_outcome_counts,
                         ),
                     }
+                    app_consumer_loop_telemetry
+                        .note_processing_started_at(swap_processing_started_at);
                     continue;
                 }
                 if shadow_scheduler.should_process_shadow_inline(
@@ -2609,6 +2706,7 @@ async fn run_app_loop(
                         &mut shadow_queue_full_outcome_counts,
                     );
                 }
+                app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
             }
             _ = discovery_interval.tick() => {
                 if discovery_handle.is_some() {
@@ -6445,6 +6543,42 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 "sig-1",
             ),
             "signature should become admissible again once it is evicted from bounded dedupe state"
+        );
+    }
+
+    #[test]
+    fn app_consumer_loop_telemetry_reports_follow_rejected_ratio_and_resets() {
+        let mut telemetry = AppConsumerLoopTelemetry::default();
+
+        telemetry.note_swap_seen();
+        telemetry.note_processing_duration(5);
+        telemetry.note_swap_seen();
+        telemetry.note_follow_rejected();
+        telemetry.note_processing_duration(15);
+        telemetry.note_swap_seen();
+        telemetry.note_follow_rejected();
+        telemetry.note_processing_duration(25);
+
+        let snapshot = telemetry.snapshot_and_reset();
+        assert_eq!(
+            snapshot,
+            AppConsumerLoopTelemetrySnapshot {
+                swaps_seen: 3,
+                follow_rejected: 2,
+                follow_rejected_ratio: 2.0 / 3.0,
+                processing_ms_p95: 25,
+            }
+        );
+
+        let empty_snapshot = telemetry.snapshot_and_reset();
+        assert_eq!(
+            empty_snapshot,
+            AppConsumerLoopTelemetrySnapshot {
+                swaps_seen: 0,
+                follow_rejected: 0,
+                follow_rejected_ratio: 0.0,
+                processing_ms_p95: 0,
+            }
         );
     }
 
