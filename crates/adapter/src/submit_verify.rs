@@ -7,7 +7,8 @@ use tracing::warn;
 use crate::{
     http_utils::{
         classify_request_error, endpoint_identity, read_response_body_limited,
-        redacted_endpoint_label, validate_endpoint_url, MAX_HTTP_JSON_BODY_READ_BYTES,
+        redacted_endpoint_label, validate_endpoint_url, MAX_HTTP_ERROR_BODY_READ_BYTES,
+        MAX_HTTP_JSON_BODY_READ_BYTES,
     },
     optional_non_empty_env, parse_bool_env, parse_u64_env, AppState, Reject,
     DEFAULT_SUBMIT_VERIFY_ATTEMPTS, DEFAULT_SUBMIT_VERIFY_INTERVAL_MS,
@@ -59,18 +60,30 @@ pub(crate) async fn verify_submitted_signature_visibility(
                 }
             };
             if !response.status().is_success() {
+                let status = response.status();
+                let body = read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
                 last_reason = format!(
-                    "rpc status={} endpoint={}",
-                    response.status(),
-                    endpoint_label
+                    "rpc status={} endpoint={} body={}",
+                    status,
+                    endpoint_label,
+                    body.text
                 );
                 continue;
+            }
+            if let Some(content_length) = response.content_length() {
+                if content_length > MAX_HTTP_JSON_BODY_READ_BYTES as u64 {
+                    last_reason = format!(
+                        "rpc response_too_large endpoint={} declared_content_length={} max_bytes={}",
+                        endpoint_label, content_length, MAX_HTTP_JSON_BODY_READ_BYTES
+                    );
+                    continue;
+                }
             }
             let body_read =
                 read_response_body_limited(response, MAX_HTTP_JSON_BODY_READ_BYTES).await;
             if let Some(read_error_class) = body_read.read_error_class {
                 last_reason = format!(
-                    "rpc body_read_failed endpoint={} class={}",
+                    "rpc response_read_failed endpoint={} class={}",
                     endpoint_label, read_error_class
                 );
                 continue;

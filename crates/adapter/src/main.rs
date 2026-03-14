@@ -5105,6 +5105,149 @@ mod tests {
         let _ = handle.join();
     }
 
+    #[tokio::test]
+    async fn verify_submit_signature_rejects_oversized_declared_content_length_before_json_read() {
+        let signature = bs58::encode([75u8; 64]).into_string();
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str())
+            .await
+            .expect_err("declared oversized content-length should fail closed");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains("response_too_large"),
+            "detail={}",
+            reject.detail
+        );
+        assert!(
+            reject.detail.contains("declared_content_length"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_uses_fallback_after_primary_declared_oversized_content_length()
+    {
+        let signature = bs58::encode([76u8; 64]).into_string();
+        let Some((primary_url, primary_handle)) = spawn_one_shot_upstream_incomplete_body(
+            200,
+            "application/json",
+            br#"{"jsonrpc":"2.0","result":{"value":[null]}}"#,
+            crate::http_utils::MAX_HTTP_JSON_BODY_READ_BYTES + 1,
+        ) else {
+            return;
+        };
+        let fallback_body =
+            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let Some((fallback_url, fallback_handle)) =
+            spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![primary_url.as_str(), fallback_url.as_str()],
+            true,
+        );
+        let result = verify_submitted_signature_visibility(&state, "rpc", signature.as_str()).await;
+        let Ok(SubmitSignatureVerification::Seen {
+            confirmation_status,
+        }) = result
+        else {
+            panic!("expected fallback verify endpoint to return Seen");
+        };
+        assert_eq!(confirmation_status, "confirmed");
+        let _ = primary_handle.join();
+        let _ = fallback_handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_keeps_invalid_json_classification_with_marker_suffix() {
+        let signature = bs58::encode([77u8; 64]).into_string();
+        let body = r#"{"jsonrpc":"2.0","result":{"value":[null]}}...[truncated]"#;
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str())
+            .await
+            .expect_err("invalid JSON should stay invalid_json classification");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains("invalid_json"),
+            "detail={}",
+            reject.detail
+        );
+        assert!(
+            !reject.detail.contains("response_too_large"),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn verify_submit_signature_includes_non_success_http_body_in_reason() {
+        let signature = bs58::encode([78u8; 64]).into_string();
+        let body = "submit-verify-upstream-unavailable";
+        let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(503, "text/plain", body)
+        else {
+            return;
+        };
+
+        let state = test_state_with_backends_and_verify(
+            "http://127.0.0.1:1/upstream",
+            None,
+            "http://127.0.0.1:1/upstream",
+            None,
+            vec![verify_url.as_str()],
+            true,
+        );
+        let reject = verify_submitted_signature_visibility(&state, "rpc", signature.as_str())
+            .await
+            .expect_err("non-success verify response should keep body detail");
+        assert!(reject.retryable);
+        assert_eq!(reject.code, "upstream_submit_signature_unseen");
+        assert!(
+            reject.detail.contains(body),
+            "detail={}",
+            reject.detail
+        );
+        let _ = handle.join();
+    }
+
     fn test_state(endpoint: &str) -> AppState {
         test_state_with_backends(endpoint, None, endpoint, None)
     }
@@ -5190,9 +5333,17 @@ mod tests {
         content_type: &str,
         body: &str,
     ) -> Option<(String, thread::JoinHandle<()>)> {
+        spawn_one_shot_upstream_raw_bytes(status, content_type, body.as_bytes())
+    }
+
+    fn spawn_one_shot_upstream_raw_bytes(
+        status: u16,
+        content_type: &str,
+        body: &[u8],
+    ) -> Option<(String, thread::JoinHandle<()>)> {
         let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().ok()?;
-        let response_body = body.to_string();
+        let response_body = body.to_vec();
         let content_type = content_type.to_string();
         let reason = match status {
             200 => "OK",
@@ -5211,15 +5362,57 @@ mod tests {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut request_buf = [0u8; 8192];
                 let _ = stream.read(&mut request_buf);
-                let response = format!(
-                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                let headers = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     status,
                     reason,
                     content_type,
                     response_body.len(),
-                    response_body
                 );
-                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(headers.as_bytes());
+                let _ = stream.write_all(response_body.as_slice());
+                let _ = stream.flush();
+            }
+        });
+        Some((format!("http://{}/upstream", addr), handle))
+    }
+
+    fn spawn_one_shot_upstream_incomplete_body(
+        status: u16,
+        content_type: &str,
+        partial_body: &[u8],
+        declared_content_length: usize,
+    ) -> Option<(String, thread::JoinHandle<()>)> {
+        if declared_content_length <= partial_body.len() {
+            return None;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let addr = listener.local_addr().ok()?;
+        let response_body = partial_body.to_vec();
+        let content_type = content_type.to_string();
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            _ => "Unknown",
+        }
+        .to_string();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0u8; 8192];
+                let _ = stream.read(&mut request_buf);
+                let headers = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    status, reason, content_type, declared_content_length
+                );
+                let _ = stream.write_all(headers.as_bytes());
+                let _ = stream.write_all(response_body.as_slice());
                 let _ = stream.flush();
             }
         });
