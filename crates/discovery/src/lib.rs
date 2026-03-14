@@ -897,7 +897,7 @@ impl DiscoveryService {
                 publish_due,
                 short_retention_window,
                 followlist_deactivations_suppressed,
-                self.build_wallet_snapshots_from_cached(store, &swaps, now),
+                self.build_wallet_snapshots_from_cached(store, &swaps, now)?,
                 "raw_window",
             ),
         };
@@ -1052,7 +1052,7 @@ impl DiscoveryService {
         store: &SqliteStore,
         swaps: &VecDeque<SwapEvent>,
         now: DateTime<Utc>,
-    ) -> Vec<WalletSnapshot> {
+    ) -> Result<Vec<WalletSnapshot>> {
         let mut ordered_swaps: Vec<&SwapEvent> = swaps.iter().collect();
         if ordered_swaps
             .windows(2)
@@ -1077,7 +1077,7 @@ impl DiscoveryService {
             }
         }
         let token_quality_cache =
-            self.resolve_token_quality_for_mints(store, &unique_buy_mints, now);
+            self.resolve_token_quality_for_mints(store, &unique_buy_mints, now)?;
         let mut token_states: HashMap<String, TokenRollingState> = HashMap::new();
         let mut token_sol_history: HashMap<String, Vec<SolLegTrade>> = HashMap::new();
         for swap in ordered_swaps.iter().copied() {
@@ -1107,7 +1107,7 @@ impl DiscoveryService {
             }
         };
 
-        by_wallet
+        Ok(by_wallet
             .into_iter()
             .map(|(wallet_id, acc)| {
                 let persisted_active_days = persisted_active_day_counts
@@ -1122,7 +1122,7 @@ impl DiscoveryService {
                     persisted_active_days,
                 )
             })
-            .collect()
+            .collect())
     }
 
     fn build_wallet_snapshots_from_latest_metrics(
@@ -3363,7 +3363,7 @@ mod tests {
             &store,
             &swaps,
             buy_ts + Duration::minutes(10),
-        );
+        )?;
         let target_snapshot = snapshots
             .into_iter()
             .find(|snapshot| snapshot.wallet_id == "wallet_target")
@@ -3430,7 +3430,7 @@ mod tests {
             1.0,
             100.0,
         )]);
-        let snapshots = discovery.build_wallet_snapshots_from_cached(&store, &swaps, now);
+        let snapshots = discovery.build_wallet_snapshots_from_cached(&store, &swaps, now)?;
         let snapshot = snapshots.into_iter().next().context("expected snapshot")?;
 
         assert!(
