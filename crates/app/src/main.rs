@@ -2287,23 +2287,17 @@ impl ShadowRiskGuard {
     }
 
     fn clear_soft_exposure_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
-        let Some(previous_until) = self.soft_exposure_pause_until.take() else {
+        let Some(previous_until) = self.soft_exposure_pause_until else {
             self.soft_exposure_pause_latched = false;
             self.soft_exposure_pause_reason = None;
             return Ok(());
         };
-        let previous_reason = self.soft_exposure_pause_reason.take().unwrap_or_else(|| {
+        let previous_reason = self.soft_exposure_pause_reason.clone().unwrap_or_else(|| {
             format!(
                 "exposure_soft_cap: paused_until={}",
                 previous_until.to_rfc3339()
             )
         });
-        self.soft_exposure_pause_latched = false;
-        info!(
-            previous_reason = %previous_reason,
-            previous_until = %previous_until.to_rfc3339(),
-            "shadow risk soft exposure pause cleared"
-        );
         let details_json = format!(
             "{{\"state\":\"cleared\",\"pause_type\":\"exposure_soft_cap\",\"previous_reason\":\"{}\",\"previous_until\":\"{}\"}}",
             sanitize_json_value(&previous_reason),
@@ -2316,7 +2310,16 @@ impl ShadowRiskGuard {
             now,
             &details_json,
             "failed to persist shadow risk soft exposure pause clear event with fatal sqlite I/O",
-        )
+        )?;
+        self.soft_exposure_pause_latched = false;
+        self.soft_exposure_pause_until = None;
+        self.soft_exposure_pause_reason = None;
+        info!(
+            previous_reason = %previous_reason,
+            previous_until = %previous_until.to_rfc3339(),
+            "shadow risk soft exposure pause cleared"
+        );
+        Ok(())
     }
 
     fn should_emit_infra_event(&mut self, now: DateTime<Utc>) -> bool {
@@ -6885,6 +6888,80 @@ mod app_tests {
         );
         assert!(guard.pause_until.is_some());
         assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 0);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_refresh_returns_error_on_fatal_soft_exposure_pause_clear_risk_event_write(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("soft-pause-clear-risk-event-fatal")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_soft_exposure_cap_sol = 0.5;
+        cfg.shadow_soft_exposure_resume_below_sol = 0.4;
+        cfg.shadow_hard_exposure_cap_sol = 2.0;
+        cfg.shadow_soft_pause_minutes = 1;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let opened_ts = now - chrono::Duration::minutes(5);
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 10.0, 0.6, opened_ts)?;
+
+        let _ = guard.can_open_buy(&store, now, true);
+        let initial_until = guard
+            .soft_exposure_pause_until
+            .expect("soft exposure pause should set until");
+        let initial_reason = guard
+            .soft_exposure_pause_reason
+            .clone()
+            .expect("soft exposure pause should set reason");
+        assert!(guard.soft_exposure_pause_latched);
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause")?, 1);
+
+        store.update_shadow_lot(lot_id, 10.0, 0.35)?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_shadow_risk_soft_pause_clear_event_insert
+             BEFORE INSERT ON risk_events
+             WHEN NEW.type = 'shadow_risk_pause_cleared'
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let recovered_at =
+            now + chrono::Duration::seconds((RISK_DB_REFRESH_MIN_SECONDS + 61).max(61));
+        let error = guard
+            .maybe_refresh_db_state(&store, recovered_at)
+            .expect_err("fatal soft-exposure pause clear write must abort refresh");
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains(
+                "failed to persist shadow risk soft exposure pause clear event with fatal sqlite I/O"
+            ),
+            "expected soft-pause clear fatal context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("failed to insert risk event"),
+            "expected storage insert_risk_event context, got: {error_text}"
+        );
+        assert!(
+            error_text.contains("xShmMap"),
+            "expected fatal sqlite marker to survive error chain, got: {error_text}"
+        );
+        assert!(
+            guard.soft_exposure_pause_latched,
+            "fatal soft-exposure pause clear write must preserve runtime soft pause latch"
+        );
+        assert_eq!(guard.soft_exposure_pause_until, Some(initial_until));
+        assert_eq!(guard.soft_exposure_pause_reason.as_deref(), Some(initial_reason.as_str()));
+        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause_cleared")?, 0);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
