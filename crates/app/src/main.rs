@@ -2045,10 +2045,38 @@ impl ShadowRiskGuard {
             .map(|signal| signal.reason)
     }
 
+    fn yellowstone_output_queue_reason_context(
+        &self,
+        snapshot: &IngestionRuntimeSnapshot,
+    ) -> Option<String> {
+        if !self.uses_yellowstone_ingestion() || snapshot.yellowstone_output_queue_capacity == 0 {
+            return None;
+        }
+        Some(format!(
+            "yellowstone_output_queue_depth={} yellowstone_output_queue_capacity={} yellowstone_output_queue_fill_ratio={:.4} yellowstone_output_oldest_age_ms={}",
+            snapshot.yellowstone_output_queue_depth,
+            snapshot.yellowstone_output_queue_capacity,
+            snapshot.yellowstone_output_queue_fill_ratio,
+            snapshot.yellowstone_output_oldest_age_ms
+        ))
+    }
+
+    fn enrich_infra_reason_with_yellowstone_queue_context(
+        &self,
+        snapshot: &IngestionRuntimeSnapshot,
+        reason: String,
+    ) -> String {
+        match self.yellowstone_output_queue_reason_context(snapshot) {
+            Some(context) => format!("{reason} {context}"),
+            None => reason,
+        }
+    }
+
     fn compute_infra_block_signal(&self, now: DateTime<Utc>) -> Option<InfraBlockSignal> {
         if self.infra_samples.is_empty() {
             return None;
         }
+        let latest = self.infra_samples.back().copied()?;
 
         if let Some(started_at) = self.lag_breach_since {
             if now - started_at
@@ -2058,10 +2086,13 @@ impl ShadowRiskGuard {
             {
                 return Some(InfraBlockSignal {
                     key: InfraBlockKey::LagP95,
-                    reason: format!(
-                        "lag_p95_over_threshold_for={}m threshold_ms={}",
-                        self.config.shadow_infra_lag_breach_minutes,
-                        self.config.shadow_infra_lag_p95_threshold_ms
+                    reason: self.enrich_infra_reason_with_yellowstone_queue_context(
+                        &latest,
+                        format!(
+                            "lag_p95_over_threshold_for={}m threshold_ms={}",
+                            self.config.shadow_infra_lag_breach_minutes,
+                            self.config.shadow_infra_lag_p95_threshold_ms
+                        ),
                     ),
                 });
             }
@@ -2069,7 +2100,6 @@ impl ShadowRiskGuard {
 
         let window_start =
             now - chrono::Duration::minutes(self.config.shadow_infra_window_minutes.max(1) as i64);
-        let latest = self.infra_samples.back().copied()?;
         let has_full_window_coverage = self
             .infra_samples
             .front()
@@ -2112,9 +2142,12 @@ impl ShadowRiskGuard {
         {
             return Some(InfraBlockSignal {
                 key: InfraBlockKey::NoIngestionProgress,
-                reason: format!(
-                    "no_ingestion_progress_for={}m",
-                    self.config.shadow_infra_window_minutes.max(1)
+                reason: self.enrich_infra_reason_with_yellowstone_queue_context(
+                    &latest,
+                    format!(
+                        "no_ingestion_progress_for={}m",
+                        self.config.shadow_infra_window_minutes.max(1)
+                    ),
                 ),
             });
         }
@@ -2131,12 +2164,15 @@ impl ShadowRiskGuard {
                 if parser_error_ratio >= INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD {
                     return Some(InfraBlockSignal {
                         key: InfraBlockKey::ParserStall,
-                        reason: format!(
-                            "parser_stall_for={}m tx_updates_delta={} parser_errors_delta={} error_ratio={:.4}",
-                            self.config.shadow_infra_window_minutes.max(1),
-                            delta_grpc_transaction_updates_total,
-                            parser_errors_delta,
-                            parser_error_ratio
+                        reason: self.enrich_infra_reason_with_yellowstone_queue_context(
+                            &latest,
+                            format!(
+                                "parser_stall_for={}m tx_updates_delta={} parser_errors_delta={} error_ratio={:.4}",
+                                self.config.shadow_infra_window_minutes.max(1),
+                                delta_grpc_transaction_updates_total,
+                                parser_errors_delta,
+                                parser_error_ratio
+                            ),
                         ),
                     });
                 }
@@ -2149,9 +2185,12 @@ impl ShadowRiskGuard {
                 if !self.uses_yellowstone_ingestion() {
                     return Some(InfraBlockSignal {
                         key: InfraBlockKey::ReplacedRatio,
-                        reason: format!(
-                            "replaced_ratio={:.4} delta_replaced={} delta_enqueued={}",
-                            replaced_ratio, delta_replaced, delta_enqueued
+                        reason: self.enrich_infra_reason_with_yellowstone_queue_context(
+                            &latest,
+                            format!(
+                                "replaced_ratio={:.4} delta_replaced={} delta_enqueued={}",
+                                replaced_ratio, delta_replaced, delta_enqueued
+                            ),
                         ),
                     });
                 }
@@ -2160,18 +2199,24 @@ impl ShadowRiskGuard {
         if delta_rpc_429 >= self.config.shadow_infra_rpc429_delta_threshold {
             return Some(InfraBlockSignal {
                 key: InfraBlockKey::Rpc429,
-                reason: format!(
-                    "rpc_429_delta={} threshold={}",
-                    delta_rpc_429, self.config.shadow_infra_rpc429_delta_threshold
+                reason: self.enrich_infra_reason_with_yellowstone_queue_context(
+                    &latest,
+                    format!(
+                        "rpc_429_delta={} threshold={}",
+                        delta_rpc_429, self.config.shadow_infra_rpc429_delta_threshold
+                    ),
                 ),
             });
         }
         if delta_rpc_5xx >= self.config.shadow_infra_rpc5xx_delta_threshold {
             return Some(InfraBlockSignal {
                 key: InfraBlockKey::Rpc5xx,
-                reason: format!(
-                    "rpc_5xx_delta={} threshold={}",
-                    delta_rpc_5xx, self.config.shadow_infra_rpc5xx_delta_threshold
+                reason: self.enrich_infra_reason_with_yellowstone_queue_context(
+                    &latest,
+                    format!(
+                        "rpc_5xx_delta={} threshold={}",
+                        delta_rpc_5xx, self.config.shadow_infra_rpc5xx_delta_threshold
+                    ),
                 ),
             });
         }
@@ -4323,6 +4368,30 @@ mod app_tests {
         }
     }
 
+    fn infra_snapshot_with_yellowstone_queue(
+        ts_utc: DateTime<Utc>,
+        ws_notifications_enqueued: u64,
+        ws_notifications_replaced_oldest: u64,
+        yellowstone_output_queue_depth: u64,
+        yellowstone_output_queue_capacity: u64,
+        yellowstone_output_oldest_age_ms: u64,
+    ) -> IngestionRuntimeSnapshot {
+        let mut snapshot = infra_snapshot(
+            ts_utc,
+            ws_notifications_enqueued,
+            ws_notifications_replaced_oldest,
+        );
+        snapshot.yellowstone_output_queue_depth = yellowstone_output_queue_depth;
+        snapshot.yellowstone_output_queue_capacity = yellowstone_output_queue_capacity;
+        snapshot.yellowstone_output_queue_fill_ratio = if yellowstone_output_queue_capacity == 0 {
+            0.0
+        } else {
+            yellowstone_output_queue_depth as f64 / yellowstone_output_queue_capacity as f64
+        };
+        snapshot.yellowstone_output_oldest_age_ms = yellowstone_output_oldest_age_ms;
+        snapshot
+    }
+
     #[test]
     fn risk_guard_infra_ratio_uses_window_delta_not_cumulative_with_consecutive_hysteresis(
     ) -> Result<()> {
@@ -4734,6 +4803,103 @@ mod app_tests {
         assert!(
             reason.contains("no_ingestion_progress_for=20m"),
             "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_no_progress_reason_includes_yellowstone_queue_context() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new_with_ingestion_source(cfg, "yellowstone_grpc");
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            infra_snapshot_with_yellowstone_queue(
+                now - chrono::Duration::minutes(21),
+                10_000,
+                0,
+                7,
+                10,
+                120,
+            ),
+            infra_snapshot_with_yellowstone_queue(
+                now - chrono::Duration::minutes(10),
+                10_000,
+                0,
+                8,
+                10,
+                240,
+            ),
+            infra_snapshot_with_yellowstone_queue(now, 10_000, 0, 9, 10, 360),
+        ]);
+
+        let reason = guard
+            .compute_infra_block_reason(now)
+            .expect("yellowstone no-progress gate should still trigger");
+        assert!(
+            reason.contains("no_ingestion_progress_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
+        assert!(
+            reason.contains("yellowstone_output_queue_depth=9"),
+            "expected queue depth context, got: {}",
+            reason
+        );
+        assert!(
+            reason.contains("yellowstone_output_queue_capacity=10"),
+            "expected queue capacity context, got: {}",
+            reason
+        );
+        assert!(
+            reason.contains("yellowstone_output_queue_fill_ratio=0.9000"),
+            "expected queue fill ratio context, got: {}",
+            reason
+        );
+        assert!(
+            reason.contains("yellowstone_output_oldest_age_ms=360"),
+            "expected queue oldest-age context, got: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn risk_guard_infra_no_progress_reason_omits_yellowstone_queue_context_for_non_yellowstone() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            infra_snapshot_with_yellowstone_queue(
+                now - chrono::Duration::minutes(21),
+                10_000,
+                0,
+                7,
+                10,
+                120,
+            ),
+            infra_snapshot_with_yellowstone_queue(
+                now - chrono::Duration::minutes(10),
+                10_000,
+                0,
+                8,
+                10,
+                240,
+            ),
+            infra_snapshot_with_yellowstone_queue(now, 10_000, 0, 9, 10, 360),
+        ]);
+
+        let reason = guard
+            .compute_infra_block_reason(now)
+            .expect("mock-source no-progress gate should still trigger");
+        assert!(
+            reason.contains("no_ingestion_progress_for=20m"),
+            "unexpected reason: {}",
+            reason
+        );
+        assert!(
+            !reason.contains("yellowstone_output_queue_depth="),
+            "non-yellowstone source must not append yellowstone queue context: {}",
             reason
         );
     }
