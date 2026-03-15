@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::time::{Duration as StdDuration, Instant};
 
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const OBSERVED_SWAP_CURSOR_PROGRESS_OPS: i32 = 2_000;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -364,6 +365,45 @@ impl SqliteStore {
         .transpose()
     }
 
+    pub fn load_observed_buy_mints_in_window(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT token_out
+                 FROM observed_swaps
+                 WHERE ts >= ?1
+                   AND ts <= ?2
+                   AND token_in = ?3
+                   AND token_out != ?3
+                 ORDER BY token_out ASC",
+            )
+            .context("failed to prepare observed_swaps distinct buy mint query")?;
+        let mut rows = stmt
+            .query(params![
+                since.to_rfc3339(),
+                until.to_rfc3339(),
+                SOL_MINT,
+            ])
+            .context("failed to query observed_swaps distinct buy mints")?;
+
+        let mut mints = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating observed_swaps distinct buy mints")?
+        {
+            mints.push(
+                row.get::<_, String>(0)
+                    .context("failed reading observed_swaps distinct buy mint")?,
+            );
+        }
+
+        Ok(mints)
+    }
+
     pub fn for_each_observed_swap_since<F>(
         &self,
         since: DateTime<Utc>,
@@ -390,6 +430,42 @@ impl SqliteStore {
         while let Some(row) = rows
             .next()
             .context("failed iterating observed_swaps stream")?
+        {
+            let swap = Self::row_to_swap_event(row)?;
+            on_swap(swap)?;
+            seen = seen.saturating_add(1);
+        }
+        Ok(seen)
+    }
+
+    pub fn for_each_observed_swap_in_window<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        mut on_swap: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                 FROM observed_swaps
+                 WHERE ts >= ?1
+                   AND ts <= ?2
+                 ORDER BY ts ASC, slot ASC, signature ASC",
+            )
+            .context("failed to prepare observed_swaps window streaming query")?;
+        let mut rows = stmt
+            .query(params![since.to_rfc3339(), until.to_rfc3339()])
+            .context("failed to stream observed_swaps window")?;
+
+        let mut seen = 0usize;
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating observed_swaps window stream")?
         {
             let swap = Self::row_to_swap_event(row)?;
             on_swap(swap)?;

@@ -32,6 +32,7 @@ const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES: u32 = 3;
 const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
+const STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS: usize = 2_048;
 
 fn discovery_runtime_cursor_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
@@ -234,11 +235,19 @@ struct Lot {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct BuyObservation {
     token: String,
     ts: DateTime<Utc>,
     tradable: bool,
     quality_resolved: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PendingBuyRugCheck {
+    token: String,
+    wallet_id: String,
+    buy_ts: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -316,6 +325,10 @@ struct WalletAccumulator {
     tx_per_minute: HashMap<i64, u32>,
     suspicious: bool,
     positions: HashMap<String, VecDeque<Lot>>,
+    buy_total: u32,
+    quality_resolved_buys: u32,
+    tradable_buys: u32,
+    rug_metrics: RugMetrics,
     buy_observations: Vec<BuyObservation>,
 }
 
@@ -1413,21 +1426,14 @@ impl DiscoveryService {
                 metrics_window_start.to_rfc3339()
             ));
         }
-        let swaps: Vec<SwapEvent> = store
-            .load_observed_swaps_since(metrics_window_start)?
-            .into_iter()
-            .filter(|swap| swap.ts_utc <= now)
-            .collect();
-        if swaps.is_empty() {
+        let (snapshots, observed_swaps_loaded) =
+            self.build_wallet_snapshots_from_persisted_stream(store, metrics_window_start, now)?;
+        if observed_swaps_loaded == 0 {
             return Err(anyhow!(
                 "no persisted observed_swaps found in bootstrap window starting at {}",
                 metrics_window_start.to_rfc3339()
             ));
         }
-        let observed_swaps_loaded = swaps.len();
-
-        let snapshots =
-            self.build_wallet_snapshots_from_cached(store, &VecDeque::from(swaps), now)?;
         let wallet_rows = self.wallet_rows_from_snapshots(&snapshots);
         let metric_rows: Vec<WalletMetricRow> = snapshots
             .iter()
@@ -1524,6 +1530,92 @@ impl DiscoveryService {
             entry.observe_swap(swap, self.config.max_tx_per_minute, buy_quality);
         }
 
+        self.wallet_snapshots_from_accumulators(store, by_wallet, now, &token_sol_history)
+    }
+
+    fn build_wallet_snapshots_from_persisted_stream(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<(Vec<WalletSnapshot>, usize)> {
+        let unique_buy_mints = store.load_observed_buy_mints_in_window(window_start, now)?;
+        let token_quality_cache =
+            self.resolve_token_quality_for_mints(store, &unique_buy_mints, now)?;
+        let lookahead = Duration::seconds(self.config.rug_lookahead_seconds.max(1) as i64);
+        let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
+        let mut token_states: HashMap<String, TokenRollingState> = HashMap::new();
+        let mut token_recent_sol_trades: HashMap<String, VecDeque<SolLegTrade>> = HashMap::new();
+        let mut pending_rug_checks = VecDeque::new();
+        let mut token_pending_buy_starts: HashMap<String, VecDeque<DateTime<Utc>>> =
+            HashMap::new();
+        let mut processed_swaps = 0usize;
+        let observed_swaps_loaded =
+            store.for_each_observed_swap_in_window(window_start, now, |swap| {
+                processed_swaps = processed_swaps.saturating_add(1);
+                let buy_quality = self.update_token_quality_state_streaming(
+                    &mut token_states,
+                    &mut token_recent_sol_trades,
+                    &token_quality_cache,
+                    &swap,
+                );
+                let entry = by_wallet.entry(swap.wallet.clone()).or_default();
+                entry.observe_swap_streaming(&swap, self.config.max_tx_per_minute, buy_quality);
+
+                let Some(token) = sol_leg_token(&swap) else {
+                    return Ok(());
+                };
+                self.finalize_streaming_rug_metrics_up_to(
+                    &mut by_wallet,
+                    token,
+                    &mut token_recent_sol_trades,
+                    &mut pending_rug_checks,
+                    &mut token_pending_buy_starts,
+                    swap.ts_utc,
+                    lookahead,
+                    now,
+                );
+                if is_sol_buy(&swap) {
+                    pending_rug_checks.push_back(PendingBuyRugCheck {
+                        token: token.to_string(),
+                        wallet_id: swap.wallet.clone(),
+                        buy_ts: swap.ts_utc,
+                    });
+                    token_pending_buy_starts
+                        .entry(token.to_string())
+                        .or_default()
+                        .push_back(swap.ts_utc);
+                }
+                if processed_swaps % STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS == 0 {
+                    self.evict_idle_streaming_rug_trade_history(
+                        &mut token_recent_sol_trades,
+                        &token_pending_buy_starts,
+                        swap.ts_utc - lookahead,
+                    );
+                }
+                Ok(())
+            })?;
+        self.finalize_all_streaming_rug_metrics(
+            &mut by_wallet,
+            &mut token_recent_sol_trades,
+            &mut pending_rug_checks,
+            &mut token_pending_buy_starts,
+            now,
+            lookahead,
+        );
+        let empty_token_sol_history = HashMap::new();
+        let snapshots =
+            self.wallet_snapshots_from_accumulators(store, by_wallet, now, &empty_token_sol_history)?;
+        Ok((snapshots, observed_swaps_loaded))
+    }
+
+    fn wallet_snapshots_from_accumulators(
+        &self,
+        store: &SqliteStore,
+        by_wallet: HashMap<String, WalletAccumulator>,
+        now: DateTime<Utc>,
+        token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
+    ) -> Result<Vec<WalletSnapshot>> {
         let wallet_ids: Vec<String> = by_wallet.keys().cloned().collect();
         let persisted_active_day_counts = match store.wallet_active_day_counts_since(
             &wallet_ids,
@@ -1561,6 +1653,149 @@ impl DiscoveryService {
                 )
             })
             .collect())
+    }
+
+    fn finalize_streaming_rug_metrics_up_to(
+        &self,
+        by_wallet: &mut HashMap<String, WalletAccumulator>,
+        _token: &str,
+        token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
+        pending_rug_checks: &mut VecDeque<PendingBuyRugCheck>,
+        token_pending_buy_starts: &mut HashMap<String, VecDeque<DateTime<Utc>>>,
+        up_to_ts: DateTime<Utc>,
+        lookahead: Duration,
+        now: DateTime<Utc>,
+    ) {
+        while pending_rug_checks
+            .front()
+            .map(|buy| buy.buy_ts + lookahead <= up_to_ts)
+            .unwrap_or(false)
+        {
+            let pending = pending_rug_checks
+                .pop_front()
+                .expect("checked pending buy exists above");
+            let rug_status = self.compute_streaming_buy_rug_status(
+                token_recent_sol_trades
+                    .get(&pending.token)
+                    .expect("recent rug trades are initialized before pending buys are recorded"),
+                pending.buy_ts,
+                lookahead,
+                now,
+            );
+            if let Some(wallet) = by_wallet.get_mut(&pending.wallet_id) {
+                wallet.note_streaming_buy_rug_status(rug_status);
+            }
+            let Some(pending_starts) = token_pending_buy_starts.get_mut(&pending.token) else {
+                continue;
+            };
+            let _ = pending_starts.pop_front();
+            let next_needed_ts = pending_starts
+                .front()
+                .copied()
+                .unwrap_or(up_to_ts - lookahead);
+            self.evict_streaming_rug_trade_history(
+                token_recent_sol_trades,
+                &pending.token,
+                next_needed_ts,
+            );
+            if pending_starts.is_empty() {
+                token_pending_buy_starts.remove(&pending.token);
+            }
+        }
+    }
+
+    fn finalize_all_streaming_rug_metrics(
+        &self,
+        by_wallet: &mut HashMap<String, WalletAccumulator>,
+        token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
+        pending_rug_checks: &mut VecDeque<PendingBuyRugCheck>,
+        token_pending_buy_starts: &mut HashMap<String, VecDeque<DateTime<Utc>>>,
+        now: DateTime<Utc>,
+        lookahead: Duration,
+    ) {
+        self.finalize_streaming_rug_metrics_up_to(
+            by_wallet,
+            "",
+            token_recent_sol_trades,
+            pending_rug_checks,
+            token_pending_buy_starts,
+            now,
+            lookahead,
+            now,
+        );
+        while let Some(pending) = pending_rug_checks.pop_front() {
+            if let Some(wallet) = by_wallet.get_mut(&pending.wallet_id) {
+                wallet.note_streaming_buy_rug_status(BuyFactRugStatus::Unevaluated);
+            }
+        }
+        token_pending_buy_starts.clear();
+    }
+
+    fn evict_streaming_rug_trade_history(
+        &self,
+        token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
+        token: &str,
+        min_ts: DateTime<Utc>,
+    ) {
+        let Some(recent_trades) = token_recent_sol_trades.get_mut(token) else {
+            return;
+        };
+        while recent_trades
+            .front()
+            .map(|trade| trade.ts < min_ts)
+            .unwrap_or(false)
+        {
+            recent_trades.pop_front();
+        }
+        if recent_trades.is_empty() {
+            token_recent_sol_trades.remove(token);
+        }
+    }
+
+    fn evict_idle_streaming_rug_trade_history(
+        &self,
+        token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
+        token_pending_buy_starts: &HashMap<String, VecDeque<DateTime<Utc>>>,
+        min_ts: DateTime<Utc>,
+    ) {
+        let tokens: Vec<String> = token_recent_sol_trades.keys().cloned().collect();
+        for token in tokens {
+            if token_pending_buy_starts.contains_key(&token) {
+                continue;
+            }
+            self.evict_streaming_rug_trade_history(token_recent_sol_trades, &token, min_ts);
+        }
+    }
+
+    fn compute_streaming_buy_rug_status(
+        &self,
+        recent_trades: &VecDeque<SolLegTrade>,
+        buy_ts: DateTime<Utc>,
+        lookahead: Duration,
+        now: DateTime<Utc>,
+    ) -> BuyFactRugStatus {
+        let window_end = buy_ts + lookahead;
+        if window_end > now {
+            return BuyFactRugStatus::Unevaluated;
+        }
+
+        let mut volume_sol = 0.0;
+        let mut unique_traders = HashSet::new();
+        for trade in recent_trades {
+            if trade.ts < buy_ts || trade.ts > window_end {
+                continue;
+            }
+            volume_sol += trade.sol_notional;
+            unique_traders.insert(trade.wallet_id.as_str());
+        }
+        let thin_volume = volume_sol + 1e-12 < self.config.thin_market_min_volume_sol;
+        let thin_traders =
+            unique_traders.len() < self.config.thin_market_min_unique_traders as usize;
+        if thin_volume || thin_traders {
+            BuyFactRugStatus::Rugged
+        } else {
+            BuyFactRugStatus::Healthy
+        }
     }
 
     fn build_wallet_snapshots_from_latest_metrics(
@@ -1896,18 +2131,34 @@ impl DiscoveryService {
         let last_seen = acc.last_seen.unwrap_or(now);
         let active_days = acc.active_days.len() as u32;
         let eligibility_active_days = active_days.max(persisted_active_days);
-        let buy_total = acc.buy_observations.len() as u32;
-        let quality_resolved_buys = acc
-            .buy_observations
-            .iter()
-            .filter(|buy| buy.quality_resolved)
-            .count() as u32;
-        let tradable_buys = acc
-            .buy_observations
-            .iter()
-            .filter(|buy| buy.quality_resolved && buy.tradable)
-            .count() as u32;
-        let rug_metrics = self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
+        let (buy_total, quality_resolved_buys, tradable_buys, rug_metrics) =
+            if acc.buy_observations.is_empty() {
+                (
+                    acc.buy_total,
+                    acc.quality_resolved_buys,
+                    acc.tradable_buys,
+                    acc.rug_metrics,
+                )
+            } else {
+                let buy_total = acc.buy_observations.len() as u32;
+                let quality_resolved_buys = acc
+                    .buy_observations
+                    .iter()
+                    .filter(|buy| buy.quality_resolved)
+                    .count() as u32;
+                let tradable_buys = acc
+                    .buy_observations
+                    .iter()
+                    .filter(|buy| buy.quality_resolved && buy.tradable)
+                    .count() as u32;
+                let rug_metrics = self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
+                (
+                    buy_total,
+                    quality_resolved_buys,
+                    tradable_buys,
+                    rug_metrics,
+                )
+            };
         self.snapshot_from_components(
             wallet_id,
             first_seen,
@@ -2131,6 +2382,47 @@ impl WalletAccumulator {
         }
     }
 
+    fn observe_swap_streaming(
+        &mut self,
+        swap: &SwapEvent,
+        max_tx_per_minute: u32,
+        buy_tradability: Option<BuyTradability>,
+    ) {
+        self.trades = self.trades.saturating_add(1);
+        self.first_seen = Some(
+            self.first_seen
+                .map(|current| current.min(swap.ts_utc))
+                .unwrap_or(swap.ts_utc),
+        );
+        self.last_seen = Some(
+            self.last_seen
+                .map(|current| current.max(swap.ts_utc))
+                .unwrap_or(swap.ts_utc),
+        );
+        let day = swap.ts_utc.date_naive();
+        self.active_days.insert(day);
+        self.mark_tx_minute(swap.ts_utc.timestamp() / 60, max_tx_per_minute);
+
+        if is_sol_buy(swap) {
+            self.observe_buy_streaming(
+                swap.token_out.as_str(),
+                swap.amount_out,
+                swap.amount_in,
+                swap.ts_utc,
+                buy_tradability.unwrap_or(BuyTradability::Rejected),
+            );
+            return;
+        }
+        if is_sol_sell(swap) {
+            self.observe_sell(
+                swap.token_in.as_str(),
+                swap.amount_in,
+                swap.amount_out,
+                swap.ts_utc,
+            );
+        }
+    }
+
     fn observe_buy(
         &mut self,
         token: &str,
@@ -2147,6 +2439,13 @@ impl WalletAccumulator {
             BuyTradability::Rejected => (false, true),
             BuyTradability::Deferred => (false, false),
         };
+        self.buy_total = self.buy_total.saturating_add(1);
+        if quality_resolved {
+            self.quality_resolved_buys = self.quality_resolved_buys.saturating_add(1);
+        }
+        if tradable {
+            self.tradable_buys = self.tradable_buys.saturating_add(1);
+        }
         self.buy_observations.push(BuyObservation {
             token: token.to_string(),
             ts,
@@ -2165,6 +2464,58 @@ impl WalletAccumulator {
                 cost_sol,
                 opened_at: ts,
             });
+    }
+
+    fn observe_buy_streaming(
+        &mut self,
+        token: &str,
+        qty: f64,
+        cost_sol: f64,
+        ts: DateTime<Utc>,
+        tradability: BuyTradability,
+    ) {
+        if qty <= 0.0 || cost_sol <= 0.0 {
+            return;
+        }
+        let (tradable, quality_resolved) = match tradability {
+            BuyTradability::Tradable => (true, true),
+            BuyTradability::Rejected => (false, true),
+            BuyTradability::Deferred => (false, false),
+        };
+        self.buy_total = self.buy_total.saturating_add(1);
+        if quality_resolved {
+            self.quality_resolved_buys = self.quality_resolved_buys.saturating_add(1);
+        }
+        if tradable {
+            self.tradable_buys = self.tradable_buys.saturating_add(1);
+        }
+        self.spent_sol += cost_sol;
+        if cost_sol > self.max_buy_notional_sol {
+            self.max_buy_notional_sol = cost_sol;
+        }
+        self.positions
+            .entry(token.to_string())
+            .or_default()
+            .push_back(Lot {
+                qty,
+                cost_sol,
+                opened_at: ts,
+            });
+    }
+
+    fn note_streaming_buy_rug_status(&mut self, rug_status: BuyFactRugStatus) {
+        match rug_status {
+            BuyFactRugStatus::Healthy => {
+                self.rug_metrics.evaluated = self.rug_metrics.evaluated.saturating_add(1);
+            }
+            BuyFactRugStatus::Rugged => {
+                self.rug_metrics.evaluated = self.rug_metrics.evaluated.saturating_add(1);
+                self.rug_metrics.rugged = self.rug_metrics.rugged.saturating_add(1);
+            }
+            BuyFactRugStatus::Unevaluated => {
+                self.rug_metrics.unevaluated = self.rug_metrics.unevaluated.saturating_add(1);
+            }
+        }
     }
 
     fn observe_sell(&mut self, token: &str, qty: f64, proceeds_sol: f64, ts: DateTime<Utc>) {
@@ -2247,6 +2598,16 @@ fn is_sol_buy(swap: &SwapEvent) -> bool {
 
 fn is_sol_sell(swap: &SwapEvent) -> bool {
     swap.token_out == SOL_MINT && swap.token_in != SOL_MINT
+}
+
+fn sol_leg_token(swap: &SwapEvent) -> Option<&str> {
+    if is_sol_buy(swap) {
+        Some(swap.token_out.as_str())
+    } else if is_sol_sell(swap) {
+        Some(swap.token_in.as_str())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

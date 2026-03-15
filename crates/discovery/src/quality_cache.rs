@@ -9,7 +9,7 @@ use copybot_core_types::SwapEvent;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -268,6 +268,55 @@ impl DiscoveryService {
         let state = token_states
             .get_mut(token)
             .expect("token state is initialized when push_sol_leg_trade is called");
+        Self::evict_expired_5m(state, swap.ts_utc);
+        Some(self.evaluate_buy_tradability(state, token_quality_cache.get(token), swap.ts_utc))
+    }
+
+    pub(super) fn update_token_quality_state_streaming(
+        &self,
+        token_states: &mut HashMap<String, TokenRollingState>,
+        token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
+        token_quality_cache: &HashMap<String, TokenQualityResolution>,
+        swap: &SwapEvent,
+    ) -> Option<BuyTradability> {
+        self.touch_token_state(token_states, &swap.token_in, &swap.wallet, swap.ts_utc);
+        self.touch_token_state(token_states, &swap.token_out, &swap.wallet, swap.ts_utc);
+
+        let (token, sol_notional) = if is_sol_buy(swap) {
+            (swap.token_out.as_str(), swap.amount_in)
+        } else if is_sol_sell(swap) {
+            (swap.token_in.as_str(), swap.amount_out)
+        } else {
+            return None;
+        };
+
+        let trade = SolLegTrade {
+            ts: swap.ts_utc,
+            wallet_id: swap.wallet.clone(),
+            sol_notional: sol_notional.max(0.0),
+        };
+        token_recent_sol_trades
+            .entry(token.to_string())
+            .or_default()
+            .push_back(trade.clone());
+
+        let state = token_states.entry(token.to_string()).or_default();
+        Self::evict_expired_5m(state, swap.ts_utc);
+        state.sol_volume_5m += trade.sol_notional;
+        state
+            .sol_traders_5m
+            .entry(trade.wallet_id.clone())
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+        state.sol_trades_5m.push_back(trade);
+
+        if !is_sol_buy(swap) {
+            return None;
+        }
+
+        let state = token_states
+            .get_mut(token)
+            .expect("token state is initialized when streaming trade is recorded");
         Self::evict_expired_5m(state, swap.ts_utc);
         Some(self.evaluate_buy_tradability(state, token_quality_cache.get(token), swap.ts_utc))
     }
