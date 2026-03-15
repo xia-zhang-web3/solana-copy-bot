@@ -75,18 +75,24 @@ Owner: copybot runtime team
 
 1. `YELLOWSTONE_GRPC_MIGRATION_PLAN.md` закрыт по разделу Success Criteria + завершено observation окно.
 2. Watchdog на сервере развернут как `systemd service + timer`, протестирован forced-failover сценарием.
-3. Execution RPC endpoint(s) и policy failover зафиксированы и проверены.
-4. Реализован execution pipeline с:
+3. Selection/bootstrap control-plane закрыт по `SELECTION_BOOTSTRAP_REDESIGN_PLAN_2026-03-15.md`:
+   1. runtime truth определяется latest trusted snapshot, а не historical `followlist.active` или сырым `MAX(window_start)`,
+   2. trusted snapshot metadata/lineage и state model формализованы (`trusted_current` / `trusted_bridged` / `trusted_bridged_stale` / `invalid`),
+   3. routine clone-latest bridge recovery выполняется официальным scripted path с staleness guard, dry-run/pre-checks и проходит в рамках задокументированного recovery SLA,
+   4. post-bootstrap validation включает publish/convergence proof, short soak window и fresh downstream-output evidence либо явный documented `N/A`,
+   5. heavy rebuild остается fallback-only path и не считается routine restart recovery.
+4. Execution RPC endpoint(s) и policy failover зафиксированы и проверены.
+5. Реализован execution pipeline с:
    1. идемпотентностью (`client_order_id`),
    2. pre-trade balance checks,
    3. simulation перед отправкой,
    4. submit + confirmation polling,
    5. on-chain reconciliation.
-5. Emergency stop реализован и срабатывает без перезапуска.
-6. Jito path (`Lil' JIT`) используется как primary submit route, RPC fallback задокументирован и проверен.
-7. Live risk limits зафиксированы и реально enforced в execution-контуре (включая per-token cap).
-8. Пройден staged rollout: dry-run -> tiny live -> limited live -> standard live.
-9. После включения submit пройден минимум 7 дней controlled live без нерешенных P0 инцидентов.
+6. Emergency stop реализован и срабатывает без перезапуска.
+7. Jito path (`Lil' JIT`) используется как primary submit route, RPC fallback задокументирован и проверен.
+8. Live risk limits зафиксированы и реально enforced в execution-контуре (включая per-token cap).
+9. Пройден staged rollout: dry-run -> tiny live -> limited live -> standard live.
+10. После включения submit пройден минимум 7 дней controlled live без нерешенных P0 инцидентов.
 
 ## 5) Порядок внедрения (строго по очереди)
 
@@ -183,7 +189,7 @@ Prerequisites Stage C:
    3. отдельный devnet RPC endpoint (`execution.rpc_devnet_http_url`) для Stage C.5 rehearsal.
 2. Явный runtime toggle:
    1. `execution.enabled=false` по умолчанию,
-   2. включение только после прохождения Stage B exit criteria.
+   2. включение только после прохождения Stage B exit criteria и закрытия selection/bootstrap blocking gate `R2P-14A`.
 3. Статусный flow исполнения:
    1. `shadow_recorded -> execution_pending -> execution_simulated -> execution_submitted -> execution_confirmed|execution_failed|execution_dropped`.
 
@@ -491,8 +497,19 @@ Status: 🟡 In progress (`configs/live.toml` scaffold added; rollout evidence p
 Depends on: R2P-11  
 Files: `crates/app/src/main.rs`, `crates/execution/*`, `configs/live.toml`
 
+`R2P-14A` — Trusted selection/bootstrap control-plane sign-off  
+Depends on: R2P-02  
+Artifacts: trusted snapshot contract note, state-model/lineage metadata evidence, routine bridge recovery runbook + drill, strict followlist activity gate PASS evidence, post-bootstrap discovery-cycle PASS evidence  
+Scope:
+1. latest trusted snapshot semantics formalized and no longer inferred from raw `MAX(window_start)` alone,
+2. state model and stale policy documented (`trusted_current` / `trusted_bridged` / `trusted_bridged_stale` / `invalid`) with one shared `max_bootstrap_snapshot_age` guard,
+3. routine bridge recovery is scripted/idempotent, includes stale override audit trail, and meets the documented recovery SLA,
+4. post-bootstrap validation requires expected followlist convergence plus fresh downstream-output evidence or an explicit documented `N/A`,
+5. heavy rebuild remains fallback-only and is bounded by operator budgets (start baseline: `10m` downtime / `2 GiB` RSS / `500 MiB` WAL) with default action = abort back to fail-close,
+6. bridge-removal is explicitly out of scope until aggregate/parity equivalence is proven.
+
 `R2P-15` — Dry-run and tiny-live rollout  
-Depends on: R2P-13, R2P-14, R2P-05, R2P-06, R2P-07  
+Depends on: R2P-13, R2P-14, R2P-14A, R2P-05, R2P-06, R2P-07  
 Artifacts: rollout reports, KPI dashboard snapshots
 
 `R2P-16` — Config truthfulness cleanup (`pause_new_trades_on_outage`)  
@@ -1278,10 +1295,15 @@ NO-GO для server rollout (остаемся на текущем этапе, з
    1. новый execution runtime flow,
    2. Jito/Fallback env настройки,
    3. live rollout runbook.
-3. `ops/*`:
+3. `SELECTION_BOOTSTRAP_REDESIGN_PLAN_2026-03-15.md`:
+   1. trusted snapshot contract,
+   2. state model / staleness policy / recovery SLA,
+   3. bridge-removal condition only after aggregate/parity equivalence.
+4. `ops/*`:
    1. watchdog deployment steps (actual),
    2. incident rollback playbook + fallback-price manual reconcile SOP (`ops/execution_manual_reconcile_runbook.md`),
-   3. key rotation and emergency stop procedures.
+   3. key rotation and emergency stop procedures,
+   4. selection/bootstrap bridge recovery runbook + drill artifacts.
 
 ## 10) Master Go/No-Go Checklist (до включения `execution.enabled=true`)
 
@@ -1289,10 +1311,18 @@ NO-GO для server rollout (остаемся на текущем этапе, з
 
 1. Stage A закрыт (`YELLOWSTONE_GRPC_MIGRATION_PLAN.md` переведен в migration-completed).
 2. Stage B закрыт (keys/alerts/emergency stop/rollback drill).
-3. `R2P-08`/`R2P-09` закрыты, `R2P-10`/`R2P-11` доведены до live-path без paper stubs.
-4. `R2P-12` закрыт (devnet rehearsal без P0).
-5. `R2P-13` и `R2P-14` закрыты (Jito primary + live risk enforcement).
-6. Подписан go/no-go note с датой, owner и rollback owner.
+3. `R2P-14A` закрыт:
+   1. trusted snapshot available within the allowed age budget,
+   2. strict followlist activity gate = `PASS`,
+   3. post-bootstrap discovery publish = `PASS`,
+   4. expected `followlist.active` convergence confirmed,
+   5. short soak window green,
+   6. fresh downstream-output evidence captured or explicit documented `N/A`,
+   7. routine bridge recovery drill passed on current code/config contract.
+4. `R2P-08`/`R2P-09` закрыты, `R2P-10`/`R2P-11` доведены до live-path без paper stubs.
+5. `R2P-12` закрыт (devnet rehearsal без P0).
+6. `R2P-13` и `R2P-14` закрыты (Jito primary + live risk enforcement).
+7. Подписан go/no-go note с датой, owner и rollback owner.
 
 ## 11) Live Advancement Policy (после первого submit)
 
@@ -3179,3 +3209,95 @@ Summary:
    1. runtime is healthy,
    2. invalid historical followlist selection is no longer used,
    3. strategy is intentionally paused/fail-closed until a trusted persisted selection source is available again.
+
+### 2026-03-15 evening — `c36f40a` trusted bootstrap materialization attempt failed operationally
+
+Artifacts:
+1. `ops/server_reports/2026-03-15_evening_c36f40a_bootstrap_materialization_attempt_report.md`
+
+Summary:
+1. `c36f40a Materialize trusted bootstrap wallet metrics` was validated locally and deployed to the live host as a controlled bootstrap rollout target, not as a general `main` rollout.
+2. The new admin/bin tool was then executed on the live DB without `--allow-rpc`, exactly as intended for a persisted-only trusted bootstrap.
+3. The tool did not complete on the live-size DB:
+   1. it stayed active for roughly `19m`,
+   2. `read_bytes` grew past `5.7 GB`,
+   3. memory climbed to roughly `6.6 GiB RSS`,
+   4. available host memory fell under `1 GiB`,
+   5. the attempt was aborted deliberately before an OOM / host instability event.
+4. `/proc/<pid>/io` showed `write_bytes = 0` for the materialization process before abort, so no fresh trusted `wallet_metrics` bucket was written and no bootstrap state was advanced.
+5. The abort left the host with a heavy WAL/startup burden, so the app was recovered by:
+   1. stopping `solana-copy-bot.service`,
+   2. running offline `PRAGMA wal_checkpoint(TRUNCATE)` to completion,
+   3. restarting `solana-copy-bot.service` cleanly on `c36f40a`.
+6. Final live state after recovery:
+   1. runtime healthy again,
+   2. strategy still fail-closed,
+   3. `trusted_selection_bootstrap_required` still true,
+   4. discovery again reports trusted bootstrap unavailable and keeps the historical followlist out of runtime truth.
+7. Conclusion:
+   1. the code-level bootstrap slice is accepted,
+   2. but the current one-shot materialization implementation is **not** operationally viable on the live DB,
+   3. the next step is a streaming / bounded-memory persisted bootstrap path,
+   4. do **not** retry the same one-shot tool on the live host.
+
+### 2026-03-15 late evening — `5ec3bc7` streamed bootstrap attempt fixed memory but still failed by wall-clock
+
+Artifacts:
+1. `ops/server_reports/2026-03-15_late_evening_streamed_bootstrap_materialization_attempt_report.md`
+
+Summary:
+1. `5ec3bc7 Stream trusted bootstrap materialization` was not deployed as a dirty `main` fast-forward, because it sat on top of unrelated `6cba34a`; instead, the server received a clean cherry-pick onto `c36f40a`, producing narrow live commit `f924312`.
+2. The streamed rewrite successfully fixed the previous memory/OOM failure mode:
+   1. no multi-GB RSS explosion,
+   2. early RSS stayed around `~10 MiB`,
+   3. late-phase RSS stayed in the low-GB range instead of consuming the whole host.
+3. But the one-shot bootstrap was still **not operationally viable**:
+   1. the app had to remain stopped for more than `76m`,
+   2. the tool continued making I/O progress,
+   3. but it still did not finish in a reasonable maintenance window,
+   4. and it was aborted manually.
+4. After abort:
+   1. `wallet_metrics MAX(window_start)` remained `2026-03-10T14:00:00+00:00`,
+   2. `trusted_selection_bootstrap_required` remained set,
+   3. `followlist.active` remained `0`,
+   4. so no fresh trusted bootstrap bucket was left behind.
+5. The app was restarted successfully and live returned to the same healthy fail-closed state:
+   1. runtime healthy,
+   2. selection still invalid and blocked,
+   3. no invalid historical followlist run resumed.
+6. Conclusion:
+   1. streaming fixed the memory failure mode,
+   2. but wall-clock viability is still not solved,
+   3. the next fix must target resumable / chunked bootstrap materialization or another bounded multi-run bootstrap workflow,
+   4. do **not** keep retrying this exact one-shot streamed tool on live as-is.
+
+### 2026-03-15 late evening — controlled clone-latest bridge restored live top-15
+
+Artifacts:
+1. `ops/server_reports/2026-03-15_late_evening_clone_latest_bridge_recovery_report.md`
+
+Summary:
+1. No new code was deployed for this recovery step; live remained on narrow streamed-bootstrap commit `f924312`.
+2. A controlled server-side bridge cloned the latest persisted `wallet_metrics` snapshot (`2026-03-10T14:00:00+00:00`, `29496` rows) into the current expected bootstrap bucket for discovery.
+3. The first bridge write used `2026-03-10T21:00:00Z` and did **not** clear fail-close because current discovery/storage code later re-queries `wallet_metrics.window_start` using canonical `to_rfc3339()` formatting, which yields `+00:00` rather than `Z`.
+4. After rewriting the cloned target bucket to canonical UTC RFC3339 (`2026-03-10T21:00:00+00:00`) and restarting `solana-copy-bot.service`, discovery consumed the trusted persisted snapshot and restored top-`N` selection:
+   1. `discovery_strategy_state.trusted_selection_bootstrap_required = 0`,
+   2. reason = `trusted_selection_bootstrap_satisfied`,
+   3. `followlist.active = 15`,
+   4. discovery log emitted `discovery restored trusted top-N selection from persisted wallet_metrics bootstrap` with `active_follow_wallets = 15`, `trusted_eligible_wallets = 358`, and `trusted_wallets_seen = 29496`.
+5. Runtime remained healthy during and after recovery:
+   1. `solana-copy-bot.service`, `copybot-adapter.service`, `copybot-executor.service` all `active`,
+   2. `solana-copy-bot.service NRestarts = 0`,
+   3. `observed_swap_writer_pending_requests = 0`,
+   4. `sqlite_busy_error_total = 0`,
+   5. `sqlite_write_retry_total = 0`,
+   6. `yellowstone_output_queue_fill_ratio` stayed at `0.0` in steady-state samples.
+6. Shadow/copy behavior also moved out of hard fail-close:
+   1. `app_follow_rejected_ratio` dropped below `1.0`,
+   2. recent telemetry showed only a very small fraction of swaps remaining rejected,
+   3. in the short immediate validation window no new `copy_signals` row had yet appeared, but the follow gate was no longer globally blocked.
+7. Operational conclusion:
+   1. the live bot is no longer strategy-fail-closed,
+   2. the live bot is no longer running on the invalid historical `976`-wallet set,
+   3. trusted persisted bootstrap restored a real top-`15` active universe,
+   4. if this bridge must ever be repeated, write the target `wallet_metrics.window_start` in canonical UTC RFC3339 with `+00:00`, not `Z`.
