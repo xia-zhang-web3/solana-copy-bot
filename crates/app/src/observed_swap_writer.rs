@@ -79,13 +79,19 @@ struct ObservedSwapWriteRequest {
 pub(crate) struct ObservedSwapWriterSnapshot {
     pub pending_requests: usize,
     pub write_latency_ms_p95: u64,
+    pub raw_batch_write_ms_p95: u64,
+    pub discovery_scoring_ms_p95: u64,
 }
 
 #[derive(Debug, Default)]
 struct ObservedSwapWriterTelemetry {
     pending_requests: AtomicUsize,
     last_write_latency_ms_p95: AtomicU64,
+    last_raw_batch_write_ms_p95: AtomicU64,
+    last_discovery_scoring_ms_p95: AtomicU64,
     write_latency_ms_samples: Mutex<VecDeque<u64>>,
+    raw_batch_write_ms_samples: Mutex<VecDeque<u64>>,
+    discovery_scoring_ms_samples: Mutex<VecDeque<u64>>,
 }
 
 impl ObservedSwapWriterTelemetry {
@@ -119,6 +125,37 @@ impl ObservedSwapWriterTelemetry {
                 });
     }
 
+    fn note_raw_batch_completed(&self, duration_ms: u64) {
+        self.note_phase_sample(
+            &self.raw_batch_write_ms_samples,
+            &self.last_raw_batch_write_ms_p95,
+            duration_ms,
+        );
+    }
+
+    fn note_discovery_scoring_completed(&self, duration_ms: u64) {
+        self.note_phase_sample(
+            &self.discovery_scoring_ms_samples,
+            &self.last_discovery_scoring_ms_p95,
+            duration_ms,
+        );
+    }
+
+    fn note_phase_sample(
+        &self,
+        samples_lock: &Mutex<VecDeque<u64>>,
+        last_p95: &AtomicU64,
+        duration_ms: u64,
+    ) {
+        if let Ok(mut samples) = samples_lock.lock() {
+            if samples.len() >= OBSERVED_SWAP_WRITER_LATENCY_SAMPLE_CAPACITY {
+                let _ = samples.pop_front();
+            }
+            samples.push_back(duration_ms);
+            last_p95.store(percentile_from_deque(&samples, 0.95), Ordering::Relaxed);
+        }
+    }
+
     fn snapshot(&self) -> ObservedSwapWriterSnapshot {
         let write_latency_ms_p95 = self
             .write_latency_ms_samples
@@ -126,9 +163,23 @@ impl ObservedSwapWriterTelemetry {
             .ok()
             .map(|samples| percentile_from_deque(&samples, 0.95))
             .unwrap_or_else(|| self.last_write_latency_ms_p95.load(Ordering::Relaxed));
+        let raw_batch_write_ms_p95 = self
+            .raw_batch_write_ms_samples
+            .lock()
+            .ok()
+            .map(|samples| percentile_from_deque(&samples, 0.95))
+            .unwrap_or_else(|| self.last_raw_batch_write_ms_p95.load(Ordering::Relaxed));
+        let discovery_scoring_ms_p95 = self
+            .discovery_scoring_ms_samples
+            .lock()
+            .ok()
+            .map(|samples| percentile_from_deque(&samples, 0.95))
+            .unwrap_or_else(|| self.last_discovery_scoring_ms_p95.load(Ordering::Relaxed));
         ObservedSwapWriterSnapshot {
             pending_requests: self.pending_requests.load(Ordering::Relaxed),
             write_latency_ms_p95,
+            raw_batch_write_ms_p95,
+            discovery_scoring_ms_p95,
         }
     }
 }
@@ -295,8 +346,10 @@ fn observed_swap_writer_loop(
             queued_at.push(request.enqueued_at);
         }
 
+        let raw_batch_started = Instant::now();
         match store.insert_observed_swaps_batch_with_activity_days(&swaps) {
             Ok(results) => {
+                telemetry.note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
                 for (reply_tx, inserted) in replies.into_iter().zip(results.iter().copied()) {
                     if let Some(reply_tx) = reply_tx {
                         let _ = reply_tx.send(Ok(inserted));
@@ -310,10 +363,14 @@ fn observed_swap_writer_loop(
                         .filter_map(|(swap, inserted)| inserted.then_some(swap.clone()))
                         .collect();
                     if !inserted_swaps.is_empty() {
+                        let aggregate_started = Instant::now();
                         let aggregate_result = store.apply_discovery_scoring_batch(
                             &inserted_swaps,
                             &config.aggregate_write_config,
                         );
+                        telemetry.note_discovery_scoring_completed(elapsed_ms_ceil(
+                            aggregate_started.elapsed(),
+                        ));
                         if let Err(error) = aggregate_result {
                             if let Some(first_gap_swap) = inserted_swaps.iter().min_by(|a, b| {
                                 a.ts_utc
@@ -385,6 +442,7 @@ fn observed_swap_writer_loop(
                 }
             }
             Err(error) => {
+                telemetry.note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
                 let message = format!("{error:#}");
                 warn!(
                     error = %error,
@@ -422,11 +480,9 @@ fn run_observed_swap_retention_maintenance(
 ) -> Result<()> {
     let now = Utc::now();
     let nominal_cutoff = observed_swap_retention_nominal_cutoff(now, config);
-    let effective_cutoff = resolve_observed_swap_retention_effective_cutoff(
-        config,
-        now,
-        |now| store.load_discovery_scoring_backfill_protected_since(now),
-    )?;
+    let effective_cutoff = resolve_observed_swap_retention_effective_cutoff(config, now, |now| {
+        store.load_discovery_scoring_backfill_protected_since(now)
+    })?;
     let deleted_raw = store.delete_observed_swaps_before(effective_cutoff).with_context(|| {
         format!(
             "observed swap retention sweep failed retention_days={} nominal_cutoff={} effective_cutoff={}",
@@ -502,6 +558,15 @@ fn percentile_from_deque(values: &VecDeque<u64>, q: f64) -> u64 {
     sorted[idx]
 }
 
+fn elapsed_ms_ceil(duration: StdDuration) -> u64 {
+    let micros = duration.as_micros();
+    if micros == 0 {
+        0
+    } else {
+        micros.div_ceil(1000).min(u128::from(u64::MAX)) as u64
+    }
+}
+
 fn run_retention_wal_checkpoint(
     store: &SqliteStore,
     config: ObservedSwapRetentionConfig,
@@ -549,7 +614,10 @@ fn run_retention_wal_checkpoint(
                     return Ok(());
                 }
                 Err(passive_error) => {
-                    if observed_swap_retention_checkpoint_error_requires_abort(None, Some(&passive_error)) {
+                    if observed_swap_retention_checkpoint_error_requires_abort(
+                        None,
+                        Some(&passive_error),
+                    ) {
                         return Err(passive_error).context(
                             "observed swap retention wal checkpoint failed with fatal sqlite I/O",
                         );
@@ -969,6 +1037,10 @@ mod tests {
             committed_snapshot.write_latency_ms_p95 >= 40,
             "snapshot should retain queue+commit latency once the blocked batch completes"
         );
+        assert!(
+            committed_snapshot.raw_batch_write_ms_p95 >= 40,
+            "snapshot should expose raw batch latency separately when sqlite lock blocks the batch commit"
+        );
         writer.shutdown()?;
 
         let verify_store = SqliteStore::open(Path::new(&db_path))?;
@@ -1117,6 +1189,14 @@ mod tests {
             snapshot.write_latency_ms_p95 < 250,
             "fast successful batches should not report lock-scale writer latency"
         );
+        assert!(
+            snapshot.raw_batch_write_ms_p95 >= 1,
+            "fast successful batches should still report a non-zero raw batch phase latency sample"
+        );
+        assert!(
+            snapshot.discovery_scoring_ms_p95 >= 1,
+            "aggregate-enabled writer batches should report aggregate phase latency separately"
+        );
 
         writer.shutdown()?;
 
@@ -1129,6 +1209,71 @@ mod tests {
         assert_eq!(swaps.len(), 8);
         let _ = std::fs::remove_file(db_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_snapshot_keeps_discovery_scoring_latency_zero_when_aggregates_disabled(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-no-aggregate-telemetry-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = runtime.block_on(async {
+            ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    aggregate_writes_enabled: false,
+                    aggregate_write_config: aggregate_write_config(),
+                },
+            )
+        })?;
+
+        let swap = SwapEvent {
+            wallet: "wallet-no-aggregate-telemetry".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-no-aggregate-telemetry".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-no-aggregate-telemetry".to_string(),
+            slot: 330,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-15T09:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+
+        runtime.block_on(async { writer.enqueue(&swap).await })?;
+        std::thread::sleep(StdDuration::from_millis(50));
+
+        let snapshot = writer.snapshot();
+        assert!(
+            snapshot.raw_batch_write_ms_p95 >= 1,
+            "aggregate-disabled writer batches should still report raw batch phase latency"
+        );
+        assert_eq!(
+            snapshot.discovery_scoring_ms_p95, 0,
+            "aggregate-disabled writer batches must keep discovery scoring latency at zero"
+        );
+
+        writer.shutdown()?;
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 
@@ -1767,20 +1912,20 @@ mod tests {
         let primary = anyhow!("database is locked");
         let fallback =
             anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
-        assert!(!super::observed_swap_retention_checkpoint_error_requires_abort(
-            Some(&primary),
-            None
-        ));
-        assert!(super::observed_swap_retention_checkpoint_error_requires_abort(
-            Some(&primary),
-            Some(&fallback)
-        ));
+        assert!(
+            !super::observed_swap_retention_checkpoint_error_requires_abort(Some(&primary), None)
+        );
+        assert!(
+            super::observed_swap_retention_checkpoint_error_requires_abort(
+                Some(&primary),
+                Some(&fallback)
+            )
+        );
     }
 
     #[test]
     fn observed_swap_writer_discovery_scoring_error_requires_abort_on_xshmmap_io_failure() {
-        let error =
-            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        let error = anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
         assert!(super::observed_swap_writer_discovery_scoring_error_requires_abort(&error));
     }
 
@@ -1827,7 +1972,8 @@ mod tests {
     }
 
     #[test]
-    fn observed_swap_retention_maintenance_returns_error_on_fatal_raw_delete_failure() -> Result<()> {
+    fn observed_swap_retention_maintenance_returns_error_on_fatal_raw_delete_failure() -> Result<()>
+    {
         let unique = format!(
             "copybot-app-observed-swap-retention-fatal-{}-{}",
             std::process::id(),
