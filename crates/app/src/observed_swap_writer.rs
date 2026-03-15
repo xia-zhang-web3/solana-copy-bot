@@ -83,6 +83,7 @@ pub(crate) struct ObservedSwapWriterSnapshot {
     pub observed_swaps_insert_ms_p95: u64,
     pub wallet_activity_days_ms_p95: u64,
     pub discovery_scoring_ms_p95: u64,
+    pub worker_busy_ms_p95: u64,
 }
 
 #[derive(Debug, Default)]
@@ -93,11 +94,13 @@ struct ObservedSwapWriterTelemetry {
     last_observed_swaps_insert_ms_p95: AtomicU64,
     last_wallet_activity_days_ms_p95: AtomicU64,
     last_discovery_scoring_ms_p95: AtomicU64,
+    last_worker_busy_ms_p95: AtomicU64,
     write_latency_ms_samples: Mutex<VecDeque<u64>>,
     raw_batch_write_ms_samples: Mutex<VecDeque<u64>>,
     observed_swaps_insert_ms_samples: Mutex<VecDeque<u64>>,
     wallet_activity_days_ms_samples: Mutex<VecDeque<u64>>,
     discovery_scoring_ms_samples: Mutex<VecDeque<u64>>,
+    worker_busy_ms_samples: Mutex<VecDeque<u64>>,
 }
 
 impl ObservedSwapWriterTelemetry {
@@ -163,6 +166,14 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
+    fn note_worker_busy_completed(&self, duration_ms: u64) {
+        self.note_phase_sample(
+            &self.worker_busy_ms_samples,
+            &self.last_worker_busy_ms_p95,
+            duration_ms,
+        );
+    }
+
     fn note_phase_sample(
         &self,
         samples_lock: &Mutex<VecDeque<u64>>,
@@ -215,6 +226,12 @@ impl ObservedSwapWriterTelemetry {
             .ok()
             .map(|samples| percentile_from_deque(&samples, 0.95))
             .unwrap_or_else(|| self.last_discovery_scoring_ms_p95.load(Ordering::Relaxed));
+        let worker_busy_ms_p95 = self
+            .worker_busy_ms_samples
+            .lock()
+            .ok()
+            .map(|samples| percentile_from_deque(&samples, 0.95))
+            .unwrap_or_else(|| self.last_worker_busy_ms_p95.load(Ordering::Relaxed));
         ObservedSwapWriterSnapshot {
             pending_requests: self.pending_requests.load(Ordering::Relaxed),
             write_latency_ms_p95,
@@ -222,6 +239,7 @@ impl ObservedSwapWriterTelemetry {
             observed_swaps_insert_ms_p95,
             wallet_activity_days_ms_p95,
             discovery_scoring_ms_p95,
+            worker_busy_ms_p95,
         }
     }
 }
@@ -388,6 +406,7 @@ fn observed_swap_writer_loop(
             queued_at.push(request.enqueued_at);
         }
 
+        let batch_started = Instant::now();
         let raw_batch_started = Instant::now();
         match store.insert_observed_swaps_batch_with_activity_days_measured(&swaps) {
             Ok(batch_metrics) => {
@@ -438,6 +457,9 @@ fn observed_swap_writer_loop(
                                     if observed_swap_writer_discovery_scoring_error_requires_abort(
                                         &gap_error,
                                     ) {
+                                        telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                            batch_started.elapsed(),
+                                        ));
                                         return Err(gap_error).context(
                                             "observed swap writer stopping after fatal discovery scoring gap cursor failure",
                                         );
@@ -450,6 +472,9 @@ fn observed_swap_writer_loop(
                                 }
                             }
                             if observed_swap_writer_discovery_scoring_error_requires_abort(&error) {
+                                telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                    batch_started.elapsed(),
+                                ));
                                 return Err(error).context(
                                     "observed swap writer stopping after fatal discovery scoring materialization failure",
                                 );
@@ -475,6 +500,9 @@ fn observed_swap_writer_loop(
                                 if observed_swap_writer_discovery_scoring_error_requires_abort(
                                     &error,
                                 ) {
+                                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                        batch_started.elapsed(),
+                                    ));
                                     return Err(error).context(
                                         "observed swap writer stopping after fatal discovery scoring coverage watermark failure",
                                     );
@@ -488,9 +516,11 @@ fn observed_swap_writer_loop(
                         }
                     }
                 }
+                telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
             }
             Err(error) => {
                 telemetry.note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
+                telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
                 let message = format!("{error:#}");
                 warn!(
                     error = %error,
@@ -1253,6 +1283,14 @@ mod tests {
             snapshot.discovery_scoring_ms_p95 >= 1,
             "aggregate-enabled writer batches should report aggregate phase latency separately"
         );
+        assert!(
+            snapshot.worker_busy_ms_p95 >= snapshot.raw_batch_write_ms_p95,
+            "full writer occupancy should be at least as large as the raw batch phase"
+        );
+        assert!(
+            snapshot.worker_busy_ms_p95 >= snapshot.discovery_scoring_ms_p95,
+            "full writer occupancy should also cover the discovery scoring phase when aggregates are enabled"
+        );
 
         writer.shutdown()?;
 
@@ -1334,6 +1372,10 @@ mod tests {
         assert_eq!(
             snapshot.discovery_scoring_ms_p95, 0,
             "aggregate-disabled writer batches must keep discovery scoring latency at zero"
+        );
+        assert!(
+            snapshot.worker_busy_ms_p95 >= snapshot.raw_batch_write_ms_p95,
+            "aggregate-disabled full writer occupancy should still cover the raw batch phase"
         );
 
         writer.shutdown()?;

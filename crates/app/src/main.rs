@@ -2956,6 +2956,8 @@ async fn run_app_loop(
                         observed_swap_writer_snapshot.wallet_activity_days_ms_p95,
                     observed_swap_writer_discovery_scoring_ms_p95 =
                         observed_swap_writer_snapshot.discovery_scoring_ms_p95,
+                    observed_swap_writer_worker_busy_ms_p95 =
+                        observed_swap_writer_snapshot.worker_busy_ms_p95,
                     "observed swap writer telemetry"
                 );
                 info!(
