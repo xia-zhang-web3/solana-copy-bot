@@ -349,6 +349,21 @@ impl SqliteStore {
         Ok(swaps)
     }
 
+    pub fn oldest_observed_swap_timestamp(&self) -> Result<Option<DateTime<Utc>>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT MIN(ts) FROM observed_swaps", [], |row| row.get(0))
+            .optional()
+            .context("failed querying oldest observed_swaps timestamp")?
+            .flatten();
+        raw.map(|raw| {
+            DateTime::parse_from_rfc3339(&raw)
+                .map(|ts| ts.with_timezone(&Utc))
+                .with_context(|| format!("invalid observed_swaps.ts rfc3339 value: {raw}"))
+        })
+        .transpose()
+    }
+
     pub fn for_each_observed_swap_since<F>(
         &self,
         since: DateTime<Utc>,

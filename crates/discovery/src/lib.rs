@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
@@ -162,6 +162,17 @@ pub struct DiscoverySummary {
     pub cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
     pub cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
     pub cap_truncation_floor_signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TrustedBootstrapWalletMetricsMaterializationSummary {
+    pub metrics_window_start: DateTime<Utc>,
+    pub observed_swaps_loaded: usize,
+    pub wallets_seen: usize,
+    pub eligible_wallets: usize,
+    pub metrics_written: usize,
+    pub bucket_already_exists: bool,
+    pub top_wallets: Vec<String>,
 }
 
 impl DiscoverySummary {
@@ -427,9 +438,8 @@ impl DiscoveryService {
                         true,
                         "startup_selection_bootstrap_required",
                     ) {
-                        return Err(error).context(
-                            "failed persisting discovery trusted bootstrap requirement",
-                        );
+                        return Err(error)
+                            .context("failed persisting discovery trusted bootstrap requirement");
                     }
                 }
             }
@@ -1382,6 +1392,92 @@ impl DiscoveryService {
             }
         };
         state.last_publish_at = Some(now);
+    }
+
+    pub fn materialize_trusted_bootstrap_wallet_metrics(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<TrustedBootstrapWalletMetricsMaterializationSummary> {
+        let metrics_window_start = self.metrics_window_start(now);
+        let Some(oldest_persisted_observed_swap_ts) = store.oldest_observed_swap_timestamp()?
+        else {
+            return Err(anyhow!(
+                "no persisted observed_swaps available to materialize a trusted bootstrap bucket"
+            ));
+        };
+        if oldest_persisted_observed_swap_ts > metrics_window_start {
+            return Err(anyhow!(
+                "persisted observed_swaps history is incomplete for trusted bootstrap: oldest_retained_ts={} metrics_window_start={}",
+                oldest_persisted_observed_swap_ts.to_rfc3339(),
+                metrics_window_start.to_rfc3339()
+            ));
+        }
+        let swaps: Vec<SwapEvent> = store
+            .load_observed_swaps_since(metrics_window_start)?
+            .into_iter()
+            .filter(|swap| swap.ts_utc <= now)
+            .collect();
+        if swaps.is_empty() {
+            return Err(anyhow!(
+                "no persisted observed_swaps found in bootstrap window starting at {}",
+                metrics_window_start.to_rfc3339()
+            ));
+        }
+        let observed_swaps_loaded = swaps.len();
+
+        let snapshots =
+            self.build_wallet_snapshots_from_cached(store, &VecDeque::from(swaps), now)?;
+        let wallet_rows = self.wallet_rows_from_snapshots(&snapshots);
+        let metric_rows: Vec<WalletMetricRow> = snapshots
+            .iter()
+            .map(|snapshot| WalletMetricRow {
+                wallet_id: snapshot.wallet_id.clone(),
+                window_start: metrics_window_start,
+                pnl: snapshot.pnl_sol,
+                win_rate: snapshot.win_rate,
+                trades: snapshot.trades,
+                closed_trades: snapshot.closed_trades,
+                hold_median_seconds: snapshot.hold_median_seconds,
+                score: snapshot.score,
+                buy_total: snapshot.buy_total,
+                tradable_ratio: snapshot.tradable_ratio,
+                rug_ratio: snapshot.rug_ratio,
+            })
+            .collect();
+        let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
+        let bucket_already_exists = store.wallet_metrics_window_exists(metrics_window_start)?;
+        let metrics_to_persist = if bucket_already_exists {
+            &[]
+        } else {
+            metric_rows.as_slice()
+        };
+        let follow_delta = store.persist_discovery_cycle(
+            &wallet_rows,
+            metrics_to_persist,
+            &[],
+            false,
+            false,
+            now,
+            "admin_trusted_wallet_metrics_bootstrap_materialize",
+        )?;
+        if follow_delta.activated > 0 || follow_delta.deactivated > 0 {
+            return Err(anyhow!(
+                "trusted wallet_metrics bootstrap materialization unexpectedly mutated followlist (activated={}, deactivated={})",
+                follow_delta.activated,
+                follow_delta.deactivated
+            ));
+        }
+
+        Ok(TrustedBootstrapWalletMetricsMaterializationSummary {
+            metrics_window_start,
+            observed_swaps_loaded,
+            wallets_seen: snapshots.len(),
+            eligible_wallets: ranked.len(),
+            metrics_written: metrics_to_persist.len(),
+            bucket_already_exists,
+            top_wallets: top_wallet_labels(&ranked, 5),
+        })
     }
 
     fn build_wallet_snapshots_from_cached(
@@ -2927,6 +3023,260 @@ mod tests {
     }
 
     #[test]
+    fn materialized_trusted_wallet_metrics_bootstrap_unblocks_fail_closed_restart_without_mutating_followlist_directly(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-materialized-trusted-wallet-metrics-bootstrap.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:14:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let next_cycle_now = now + Duration::minutes(1);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.observed_swaps_retention_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.0;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 1.0;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.thin_market_min_unique_traders = 1;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let fresh_metrics_window_start = discovery.metrics_window_start(now);
+        let stale_metrics_window_start = fresh_metrics_window_start - Duration::hours(1);
+
+        for wallet in ["wallet_hist_a", "wallet_hist_b"] {
+            store.upsert_wallet(
+                wallet,
+                now - Duration::days(4),
+                now - Duration::minutes(5),
+                "candidate",
+            )?;
+            store.activate_follow_wallet(wallet, now - Duration::minutes(5), "seed-follow")?;
+        }
+
+        for idx in 0..4 {
+            let buy_ts = fresh_metrics_window_start + Duration::hours((idx * 8) as i64 + 1);
+            let sell_ts = buy_ts + Duration::minutes(8);
+            store.insert_observed_swap(&swap(
+                "wallet_top",
+                &format!("top-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenTop11111111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_top",
+                &format!("top-sell-{idx}"),
+                sell_ts,
+                "TokenTop11111111111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.35,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_runner_up",
+                &format!("runner-up-buy-{idx}"),
+                buy_ts + Duration::minutes(2),
+                SOL_MINT,
+                "TokenRunnerUp111111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_runner_up",
+                &format!("runner-up-sell-{idx}"),
+                sell_ts + Duration::minutes(2),
+                "TokenRunnerUp111111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            ))?;
+        }
+
+        for wallet in ["wallet_top", "wallet_runner_up"] {
+            store.upsert_wallet(
+                wallet,
+                now - Duration::days(4),
+                now - Duration::minutes(1),
+                "candidate",
+            )?;
+        }
+        store.insert_observed_swap(&swap(
+            "wallet_history_anchor",
+            "history-anchor-buy",
+            fresh_metrics_window_start - Duration::minutes(5),
+            SOL_MINT,
+            "TokenHistoryAnchor11111111111111111111111111",
+            0.8,
+            80.0,
+        ))?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet_top".to_string(),
+            window_start: stale_metrics_window_start,
+            pnl: 2.0,
+            win_rate: 0.8,
+            trades: 8,
+            closed_trades: 4,
+            hold_median_seconds: 480,
+            score: 0.7,
+            buy_total: 4,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+
+        let fail_closed_summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(
+            fail_closed_summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap_unavailable",
+            "stale persisted wallet_metrics must keep discovery fail-closed"
+        );
+        assert!(store.list_active_follow_wallets()?.is_empty());
+        assert!(store.discovery_trusted_selection_bootstrap_required()?);
+
+        let materialized = discovery.materialize_trusted_bootstrap_wallet_metrics(&store, now)?;
+        assert_eq!(
+            materialized.metrics_window_start,
+            fresh_metrics_window_start
+        );
+        assert_eq!(materialized.observed_swaps_loaded, 16);
+        assert!(materialized.wallets_seen >= 2);
+        assert!(materialized.eligible_wallets >= 1);
+        assert!(materialized.metrics_written >= 2);
+        assert!(
+            !materialized.bucket_already_exists,
+            "test fixture should require writing a fresh bootstrap bucket"
+        );
+        assert_eq!(
+            store.latest_wallet_metrics_window_start()?,
+            Some(fresh_metrics_window_start),
+            "tool must materialize a fresh wallet_metrics bucket for the current bootstrap window"
+        );
+        assert!(
+            store.list_active_follow_wallets()?.is_empty(),
+            "tool must not directly mutate followlist; discovery should do that on the next cycle"
+        );
+
+        let discovery_after_materialization =
+            DiscoveryService::new(config, permissive_shadow_quality());
+        let recovered_summary =
+            discovery_after_materialization.run_cycle(&store, next_cycle_now)?;
+        assert_eq!(
+            recovered_summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap"
+        );
+        assert!(
+            recovered_summary.active_follow_wallets <= 1,
+            "followlist must converge to follow_top_n after trusted bootstrap"
+        );
+        assert!(
+            recovered_summary.eligible_wallets > 0,
+            "fresh bootstrap bucket should restore a non-empty trusted eligible universe"
+        );
+        assert!(
+            !recovered_summary.top_wallets.is_empty(),
+            "fresh trusted bootstrap should restore top-wallet labels"
+        );
+        assert!(
+            store.list_active_follow_wallets()?.contains("wallet_top"),
+            "next discovery cycle should activate the trusted top-ranked wallet"
+        );
+        assert!(
+            !store.discovery_trusted_selection_bootstrap_required()?,
+            "trusted bootstrap flag should clear after discovery consumes the fresh bucket"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_trusted_wallet_metrics_bootstrap_rejects_incomplete_persisted_history(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-materialized-wallet-metrics-bootstrap-incomplete-history.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:44:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.observed_swaps_retention_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 2;
+        config.min_active_days = 1;
+        config.min_score = 0.0;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.max_rug_ratio = 1.0;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.thin_market_min_unique_traders = 1;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let metrics_window_start = discovery.metrics_window_start(now);
+
+        for idx in 0..2 {
+            let buy_ts = metrics_window_start + Duration::hours((idx * 12) as i64 + 1);
+            let sell_ts = buy_ts + Duration::minutes(5);
+            store.insert_observed_swap(&swap(
+                "wallet_partial",
+                &format!("partial-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenPartialBootstrap1111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_partial",
+                &format!("partial-sell-{idx}"),
+                sell_ts,
+                "TokenPartialBootstrap1111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.2,
+            ))?;
+        }
+
+        let error = discovery
+            .materialize_trusted_bootstrap_wallet_metrics(&store, now)
+            .expect_err(
+                "incomplete persisted history must reject trusted bootstrap materialization",
+            );
+        assert!(
+            error
+                .to_string()
+                .contains("persisted observed_swaps history is incomplete"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(
+            store.latest_wallet_metrics_window_start()?,
+            None,
+            "tool must not write a fresh wallet_metrics bucket from incomplete persisted history"
+        );
+        assert!(store.list_active_follow_wallets()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn short_retention_bootstrap_does_not_republish_every_tick_or_repersist_metrics() -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -3001,8 +3351,7 @@ mod tests {
 
     #[test]
     fn short_retention_restart_prefers_trusted_persisted_selection_over_truncated_raw_window(
-    ) -> Result<()>
-    {
+    ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("test-short-retention-no-false-demote.db");
         let mut store = SqliteStore::open(Path::new(&db_path))?;
