@@ -92,6 +92,38 @@ fn maybe_warn_on_cap_truncation_deactivation_guard_expiry(state: &DiscoveryWindo
     );
 }
 
+#[derive(Debug, Clone, Default)]
+struct CapTruncationTelemetrySnapshot {
+    raw_window_cap_truncated: bool,
+    cap_truncation_deactivation_guard_active: bool,
+    cap_truncation_deactivation_guard_reason: Option<&'static str>,
+    cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
+    cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
+    cap_truncation_floor_signature: Option<String>,
+}
+
+fn snapshot_cap_truncation_telemetry(
+    state: &DiscoveryWindowState,
+) -> CapTruncationTelemetrySnapshot {
+    CapTruncationTelemetrySnapshot {
+        raw_window_cap_truncated: state.cap_truncation_floor.is_some(),
+        cap_truncation_deactivation_guard_active: state.cap_truncation_deactivations_suppressed(),
+        cap_truncation_deactivation_guard_reason: state
+            .cap_truncation_deactivation_guard_reason
+            .map(CapTruncationDeactivationGuardReason::as_str),
+        cap_truncation_deactivation_guard_started_at: state
+            .cap_truncation_deactivation_guard_started_at,
+        cap_truncation_floor_ts_utc: state
+            .cap_truncation_floor
+            .as_ref()
+            .map(|floor| floor.ts_utc),
+        cap_truncation_floor_signature: state
+            .cap_truncation_floor
+            .as_ref()
+            .map(|floor| floor.signature.clone()),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
     config: DiscoveryConfig,
@@ -111,6 +143,33 @@ pub struct DiscoverySummary {
     pub active_follow_wallets: usize,
     pub top_wallets: Vec<String>,
     pub published: bool,
+    pub scoring_source: &'static str,
+    pub raw_window_cap_truncated: bool,
+    pub cap_truncation_deactivation_guard_active: bool,
+    pub cap_truncation_deactivation_guard_reason: Option<&'static str>,
+    pub cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
+    pub cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
+    pub cap_truncation_floor_signature: Option<String>,
+}
+
+impl DiscoverySummary {
+    fn with_scoring_source(mut self, scoring_source: &'static str) -> Self {
+        self.scoring_source = scoring_source;
+        self
+    }
+
+    fn with_cap_truncation_telemetry(mut self, telemetry: &CapTruncationTelemetrySnapshot) -> Self {
+        self.raw_window_cap_truncated = telemetry.raw_window_cap_truncated;
+        self.cap_truncation_deactivation_guard_active =
+            telemetry.cap_truncation_deactivation_guard_active;
+        self.cap_truncation_deactivation_guard_reason =
+            telemetry.cap_truncation_deactivation_guard_reason;
+        self.cap_truncation_deactivation_guard_started_at =
+            telemetry.cap_truncation_deactivation_guard_started_at;
+        self.cap_truncation_floor_ts_utc = telemetry.cap_truncation_floor_ts_utc;
+        self.cap_truncation_floor_signature = telemetry.cap_truncation_floor_signature.clone();
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -297,7 +356,7 @@ impl DiscoveryService {
                 now,
                 Duration::seconds(self.config.refresh_seconds.max(1) as i64),
             )?;
-        let (swaps_window, fetch_progress, prepared_cycle) = {
+        let (swaps_window, fetch_progress, cap_truncation_telemetry, prepared_cycle) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -483,8 +542,9 @@ impl DiscoveryService {
                 sorted.sort_by(cmp_swap_order);
                 state.swaps = sorted.into();
             }
+            let cap_truncation_telemetry = snapshot_cap_truncation_telemetry(&state);
             let followlist_deactivations_suppressed =
-                state.cap_truncation_deactivations_suppressed();
+                cap_truncation_telemetry.cap_truncation_deactivation_guard_active;
             let bootstrap_from_persisted_metrics =
                 state.bootstrap_from_persisted_metrics && state.swaps.is_empty();
             let truncated_warm_restore_bootstrap =
@@ -509,6 +569,7 @@ impl DiscoveryService {
                 (
                     swaps_window,
                     fetch_progress,
+                    cap_truncation_telemetry,
                     if state.last_snapshot_bucket == Some(metrics_window_start)
                         && state.last_summary_from_aggregates
                         && state.last_summary.is_some()
@@ -538,6 +599,7 @@ impl DiscoveryService {
                 (
                     swaps_window,
                     fetch_progress,
+                    cap_truncation_telemetry,
                     PreparedCycleState::Empty {
                         publish_due,
                         followlist_deactivations_suppressed: false,
@@ -549,6 +611,7 @@ impl DiscoveryService {
                 (
                     swaps_window,
                     fetch_progress,
+                    cap_truncation_telemetry,
                     PreparedCycleState::PersistedBootstrap {
                         publish_due,
                         followlist_activations_suppressed: true,
@@ -563,6 +626,7 @@ impl DiscoveryService {
                 (
                     swaps_window,
                     fetch_progress,
+                    cap_truncation_telemetry,
                     PreparedCycleState::Cached {
                         publish_due,
                         followlist_activations_suppressed: false,
@@ -577,6 +641,7 @@ impl DiscoveryService {
                 (
                     swaps_window,
                     fetch_progress,
+                    cap_truncation_telemetry,
                     PreparedCycleState::Recompute {
                         publish_due,
                         followlist_deactivations_suppressed,
@@ -629,7 +694,10 @@ impl DiscoveryService {
                             active_follow_wallets: store.list_active_follow_wallets()?.len(),
                             top_wallets: top_wallet_labels(&ranked, 5),
                             published: publish_due,
-                        };
+                            ..DiscoverySummary::default()
+                        }
+                        .with_scoring_source("persisted_wallet_metrics_bootstrap")
+                        .with_cap_truncation_telemetry(&cap_truncation_telemetry);
                         if publish_due {
                             self.record_live_publish(now);
                         }
@@ -723,7 +791,9 @@ impl DiscoveryService {
                             window_start,
                             published: publish_due,
                             ..DiscoverySummary::default()
-                        });
+                        }
+                        .with_scoring_source("persisted_wallet_metrics_bootstrap_empty")
+                        .with_cap_truncation_telemetry(&cap_truncation_telemetry));
                     }
                 } else {
                     let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
@@ -761,7 +831,9 @@ impl DiscoveryService {
                         window_start,
                         published: publish_due,
                         ..DiscoverySummary::default()
-                    });
+                    }
+                    .with_scoring_source("raw_window_empty")
+                    .with_cap_truncation_telemetry(&cap_truncation_telemetry));
                 }
             }
             PreparedCycleState::PersistedBootstrap {
@@ -786,7 +858,10 @@ impl DiscoveryService {
                         active_follow_wallets: store.list_active_follow_wallets()?.len(),
                         top_wallets: top_wallet_labels(&ranked, 5),
                         published: publish_due,
-                    };
+                        ..DiscoverySummary::default()
+                    }
+                    .with_scoring_source(scoring_source)
+                    .with_cap_truncation_telemetry(&cap_truncation_telemetry);
                     if publish_due {
                         self.record_live_publish(now);
                     }
@@ -893,7 +968,9 @@ impl DiscoveryService {
                     active_follow_wallets,
                     published: publish_due,
                     ..DiscoverySummary::default()
-                });
+                }
+                .with_scoring_source("persisted_wallet_metrics_truncated_warm_restore_empty")
+                .with_cap_truncation_telemetry(&cap_truncation_telemetry));
             }
             PreparedCycleState::Cached {
                 publish_due,
@@ -913,7 +990,10 @@ impl DiscoveryService {
                     active_follow_wallets,
                     top_wallets: previous_summary.top_wallets,
                     published: publish_due,
-                };
+                    ..DiscoverySummary::default()
+                }
+                .with_scoring_source(previous_summary.scoring_source)
+                .with_cap_truncation_telemetry(&cap_truncation_telemetry);
                 if publish_due {
                     self.record_live_publish(now);
                 }
@@ -949,7 +1029,7 @@ impl DiscoveryService {
                     swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
                     swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
                     metrics_window_start = %metrics_window_start,
-                    scoring_source = if aggregate_scoring_ready { "aggregates" } else { "raw_window" },
+                    scoring_source = summary.scoring_source,
                     metrics_persisted = false,
                     snapshot_recomputed = false,
                     discovery_published = summary.published,
@@ -1046,7 +1126,10 @@ impl DiscoveryService {
             active_follow_wallets,
             top_wallets,
             published: publish_due,
-        };
+            ..DiscoverySummary::default()
+        }
+        .with_scoring_source(scoring_source)
+        .with_cap_truncation_telemetry(&cap_truncation_telemetry);
         if publish_due {
             self.record_live_publish(now);
         }
@@ -3215,6 +3298,27 @@ mod tests {
             second_summary.follow_demoted, 0,
             "first cap-truncated recompute must still suppress followlist demotions while the bounded guard is active"
         );
+        assert!(
+            second_summary.raw_window_cap_truncated,
+            "cap-truncated raw recompute summary must report that the raw window is still truncated"
+        );
+        assert!(
+            second_summary.cap_truncation_deactivation_guard_active,
+            "cap-truncated raw recompute summary must report active temporary deactivation suppression"
+        );
+        assert_eq!(
+            second_summary.cap_truncation_deactivation_guard_reason,
+            Some("live_cap_eviction"),
+            "summary must expose why cap-truncation suppression is active"
+        );
+        assert!(
+            second_summary.cap_truncation_floor_signature.is_some(),
+            "summary must expose the retained truncation floor signature for diagnostics"
+        );
+        assert_eq!(
+            second_summary.scoring_source, "raw_window",
+            "cap-truncated recompute summary must preserve its raw-window scoring source for downstream scoping"
+        );
         let active_after = store.list_active_follow_wallets()?;
         assert!(
             active_after.contains("wallet_leader"),
@@ -3467,6 +3571,24 @@ mod tests {
             "warm-restore on an already capped recent tail must suppress false followlist demotions"
         );
         assert!(
+            summary.raw_window_cap_truncated,
+            "warm-restored capped-tail bootstrap summary must report that raw history remains truncated"
+        );
+        assert!(
+            summary.cap_truncation_deactivation_guard_active,
+            "warm-restored capped-tail bootstrap summary must report that the temporary deactivation guard is active"
+        );
+        assert_eq!(
+            summary.cap_truncation_deactivation_guard_reason,
+            Some("warm_load_truncated"),
+            "warm-restored capped-tail bootstrap summary must expose the warm-load truncation reason"
+        );
+        assert_eq!(
+            summary.scoring_source,
+            "persisted_wallet_metrics_truncated_warm_restore",
+            "warm-restored capped-tail bootstrap summary must preserve its truncated warm-restore scoring source for downstream scoping"
+        );
+        assert!(
             summary.eligible_wallets >= 1,
             "persisted wallet_metrics bootstrap should keep the latest ranked wallet snapshot visible after restart"
         );
@@ -3668,9 +3790,10 @@ mod tests {
 
     #[test]
     fn discovery_wallet_activity_day_count_error_requires_abort_on_xshmmap_io_failure() {
-        let error =
-            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
-        assert!(discovery_wallet_activity_day_count_error_requires_abort(&error));
+        let error = anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        assert!(discovery_wallet_activity_day_count_error_requires_abort(
+            &error
+        ));
     }
 
     #[test]
@@ -4000,9 +4123,7 @@ mod tests {
 
     #[test]
     fn discovery_runtime_cursor_error_requires_abort_on_xshmmap_io_failure() {
-        let error = anyhow!(
-            "disk I/O error: Error code 4874: I/O error within the xShmMap method"
-        );
+        let error = anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
         assert!(discovery_runtime_cursor_error_requires_abort(&error));
     }
 
@@ -4076,8 +4197,7 @@ mod tests {
 
     #[test]
     fn discovery_runtime_cursor_load_error_requires_abort_on_xshmmap_io_failure() {
-        let error =
-            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        let error = anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
         assert!(discovery_runtime_cursor_load_error_requires_abort(&error));
     }
 
@@ -4089,8 +4209,7 @@ mod tests {
 
     #[test]
     fn discovery_recent_window_load_error_requires_abort_on_xshmmap_io_failure() {
-        let error =
-            anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
+        let error = anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
         assert!(discovery_recent_window_load_error_requires_abort(&error));
     }
 

@@ -24,6 +24,16 @@ pub(crate) fn spawn_discovery_task(
             eligible_wallets: summary.eligible_wallets,
             active_follow_wallets: summary.active_follow_wallets,
             published: summary.published,
+            scoring_source: summary.scoring_source,
+            raw_window_cap_truncated: summary.raw_window_cap_truncated,
+            cap_truncation_deactivation_guard_active: summary
+                .cap_truncation_deactivation_guard_active,
+            cap_truncation_deactivation_guard_reason: summary
+                .cap_truncation_deactivation_guard_reason,
+            cap_truncation_deactivation_guard_started_at: summary
+                .cap_truncation_deactivation_guard_started_at,
+            cap_truncation_floor_ts_utc: summary.cap_truncation_floor_ts_utc,
+            cap_truncation_floor_signature: summary.cap_truncation_floor_signature,
         })
     }
 }

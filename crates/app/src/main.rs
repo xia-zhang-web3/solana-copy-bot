@@ -494,6 +494,25 @@ fn persist_shadow_risk_fail_closed_event_or_warn(
     )
 }
 
+fn discovery_scoring_source_uses_raw_window_cap_truncation_context(scoring_source: &str) -> bool {
+    matches!(
+        scoring_source,
+        "raw_window"
+            | "raw_window_empty"
+            | "persisted_wallet_metrics_truncated_warm_restore"
+            | "persisted_wallet_metrics_truncated_warm_restore_empty"
+    )
+}
+
+fn discovery_output_has_raw_window_cap_truncation_context(
+    discovery_output: &DiscoveryTaskOutput,
+) -> bool {
+    discovery_output.raw_window_cap_truncated
+        && discovery_scoring_source_uses_raw_window_cap_truncation_context(
+            discovery_output.scoring_source,
+        )
+}
+
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -572,12 +591,14 @@ fn classify_observed_swap_shadow_relevance(
         return ObservedSwapShadowRelevance::IrrelevantUnclassified;
     };
 
-    if matches!(side, ShadowSwapSide::Buy) && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
+    if matches!(side, ShadowSwapSide::Buy)
+        && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
     {
         return ObservedSwapShadowRelevance::IrrelevantNotFollowed(side);
     }
 
-    if matches!(side, ShadowSwapSide::Sell) && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
+    if matches!(side, ShadowSwapSide::Sell)
+        && !follow_snapshot.is_followed_at(&swap.wallet, swap.ts_utc)
     {
         let wallet_has_recent_follow_history = follow_snapshot.is_active(&swap.wallet)
             || follow_snapshot.promoted_at.contains_key(&swap.wallet)
@@ -616,9 +637,8 @@ async fn enqueue_irrelevant_observed_swap(
     recent_signature_order: &mut VecDeque<String>,
     swap: &SwapEvent,
 ) -> Result<()> {
-    match try_persist_irrelevant_observed_swap(swap, |swap| {
-        observed_swap_writer.try_enqueue(swap)
-    })? {
+    match try_persist_irrelevant_observed_swap(swap, |swap| observed_swap_writer.try_enqueue(swap))?
+    {
         IrrelevantObservedSwapPersistence::EnqueuedFastPath => Ok(()),
         IrrelevantObservedSwapPersistence::NeedsAwaitedFallback => {
             enqueue_observed_swap_immediately(
@@ -1501,12 +1521,84 @@ impl ShadowRiskGuard {
         sol_to_signed_lamports_conservative(stop_sol, label)
     }
 
+    fn build_universe_stop_details_json(
+        &self,
+        eligible_wallets: usize,
+        active_follow_wallets: usize,
+        discovery_output: Option<&DiscoveryTaskOutput>,
+    ) -> Result<String> {
+        let mut details = serde_json::Map::new();
+        details.insert(
+            "active_follow_wallets".to_string(),
+            serde_json::Value::from(active_follow_wallets as u64),
+        );
+        details.insert(
+            "eligible_wallets".to_string(),
+            serde_json::Value::from(eligible_wallets as u64),
+        );
+        details.insert(
+            "streak".to_string(),
+            serde_json::Value::from(self.universe_breach_streak),
+        );
+        details.insert(
+            "min_active_follow_wallets".to_string(),
+            serde_json::Value::from(self.config.shadow_universe_min_active_follow_wallets),
+        );
+        details.insert(
+            "min_eligible_wallets".to_string(),
+            serde_json::Value::from(self.config.shadow_universe_min_eligible_wallets),
+        );
+        if let Some(discovery_output) = discovery_output {
+            if discovery_output_has_raw_window_cap_truncation_context(discovery_output) {
+                details.insert(
+                    "raw_window_cap_truncated".to_string(),
+                    serde_json::Value::Bool(true),
+                );
+                details.insert(
+                    "cap_truncation_deactivation_guard_active".to_string(),
+                    serde_json::Value::Bool(
+                        discovery_output.cap_truncation_deactivation_guard_active,
+                    ),
+                );
+                if let Some(reason) = discovery_output.cap_truncation_deactivation_guard_reason {
+                    details.insert(
+                        "cap_truncation_deactivation_guard_reason".to_string(),
+                        serde_json::Value::from(reason),
+                    );
+                }
+                if let Some(started_at) =
+                    discovery_output.cap_truncation_deactivation_guard_started_at
+                {
+                    details.insert(
+                        "cap_truncation_deactivation_guard_started_at".to_string(),
+                        serde_json::Value::from(started_at.to_rfc3339()),
+                    );
+                }
+                if let Some(floor_ts) = discovery_output.cap_truncation_floor_ts_utc {
+                    details.insert(
+                        "cap_truncation_floor_ts".to_string(),
+                        serde_json::Value::from(floor_ts.to_rfc3339()),
+                    );
+                }
+                if let Some(signature) = discovery_output.cap_truncation_floor_signature.as_deref()
+                {
+                    details.insert(
+                        "cap_truncation_floor_signature".to_string(),
+                        serde_json::Value::from(signature),
+                    );
+                }
+            }
+        }
+        serde_json::to_string(&details).context("failed to serialize universe stop details")
+    }
+
     fn observe_discovery_cycle(
         &mut self,
         store: &SqliteStore,
         now: DateTime<Utc>,
         eligible_wallets: usize,
         active_follow_wallets: usize,
+        discovery_output: Option<&DiscoveryTaskOutput>,
     ) -> Result<()> {
         if !self.config.shadow_killswitch_enabled {
             return Ok(());
@@ -1523,14 +1615,13 @@ impl ShadowRiskGuard {
             self.universe_breach_streak >= self.config.shadow_universe_breach_cycles.max(1);
         if should_block != self.universe_blocked {
             if should_block {
-                let details_json = format!(
-                    "{{\"active_follow_wallets\":{},\"eligible_wallets\":{},\"streak\":{},\"min_active_follow_wallets\":{},\"min_eligible_wallets\":{}}}",
-                    active_follow_wallets,
+                let details_json = self.build_universe_stop_details_json(
                     eligible_wallets,
-                    self.universe_breach_streak,
-                    self.config.shadow_universe_min_active_follow_wallets,
-                    self.config.shadow_universe_min_eligible_wallets
-                );
+                    active_follow_wallets,
+                    discovery_output,
+                )?;
+                let raw_window_cap_truncated = discovery_output
+                    .is_some_and(discovery_output_has_raw_window_cap_truncation_context);
                 warn!(
                     active_follow_wallets,
                     eligible_wallets,
@@ -1538,6 +1629,20 @@ impl ShadowRiskGuard {
                     min_active_follow_wallets =
                         self.config.shadow_universe_min_active_follow_wallets,
                     min_eligible_wallets = self.config.shadow_universe_min_eligible_wallets,
+                    raw_window_cap_truncated,
+                    cap_truncation_deactivation_guard_active = raw_window_cap_truncated
+                        && discovery_output.is_some_and(
+                            |output| output.cap_truncation_deactivation_guard_active
+                        ),
+                    cap_truncation_deactivation_guard_reason = raw_window_cap_truncated
+                        .then(|| {
+                            discovery_output
+                                .and_then(|output| output.cap_truncation_deactivation_guard_reason)
+                        })
+                        .flatten(),
+                    cap_truncation_floor_ts = ?raw_window_cap_truncated
+                        .then(|| discovery_output.and_then(|output| output.cap_truncation_floor_ts_utc))
+                        .flatten(),
                     "shadow risk universe stop activated"
                 );
                 record_shadow_risk_state_event_or_warn(
@@ -2673,7 +2778,7 @@ async fn run_app_loop(
                             let mut snapshot = (*follow_snapshot).clone();
                             apply_follow_snapshot_update(
                                 &mut snapshot,
-                                discovery_output.active_wallets,
+                                discovery_output.active_wallets.clone(),
                                 discovery_output.cycle_ts,
                                 follow_event_retention,
                             );
@@ -2683,6 +2788,7 @@ async fn run_app_loop(
                                 discovery_output.cycle_ts,
                                 discovery_output.eligible_wallets,
                                 discovery_output.active_follow_wallets,
+                                Some(&discovery_output),
                             ).context("shadow risk discovery-cycle universe event failed with fatal sqlite I/O")?;
                         }
                     }
@@ -3341,6 +3447,13 @@ struct DiscoveryTaskOutput {
     eligible_wallets: usize,
     active_follow_wallets: usize,
     published: bool,
+    scoring_source: &'static str,
+    raw_window_cap_truncated: bool,
+    cap_truncation_deactivation_guard_active: bool,
+    cap_truncation_deactivation_guard_reason: Option<&'static str>,
+    cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
+    cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
+    cap_truncation_floor_signature: Option<String>,
 }
 
 #[cfg(test)]
@@ -4594,7 +4707,9 @@ mod app_tests {
         let error = guard
             .observe_ingestion_snapshot(
                 &store,
-                now + chrono::Duration::seconds(20 * RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as i64),
+                now + chrono::Duration::seconds(
+                    20 * RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as i64,
+                ),
                 Some(infra_snapshot(
                     now + chrono::Duration::seconds(
                         20 * RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as i64,
@@ -4603,10 +4718,13 @@ mod app_tests {
                     14_400_270 + (RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES as u64 * 36),
                 )),
             )
-            .expect_err("fatal infra-stop risk event write must abort ingestion-snapshot observation");
+            .expect_err(
+                "fatal infra-stop risk event write must abort ingestion-snapshot observation",
+            );
         let error_text = format!("{error:#}");
         assert!(
-            error_text.contains("failed to persist shadow risk infra stop event with fatal sqlite I/O"),
+            error_text
+                .contains("failed to persist shadow risk infra stop event with fatal sqlite I/O"),
             "expected infra-stop fatal context, got: {error_text}"
         );
         assert!(
@@ -4689,10 +4807,13 @@ mod app_tests {
                     14_400_900 + (RISK_INFRA_CLEAR_HEALTHY_SAMPLES as u64 * 5),
                 )),
             )
-            .expect_err("fatal infra-clear risk event write must abort ingestion-snapshot observation");
+            .expect_err(
+                "fatal infra-clear risk event write must abort ingestion-snapshot observation",
+            );
         let error_text = format!("{error:#}");
         assert!(
-            error_text.contains("failed to persist shadow risk infra clear event with fatal sqlite I/O"),
+            error_text
+                .contains("failed to persist shadow risk infra clear event with fatal sqlite I/O"),
             "expected infra-clear fatal context, got: {error_text}"
         );
         assert!(
@@ -4707,7 +4828,10 @@ mod app_tests {
             guard.infra_block_key.is_some(),
             "fatal infra-clear write must preserve runtime infra block state"
         );
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_infra_cleared")?, 0);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_infra_cleared")?,
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -4936,8 +5060,8 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_observe_ingestion_snapshot_persists_yellowstone_queue_context_in_infra_stop_details()
-    -> Result<()> {
+    fn risk_guard_observe_ingestion_snapshot_persists_yellowstone_queue_context_in_infra_stop_details(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("infra-stop-yellowstone-details")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_infra_window_minutes = 20;
@@ -5026,8 +5150,8 @@ mod app_tests {
     }
 
     #[test]
-    fn risk_guard_observe_ingestion_snapshot_omits_yellowstone_queue_context_in_infra_stop_details_for_non_yellowstone()
-    -> Result<()> {
+    fn risk_guard_observe_ingestion_snapshot_omits_yellowstone_queue_context_in_infra_stop_details_for_non_yellowstone(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("infra-stop-non-yellowstone-details")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_infra_window_minutes = 20;
@@ -5438,15 +5562,185 @@ mod app_tests {
         let mut guard = ShadowRiskGuard::new(cfg);
         let now = Utc::now();
 
-        guard.observe_discovery_cycle(&store, now, 70, 14)?;
+        guard.observe_discovery_cycle(&store, now, 70, 14, None)?;
         assert!(!guard.universe_blocked);
-        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(3), 70, 14)?;
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(3), 70, 14, None)?;
         assert!(!guard.universe_blocked);
-        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(6), 70, 14)?;
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(6), 70, 14, None)?;
         assert!(guard.universe_blocked);
 
-        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(9), 150, 30)?;
+        guard.observe_discovery_cycle(&store, now + chrono::Duration::minutes(9), 150, 30, None)?;
         assert!(!guard.universe_blocked);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_discovery_cycle_persists_cap_truncation_context_in_universe_stop_details(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-cap-truncation-context")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 1;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let guard_started_at = now - chrono::Duration::minutes(2);
+        let floor_ts = now - chrono::Duration::minutes(9);
+        let discovery_output = DiscoveryTaskOutput {
+            active_wallets: std::collections::HashSet::new(),
+            cycle_ts: now,
+            eligible_wallets: 5,
+            active_follow_wallets: 5,
+            published: true,
+            scoring_source: "raw_window",
+            raw_window_cap_truncated: true,
+            cap_truncation_deactivation_guard_active: false,
+            cap_truncation_deactivation_guard_reason: Some("warm_load_truncated"),
+            cap_truncation_deactivation_guard_started_at: Some(guard_started_at),
+            cap_truncation_floor_ts_utc: Some(floor_ts),
+            cap_truncation_floor_signature: Some("restart-noise-buy-1".to_string()),
+        };
+
+        guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
+        let universe_stops = store.list_risk_events_by_type_desc("shadow_risk_universe_stop")?;
+        assert_eq!(universe_stops.len(), 1);
+        let details_json = universe_stops[0]
+            .details_json
+            .as_deref()
+            .expect("universe stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse universe stop details_json")?;
+        assert_eq!(details["active_follow_wallets"], serde_json::json!(5));
+        assert_eq!(details["eligible_wallets"], serde_json::json!(5));
+        assert_eq!(details["raw_window_cap_truncated"], serde_json::json!(true));
+        assert_eq!(
+            details["cap_truncation_deactivation_guard_active"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            details["cap_truncation_deactivation_guard_reason"],
+            serde_json::json!("warm_load_truncated")
+        );
+        assert_eq!(
+            details["cap_truncation_deactivation_guard_started_at"],
+            serde_json::json!(guard_started_at.to_rfc3339())
+        );
+        assert_eq!(
+            details["cap_truncation_floor_ts"],
+            serde_json::json!(floor_ts.to_rfc3339())
+        );
+        assert_eq!(
+            details["cap_truncation_floor_signature"],
+            serde_json::json!("restart-noise-buy-1")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_discovery_cycle_omits_cap_truncation_context_when_raw_window_not_truncated(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-no-cap-truncation-context")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 1;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let discovery_output = DiscoveryTaskOutput {
+            active_wallets: std::collections::HashSet::new(),
+            cycle_ts: now,
+            eligible_wallets: 5,
+            active_follow_wallets: 5,
+            published: true,
+            scoring_source: "aggregates",
+            raw_window_cap_truncated: false,
+            cap_truncation_deactivation_guard_active: false,
+            cap_truncation_deactivation_guard_reason: Some("live_cap_eviction"),
+            cap_truncation_deactivation_guard_started_at: Some(now),
+            cap_truncation_floor_ts_utc: Some(now),
+            cap_truncation_floor_signature: Some("cap-sig-001".to_string()),
+        };
+
+        guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
+        let universe_stops = store.list_risk_events_by_type_desc("shadow_risk_universe_stop")?;
+        assert_eq!(universe_stops.len(), 1);
+        let details_json = universe_stops[0]
+            .details_json
+            .as_deref()
+            .expect("universe stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse universe stop details_json")?;
+        assert!(
+            details.get("raw_window_cap_truncated").is_none(),
+            "non-truncated universe stop details must omit cap-truncation fields: {details_json}"
+        );
+        assert!(
+            details
+                .get("cap_truncation_deactivation_guard_reason")
+                .is_none(),
+            "non-truncated universe stop details must omit cap-truncation fields: {details_json}"
+        );
+        assert!(
+            details.get("cap_truncation_floor_signature").is_none(),
+            "non-truncated universe stop details must omit cap-truncation fields: {details_json}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_discovery_cycle_omits_cap_truncation_context_for_aggregate_scoring_with_lingering_floor(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-aggregate-no-cap-context")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 1;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let discovery_output = DiscoveryTaskOutput {
+            active_wallets: std::collections::HashSet::new(),
+            cycle_ts: now,
+            eligible_wallets: 5,
+            active_follow_wallets: 5,
+            published: true,
+            scoring_source: "aggregates",
+            raw_window_cap_truncated: true,
+            cap_truncation_deactivation_guard_active: true,
+            cap_truncation_deactivation_guard_reason: Some("live_cap_eviction"),
+            cap_truncation_deactivation_guard_started_at: Some(now),
+            cap_truncation_floor_ts_utc: Some(now),
+            cap_truncation_floor_signature: Some("aggregate-floor-sig".to_string()),
+        };
+
+        guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
+        let universe_stops = store.list_risk_events_by_type_desc("shadow_risk_universe_stop")?;
+        assert_eq!(universe_stops.len(), 1);
+        let details_json = universe_stops[0]
+            .details_json
+            .as_deref()
+            .expect("universe stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse universe stop details_json")?;
+        assert!(
+            details.get("raw_window_cap_truncated").is_none(),
+            "aggregate-scored universe stop details must omit raw-window truncation fields even if a truncation floor still lingers: {details_json}"
+        );
+        assert!(
+            details
+                .get("cap_truncation_deactivation_guard_reason")
+                .is_none(),
+            "aggregate-scored universe stop details must omit raw-window truncation fields even if a truncation floor still lingers: {details_json}"
+        );
+        assert!(
+            details.get("cap_truncation_floor_signature").is_none(),
+            "aggregate-scored universe stop details must omit raw-window truncation fields even if a truncation floor still lingers: {details_json}"
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -5474,11 +5768,15 @@ mod app_tests {
         )?;
 
         let error = guard
-            .observe_discovery_cycle(&store, now, 70, 14)
-            .expect_err("fatal universe-stop risk event write must abort discovery-cycle observation");
+            .observe_discovery_cycle(&store, now, 70, 14, None)
+            .expect_err(
+                "fatal universe-stop risk event write must abort discovery-cycle observation",
+            );
         let error_text = format!("{error:#}");
         assert!(
-            error_text.contains("failed to persist shadow risk universe stop event with fatal sqlite I/O"),
+            error_text.contains(
+                "failed to persist shadow risk universe stop event with fatal sqlite I/O"
+            ),
             "expected universe-stop fatal context, got: {error_text}"
         );
         assert!(
@@ -5493,7 +5791,10 @@ mod app_tests {
             !guard.universe_blocked,
             "fatal universe-stop write must not flip runtime blocked state"
         );
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_universe_stop")?, 0);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_universe_stop")?,
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -5510,9 +5811,12 @@ mod app_tests {
         let mut guard = ShadowRiskGuard::new(cfg);
         let now = Utc::now();
 
-        guard.observe_discovery_cycle(&store, now, 70, 14)?;
+        guard.observe_discovery_cycle(&store, now, 70, 14, None)?;
         assert!(guard.universe_blocked);
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_universe_stop")?, 1);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_universe_stop")?,
+            1
+        );
 
         let conn = rusqlite::Connection::open(&db_path)?;
         conn.execute_batch(
@@ -5525,12 +5829,15 @@ mod app_tests {
         )?;
 
         let error = guard
-            .observe_discovery_cycle(&store, now + chrono::Duration::minutes(3), 150, 30)
-            .expect_err("fatal universe-clear risk event write must abort discovery-cycle observation");
+            .observe_discovery_cycle(&store, now + chrono::Duration::minutes(3), 150, 30, None)
+            .expect_err(
+                "fatal universe-clear risk event write must abort discovery-cycle observation",
+            );
         let error_text = format!("{error:#}");
         assert!(
-            error_text
-                .contains("failed to persist shadow risk universe clear event with fatal sqlite I/O"),
+            error_text.contains(
+                "failed to persist shadow risk universe clear event with fatal sqlite I/O"
+            ),
             "expected universe-clear fatal context, got: {error_text}"
         );
         assert!(
@@ -5545,7 +5852,10 @@ mod app_tests {
             guard.universe_blocked,
             "fatal universe-clear write must preserve runtime blocked state"
         );
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_universe_cleared")?, 0);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_universe_cleared")?,
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -7139,7 +7449,10 @@ mod app_tests {
             guard.hard_stop_reason.is_some(),
             "fatal hard-stop clear write must preserve runtime hard-stop state"
         );
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_hard_stop_cleared")?, 0);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_hard_stop_cleared")?,
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -7386,8 +7699,14 @@ mod app_tests {
             "fatal soft-exposure pause clear write must preserve runtime soft pause latch"
         );
         assert_eq!(guard.soft_exposure_pause_until, Some(initial_until));
-        assert_eq!(guard.soft_exposure_pause_reason.as_deref(), Some(initial_reason.as_str()));
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause_cleared")?, 0);
+        assert_eq!(
+            guard.soft_exposure_pause_reason.as_deref(),
+            Some(initial_reason.as_str())
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -7438,7 +7757,10 @@ mod app_tests {
             guard.pause_until.is_some(),
             "fatal timed-pause clear write must preserve runtime pause state"
         );
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause_cleared")?, 0);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -7471,24 +7793,27 @@ mod app_tests {
             } => {
                 assert!(detail.contains("cached error"));
                 assert!(detail.contains("fail_closed_event_error"));
-                assert!(
-                    detail.contains("failed to persist shadow risk fail-closed event with fatal sqlite I/O")
-                );
+                assert!(detail.contains(
+                    "failed to persist shadow risk fail-closed event with fatal sqlite I/O"
+                ));
                 assert!(detail.contains("xShmMap"));
             }
             other => panic!(
                 "expected fail-closed block when fatal fail-closed event write fails, got {other:?}"
             ),
         }
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_fail_closed")?, 0);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_fail_closed")?,
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 
     #[test]
-    fn risk_guard_timed_pause_clear_blocks_buy_on_fatal_fail_closed_risk_event_write(
-    ) -> Result<()> {
+    fn risk_guard_timed_pause_clear_blocks_buy_on_fatal_fail_closed_risk_event_write() -> Result<()>
+    {
         let (store, db_path) = make_test_store("timed-pause-clear-fail-closed-risk-event-fatal")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_drawdown_1h_stop_sol = -999.0;
@@ -7540,8 +7865,14 @@ mod app_tests {
             ),
         }
         assert!(guard.pause_until.is_some());
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_pause_cleared")?, 0);
-        assert_eq!(store.risk_event_count_by_type("shadow_risk_fail_closed")?, 0);
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_pause_cleared")?,
+            0
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_fail_closed")?,
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -8922,8 +9253,8 @@ manual override by operator
     }
 
     #[test]
-    fn operator_emergency_stop_refresh_returns_error_on_fatal_clear_risk_event_write(
-    ) -> Result<()> {
+    fn operator_emergency_stop_refresh_returns_error_on_fatal_clear_risk_event_write() -> Result<()>
+    {
         let (store, db_path) = make_test_store("operator-stop-clear-risk-event-fatal")?;
         let now = DateTime::parse_from_rfc3339("2026-03-14T12:00:00Z")
             .expect("timestamp")
