@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-#[cfg(test)]
-use copybot_config::ExecutionConfig;
 use copybot_config::{
-    load_from_env_or_default, normalize_ingestion_source, RiskConfig, ShadowConfig,
+    load_from_env_or_default, normalize_ingestion_source, ExecutionConfig, RiskConfig, ShadowConfig,
 };
 use copybot_core_types::SwapEvent;
 #[cfg(test)]
@@ -176,6 +174,7 @@ async fn main() -> Result<()> {
     }
     validate_execution_runtime_contract(&config.execution, &config.system.env)?;
     validate_execution_risk_contract(&config.risk)?;
+    validate_live_execution_policy_contract(&config.execution, &config.risk, &config.system.env)?;
 
     let mut store = SqliteStore::open(Path::new(&config.sqlite.path))
         .context("failed to initialize sqlite store")?;
@@ -1324,6 +1323,44 @@ fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
     {
         return Err(anyhow!(
             "risk.shadow_universe_min_active_follow_wallets/min_eligible_wallets/breach_cycles must be >= 1"
+        ));
+    }
+    Ok(())
+}
+
+fn is_production_like_execution_env(env: &str) -> bool {
+    let env_norm = env.trim().to_ascii_lowercase();
+    matches!(env_norm.as_str(), "prod" | "production")
+        || env_norm.starts_with("prod-")
+        || env_norm.starts_with("prod_")
+        || env_norm.starts_with("production-")
+        || env_norm.starts_with("production_")
+}
+
+fn validate_live_execution_policy_contract(
+    execution: &ExecutionConfig,
+    risk: &RiskConfig,
+    env: &str,
+) -> Result<()> {
+    if !execution.enabled || !is_production_like_execution_env(env) {
+        return Ok(());
+    }
+    if execution.pretrade_min_sol_reserve < 0.05 {
+        return Err(anyhow!(
+            "execution.enabled=true in production-like env {} requires execution.pretrade_min_sol_reserve >= 0.05 SOL",
+            env
+        ));
+    }
+    if execution.pretrade_max_fee_overhead_bps == 0 {
+        return Err(anyhow!(
+            "execution.enabled=true in production-like env {} requires execution.pretrade_max_fee_overhead_bps > 0 to keep fee-overhead breakeven policy active",
+            env
+        ));
+    }
+    if risk.execution_buy_cooldown_seconds == 0 {
+        return Err(anyhow!(
+            "execution.enabled=true in production-like env {} requires risk.execution_buy_cooldown_seconds >= 1",
+            env
         ));
     }
     Ok(())
@@ -4790,6 +4827,73 @@ mod app_tests {
             "unexpected error: {}",
             error
         );
+    }
+
+    #[test]
+    fn validate_live_execution_policy_contract_rejects_fee_overhead_policy_disabled_in_prod_live() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.pretrade_max_fee_overhead_bps = 0;
+        let mut risk = RiskConfig::default();
+        risk.execution_buy_cooldown_seconds = 60;
+
+        let error = validate_live_execution_policy_contract(&execution, &risk, "prod-live")
+            .expect_err("prod-live execution must keep fee-overhead policy enabled");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.pretrade_max_fee_overhead_bps > 0"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_live_execution_policy_contract_rejects_zero_buy_cooldown_in_prod_live() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.pretrade_max_fee_overhead_bps = 1_000;
+        let risk = RiskConfig::default();
+
+        let error = validate_live_execution_policy_contract(&execution, &risk, "prod-live")
+            .expect_err("prod-live execution must keep buy cooldown enabled");
+        assert!(
+            error
+                .to_string()
+                .contains("risk.execution_buy_cooldown_seconds >= 1"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_live_execution_policy_contract_rejects_sub_floor_sol_reserve_in_prod_live() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        execution.pretrade_min_sol_reserve = 0.049;
+        execution.pretrade_max_fee_overhead_bps = 1_000;
+        let mut risk = RiskConfig::default();
+        risk.execution_buy_cooldown_seconds = 60;
+
+        let error = validate_live_execution_policy_contract(&execution, &risk, "prod-live")
+            .expect_err("prod-live execution must keep 0.05 SOL reserve floor");
+        assert!(
+            error
+                .to_string()
+                .contains("execution.pretrade_min_sol_reserve >= 0.05 SOL"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn validate_live_execution_policy_contract_allows_zeroed_guards_outside_prod_like_env() {
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        let risk = RiskConfig::default();
+
+        validate_live_execution_policy_contract(&execution, &risk, "paper")
+            .expect("paper env should not enforce prod-live reserve/cooldown contract");
     }
 
     fn infra_snapshot(
